@@ -53,11 +53,11 @@
 // Use ioctl calls to IO driver to turn heater on/off
 #  define HEATER_PX4IO
 #else
-// Use direct calls to turn GPIO pin on/off
-#  ifndef GPIO_HEATER_OUTPUT
-#  error "To use the heater driver, the board_config.h must define and initialize GPIO_HEATER_OUTPUT"
-#  endif
-#  define HEATER_GPIO
+// // Use direct calls to turn GPIO pin on/off
+// #  ifndef GPIO_HEATER_OUTPUT
+// #  error "To use the heater driver, the board_config.h must define and initialize GPIO_HEATER_OUTPUT"
+// #  endif
+// #  define HEATER_GPIO
 #endif
 
 Heater::Heater() :
@@ -265,11 +265,11 @@ void Heater::publish_status()
 int Heater::start()
 {
 	// Exit the driver if the sensor ID does not match the desired sensor.
-	if (_param_sens_temp_id.get() == 0) {
-		PX4_ERR("Valid SENS_TEMP_ID required");
-		request_stop();
-		return PX4_ERROR;
-	}
+	// if (_param_sens_temp_id.get() == 0) {
+	// 	PX4_ERR("Valid SENS_TEMP_ID required");
+	// 	request_stop();
+	// 	return PX4_ERROR;
+	// }
 
 	update_params(true);
 	ScheduleNow();
@@ -279,7 +279,7 @@ int Heater::start()
 int Heater::task_spawn(int argc, char *argv[])
 {
 	Heater *heater = new Heater();
-
+	PX4_ERR("Balance Controller started");
 	if (!heater) {
 		PX4_ERR("driver allocation failed");
 		return PX4_ERROR;
@@ -325,7 +325,7 @@ This task can be started at boot from the startup scripts by setting SENS_EN_THE
 	return 0;
 }
 
-extern "C" __EXPORT int heater_main(int argc, char *argv[])
+extern "C" __EXPORT int balance_controller_main(int argc, char *argv[])
 {
 	return Heater::main(argc, argv);
 }
