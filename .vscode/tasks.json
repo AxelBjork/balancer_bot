@@ -1,0 +1,49 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "cmake configure",
+      "type": "shell",
+      "command": "cmake",
+      "args": [
+        "-S", "${workspaceFolder}",
+        "-B", "${workspaceFolder}/build",
+        "-DCMAKE_BUILD_TYPE=Debug"
+      ],
+      "problemMatcher": [],
+      "group": "build"
+    },
+    {
+      "label": "cmake build",
+      "type": "shell",
+      "command": "cmake",
+      "args": [
+        "--build", "${workspaceFolder}/build",
+        "--config", "Debug"
+      ],
+      "dependsOn": "cmake configure",
+      "problemMatcher": ["$gcc"],
+      "group": { "kind": "build", "isDefault": true }
+    },
+    {
+      "label": "run hello_world",
+      "type": "shell",
+      "command": "${workspaceFolder}/build/hello_world",
+      "dependsOn": "cmake build",
+      "group": "test",
+      "presentation": { "reveal": "always" }
+    },
+    {
+      "label": "ctest",
+      "type": "shell",
+      "command": "ctest",
+      "args": [
+        "--output-on-failure",
+        "--test-dir", "${workspaceFolder}/build"
+      ],
+      "dependsOn": "cmake build",
+      "group": "test",
+      "presentation": { "reveal": "always" }
+    }
+  ]
+}
