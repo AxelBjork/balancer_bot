@@ -15,3 +15,7 @@ pxh> balance_controller start
 pxh> balance_controller status
 
 ```
+
+
+g++ motor_hat_test.cpp -o motor_hat_test -lpigpio -lrt
+sudo ./motor_hat_test
