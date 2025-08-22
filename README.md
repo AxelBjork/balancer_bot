@@ -17,8 +17,19 @@ pxh> balance_controller status
 ```
 
 ## Motor Test
-g++ motor_hat_test.cpp -o motor_hat_test -lpigpio -lrt
-sudo ./motor_hat_test
+
+g++ motor_off.cpp -o motor_hat_test -lpigpio -lrt
+g++ motor_hat_test.cpp -o motor_hat_test -lSDL2 -lpigpiod_if2 -lrt -pthread
+./motor_hat_test
+sudo ./motor_off
+
+
+## Bluetooth connect
+bluetoothctl
+power on
+scan on
+pair 28:EA:0B:E1:04:E6
+connect 28:EA:0B:E1:04:E6
 
 ## XBOX Control
 

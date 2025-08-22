@@ -1,7 +1,5 @@
-#include <pigpio.h>
-#include <chrono>
-#include <thread>
-#include <string_view>
+#include <pigpiod_if2.h>
+#include <algorithm>
 
 class Stepper {
 public:
@@ -11,41 +9,39 @@ public:
     unsigned dir;
   };
 
-  Stepper(const Pins& pins) : pins_(pins) {
-    // Set modes
-    gpioSetMode(pins_.ena,      PI_OUTPUT);
-    gpioSetMode(pins_.step,     PI_OUTPUT);
-    gpioSetMode(pins_.dir,      PI_OUTPUT);
+  Stepper(int pi, const Pins& pins) : pi_(pi), pins_(pins) {
+    set_mode(pi_, pins_.ena,  PI_OUTPUT);
+    set_mode(pi_, pins_.step, PI_OUTPUT);
+    set_mode(pi_, pins_.dir,  PI_OUTPUT);
 
-    gpioWrite(pins_.ena, 1);      // enable this motor
-    gpioDelay(kWakeDelayUs);
+    gpio_write(pi_, pins_.ena, 1);     // enable this motor
+    sleep_us(kWakeDelayUs);
   }
 
   ~Stepper() {
-    // Ensure motor is de-energized
-    gpioWrite(pins_.ena, 0);
+    gpio_write(pi_, pins_.ena, 0);     // de-energize
   }
 
   void stepOnce(unsigned periodUs) const {
-    // Ensure at least minimal pulse width
     constexpr unsigned kMinPulse = 2;
     const unsigned half = std::max(periodUs / 2, kMinPulse);
 
-    gpioWrite(pins_.step, 1);
-    gpioDelay(half);
-    gpioWrite(pins_.step, 0);
-    gpioDelay(half);
+    gpio_write(pi_, pins_.step, 1);
+    sleep_us(half);
+    gpio_write(pi_, pins_.step, 0);
+    sleep_us(half);
   }
 
   void stepN(unsigned steps, unsigned periodUs, bool dirForward) const {
-    gpioWrite(pins_.dir, dirForward ? 1 : 0);
-    gpioDelay(kDirSetupDelayUs);
-    for (unsigned i = 0; i < steps; ++i) {
-      stepOnce(periodUs);
-    }
+    gpio_write(pi_, pins_.dir, dirForward ? 1 : 0);
+    sleep_us(kDirSetupDelayUs);
+    for (unsigned i = 0; i < steps; ++i) stepOnce(periodUs);
   }
 
 private:
+  static inline void sleep_us(unsigned us) { time_sleep(us / 1e6); }
+
+  int  pi_;
   Pins pins_;
   static constexpr unsigned kWakeDelayUs    = 100'000; // 100 ms
   static constexpr unsigned kDirSetupDelayUs=   2'000; // 2 ms
