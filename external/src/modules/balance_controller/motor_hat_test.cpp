@@ -8,17 +8,24 @@ int main() {
   }
 
   {
-    Stepper::Pins m1Pins{12, 19, 13, 4};
-    Stepper motor(m1Pins);
+    Stepper::Pins m1Pins{12, 19, 13};   // ENA, STEP, DIR
+    Stepper::Pins m2Pins{4, 18, 24};   // ENB, STEP, DIR
 
-    // Forward ~2 revs
-    motor.stepN(600, 1200, true);
+    Stepper motor1(m1Pins);
+    Stepper motor2(m2Pins);
 
-    gpioDelay(50'000); // pause
+    // Motor 1 forward/backward
+    motor1.stepN(400, 1000, true);
+    gpioDelay(200'000);
+    motor1.stepN(400, 1000, false);
 
-    // Backward ~2 revs
-    motor.stepN(600, 1200, false);
-  } // motor destructor de-energizes coils
+    gpioDelay(500'000); // pause between motors
+
+    // Motor 2 forward/backward
+    motor2.stepN(400, 1000, true);
+    gpioDelay(200'000);
+    motor2.stepN(400, 1000, false);
+  }
 
   gpioTerminate();
   return 0;

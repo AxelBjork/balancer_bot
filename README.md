@@ -16,6 +16,13 @@ pxh> balance_controller status
 
 ```
 
-
+## Motor Test
 g++ motor_hat_test.cpp -o motor_hat_test -lpigpio -lrt
 sudo ./motor_hat_test
+
+## XBOX Control
+
+sudo apt install libsdl2-dev
+
+g++ main.cpp -o xbox_demo -lSDL2
+./xbox_demo

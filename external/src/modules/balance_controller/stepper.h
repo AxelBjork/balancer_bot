@@ -9,7 +9,6 @@ public:
     unsigned ena;
     unsigned step;
     unsigned dir;
-    unsigned en_other; // keep the other channel disabled
   };
 
   Stepper(const Pins& pins) : pins_(pins) {
@@ -17,9 +16,7 @@ public:
     gpioSetMode(pins_.ena,      PI_OUTPUT);
     gpioSetMode(pins_.step,     PI_OUTPUT);
     gpioSetMode(pins_.dir,      PI_OUTPUT);
-    gpioSetMode(pins_.en_other, PI_OUTPUT);
 
-    gpioWrite(pins_.en_other, 0); // disable other channel
     gpioWrite(pins_.ena, 1);      // enable this motor
     gpioDelay(kWakeDelayUs);
   }
