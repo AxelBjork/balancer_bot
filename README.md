@@ -8,7 +8,7 @@ cd /home/axel/Public/Project/vscode/balancer_bot/PX4-Autopilot
 make px4_sitl_default -j$(nproc) EXTERNAL_MODULES_LOCATION=../external
 ```
 
-# Run SITL
+## Run SITL
 ```
 make px4_sitl none
 
@@ -80,7 +80,8 @@ Add
 gpio=4=op,dl
 dtparam=i2c_arm=on
 dtparam=i2c_arm_baudrate=400000
-``
+```
+
 
 **Enable pigiod daemon** `sudo systemctl enable --now pigpiod`
 
@@ -109,3 +110,7 @@ g++ extras/xbox_demo.cpp -o xbox_demo -lSDL2
 
 ## IMU Demo
 g++ extras/imu_demo.cpp -o imu_demo
+
+# Unittest
+
+./build_cmake
