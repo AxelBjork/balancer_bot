@@ -55,23 +55,39 @@ if (BUILD_TESTS)
   FetchContent_MakeAvailable(googletest)
 
   message(STATUS "Building tests")
-  add_executable(motor_controller_test
-    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/motor_controller_test.cpp
-  )
-
-  # Use pigpio stub (inline impl) and include your src for headers under test
-  target_compile_definitions(motor_controller_test PRIVATE PIGPIOD_STUB_IMPL)
-  target_include_directories(motor_controller_test PRIVATE
+  add_library(balancer_common INTERFACE)
+  target_include_directories(balancer_common INTERFACE
+    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller
     ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/stubs
     ${SDL2_INCS}
   )
-  target_link_libraries(motor_controller_test PRIVATE
+
+  target_compile_definitions(balancer_common INTERFACE
+    PIGPIOD_STUB_IMPL
+  )
+  target_link_libraries(balancer_common INTERFACE
     GTest::gmock_main GTest::gtest
     Threads::Threads
     ${SDL2_LIBS}
   )
 
+  # 2) motor_controller_test (existing)
+  add_executable(motor_controller_test
+    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/motor_controller_test.cpp
+  )
+  target_link_libraries(motor_controller_test PRIVATE
+    balancer_common
+  )
   add_test(NAME motor_controller_test COMMAND motor_controller_test)
+
+  # 3) control_loop_test (new)
+  add_executable(control_loop_test
+    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/control_loop_test.cpp
+  )
+  target_link_libraries(control_loop_test PRIVATE
+    balancer_common
+  )
+  add_test(NAME control_loop_test COMMAND control_loop_test)
 
 # ================================================================
 #                       App (opt-in, hard checks)

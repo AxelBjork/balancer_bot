@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 // ---------------------- Compile-time configuration ---------------------------
 struct Config {
   static inline constexpr int   run_seconds   = 30;
@@ -9,3 +10,6 @@ struct Config {
   static inline constexpr bool  invert_right  = false;
 };
 // ---------------------------------------------------------------------------
+
+static std::atomic<bool> g_stop{false};
+static void on_signal(int) { g_stop.store(true, std::memory_order_relaxed); }

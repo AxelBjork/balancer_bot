@@ -1,8 +1,3 @@
-// drive_by_xbox.cpp
-#include "stepper.h"
-#include "xbox_controller.h"
-#include "config.h"
-
 #include <pigpiod_if2.h>
 #include <atomic>
 #include <chrono>
@@ -10,14 +5,13 @@
 #include <csignal>
 #include <thread>
 
-
-namespace {
-using clock = std::chrono::steady_clock;
-
+#include "stepper.h"
+#include "xbox_controller.h"
+#include "motor_runner.h"
+#include "config.h"
 
 
 // ---------------------- Motor control runner --------------------------------
-
 class App {
 public:
   int run(PigpioCtx& _ctx) {
@@ -28,10 +22,10 @@ public:
     Stepper left(_ctx.handle(), leftPins), right(_ctx.handle(), rightPins);
     MotorRunner L(left), R(right);
 
-    const auto t_end = clock::now() + std::chrono::seconds(Config::run_seconds);
+    const auto t_end = std::chrono::steady_clock::now() + std::chrono::seconds(Config::run_seconds);
     const auto tick  = std::chrono::milliseconds(1000 / Config::control_hz);
 
-    while (clock::now() < t_end && !g_stop.load(std::memory_order_relaxed)) {
+    while (std::chrono::steady_clock::now() < t_end && !g_stop.load(std::memory_order_relaxed)) {
       pad.update();
 
       float ly = pad.leftY();
@@ -50,7 +44,6 @@ public:
     return 0;
   }
 };
-} // namespace
 
 
 int main() {

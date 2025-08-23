@@ -12,8 +12,6 @@
 #include <stdexcept>
 #include <thread>
 
-static std::atomic<bool> g_stop{false};
-static void on_signal(int) { g_stop.store(true, std::memory_order_relaxed); }
 
 struct PigpioCtx {
   PigpioCtx(const char* host=nullptr, const char* port=nullptr) {
