@@ -74,11 +74,21 @@ xbox_remote status
 
 
 # Pi Setup
+`sudo nano /boot/firmware/config.txt`
+Add
+```
+gpio=4=op,dl
+dtparam=i2c_arm=on
+dtparam=i2c_arm_baudrate=400000
+``
+
+**Enable pigiod daemon** `sudo systemctl enable --now pigpiod`
 
 ## Motor Test
 
-g++ motor_off.cpp -o motor_hat_test -lpigpio -lrt
-g++ motor_hat_test.cpp -o motor_hat_test -lSDL2 -lpigpiod_if2 -lrt -pthread
+g++ extras/motor_off.cpp -o motor_off -lpigpio -lrt
+g++ motor_controller.cpp -o motor_controller -lSDL2 -lrt -pthread -I./stubs -DPIGPIOD_STUB_IMPL
+g++ motor_controller.cpp -o motor_controller -lSDL2 -lpigpiod_if2 -lrt -pthread
 ./motor_hat_test
 sudo ./motor_off
 
@@ -94,5 +104,8 @@ connect 28:EA:0B:E1:04:E6
 
 sudo apt install libsdl2-dev
 
-g++ main.cpp -o xbox_demo -lSDL2
+g++ extras/xbox_demo.cpp -o xbox_demo -lSDL2
 ./xbox_demo
+
+## IMU Demo
+g++ extras/imu_demo.cpp -o imu_demo
