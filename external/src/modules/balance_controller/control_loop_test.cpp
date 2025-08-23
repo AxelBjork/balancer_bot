@@ -44,10 +44,11 @@ private:
 template <class CtrlT>
 class ImuFeeder {
 public:
-  ImuFeeder(CtrlT& c, double angle=0.0, double gyro=0.0)
+  ImuFeeder(CtrlT& c, double angle=0.0, double gyro=0.0, double yaw=0.0)
     : ctrl_(c) {
     angle_.store(angle);
     gyro_.store(gyro);
+    yaw_.store(yaw);
     running_.store(true);
     th_ = std::thread([this]{
       using clk = std::chrono::steady_clock;
@@ -57,6 +58,7 @@ public:
         ImuSample s;
         s.angle_rad = angle_.load(std::memory_order_relaxed);
         s.gyro_rad_s = gyro_.load(std::memory_order_relaxed);
+        s.yaw_rate_z = yaw_.load(std::memory_order_relaxed);
         s.t = clk::now();
         ctrl_.pushImu(s);
         std::this_thread::sleep_until(next);
@@ -68,15 +70,16 @@ public:
     bool exp = true;
     if (running_.compare_exchange_strong(exp, false) && th_.joinable()) th_.join();
   }
-  void set(double angle, double gyro) {
+  void set(double angle, double gyro, double yaw) {
     angle_.store(angle, std::memory_order_relaxed);
-    gyro_.store(gyro, std::memory_order_relaxed);
+    gyro_.store(gyro,  std::memory_order_relaxed);
+    yaw_.store(yaw,    std::memory_order_relaxed);
   }
 private:
   CtrlT& ctrl_;
   std::atomic<bool> running_{false};
   std::thread th_;
-  std::atomic<double> angle_{0.0}, gyro_{0.0};
+  std::atomic<double> angle_{0.0}, gyro_{0.0}, yaw_{0.0};
 };
 
 // ===================== Test Fixture =====================
@@ -108,10 +111,11 @@ protected:
       sink_.on(t);
       static std::atomic<int> k{0};
       if ((++k % 25) == 0) {
-        std::printf("tgt=%.2f° tilt=%.2f° u=%.0f L=%.0f R=%.0f velErr=%.0f sat=%d\n",
+        std::printf("tgt=%.2f° tilt=%.2f° u=%.0f L=%.0f R=%.0f velErr=%.0f sat=%d desiredYaw=%.2f yawErr=%.2f\n",
           t.tilt_target_rad * 180.0/M_PI, t.tilt_rad * 180.0/M_PI,
           t.u_balance_sps, t.left_cmd_sps, t.right_cmd_sps,
-          t.vel_err_sps, int(t.tilt_saturated));
+          t.vel_err_sps, int(t.tilt_saturated), t.desired_yaw_rate,
+          t.yaw_err);
       }
     });
     // Start IMU feeder
@@ -223,4 +227,70 @@ TEST_F(CascadedControllerFixture, TiltTargetIsClamped) {
     if (t.tilt_saturated) saw_sat = true;
   }
   EXPECT_TRUE(saw_sat);
+}
+
+TEST_F(CascadedControllerFixture, YawPI_PositiveTurnGeneratesPositiveSteerWhenYawIsZero) {
+  // Ensure yaw PI is enabled & reasonable limits
+  ControlTunings g = gains_;
+  g.yaw_pi_enabled = true;
+  g.kp_yaw = 250.0;
+  g.ki_yaw = 80.0;
+  g.max_yaw_rate_cmd = 1.5; // rad/s
+  g.max_steer_sps = 800.0;
+  recreateController(g);
+
+  // Flat pitch, zero yaw rate from IMU
+  imu_->set(0.0, 0.0, 0.0);
+
+  // Command a positive turn (CCW)
+  setJoystick(0.0f, +0.5f);
+
+  ASSERT_TRUE(waitTelemetry(120));
+  auto v = telemetry();
+  const size_t k = std::min<size_t>(v.size(), 40);
+  auto tail_begin = v.end() - k;
+
+  // Expect positive steering split on average (left faster, right slower)
+  double avg_steer = 0.0;
+  for (auto it = tail_begin; it != v.end(); ++it) {
+    avg_steer += it->steer_split_sps;
+    // yaw error should be ~ desired (> 0)
+    EXPECT_GT(it->desired_yaw_rate, 0.0);
+  }
+  avg_steer /= k;
+  EXPECT_GT(avg_steer, 0.0);
+}
+
+TEST_F(CascadedControllerFixture, YawPI_TracksDesiredYawRate) {
+  ControlTunings g = gains_;
+  g.yaw_pi_enabled = true;
+  g.kp_yaw = 200.0;
+  g.ki_yaw = 60.0;
+  g.max_yaw_rate_cmd = 1.0; // rad/s
+  g.max_steer_sps = 600.0;
+  recreateController(g);
+
+  // Command +0.8 rad/s yaw
+  setJoystick(0.0f, +0.8f);
+
+  // Simulate the plant reporting roughly the desired yaw rate
+  imu_->set(0.0, 0.0, +0.8 * g.max_yaw_rate_cmd); // actual ≈ desired
+
+  ASSERT_TRUE(waitTelemetry(150));
+  auto v = telemetry();
+  const size_t k = std::min<size_t>(v.size(), 40);
+  auto tail_begin = v.end() - k;
+
+  // With actual ≈ desired, yaw error should be near 0 and steering near 0
+  double avg_yaw_err = 0.0;
+  double avg_steer   = 0.0;
+  for (auto it = tail_begin; it != v.end(); ++it) {
+    avg_yaw_err += std::fabs(it->yaw_err);
+    avg_steer   += std::fabs(it->steer_split_sps);
+  }
+  avg_yaw_err /= k;
+  avg_steer   /= k;
+
+  EXPECT_LT(avg_yaw_err, 0.05); // rad/s
+  EXPECT_LT(avg_steer,   40.0); // sps (near zero correction)
 }

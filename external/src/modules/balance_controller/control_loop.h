@@ -10,39 +10,15 @@
 
 
 // TODO
-// wire in a yaw PI option,
 // add a rate limiter on sps,
 
-struct Telemetry {
-  // timing
-  std::chrono::steady_clock::time_point ts{};
-
-  // IMU & references
-  double tilt_rad         = 0.0;
-  double gyro_rad_s       = 0.0;
-  double tilt_target_rad  = 0.0;     // after clamp
-  bool   tilt_saturated   = false;
-
-  // Velocity loop
-  double desired_base_sps = 0.0;
-  double actual_base_sps  = 0.0;
-  double vel_err_sps      = 0.0;
-  double vel_int_state    = 0.0;     // integrator state (in “PI space”)
-
-  // Balance & steering
-  double u_balance_sps    = 0.0;
-  double steer_split_sps  = 0.0;
-
-  // Motor commands
-  double left_cmd_sps     = 0.0;
-  double right_cmd_sps    = 0.0;
-};
 
 // ---- IMU sample (from ISM330DHCX fusion later) ----
 // angle_rad: pitch angle (+ forward), gyro_rad_s: pitch rate (+ when nose down)
 struct ImuSample {
   double angle_rad;
   double gyro_rad_s;
+  double yaw_rate_z;
   std::chrono::steady_clock::time_point t;
 };
 
@@ -54,24 +30,62 @@ struct JoyCmd {
 
 // ---- Controller tunables & limits ----
 struct ControlTunings {
-  // Balance PD (inner, fast)
+  // Balance PD
   double kp_bal = 60.0;     // [sps/rad]
   double kd_bal = 1.2;      // [sps/(rad/s)]
 
-  // Velocity PI (outer, slower)
-  double kp_vel = 1.2;      // [rad/(m/s)] or [rad per (normalized speed)]
-  double ki_vel = 0.4;      // [rad/(m/s*s)]
+  // Velocity PI
+  double kp_vel = 1.2;
+  double ki_vel = 0.4;
 
-  // Steering gain (maps turn cmd to sps split)
-  double k_turn = 600.0;    // [sps per unit turn]
+  // Open-loop steering gain (used if yaw PI disabled)
+  double k_turn = 600.0;    // [sps / unit turn]
+
+  // Yaw PI (closed-loop steering) -- ENABLE THIS to use gyro Z
+  bool   yaw_pi_enabled = true;
+  double kp_yaw = 250.0;         // [sps / (rad/s)]
+  double ki_yaw = 80.0;          // [sps / (rad/s * s)]
+  double max_yaw_rate_cmd = 2.0; // [rad/s] from joystick at |turn|=1
+  double max_steer_sps    = 800.0; // clamp steering split
 
   // Saturations
-  double max_tilt_rad = 6.0 * (M_PI / 180.0); // clamp target tilt to ±6°
+  double max_tilt_rad = 6.0 * (M_PI / 180.0);
   double max_sps      = static_cast<double>(Config::max_sps);
 
   // Loop rates
-  int hz_balance = 400;   // inner PD
-  int hz_outer   = 100;   // velocity PI & steering
+  int hz_balance = 400;
+  int hz_outer   = 100;
+};
+
+struct Telemetry {
+  // timing
+  std::chrono::steady_clock::time_point ts{};
+
+  // IMU & references
+  double tilt_rad = 0.0;
+  double gyro_rad_s = 0.0;
+  double tilt_target_rad = 0.0;
+  bool   tilt_saturated = false;
+
+  // Velocity loop
+  double desired_base_sps = 0.0;
+  double actual_base_sps  = 0.0;
+  double vel_err_sps      = 0.0;
+  double vel_int_state    = 0.0;
+
+  // NEW: Yaw loop
+  double desired_yaw_rate = 0.0; // [rad/s]
+  double actual_yaw_rate  = 0.0; // [rad/s]
+  double yaw_err          = 0.0; // [rad/s]
+  double yaw_int_state    = 0.0; // integrator state
+
+  // Balance & steering
+  double u_balance_sps   = 0.0;
+  double steer_split_sps = 0.0;
+
+  // Motor commands
+  double left_cmd_sps  = 0.0;
+  double right_cmd_sps = 0.0;
 };
 
 // ---- Simple speed estimator (fallback until encoders exist) ----
@@ -140,30 +154,30 @@ public:
 
 private:
   // Minimal lock-free “latest value” wrapper
-  struct AtomicImu {
-    std::atomic<double> angle{0.0};
-    std::atomic<double> gyro{0.0};
-    std::atomic<int64_t> t_ns{0};
-    double tel_desired_base_sps_ = 0.0;
-    double tel_actual_base_sps_  = 0.0;
-    double tel_vel_err_sps_      = 0.0;
-    double tel_vel_int_state_    = 0.0;
-    bool   tel_tilt_saturated_   = false;
+    struct AtomicImu {
+    std::atomic<double> angle{0.0}; // pitch
+    std::atomic<double> gyro{0.0};  // pitch rate
+    std::atomic<double> yaw_z{0.0}; // NEW: yaw rate
+    std::atomic<std::int64_t> t_count{0};
 
     void store(const ImuSample& s, std::memory_order mo) {
-      angle.store(s.angle_rad, mo);
-      gyro.store(s.gyro_rad_s, mo);
-      const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(s.t.time_since_epoch()).count();
-      t_ns.store(ns, mo);
+        angle.store(s.angle_rad, mo);
+        gyro.store(s.gyro_rad_s, mo);
+        yaw_z.store(s.yaw_rate_z, mo);
+        const auto d = s.t.time_since_epoch();
+        t_count.store(static_cast<std::int64_t>(d.count()), mo);
     }
     ImuSample load(std::memory_order mo) const {
-      ImuSample s{};
-      s.angle_rad = angle.load(mo);
-      s.gyro_rad_s = gyro.load(mo);
-      s.t = std::chrono::steady_clock::time_point(std::chrono::nanoseconds(t_ns.load(mo)));
-      return s;
+        ImuSample s{};
+        s.angle_rad  = angle.load(mo);
+        s.gyro_rad_s = gyro.load(mo);
+        s.yaw_rate_z = yaw_z.load(mo);
+        using clock = std::chrono::steady_clock;
+        const auto cnt = static_cast<clock::duration::rep>(t_count.load(mo));
+        s.t = std::chrono::time_point<clock>(clock::duration(cnt));
+        return s;
     }
-  };
+    };
 
   struct AtomicJoy {
     std::atomic<float> f{0.0f}, t{0.0f};
@@ -199,12 +213,12 @@ void loop() {
 
     // --- Outer (velocity PI + steering) ---
     if (now >= t_next_out) {
-      t_next_out += dt_out;
-      const double dt_sec = std::chrono::duration<double>(dt_out).count();
+    t_next_out += dt_out;
+    const double dt_sec = std::chrono::duration<double>(dt_out).count();
 
-      JoyCmd j = joy_.load(std::memory_order_relaxed);
-      if (std::fabs(j.forward) < 0.02f) j.forward = 0.0f;
-      if (std::fabs(j.turn)    < 0.02f) j.turn    = 0.0f;
+    JoyCmd j = joy_.load(std::memory_order_relaxed);
+    if (std::fabs(j.forward) < 0.02f) j.forward = 0.0f;
+    if (std::fabs(j.turn)    < 0.02f) j.turn    = 0.0f;
 
       const double desired_base_sps = static_cast<double>(j.forward) * g_.max_sps;
 
@@ -229,17 +243,55 @@ void loop() {
           (tilt_from_vel < -g_.max_tilt_rad && vel_err < 0.0);
         if (pushing_out) vel_int -= vel_err * dt_sec;
       }
-      tilt_target_rad_.store(tilt_target, std::memory_order_relaxed);
+    tilt_target_rad_.store(tilt_target, std::memory_order_relaxed);
+    // Save for telemetry
+    tel_desired_base_sps_ = desired_base_sps;
+    tel_actual_base_sps_  = actual_base_sps;
+    tel_vel_err_sps_      = vel_err;
+    tel_vel_int_state_    = vel_int;
+    tel_tilt_saturated_   = saturated;
 
-      steer_split_sps_ = std::clamp(static_cast<double>(j.turn) * g_.k_turn,
-                                    -g_.max_sps, g_.max_sps);
+    // --- Yaw control ---
+    const ImuSample s_now = latest_imu_.load(std::memory_order_relaxed);
+    const double actual_yaw = s_now.yaw_rate_z;
 
-      // Save for telemetry
-      tel_desired_base_sps_ = desired_base_sps;
-      tel_actual_base_sps_  = actual_base_sps;
-      tel_vel_err_sps_      = vel_err;
-      tel_vel_int_state_    = vel_int;
-      tel_tilt_saturated_   = saturated;
+    if (g_.yaw_pi_enabled) {
+        // Desired yaw rate from joystick in rad/s (positive = CCW)
+        const double desired_yaw = std::clamp(static_cast<double>(j.turn),
+                                            -1.0, 1.0) * g_.max_yaw_rate_cmd;
+        const double yaw_err = desired_yaw - actual_yaw;
+
+        // Integrate (anti-windup via output clamp below)
+        yaw_int_ += yaw_err * dt_sec;
+
+        // Raw PI steering split (in sps)
+        double steer = g_.kp_yaw * yaw_err + g_.ki_yaw * yaw_int_;
+
+        // Clamp steering and back-calc anti-windup if pushing further out
+        const double pre = steer;
+        steer = std::clamp(steer, -g_.max_steer_sps, g_.max_steer_sps);
+        if (steer != pre) {
+        const bool pushing_out = (pre >  steer && yaw_err > 0.0) ||
+                                (pre <  steer && yaw_err < 0.0); // sign-consistent
+        if (pushing_out) yaw_int_ -= yaw_err * dt_sec;
+        }
+
+        steer_split_sps_ = steer;
+
+        // Telemetry shadows
+        tel_desired_yaw_rate_ = desired_yaw;
+        tel_actual_yaw_rate_  = actual_yaw;
+        tel_yaw_err_          = yaw_err;
+        tel_yaw_int_          = yaw_int_;
+    } else {
+        // Open-loop fallback: same as before
+        steer_split_sps_ = std::clamp(static_cast<double>(j.turn) * g_.k_turn,
+                                    -g_.max_steer_sps, g_.max_steer_sps);
+        tel_desired_yaw_rate_ = 0.0;
+        tel_actual_yaw_rate_  = actual_yaw;
+        tel_yaw_err_          = 0.0;
+        tel_yaw_int_          = 0.0;
+    }
     }
 
     // --- Balance PD ---
@@ -299,12 +351,19 @@ private:
     t.actual_base_sps  = tel_actual_base_sps_;
     t.vel_err_sps      = tel_vel_err_sps_;
     t.vel_int_state    = tel_vel_int_state_;
+
+    // yaw telemetry
+    t.desired_yaw_rate = tel_desired_yaw_rate_;
+    t.actual_yaw_rate  = tel_actual_yaw_rate_;
+    t.yaw_err          = tel_yaw_err_;
+    t.yaw_int_state    = tel_yaw_int_;
+
     t.u_balance_sps    = u_balance;
     t.steer_split_sps  = steer_split;
     t.left_cmd_sps     = left_cmd;
     t.right_cmd_sps    = right_cmd;
     tel_cb_(t);
-  }
+    }
 
   MotorRunnerT& left_;
   MotorRunnerT& right_;
@@ -324,5 +383,10 @@ private:
   double tel_actual_base_sps_  = 0.0;
   double tel_vel_err_sps_      = 0.0;
   double tel_vel_int_state_    = 0.0;
+  double yaw_int_ = 0.0;
+  double tel_desired_yaw_rate_ = 0.0;
+  double tel_actual_yaw_rate_  = 0.0;
+  double tel_yaw_err_          = 0.0;
+  double tel_yaw_int_          = 0.0;
   bool   tel_tilt_saturated_   = false;
 };

@@ -40,3 +40,6 @@
 # debug information files
 *.dwo
 build/*
+external/src/modules/balance_controller/motor_controller
+external/src/modules/balance_controller/imu_demo
+external/src/modules/balance_controller/xbox_demo
