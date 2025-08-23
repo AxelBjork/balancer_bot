@@ -6,7 +6,7 @@ A compact, personal project that repurposes the **B-robot EVO 2** frame for a Ra
 ```
 cd /home/axel/Public/Project/vscode/balancer_bot/PX4-Autopilot
 make px4_sitl_default -j$(nproc) EXTERNAL_MODULES_LOCATION=../external
-``
+```
 
 # Run SITL
 ```
