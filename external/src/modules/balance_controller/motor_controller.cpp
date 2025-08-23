@@ -1,31 +1,19 @@
 // drive_by_xbox.cpp
 #include "stepper.h"
 #include "xbox_controller.h"
+#include "config.h"
 
 #include <pigpiod_if2.h>
 #include <atomic>
 #include <chrono>
 #include <cmath>
 #include <csignal>
-#include <stdexcept>
 #include <thread>
 
-// ---------------------- Compile-time configuration ---------------------------
-struct Config {
-  static inline constexpr int   run_seconds   = 30;
-  static inline constexpr int   control_hz    = 100;
-  static inline constexpr int   max_sps       = 1200;
-  static inline constexpr float deadzone      = 0.05f;
-  static inline constexpr bool  invert_left   = false;
-  static inline constexpr bool  invert_right  = false;
-};
-// ---------------------------------------------------------------------------
 
 namespace {
 using clock = std::chrono::steady_clock;
 
-static std::atomic<bool> g_stop{false};
-static void on_signal(int) { g_stop.store(true, std::memory_order_relaxed); }
 
 
 // ---------------------- Motor control runner --------------------------------

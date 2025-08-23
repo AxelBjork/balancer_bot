@@ -1,5 +1,8 @@
+#pragma once
+
 #include "stepper.h"
 #include "xbox_controller.h"
+#include "config.h"
 
 #include <pigpiod_if2.h>
 #include <atomic>
@@ -9,6 +12,8 @@
 #include <stdexcept>
 #include <thread>
 
+static std::atomic<bool> g_stop{false};
+static void on_signal(int) { g_stop.store(true, std::memory_order_relaxed); }
 
 struct PigpioCtx {
   PigpioCtx(const char* host=nullptr, const char* port=nullptr) {
@@ -18,7 +23,7 @@ struct PigpioCtx {
   ~PigpioCtx() { pigpio_stop(pi); }
   int handle() const { return pi; }
 private: int pi{};
-}
+};
 
 class MotorRunner {
 public:
