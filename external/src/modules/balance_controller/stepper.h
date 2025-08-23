@@ -18,7 +18,7 @@ public:
     sleep_us(kWakeDelayUs);
   }
 
-  ~Stepper() {
+  virtual ~Stepper() {
     gpio_write(pi_, pins_.ena, 0);     // de-energize
   }
 
@@ -32,7 +32,7 @@ public:
     sleep_us(half);
   }
 
-  void stepN(unsigned steps, unsigned periodUs, bool dirForward) const {
+  virtual void stepN(unsigned steps, unsigned periodUs, bool dirForward) const {
     gpio_write(pi_, pins_.dir, dirForward ? 1 : 0);
     sleep_us(kDirSetupDelayUs);
     for (unsigned i = 0; i < steps; ++i) stepOnce(periodUs);

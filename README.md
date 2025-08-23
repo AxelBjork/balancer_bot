@@ -74,11 +74,20 @@ xbox_remote status
 
 
 # Pi Setup
+`sudo nano /boot/firmware/config.txt`
+Add
+```
+gpio=4=op,dl
+dtparam=i2c_arm=on
+dtparam=i2c_arm_baudrate=400000
+``
+
+**Enable pigiod daemon** `sudo systemctl enable --now pigpiod`
 
 ## Motor Test
 
-g++ motor_off.cpp -o motor_hat_test -lpigpio -lrt
-g++ motor_hat_test.cpp -o motor_hat_test -lSDL2 -lpigpiod_if2 -lrt -pthread
+g++ motor_off.cpp -o motor_off -lpigpio -lrt
+g++ motor_controller.cpp -o motor_controller -lSDL2 -lpigpiod_if2 -lrt -pthread
 ./motor_hat_test
 sudo ./motor_off
 
