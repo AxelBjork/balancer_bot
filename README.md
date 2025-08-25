@@ -90,6 +90,8 @@ dtparam=i2c_arm_baudrate=400000
 g++ motor_controller.cpp -o motor_controller -lSDL2 -lrt -pthread -I./stubs -DPIGPIOD_STUB_IMPL
 **Pi Build**
 g++ motor_controller.cpp -o motor_controller -lSDL2 -lpigpiod_if2 -lrt -pthread
+g++ extras/motor_off.cpp -o motor_off -lpigpiod_if2 -lrt -pthread
+
 ./motor_controller
 
 
@@ -143,6 +145,26 @@ echo ism330dhcx 0x6a | sudo tee /sys/bus/i2c/devices/i2c-1/new_device
 
 g++ extras/imu_demo.cpp -o imu_demo
 
+### Configure auto setup
+printf "industrialio\nindustrialio_triggered_buffer\nst_lsm6dsx_i2c\n" | \
+  sudo tee /etc/modules-load.d/ism330dhcx.conf
+
+
+sudo tee /usr/local/sbin/add-ism330dhcx.sh >/dev/null <<'EOF'
+#!/bin/sh
+NODE="/sys/bus/i2c/devices/i2c-1/new_device"
+for i in $(seq 1 20); do
+  [ -e "$NODE" ] && { echo "ism330dhcx 0x6a" > "$NODE"; exit 0; }
+  sleep 0.25
+done
+exit 1
+EOF
+sudo chmod +x /usr/local/sbin/add-ism330dhcx.sh
+
+sudo tee /etc/udev/rules.d/60-ism330dhcx.rules >/dev/null <<'EOF'
+SUBSYSTEM=="i2c", KERNEL=="i2c-1", ACTION=="add", RUN+="/usr/local/sbin/add-ism330dhcx.sh"
+EOF
+sudo udevadm control --reload
 
 # Unittest
 

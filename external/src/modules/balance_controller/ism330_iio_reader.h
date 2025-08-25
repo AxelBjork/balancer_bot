@@ -13,13 +13,27 @@
 #include <thread>
 #include <utility>
 #include <vector>
+#include "config.h"
 
 namespace fs = std::filesystem;
 
+static void tryWrite(const fs::path& p, const std::string& v) {
+  std::error_code ec;
+  if (!fs::exists(p, ec)) return;
+  std::ofstream f(p);
+  if (!f) return;
+  f << v;
+}
+
+static std::string readBack(const fs::path& p) {
+  std::ifstream f(p);
+  std::string s; if (f) std::getline(f, s); return s;
+}
+
+
 class Ism330IioReader {
 public:
-  struct Config {
-    double sampling_hz = 1000.0; // polling rate target
+  struct IMUConfig {
     // Axis mapping (default: pitch from accel X/Z; pitch rate = gyro Y; yaw rate = gyro Z)
     int accel_x = 0, accel_y = 1, accel_z = 2;
     int gyro_x  = 0, gyro_y  = 1, gyro_z  = 2;
@@ -30,7 +44,7 @@ public:
                        std::chrono::steady_clock::time_point ts)> on_sample;
   };
 
-  explicit Ism330IioReader(Config cfg) : cfg_(std::move(cfg)) {
+  explicit Ism330IioReader(IMUConfig cfg) : cfg_(std::move(cfg)) {
     if (!cfg_.on_sample) throw std::runtime_error("Ism330IioReader: on_sample callback is required");
     discoverDevices();            // fills accel_sysfs_/gyro_sysfs_ or combo_sysfs_
     openRawChannels();            // opens in_*_raw ifstreams and reads scales
@@ -55,7 +69,7 @@ public:
   }
 
 private:
-  Config cfg_{};
+  IMUConfig cfg_{};
   std::atomic<bool> alive_{false};
   std::thread worker_;
 
@@ -126,6 +140,19 @@ private:
     }
   }
 
+  void setSamplingAndLog() {
+    // Split devices
+    if (!combo_sysfs_.empty()) return; // you’re on split
+    const std::string hz = std::to_string(Config::sampling_hz);
+    tryWrite(accel_sysfs_ / "sampling_frequency", hz);
+    tryWrite(gyro_sysfs_  / "sampling_frequency", hz);
+
+    auto a = readBack(accel_sysfs_ / "sampling_frequency");
+    auto g = readBack(gyro_sysfs_  / "sampling_frequency");
+    std::printf("Requested sampling_freq=%s; now=%s\n",
+                hz.c_str(), a.c_str());
+  }
+
   void openRawChannels() {
     if (!combo_sysfs_.empty()) {
       accel_scale_ = readDouble(combo_sysfs_ / "in_accel_scale");
@@ -140,6 +167,7 @@ private:
     }
 
     // split devices
+    setSamplingAndLog();
     accel_scale_ = readDouble(accel_sysfs_ / "in_accel_scale");
     gyro_scale_  = readDouble(gyro_sysfs_  / "in_anglvel_scale");
 
@@ -159,14 +187,13 @@ private:
 
   void loop() {
     using clock = std::chrono::steady_clock;
-    const auto period = std::chrono::duration<double>(1.0 / std::max(1.0, cfg_.sampling_hz));
+    const auto period = std::chrono::duration<double>(1.0 / std::max(1.0, Config::sampling_hz));
     auto next = clock::now();
 
     // simple jitter absorber: if we fall behind, just catch up
     while (alive_.load(std::memory_order_relaxed)) {
       next += std::chrono::duration_cast<clock::duration>(period);
       const auto now = clock::now();
-      std::printf("Ism330IioReader::loop__ENTER__\n");
 
       // read raw ints
       const int axr = readInt(acc_raw_[0]);
@@ -197,7 +224,6 @@ private:
       cfg_.on_sample(pitch, gy_m, gz_m, now);
 
       std::this_thread::sleep_until(next);
-      std::printf("Ism330IioReader::loop__EXIT__\n");
     }
   }
 };

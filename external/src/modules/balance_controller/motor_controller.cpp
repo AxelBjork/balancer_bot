@@ -66,8 +66,7 @@ public:
     // IMU reader (IIO; runs its own thread). If not found, we’ll fall back to zeros.
     std::unique_ptr<Ism330IioReader> imu;
     try {
-      Ism330IioReader::Config icfg;
-      icfg.sampling_hz = 1000.0;
+      Ism330IioReader::IMUConfig icfg;
       // Axis mapping: adjust if your board is rotated. Defaults assume:
       //  pitch uses accel X vs Z and gyro Y; yaw uses gyro Z.
       icfg.accel_x = 0; icfg.accel_y = 1; icfg.accel_z = 2;
