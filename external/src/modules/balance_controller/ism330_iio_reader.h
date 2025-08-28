@@ -17,6 +17,13 @@
 
 namespace fs = std::filesystem;
 
+struct AxisCfg {
+  int x = 0, y = 1, z = 2;     // which source axis to use
+  bool invert_x = false;
+  bool invert_y = false;
+  bool invert_z = false;
+};
+
 static void tryWrite(const fs::path& p, const std::string& v) {
   std::error_code ec;
   if (!fs::exists(p, ec)) return;
@@ -31,16 +38,22 @@ static std::string readBack(const fs::path& p) {
 }
 
 
+inline std::array<double, 3> applyAxisMap(const AxisCfg& c, const std::array<double, 3>& src) {
+  return std::array<double, 3>{
+    c.invert_x ? -src[c.x] : src[c.x],
+    c.invert_y ? -src[c.y] : src[c.y],
+    c.invert_z ? -src[c.z] : src[c.z]
+  };
+}
+
 class Ism330IioReader {
 public:
   struct IMUConfig {
-    // Axis mapping (default: pitch from accel X/Z; pitch rate = gyro Y; yaw rate = gyro Z)
-    int accel_x = 0, accel_y = 1, accel_z = 2;
-    int gyro_x  = 0, gyro_y  = 1, gyro_z  = 2;
+    AxisCfg accel_cfg{.x = 0, .y = 2, .z = 1, .invert_x = true, .invert_z = true};
+    AxisCfg gyro_cfg{.x = 0, .y = 2, .z = 1, .invert_x = true, .invert_z = true};
 
     // Required: called from reader thread per sample
-    std::function<void(double pitch_rad, double pitch_rate_rad_s,
-                       double yaw_rate_rad_s,
+    std::function<void(double pitch_rad, std::array<double, 3> acc, std::array<double, 3> gyrv,
                        std::chrono::steady_clock::time_point ts)> on_sample;
   };
 
@@ -212,16 +225,17 @@ private:
       const double gy = static_cast<double>(gyr) * gyro_scale_;
       const double gz = static_cast<double>(gzr) * gyro_scale_;
 
-      const double acc[3] = {ax, ay, az};
-      const double gyrv[3] = {gx, gy, gz};
+      const auto acc_src = std::array{ax, ay, az};
+      const auto gyr_src = std::array{gx, gy, gz};
 
-      const double ax_m = acc[cfg_.accel_x];
-      const double az_m = acc[cfg_.accel_z];
-      const double gy_m = gyrv[cfg_.gyro_y];
-      const double gz_m = gyrv[cfg_.gyro_z];
+      const auto acc = applyAxisMap(cfg_.accel_cfg, acc_src);
+      const auto gyrv = applyAxisMap(cfg_.gyro_cfg, gyr_src);
+
+      double ax_m = acc[0];
+      double az_m = acc[2];
 
       const double pitch = std::atan2(-ax_m, az_m);
-      cfg_.on_sample(pitch, gy_m, gz_m, now);
+      cfg_.on_sample(pitch, acc, gyrv, now);
 
       std::this_thread::sleep_until(next);
     }

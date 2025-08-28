@@ -98,6 +98,9 @@ g++ extras/motor_off.cpp -o motor_off -lpigpiod_if2 -lrt -pthread
 ## Bluetooth connect
 bluetoothctl
 power on
+menu scan
+pattern Xbox
+back
 scan on
 pair 28:EA:0B:E1:04:E6
 connect 28:EA:0B:E1:04:E6
@@ -110,6 +113,9 @@ g++ extras/xbox_demo.cpp -o xbox_demo -lSDL2
 ./xbox_demo
 
 ## IMU Demo
+
+g++ extras/imu_demo.cpp -o imu_demo -pthread
+
 
 `mkdir -p ~/lsm6dsx-oot && cd ~/lsm6dsx-oot`
 
@@ -165,6 +171,12 @@ sudo tee /etc/udev/rules.d/60-ism330dhcx.rules >/dev/null <<'EOF'
 SUBSYSTEM=="i2c", KERNEL=="i2c-1", ACTION=="add", RUN+="/usr/local/sbin/add-ism330dhcx.sh"
 EOF
 sudo udevadm control --reload
+
+**Verify**
+echo 0x6a | sudo tee /sys/bus/i2c/devices/i2c-1/delete_device 2>/dev/null
+echo ism330dhcx 0x6a | sudo tee /sys/bus/i2c/devices/i2c-1/new_device
+i2cdetect -y 1
+ls /sys/bus/iio/devices/
 
 # Unittest
 
