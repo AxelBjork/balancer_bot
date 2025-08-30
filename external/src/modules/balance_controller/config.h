@@ -1,5 +1,8 @@
 #pragma once
 #include <atomic>
+#include <chrono>
+#include <csignal>
+#include <cmath>
 
 struct AxisCfg {
   int x = 0, y = 1, z = 2;
@@ -7,6 +10,10 @@ struct AxisCfg {
 };
 // ---------------------- Compile-time configuration ---------------------------
 struct Config {
+  // General
+  static constexpr int   run_seconds   = 30;
+  // IMU
+  static constexpr double sampling_hz  = 833.000; // available 12.500 26.000 52.000 104.000 208.000 416.000 833.000
   static constexpr AxisCfg accel_cfg = {.x = 0, .y = 2, .z = 1, .invert_x = true, .invert_z = true};
   static constexpr AxisCfg gyro_cfg = {.x = 0, .y = 2, .z = 1, .invert_x = true, .invert_z = true};
 
@@ -19,14 +26,37 @@ struct Config {
   static constexpr double fallback_dt_s = 1.0 / 400.0; // used on first/invalid dt
   static constexpr double yaw_fixed_deg = 0.0;     // static mode: constant yaw
 
-  static constexpr int   run_seconds   = 30;
-  static constexpr double sampling_hz  = 833.000; // available 12.500 26.000 52.000 104.000 208.000 416.000 833.000
-  // Motor Control
-  static constexpr int   control_hz    = 100;
-  static constexpr int   max_sps       = 1200;
-  static constexpr float deadzone      = 0.05f;
-  static constexpr bool  invert_left   = false;
-  static constexpr bool  invert_right  = false;
+  // Cascaded Controller
+  static constexpr int   hz_balance        = 400;
+  static constexpr int   hz_outer          = 100;
+  // Saturations
+  static constexpr double max_tilt_rad     = 6.0 * (M_PI / 180.0);
+
+  // Balance PD: tilt error -> sps
+  static constexpr double kp_bal           = 60.0;   // [sps/rad]
+  static constexpr double kd_bal           = 1.2;    // [sps/(rad/s)]
+
+  // Velocity PI: speed error -> tilt target
+  static constexpr double kp_vel           = 1.2;
+  static constexpr double ki_vel           = 0.4;
+
+  // Open-loop steering (used if yaw PI disabled)
+  static constexpr double k_turn           = 600.0;  // [sps / unit turn]
+
+  // Yaw PI (closed-loop steering)
+  static constexpr bool   yaw_pi_enabled   = true;   // enable Z gyro loop
+  static constexpr double kp_yaw           = 250.0;  // [sps/(rad/s)]
+  static constexpr double ki_yaw           = 80.0;   // [sps/(rad/s*s)]
+  static constexpr double max_yaw_rate_cmd = 1.5;    // [rad/s] at |turn|=1
+  static constexpr double max_steer_sps    = 800.0;  // clamp steering split
+
+
+  // Motor Config
+  static constexpr int    control_hz    = 100;
+  static constexpr double max_sps       = 1200;
+  static constexpr float  deadzone      = 0.05f;
+  static constexpr bool   invert_left   = false;
+  static constexpr bool   invert_right  = false;
 };
 // ---------------------------------------------------------------------------
 

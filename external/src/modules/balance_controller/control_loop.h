@@ -104,8 +104,8 @@ private:
 template <class MotorRunnerT>
 class CascadedController {
 public:
-  CascadedController(MotorRunnerT& left, MotorRunnerT& right, const ControlTunings& g = {})
-    : left_(left), right_(right), g_(g) {
+  CascadedController(MotorRunnerT& left, MotorRunnerT& right)
+    : left_(left), right_(right) {
     worker_ = std::thread(&CascadedController::loop, this);
   }
 
@@ -183,9 +183,9 @@ void loop() {
   using dur   = std::chrono::steady_clock::duration;
 
   const auto dt_out = std::chrono::duration_cast<dur>(
-      std::chrono::duration<double>(1.0 / std::max(20, g_.hz_outer)));
+      std::chrono::duration<double>(1.0 / std::max(20, Config::hz_outer)));
   const auto dt_bal = std::chrono::duration_cast<dur>(
-      std::chrono::duration<double>(1.0 / std::max(50, g_.hz_balance)));
+      std::chrono::duration<double>(1.0 / std::max(50, Config::hz_balance)));
 
   auto t_next_out = std::chrono::steady_clock::now();
   auto t_next_bal = t_next_out;
@@ -208,7 +208,7 @@ void loop() {
     if (std::fabs(j.forward) < 0.02f) j.forward = 0.0f;
     if (std::fabs(j.turn)    < 0.02f) j.turn    = 0.0f;
 
-      const double desired_base_sps = static_cast<double>(j.forward) * g_.max_sps;
+      const double desired_base_sps = static_cast<double>(j.forward) * Config::max_sps;
 
       v_est.updateTargets(cmd_left_sps, cmd_right_sps, dt_sec);
       const double actual_base_sps = 0.5 * (v_est.leftSps() + v_est.rightSps());
@@ -217,18 +217,18 @@ void loop() {
       vel_int += vel_err * dt_sec;
 
       const double tilt_from_vel =
-        g_.kp_vel * vel_err * (1.0 / std::max(1.0, g_.max_sps)) * g_.max_tilt_rad +
-        g_.ki_vel * vel_int * (1.0 / std::max(1.0, g_.max_sps)) * g_.max_tilt_rad;
+        Config::kp_vel * vel_err * (1.0 / std::max(1.0, Config::max_sps)) * Config::max_tilt_rad +
+        Config::ki_vel * vel_int * (1.0 / std::max(1.0, Config::max_sps)) * Config::max_tilt_rad;
 
       bool saturated = false;
       double tilt_target = tilt_from_vel;
-      if (tilt_target > g_.max_tilt_rad) { tilt_target = g_.max_tilt_rad; saturated = true; }
-      else if (tilt_target < -g_.max_tilt_rad) { tilt_target = -g_.max_tilt_rad; saturated = true; }
+      if (tilt_target > Config::max_tilt_rad) { tilt_target = Config::max_tilt_rad; saturated = true; }
+      else if (tilt_target < -Config::max_tilt_rad) { tilt_target = -Config::max_tilt_rad; saturated = true; }
 
       if (saturated) {
         const bool pushing_out =
-          (tilt_from_vel > g_.max_tilt_rad && vel_err > 0.0) ||
-          (tilt_from_vel < -g_.max_tilt_rad && vel_err < 0.0);
+          (tilt_from_vel > Config::max_tilt_rad && vel_err > 0.0) ||
+          (tilt_from_vel < -Config::max_tilt_rad && vel_err < 0.0);
         if (pushing_out) vel_int -= vel_err * dt_sec;
       }
     tilt_target_rad_.store(tilt_target, std::memory_order_relaxed);
@@ -243,21 +243,21 @@ void loop() {
     const ImuSample s_now = latest_imu_.load(std::memory_order_relaxed);
     const double actual_yaw = s_now.yaw_rate_z;
 
-    if (g_.yaw_pi_enabled) {
+    if (Config::yaw_pi_enabled) {
         // Desired yaw rate from joystick in rad/s (positive = CCW)
         const double desired_yaw = std::clamp(static_cast<double>(j.turn),
-                                            -1.0, 1.0) * g_.max_yaw_rate_cmd;
+                                            -1.0, 1.0) * Config::max_yaw_rate_cmd;
         const double yaw_err = desired_yaw - actual_yaw;
 
         // Integrate (anti-windup via output clamp below)
         yaw_int_ += yaw_err * dt_sec;
 
         // Raw PI steering split (in sps)
-        double steer = g_.kp_yaw * yaw_err + g_.ki_yaw * yaw_int_;
+        double steer = Config::kp_yaw * yaw_err + Config::ki_yaw * yaw_int_;
 
         // Clamp steering and back-calc anti-windup if pushing further out
         const double pre = steer;
-        steer = std::clamp(steer, -g_.max_steer_sps, g_.max_steer_sps);
+        steer = std::clamp(steer, -Config::max_steer_sps, Config::max_steer_sps);
         if (steer != pre) {
         const bool pushing_out = (pre >  steer && yaw_err > 0.0) ||
                                 (pre <  steer && yaw_err < 0.0); // sign-consistent
@@ -273,8 +273,8 @@ void loop() {
         tel_yaw_int_          = yaw_int_;
     } else {
         // Open-loop fallback: same as before
-        steer_split_sps_ = std::clamp(static_cast<double>(j.turn) * g_.k_turn,
-                                    -g_.max_steer_sps, g_.max_steer_sps);
+        steer_split_sps_ = std::clamp(static_cast<double>(j.turn) * Config::k_turn,
+                                    -Config::max_steer_sps, Config::max_steer_sps);
         tel_desired_yaw_rate_ = 0.0;
         tel_actual_yaw_rate_  = actual_yaw;
         tel_yaw_err_          = 0.0;
@@ -292,13 +292,13 @@ void loop() {
       const double tilt_target = tilt_target_rad_.load(std::memory_order_relaxed);
       const double err = tilt_target - tilt;
 
-      const double u_balance = g_.kp_bal * err + g_.kd_bal * (-gyro);
+      const double u_balance = Config::kp_bal * err + Config::kd_bal * (-gyro);
       u_balance_sps_.store(u_balance, std::memory_order_relaxed);
 
       double left = u_balance + steer_split_sps_;
       double right = u_balance - steer_split_sps_;
-      left  = std::clamp(left,  -g_.max_sps, g_.max_sps);
-      right = std::clamp(right, -g_.max_sps, g_.max_sps);
+      left  = std::clamp(left,  -Config::max_sps, Config::max_sps);
+      right = std::clamp(right, -Config::max_sps, Config::max_sps);
 
       cmd_left_sps = left;
       cmd_right_sps = right;
