@@ -1,0 +1,21 @@
+# /etc/udev/rules.d/99-iio-perms.rules
+# /dev/iio:deviceN character nodes -> group iio, rw for group
+SUBSYSTEM=="iio", KERNEL=="iio:device*", GROUP="iio", MODE="0660"
+
+# Give group write to key sysfs attributes under each IIO device
+ACTION=="add", SUBSYSTEM=="iio", KERNEL=="iio:device*", \
+  RUN+="/bin/chgrp iio /sys$devpath/sampling_frequency", \
+  RUN+="/bin/chmod g+w /sys$devpath/sampling_frequency", \
+  RUN+="/bin/chgrp -R iio /sys$devpath/scan_elements", \
+  RUN+="/bin/chmod -R g+w /sys$devpath/scan_elements", \
+  RUN+="/bin/chgrp iio /sys$devpath/trigger/current_trigger", \
+  RUN+="/bin/chmod g+w /sys$devpath/trigger/current_trigger", \
+  RUN+="/bin/chgrp iio /sys$devpath/buffer/enable", \
+  RUN+="/bin/chmod g+w /sys$devpath/buffer/enable", \
+  RUN+="/bin/chgrp iio /sys$devpath/buffer/length", \
+  RUN+="/bin/chmod g+w /sys$devpath/buffer/length"
+
+# Give group write to the trigger's sampling_frequency (for hrtimer)
+ACTION=="add", SUBSYSTEM=="iio", KERNEL=="trigger*", \
+  RUN+="/bin/chgrp iio /sys$devpath/sampling_frequency", \
+  RUN+="/bin/chmod g+w /sys$devpath/sampling_frequency"

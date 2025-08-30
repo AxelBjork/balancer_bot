@@ -89,7 +89,7 @@ dtparam=i2c_arm_baudrate=400000
 **Stubs**
 g++ motor_controller.cpp -o motor_controller -lSDL2 -lrt -pthread -I./stubs -DPIGPIOD_STUB_IMPL
 **Pi Build**
-g++ motor_controller.cpp -o motor_controller -lSDL2 -lpigpiod_if2 -lrt -pthread
+g++ motor_controller.cpp -o motor_controller -lSDL2 -lpigpiod_if2 -lrt -pthread -O2
 g++ extras/motor_off.cpp -o motor_off -lpigpiod_if2 -lrt -pthread
 
 ./motor_controller
@@ -114,7 +114,7 @@ g++ extras/xbox_demo.cpp -o xbox_demo -lSDL2
 
 ## IMU Demo
 
-g++ extras/imu_demo.cpp -o imu_demo -pthread
+g++ extras/imu_demo.cpp -o imu_demo -pthread -O2
 
 
 `mkdir -p ~/lsm6dsx-oot && cd ~/lsm6dsx-oot`
@@ -172,10 +172,18 @@ SUBSYSTEM=="i2c", KERNEL=="i2c-1", ACTION=="add", RUN+="/usr/local/sbin/add-ism3
 EOF
 sudo udevadm control --reload
 
+**Setup Kernel trigger & permissions**
+sudo mkdir -p /sys/kernel/config/iio/triggers/hrtimer/imu833
+sudo groupadd -f iio
+sudo usermod -aG iio "$USER"
+# Either re-login, or do:
+newgrp iio
+
 **Verify**
+i2cdetect -yr 1
+ls /sys/bus/iio/devices/
 echo 0x6a | sudo tee /sys/bus/i2c/devices/i2c-1/delete_device 2>/dev/null
 echo ism330dhcx 0x6a | sudo tee /sys/bus/i2c/devices/i2c-1/new_device
-i2cdetect -y 1
 ls /sys/bus/iio/devices/
 
 # Unittest

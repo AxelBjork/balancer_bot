@@ -68,16 +68,13 @@ public:
     std::unique_ptr<Ism330IioReader> imu;
     try {
       Ism330IioReader::IMUConfig icfg;
-      // Axis mapping: adjust if your board is rotated. Defaults assume:
-      //  pitch uses accel X vs Z and gyro Y; yaw uses gyro Z.
-      // AxisCfg accel_cfg{.x = 0, .y = 2, .z = 1, .invert_x = true, .invert_z = true};
-      // AxisCfg gyro_cfg{.x = 0, .y = 2, .z = 1, .invert_x = true, .invert_z = true};
-      icfg.accel_cfg = {.x = 0, .y = 2, .z = 1, .invert_x = true, .invert_z = true};
-      icfg.gyro_cfg = {.x = 0, .y = 2, .z = 1, .invert_x = true, .invert_z = true};
 
       icfg.on_sample = [&](double pitch, std::array<double, 3> acc, std::array<double, 3> gyrv,
                            std::chrono::steady_clock::time_point ts){
         ImuSample s;
+
+        filt.push_sample(acc, gyrv, ts);
+
         s.angle_rad   = pitch;
         s.gyro_rad_s  = gyrv[1];
         s.yaw_rate_z  = gyrv[2];
