@@ -33,8 +33,8 @@ struct Config {
   static constexpr double max_tilt_rad     = 6.0 * (M_PI / 180.0);
 
   // Balance PD: tilt error -> sps
-  static constexpr double kp_bal           = 60.0;   // [sps/rad]
-  static constexpr double kd_bal           = 1.2;    // [sps/(rad/s)]
+  static constexpr double kp_bal           = 1200.0;   // [sps/rad]
+  static constexpr double kd_bal           = 150;    // [sps/(rad/s)]
 
   // Velocity PI: speed error -> tilt target
   static constexpr double kp_vel           = 1.2;
