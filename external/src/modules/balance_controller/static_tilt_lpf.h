@@ -24,9 +24,11 @@ public:
   // ---------------- Writer (single producer) ----------------
   void push_sample(const Acc3& acc, const Gyr3& gyrv, TimePoint ts) {
     const double dt = compute_dt(ts);
-    const double a_acc = std::exp(-2.0 * M_PI * C.fc_acc_hz * dt);
-    const double a_g = std::exp(-2.0 * M_PI * C.fc_g_hz * dt);
+    const double a_acc   = std::exp(-2.0 * M_PI * C.fc_acc_hz   * dt);
+    const double a_g     = std::exp(-2.0 * M_PI * C.fc_g_hz     * dt);
     const double a_angle = std::exp(-2.0 * M_PI * C.fc_angle_hz * dt);
+    // gyro LPF coefficient (single-pole at ~50 Hz by default)
+    const double a_gyro  = std::exp(-2.0 * M_PI * C.fc_gyro_pitch_hz * dt);
 
     if (!initialized) {
       ax_f = acc;
@@ -35,7 +37,7 @@ public:
       const auto rp = tilt_from_acc(normalize(ax_f, g_est));
       roll_rad = rp[0];
       pitch_rad = rp[1];
-      last_pitch_for_rate = pitch_rad;
+      gyro_pitch_f = gyrv[1];
       initialized = true;
     }
     else {
@@ -51,22 +53,21 @@ public:
       const auto a_n = normalize(ax_f, g_safe);
       const auto rp = tilt_from_acc(a_n);
 
-      roll_rad = a_angle * roll_rad + (1.0 - a_angle) * rp[0];
+      roll_rad  = a_angle * roll_rad  + (1.0 - a_angle) * rp[0];
       pitch_rad = a_angle * pitch_rad + (1.0 - a_angle) * rp[1];
+
+      const double gyro_pitch = gyrv[1];
+      gyro_pitch_f = a_gyro * gyro_pitch_f + (1.0 - a_gyro) * gyro_pitch;
     }
 
     // Publish coherent snapshot (seqlock)
-    const double d_pitch = pitch_rad - last_pitch_for_rate;
-    const double pitch_rate = (dt > 1e-9) ? (d_pitch / dt) : 0.0;
-    last_pitch_for_rate = pitch_rad;
-
     const double yaw_rate_z = gyrv[2];
 
     uint64_t s1 = seq.load(std::memory_order_relaxed);
     seq.store(s1 + 1, std::memory_order_release);
-    pub.t = ts;
-    pub.angle_rad = pitch_rad;
-    pub.gyro_rad_s = pitch_rate;
+    pub.t          = ts;
+    pub.angle_rad  = pitch_rad;
+    pub.gyro_rad_s = gyro_pitch_f;
     pub.yaw_rate_z = yaw_rate_z;
     seq.store(s1 + 2, std::memory_order_release);
   }
@@ -94,7 +95,7 @@ public:
     g_est = C.g0_guess;
     roll_rad = 0.0;
     pitch_rad = 0.0;
-    last_pitch_for_rate = 0.0;
+    gyro_pitch_f = 0.0;
 
     uint64_t s1 = seq.load(std::memory_order_relaxed);
     seq.store(s1 + 1, std::memory_order_release);
@@ -104,6 +105,7 @@ public:
 
 private:
   static constexpr Config C{};
+
   bool initialized{false};
   bool have_last_ts{false};
   TimePoint last_ts{};
@@ -111,7 +113,7 @@ private:
   double g_est{9.81};
   double roll_rad{0.0};
   double pitch_rad{0.0};
-  double last_pitch_for_rate{0.0};
+  double gyro_pitch_f{0.0};
 
   mutable std::atomic<uint64_t> seq{0};
   alignas(64) ImuSample pub{};
@@ -151,7 +153,7 @@ private:
     const double ay = a[1];
     const double az = a[2];
     const double ax = a[0];
-    const double roll = std::atan2(ay, az);
+    const double roll  = std::atan2(ay, az);
     const double pitch = std::atan2(-ax, std::sqrt(ay*ay + az*az));
     return { roll, pitch };
   }

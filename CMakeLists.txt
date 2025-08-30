@@ -43,9 +43,12 @@ endif()
 # ================================================================
 if (BUILD_TESTS)
   include(CTest)
+  include(GoogleTest)
+
   enable_testing()
   # GoogleTest via FetchContent
   include(FetchContent)
+
   FetchContent_Declare(
     googletest
     URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
@@ -72,24 +75,27 @@ if (BUILD_TESTS)
   )
 
   # 2) motor_controller_test (existing)
-  add_executable(motor_controller_test
-    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/motor_controller_test.cpp
+  add_executable(balancer_tests
+    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/test/motor_runner_test.cpp
+    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/test/control_loop_test.cpp
   )
-  target_link_libraries(motor_controller_test PRIVATE
-    balancer_common
-  )
-  add_test(NAME motor_controller_test COMMAND motor_controller_test)
+
+  target_link_libraries(balancer_tests PRIVATE balancer_common)
+  ## add_test(NAME motor_controller_test COMMAND motor_controller_test)
 
   # 3) control_loop_test (new)
-  add_executable(control_loop_test
-    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/control_loop_test.cpp
-  )
-  target_link_libraries(control_loop_test PRIVATE
-    balancer_common
-  )
-  add_test(NAME control_loop_test COMMAND control_loop_test)
+  #add_executable(control_loop_test
+  #  ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/control_loop_test.cpp
+  #)
+  #target_link_libraries(control_loop_test PRIVATE
+  #  balancer_common
+  #)
 
-# ================================================================
+  #add_test(NAME control_loop_test COMMAND control_loop_test)
+  gtest_discover_tests(balancer_tests
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    DISCOVERY_TIMEOUT 60
+  )# ================================================================
 #                       App (opt-in, hard checks)
 # ================================================================
 else()
