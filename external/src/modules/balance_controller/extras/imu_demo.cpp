@@ -8,13 +8,7 @@
 
 int main() {
     // Filter Setup
-    StaticTiltLPF::Config cfg;
-    cfg.fc_acc_hz = 0.10;   // 0.05–0.15 for “very still”
-    cfg.fc_g_hz = 0.50;
-    cfg.fc_angle_hz = 0.50;
-    cfg.yaw_fixed_deg = 0.0;
-
-    StaticTiltLPF filt(cfg);
+    StaticTiltLPF filt{};
 
     // IMU Setup
     Ism330IioReader::IMUConfig imu_cfg;
@@ -29,16 +23,17 @@ int main() {
       filt.push_sample(acc, gyrv, ts);
 
       static int k = 0;
-      if ((++k % 1000) == -1) {
-          std::printf("acc_x=%.3fm/s, acc_y=%.3fm/s, acc_z=%.3fm/s, gyrv_x=%.3f°/s, gyrv_y=%.3f°/s, gyrv_z=%.3f°/s, time=%.3f\n",
-              acc[0], acc[1], acc[2], gyrv[0]*180.0/M_PI, gyrv[1]*180.0/M_PI, gyrv[2]*180.0/M_PI, std::chrono::duration<double>(ts.time_since_epoch()).count());
+      if ((++k % 1) == -1) {
+          // std::printf("acc_x=%.3fm/s, acc_y=%.3fm/s, acc_z=%.3fm/s, gyrv_x=%.3f°/s, gyrv_y=%.3f°/s, gyrv_z=%.3f°/s, time=%.3f\n",
+          //     acc[0], acc[1], acc[2], gyrv[0]*180.0/M_PI, gyrv[1]*180.0/M_PI, gyrv[2]*180.0/M_PI, std::chrono::duration<double>(ts.time_since_epoch()).count());
       }
     };
     Ism330IioReader imu(imu_cfg);
-    for (int i = 0; i < 1000; ++i) {
-      StaticTiltLPF::Output out = filt.read_latest();
-      std::printf("Filtered Output: pitch=%.3f°, yaw=%.3f°\n", out.pitch_deg, out.yaw_deg);
-      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    for (int i = 0; i < 10000; ++i) {
+      ImuSample s = filt.read_latest();
+      std::printf("pitch=%.3f°, dpitch=%.3f°, yaw=%.3f°, time=%.3f\n",
+          s.angle_rad * 180.0 / M_PI, s.gyro_rad_s * 180.0 / M_PI, s.yaw_rate_z * 180.0 / M_PI, std::chrono::duration<double>(s.t.time_since_epoch()).count());
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     return 0;
 }

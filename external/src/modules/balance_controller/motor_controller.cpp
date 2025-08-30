@@ -12,7 +12,7 @@
 #include "config.h"
 #include "control_loop.h"
 #include "ism330_iio_reader.h"
-
+#include "static_tilt_lpf.h"
 
 // ---------------------- Motor control runner --------------------------------
 class App {
@@ -65,25 +65,22 @@ public:
     }
 
     // IMU reader (IIO; runs its own thread). If not found, we’ll fall back to zeros.
+    StaticTiltLPF filt{};
     std::unique_ptr<Ism330IioReader> imu;
     try {
       Ism330IioReader::IMUConfig icfg;
 
       icfg.on_sample = [&](double pitch, std::array<double, 3> acc, std::array<double, 3> gyrv,
                            std::chrono::steady_clock::time_point ts){
-        ImuSample s;
 
         filt.push_sample(acc, gyrv, ts);
 
-        s.angle_rad   = pitch;
-        s.gyro_rad_s  = gyrv[1];
-        s.yaw_rate_z  = gyrv[2];
-        s.t           = ts;
+        ImuSample s = filt.read_latest();
         ctrl.pushImu(s);
         static int k = 0;
-        if ((++k % 1) == 0) {
-          // std::printf("pitch=%.3f°/s, pitch_rate=%.3f°/s, yaw_rate=%.3f°, x=%.3f y=%.3f z=%.3f\n",
-          //     pitch*180.0/M_PI, pitch_rate*180.0/M_PI, yaw_rate*180.0/M_PI, acc[0], acc[1], acc[2]);
+        if ((++k % 1) == 1) {
+          std::printf("pitch=%.3f°, dpitch=%.3f°, yaw=%.3f°, time=%.3f\n",
+             s.angle_rad * 180.0 / M_PI, s.gyro_rad_s * 180.0 / M_PI, s.yaw_rate_z * 180.0 / M_PI, std::chrono::duration<double>(ts.time_since_epoch()).count());
           std::printf("acc_x=%.3fm/s, acc_y=%.3fm/s, acc_z=%.3fm/s, gyrv_x=%.3f°/s, gyrv_y=%.3f°/s, gyrv_z=%.3f°/s, time=%.3f\n",
               acc[0], acc[1], acc[2], gyrv[0]*180.0/M_PI, gyrv[1]*180.0/M_PI, gyrv[2]*180.0/M_PI, std::chrono::duration<double>(ts.time_since_epoch()).count());
         }
@@ -114,7 +111,7 @@ public:
 
     while (std::chrono::steady_clock::now() < t_end
            && !g_stop.load(std::memory_order_relaxed)) {
-      float ly = 0;
+      float ly = 0.0;
       float ry = 0;
 
       if(xbox_control) {
