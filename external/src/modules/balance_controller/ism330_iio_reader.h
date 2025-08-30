@@ -1,134 +1,89 @@
 #pragma once
 #include <atomic>
+#include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
-#include <cstdio>
-#include <cstring>
-#include <dirent.h>
-#include <fcntl.h>
+#include <filesystem>
+#include <fstream>
 #include <functional>
-#include <optional>
 #include <stdexcept>
 #include <string>
-#include <string_view>
-#include <sys/stat.h>
-#include <sys/types.h>
 #include <thread>
-#include <unistd.h>
-#include <vector>
-#include <cmath>
 
-// Minimal helper: read entire file as string
-inline std::string read_text_file(const std::string& path) {
-  int fd = ::open(path.c_str(), O_RDONLY);
-  if (fd < 0) throw std::runtime_error("open: " + path + " failed");
-  std::string out;
-  char buf[512];
-  while (true) {
-    const ssize_t n = ::read(fd, buf, sizeof(buf));
-    if (n < 0) { ::close(fd); throw std::runtime_error("read: " + path + " failed"); }
-    if (n == 0) break;
-    out.append(buf, buf + n);
-  }
-  ::close(fd);
-  // trim trailing newlines/spaces
-  while (!out.empty() && (out.back()=='\n' || out.back()=='\r' || out.back()==' ')) out.pop_back();
+#include <fcntl.h>
+#include <poll.h>
+#include <unistd.h>
+
+#include "config.h"
+
+namespace fs = std::filesystem;
+
+
+static inline void tryWrite(const fs::path& p, const std::string& v) {
+  std::error_code ec;
+  if (!fs::exists(p, ec)) return;
+  std::ofstream f(p);
+  if (!f) return;
+  f << v;
+}
+
+static inline std::string readBack(const fs::path& p) {
+  std::ifstream f(p);
+  std::string s;
+  if (f) std::getline(f, s);
+  return s;
+}
+
+static inline std::string readOneLine(const fs::path& p) {
+  std::ifstream f(p);
+  if (!f) throw std::runtime_error("open failed: " + p.string());
+  std::string s;
+  std::getline(f, s);
+  return s;
+}
+
+static inline std::array<double, 3> applyAxisMap(const AxisCfg& c, const std::array<double, 3>& src) {
+  std::array<double, 3> out;
+  out[0] = c.invert_x ? -src[c.x] : src[c.x];
+  out[1] = c.invert_y ? -src[c.y] : src[c.y];
+  out[2] = c.invert_z ? -src[c.z] : src[c.z];
   return out;
 }
 
-inline void write_text_file(const std::string& path, std::string_view s) {
-  int fd = ::open(path.c_str(), O_WRONLY);
-  if (fd < 0) throw std::runtime_error("open: " + path + " for write failed");
-  const ssize_t n = ::write(fd, s.data(), s.size());
-  ::close(fd);
-  if (n < 0 || static_cast<size_t>(n) != s.size()) {
-    throw std::runtime_error("write: " + path + " failed");
-  }
-}
-
-// Find iio:deviceX whose `name` contains any of the provided substrings
-inline std::optional<std::string> find_iio_device_by_name(const std::vector<std::string>& needles) {
-  const char* base = "/sys/bus/iio/devices";
-  DIR* dir = ::opendir(base);
-  if (!dir) return std::nullopt;
-  struct dirent* ent;
-  while ((ent = ::readdir(dir))) {
-    if (std::strncmp(ent->d_name, "iio:device", 10) != 0) continue;
-    std::string devdir = std::string(base) + "/" + ent->d_name;
-    std::string name = read_text_file(devdir + "/name");
-    for (const auto& n : needles) {
-      if (name.find(n) != std::string::npos) {
-        ::closedir(dir);
-        return devdir; // sysfs directory path (not /dev node)
-      }
-    }
-  }
-  ::closedir(dir);
-  return std::nullopt;
-}
-
-// Small RAII that turns the IIO buffered capture on/off with selected scan elements.
 class Ism330IioReader {
 public:
-  struct Config {
-    // any of these appearing in /sys/bus/iio/devices/iio:deviceX/name will match
-    std::vector<std::string> name_hints = {"ism330", "lsm6d", "lsm6dsx"};
-    // desired sample rate for both accel+gyro (driver rounds to supported ODR)
-    double sampling_hz = 1000.0;
-    // ring buffer size (number of samples)
-    int buffer_len = 256;
-    // axis mapping: which accel/gyro axes correspond to pitch
-    // (common: pitch around Y; adjust if your board is rotated)
-    // We’ll compute pitch angle from accel_x/z and pitch rate from gyro_y by default.
-    int accel_x = 0, accel_y = 1, accel_z = 2; // index 0:x,1:y,2:z
-    int gyro_x  = 0, gyro_y  = 1, gyro_z  = 2;
-    // callback invoked per sample
-    std::function<void(double pitch_rad, double pitch_rate_rad_s,
-                       double yaw_rate_rad_s,
-                       std::chrono::steady_clock::time_point ts)> on_sample;
+  struct IMUConfig {
+    std::function<void(double,
+                       std::array<double, 3>,
+                       std::array<double, 3>,
+                       std::chrono::steady_clock::time_point)> on_sample;
   };
 
-  explicit Ism330IioReader(Config cfg) : cfg_(std::move(cfg)) {
-    // 1) locate device
-    devsys_ = find_iio_device_by_name(cfg_.name_hints).value_or("");
-    if (devsys_.empty()) throw std::runtime_error("ISM330 IIO device not found");
-    devnode_ = "/dev/" + devsys_.substr(devsys_.rfind('/') + 1);
+  // Compile-time constants from your sysfs
+  static constexpr double kAccelScale = 0.000598205;
+  static constexpr double kGyroScale  = 0.000152716;
 
-    // 2) enable accel/gyro scan elements (x,y,z)
-    // in_accel_*_en, in_anglvel_*_en
-    for (const char axis : {'x','y','z'}) {
-      write_text_file(path("scan_elements/in_accel_") + axis + std::string("_en"), "1");
-      write_text_file(path("scan_elements/in_anglvel_") + axis + std::string("_en"), "1");
-    }
+  static constexpr const char* kTriggerName = "imu833";
 
-    // 3) set sampling frequency (if present)
-    // some drivers expose single `sampling_frequency`
-    try {
-      write_text_file(path("sampling_frequency"), fmt(cfg_.sampling_hz));
-    } catch (...) {
-      // fallback: per-sensor nodes if available (not all kernels expose both)
-      try { write_text_file(path("in_accel_sampling_frequency"), fmt(cfg_.sampling_hz)); } catch (...) {}
-      try { write_text_file(path("in_anglvel_sampling_frequency"), fmt(cfg_.sampling_hz)); } catch (...) {}
-    }
+  // Fixed packed layout: s16 x3 + s64 ts => 2+2+2+8 = 14 bytes
+  static constexpr std::size_t kOffX   = 0;
+  static constexpr std::size_t kOffY   = 2;
+  static constexpr std::size_t kOffZ   = 4;
+  static constexpr std::size_t kOffTS  = 6;
+  static constexpr std::size_t kStride = 14;
 
-    // 4) set buffer length and enable
-    write_text_file(path("buffer/length"), std::to_string(cfg_.buffer_len));
-    // Open the character device before enabling buffer
-    fd_ = ::open(devnode_.c_str(), O_RDONLY | O_NONBLOCK);
-    if (fd_ < 0) throw std::runtime_error("open " + devnode_ + " failed");
-
-    write_text_file(path("buffer/enable"), "1");
-
-    // 5) read scales (to convert raw -> SI)
-    accel_scale_ = read_double(path("in_accel_scale"));
-    gyro_scale_  = read_double(path("in_anglvel_scale"));
-
-    // 6) inspect types (we assume le:s16 here; robust parsing can read *_type)
-    //   in_accel_x_type -> e.g. "le:s16/16>>0"
-    // If this differs on your kernel, parse and adjust. For ST parts this is typically s16 LE.
-    // 7) start thread
+  explicit Ism330IioReader(IMUConfig cfg) : cfg_(std::move(cfg)) {
+    if (!cfg_.on_sample) throw std::runtime_error("Ism330IioReader: on_sample callback is required");
+    discoverSplitDevices();
+    setSamplingHz();
+    setupBuffer(accel_sysfs_, true);
+    setupBuffer(gyro_sysfs_, false);
+    openDeviceFds();
+    assertFixedLayout(accel_sysfs_, true);
+    assertFixedLayout(gyro_sysfs_, false);
     alive_.store(true);
-    th_ = std::thread(&Ism330IioReader::run, this);
+    worker_ = std::thread(&Ism330IioReader::loop, this);
   }
 
   ~Ism330IioReader() {
@@ -138,104 +93,229 @@ public:
   void stop() {
     bool exp = true;
     if (!alive_.compare_exchange_strong(exp, false)) return;
-    if (th_.joinable()) th_.join();
-
-    // disable buffer & close
-    try { write_text_file(path("buffer/enable"), "0"); } catch (...) {}
-    if (fd_ >= 0) { ::close(fd_); fd_ = -1; }
-    // disable scan elements (optional)
-    for (const char axis : {'x','y','z'}) {
-      safe_write(path("scan_elements/in_accel_") + axis + std::string("_en"), "0");
-      safe_write(path("scan_elements/in_anglvel_") + axis + std::string("_en"), "0");
-    }
+    if (worker_.joinable()) worker_.join();
+    teardownBuffer(accel_sysfs_);
+    teardownBuffer(gyro_sysfs_);
+    if (fd_accel_ >= 0) ::close(fd_accel_);
+    if (fd_gyro_  >= 0) ::close(fd_gyro_);
   }
 
-  std::string devnode() const { return devnode_; }
-  std::string devsys()  const { return devsys_;  }
-  double accel_scale()  const { return accel_scale_; }
-  double gyro_scale()   const { return gyro_scale_;  }
+  std::string devnode() const {
+    return "accel@" + accel_sysfs_.filename().string() + " + gyro@" + gyro_sysfs_.filename().string();
+  }
 
 private:
-  std::string path(const std::string& p) const { return devsys_ + "/" + p; }
-  static std::string fmt(double v) {
-    char buf[64]; std::snprintf(buf, sizeof(buf), "%.0f", v); return buf;
+  IMUConfig cfg_{};
+  std::atomic<bool> alive_{false};
+  std::thread worker_{};
+  fs::path accel_sysfs_{};
+  fs::path gyro_sysfs_{};
+  int fd_accel_ = -1;
+  int fd_gyro_ = -1;
+
+  static inline std::string devCharFromSysfs(const fs::path& sys) {
+    return "/dev/" + sys.filename().string();
   }
-  static double read_double(const std::string& p) {
-    return std::stod(read_text_file(p));
-  }
-  static void safe_write(const std::string& p, std::string_view v) {
-    try { write_text_file(p, v); } catch (...) {}
+
+  static inline uint16_t rd16le(const uint8_t* p) {
+    return (uint16_t)p[0] | (uint16_t(p[1]) << 8);
   }
 
-  void run() {
-    // Scan layout: accel_x,y,z then gyro_x,y,z in the order enabled by scan_elements.
-    // Commonly ST driver orders acc x y z, then gyro x y z, each s16 little-endian.
-    // Each sample = 6 * 2 bytes = 12 bytes. If timestamp is enabled, it adds 8 bytes; we’re not enabling it now.
-    const size_t stride = 6 * sizeof(int16_t);
-    std::vector<uint8_t> buf( stride * static_cast<size_t>(cfg_.buffer_len) );
+  static inline uint64_t rd64le(const uint8_t* p) {
+    return  (uint64_t)p[0]
+          | (uint64_t(p[1]) << 8)
+          | (uint64_t(p[2]) << 16)
+          | (uint64_t(p[3]) << 24)
+          | (uint64_t(p[4]) << 32)
+          | (uint64_t(p[5]) << 40)
+          | (uint64_t(p[6]) << 48)
+          | (uint64_t(p[7]) << 56);
+  }
 
-    while (alive_.load(std::memory_order_relaxed)) {
-      const ssize_t n = ::read(fd_, buf.data(), buf.size());
-      if (n < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-          std::this_thread::sleep_for(std::chrono::milliseconds(1));
-          continue;
-        }
-        // read error; try to continue
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        continue;
-      }
-      const auto now = std::chrono::steady_clock::now();
-      const size_t frames = static_cast<size_t>(n) / stride;
-      const uint8_t* p = buf.data();
+  void discoverSplitDevices() {
+    const fs::path base{"/sys/bus/iio/devices"};
+    if (!fs::exists(base)) throw std::runtime_error("No IIO sysfs at " + base.string());
+    for (auto& ent : fs::directory_iterator(base)) {
+      if (!ent.is_directory()) continue;
+      if (ent.path().filename().string().rfind("iio:device", 0) != 0) continue;
+      const fs::path sys = ent.path();
+      std::string name;
+      try { name = readOneLine(sys / "name"); } catch (...) { continue; }
+      if (name.find("ism330") == std::string::npos && name.find("lsm6d") == std::string::npos) continue;
+      if (name.find("accel") != std::string::npos) accel_sysfs_ = sys;
+      else if (name.find("gyro") != std::string::npos) gyro_sysfs_ = sys;
+    }
+    if (accel_sysfs_.empty() || gyro_sysfs_.empty()) throw std::runtime_error("ISM330 split accel/gyro devices not found");
+  }
 
-      for (size_t i = 0; i < frames; ++i, p += stride) {
-        const int16_t ax_raw = le16(p + 0);
-        const int16_t ay_raw = le16(p + 2);
-        const int16_t az_raw = le16(p + 4);
-        const int16_t gx_raw = le16(p + 6);
-        const int16_t gy_raw = le16(p + 8);
-        const int16_t gz_raw = le16(p + 10);
+  void setSamplingHz() {
+    const std::string hz = std::to_string(Config::sampling_hz);
+    tryWrite(accel_sysfs_ / "sampling_frequency", hz);
+    tryWrite(gyro_sysfs_  / "sampling_frequency", hz);
+    const std::string a = readBack(accel_sysfs_ / "sampling_frequency");
+    const std::string g = readBack(gyro_sysfs_  / "sampling_frequency");
+    std::printf("ISM330 requested ODR=%s; accel now=%s, gyro now=%s\n", hz.c_str(), a.c_str(), g.c_str());
 
-        // apply scales
-        const double ax = static_cast<double>(ax_raw) * accel_scale_;
-        const double ay = static_cast<double>(ay_raw) * accel_scale_;
-        const double az = static_cast<double>(az_raw) * accel_scale_;
-        const double gx = static_cast<double>(gx_raw) * gyro_scale_;
-        const double gy = static_cast<double>(gy_raw) * gyro_scale_;
-        const double gz = static_cast<double>(gz_raw) * gyro_scale_;
+    const fs::path tdir = findTriggerDirByName(kTriggerName);
+    const fs::path tf = tdir / "sampling_frequency";
+    if (!fs::exists(tf)) throw std::runtime_error("Trigger '" + std::string(kTriggerName) + "' has no sampling_frequency. Is it an hrtimer trigger?");
+    tryWrite(tf, hz);
+    const std::string tb = readBack(tf);
+    if (tb != hz) throw std::runtime_error("Failed to set trigger sampling_frequency to " + hz + " (now='" + tb + "')");
+    std::printf("Trigger '%s' sampling_frequency now=%s\n", kTriggerName, tb.c_str());
+  }
 
-        // Axis mapping selection (indices default to x=0,y=1,z=2)
-        const double accXYZ[3] = {ax, ay, az};
-        const double gyrXYZ[3] = {gx, gy, gz};
-        const double acc_x = accXYZ[cfg_.accel_x];
-        const double acc_y = accXYZ[cfg_.accel_y];
-        const double acc_z = accXYZ[cfg_.accel_z];
-        const double gyr_y = gyrXYZ[cfg_.gyro_y];
-        const double gyr_z = gyrXYZ[cfg_.gyro_z];
+  static inline void writeStrict(const fs::path& p, const std::string& v) {
+    std::ofstream f(p);
+    if (!f) throw std::runtime_error("write failed: " + p.string());
+    f << v;
+    if (!f) throw std::runtime_error("write failed (flush): " + p.string());
+  }
 
-        // Quick pitch estimate (upright gravity ref): pitch = atan2(-ax, az)
-        // Adjust sign convention to your controller if needed.
-        const double pitch_rad = std::atan2(-acc_x, acc_z);
-        const double pitch_rate = gyr_y; // rad/s
-        const double yaw_rate   = gyr_z; // rad/s
-
-        if (cfg_.on_sample) cfg_.on_sample(pitch_rad, pitch_rate, yaw_rate, now);
-      }
+  static inline void disableAllChannels(const fs::path& dev) {
+    const fs::path scan = dev / "scan_elements";
+    if (!fs::exists(scan)) throw std::runtime_error("scan_elements missing under " + dev.string());
+    for (auto& ent : fs::directory_iterator(scan)) {
+      const std::string fn = ent.path().filename().string();
+      if (fn.size() > 3 && fn.rfind("_en") == fn.size() - 3) tryWrite(ent.path(), "0");
     }
   }
 
-  static int16_t le16(const uint8_t* p) {
-    return static_cast<int16_t>(p[0] | (static_cast<int16_t>(p[1]) << 8));
+static fs::path findTriggerDirByName(const std::string& name) {
+  const fs::path base{"/sys/bus/iio/devices"};
+  for (auto& ent : fs::directory_iterator(base)) {
+    if (!ent.is_directory()) continue;
+    const std::string fn = ent.path().filename().string();
+    if (fn.rfind("trigger", 0) != 0) continue;
+    std::string n;
+    try { n = readOneLine(ent.path() / "name"); } catch (...) { continue; }
+    if (n == name) return ent.path();
+  }
+  throw std::runtime_error("Required IIO trigger '" + name + "' not found. Did you run: sudo mkdir -p /sys/kernel/config/iio/triggers/hrtimer/imu833 ?");
+}
+
+  void setupBuffer(const fs::path& dev, bool is_accel) {
+    tryWrite(dev / "buffer" / "enable", "0");
+    const fs::path scan = dev / "scan_elements";
+    tryWrite(scan / "in_accel_x_en",  is_accel ? "1" : "0");
+    tryWrite(scan / "in_accel_y_en",  is_accel ? "1" : "0");
+    tryWrite(scan / "in_accel_z_en",  is_accel ? "1" : "0");
+    tryWrite(scan / "in_anglvel_x_en", is_accel ? "0" : "1");
+    tryWrite(scan / "in_anglvel_y_en", is_accel ? "0" : "1");
+    tryWrite(scan / "in_anglvel_z_en", is_accel ? "0" : "1");
+    tryWrite(scan / "in_timestamp_en", "1");
+    tryWrite(dev / "trigger" / "current_trigger", kTriggerName);
+    const std::string rb = readBack(dev / "trigger" / "current_trigger");
+    if (rb != kTriggerName) throw std::runtime_error("Failed to attach trigger '" + std::string(kTriggerName) + "' to " + dev.string() + " (current='" + rb + "')");
+    std::printf("%s: using trigger '%s'\n", dev.filename().c_str(), kTriggerName);
+    tryWrite(dev / "buffer" / "length", "4096");
+    tryWrite(dev / "buffer" / "enable", "1");
   }
 
-  Config cfg_;
-  std::string devsys_;
-  std::string devnode_;
-  int fd_ = -1;
-  double accel_scale_ = 0.0;
-  double gyro_scale_  = 0.0;
+  void teardownBuffer(const fs::path& dev) {
+    tryWrite(dev / "buffer" / "enable", "0");
+    tryWrite(dev / "trigger" / "current_trigger", "");
+  }
 
-  std::atomic<bool> alive_{false};
-  std::thread th_;
+  void openDeviceFds() {
+    const std::string da = devCharFromSysfs(accel_sysfs_);
+    const std::string dg = devCharFromSysfs(gyro_sysfs_);
+    fd_accel_ = ::open(da.c_str(), O_RDONLY);
+    if (fd_accel_ < 0) throw std::runtime_error("open failed: " + da);
+    fd_gyro_  = ::open(dg.c_str(), O_RDONLY);
+    if (fd_gyro_  < 0) throw std::runtime_error("open failed: " + dg);
+  }
+
+  void assertFixedLayout(const fs::path& dev, bool is_accel) {
+    const fs::path s = dev / "scan_elements";
+    const std::string ax = is_accel ? "in_accel_x" : "in_anglvel_x";
+    const std::string ay = is_accel ? "in_accel_y" : "in_anglvel_y";
+    const std::string az = is_accel ? "in_accel_z" : "in_anglvel_z";
+    if (readOneLine(s / (ax + "_type")) != "le:s16/16>>0") throw std::runtime_error(dev.string() + ": unexpected x type");
+    if (readOneLine(s / (ay + "_type")) != "le:s16/16>>0") throw std::runtime_error(dev.string() + ": unexpected y type");
+    if (readOneLine(s / (az + "_type")) != "le:s16/16>>0") throw std::runtime_error(dev.string() + ": unexpected z type");
+    if (readOneLine(s / "in_timestamp_type") != "le:s64/64>>0") throw std::runtime_error(dev.string() + ": unexpected ts type");
+    if (readOneLine(s / (ax + "_index")) != "0") throw std::runtime_error(dev.string() + ": x index != 0");
+    if (readOneLine(s / (ay + "_index")) != "1") throw std::runtime_error(dev.string() + ": y index != 1");
+    if (readOneLine(s / (az + "_index")) != "2") throw std::runtime_error(dev.string() + ": z index != 2");
+    if (readOneLine(s / "in_timestamp_index") != "3") throw std::runtime_error(dev.string() + ": ts index != 3");
+  }
+
+  void loop() {
+    alignas(8) uint8_t bufA[kStride * 512];
+    alignas(8) uint8_t bufG[kStride * 512];
+    struct Acc { double ax; double ay; double az; uint64_t ts; bool updated; };
+    struct Gyr { double gx; double gy; double gz; uint64_t ts; bool updated; };
+    Acc lastA{0.0, 0.0, 0.0, 0ULL, false};
+    Gyr lastG{0.0, 0.0, 0.0, 0ULL, false};
+    uint64_t tsA_emitted = 0ULL;
+    uint64_t tsG_emitted = 0ULL;
+
+    std::printf("Polling for IMU data...\n");
+    while (alive_.load(std::memory_order_relaxed)) {
+      struct pollfd pfds[2];
+      pfds[0].fd = fd_accel_;
+      pfds[0].events = POLLIN;
+      pfds[0].revents = 0;
+      pfds[1].fd = fd_gyro_;
+      pfds[1].events = POLLIN;
+      pfds[1].revents = 0;
+
+      int r = ::poll(pfds, 2, 1000);
+      if (r <= 0) continue;
+
+      const auto now = std::chrono::steady_clock::now();
+
+      if (pfds[0].revents & POLLIN) {
+        ssize_t n = ::read(fd_accel_, bufA, sizeof(bufA));
+        if (n > 0) {
+          for (size_t off = 0; off + kStride <= (size_t)n; off += kStride) {
+            const uint8_t* p = bufA + off;
+            int16_t xr = (int16_t)rd16le(p + kOffX);
+            int16_t yr = (int16_t)rd16le(p + kOffY);
+            int16_t zr = (int16_t)rd16le(p + kOffZ);
+            uint64_t ts = rd64le(p + kOffTS);
+            lastA.ax = double(xr) * kAccelScale;
+            lastA.ay = double(yr) * kAccelScale;
+            lastA.az = double(zr) * kAccelScale;
+            lastA.ts = ts;
+            lastA.updated = true;
+          }
+        }
+      }
+
+      if (pfds[1].revents & POLLIN) {
+        ssize_t n = ::read(fd_gyro_, bufG, sizeof(bufG));
+        if (n > 0) {
+          for (size_t off = 0; off + kStride <= (size_t)n; off += kStride) {
+            const uint8_t* p = bufG + off;
+            int16_t xr = (int16_t)rd16le(p + kOffX);
+            int16_t yr = (int16_t)rd16le(p + kOffY);
+            int16_t zr = (int16_t)rd16le(p + kOffZ);
+            uint64_t ts = rd64le(p + kOffTS);
+            lastG.gx = double(xr) * kGyroScale;
+            lastG.gy = double(yr) * kGyroScale;
+            lastG.gz = double(zr) * kGyroScale;
+            lastG.ts = ts;
+            lastG.updated = true;
+          }
+        }
+      }
+
+      if (lastA.updated && lastG.updated) {
+        if (lastA.ts != tsA_emitted || lastG.ts != tsG_emitted) {
+          const std::array<double, 3> acc_src{lastA.ax, lastA.ay, lastA.az};
+          const std::array<double, 3> gyr_src{lastG.gx, lastG.gy, lastG.gz};
+          const std::array<double, 3> acc = applyAxisMap(Config::accel_cfg, acc_src);
+          const std::array<double, 3> gyr = applyAxisMap(Config::gyro_cfg, gyr_src);
+          const double pitch = std::atan2(-acc[0], acc[2]);
+          cfg_.on_sample(pitch, acc, gyr, now);
+          tsA_emitted = lastA.ts;
+          tsG_emitted = lastG.ts;
+          lastA.updated = false;
+          lastG.updated = false;
+        }
+      }
+    }
+  }
 };

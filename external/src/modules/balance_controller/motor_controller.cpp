@@ -12,14 +12,15 @@
 #include "config.h"
 #include "control_loop.h"
 #include "ism330_iio_reader.h"
-
+#include "static_tilt_lpf.h"
 
 // ---------------------- Motor control runner --------------------------------
 class App {
 public:
-  int run(PigpioCtx& _ctx) {
-    XboxController pad;
-
+  int run(PigpioCtx& _ctx, bool xbox_control = true) {
+    if (xbox_control) {
+      pad = std::make_unique<XboxController>();
+    }
     // Hardware setup
     Stepper::Pins leftPins  {12, 19, 13}; // ENA, STEP, DIR
     Stepper::Pins rightPins { 4, 18, 24}; // ENB, STEP, DIR
@@ -64,22 +65,25 @@ public:
     }
 
     // IMU reader (IIO; runs its own thread). If not found, we’ll fall back to zeros.
+    StaticTiltLPF filt{};
     std::unique_ptr<Ism330IioReader> imu;
     try {
-      Ism330IioReader::Config icfg;
-      icfg.sampling_hz = 1000.0;
-      // Axis mapping: adjust if your board is rotated. Defaults assume:
-      //  pitch uses accel X vs Z and gyro Y; yaw uses gyro Z.
-      icfg.accel_x = 0; icfg.accel_y = 1; icfg.accel_z = 2;
-      icfg.gyro_y  = 1; icfg.gyro_z  = 2;
-      icfg.on_sample = [&](double pitch, double pitch_rate, double yaw_rate,
+      Ism330IioReader::IMUConfig icfg;
+
+      icfg.on_sample = [&](double pitch, std::array<double, 3> acc, std::array<double, 3> gyrv,
                            std::chrono::steady_clock::time_point ts){
-        ImuSample s;
-        s.angle_rad   = pitch;
-        s.gyro_rad_s  = pitch_rate;
-        s.yaw_rate_z  = yaw_rate;
-        s.t           = ts;
+
+        filt.push_sample(acc, gyrv, ts);
+
+        ImuSample s = filt.read_latest();
         ctrl.pushImu(s);
+        static int k = 0;
+        if ((++k % 1) == 1) {
+          std::printf("pitch=%.3f°, dpitch=%.3f°, yaw=%.3f°, time=%.3f\n",
+             s.angle_rad * 180.0 / M_PI, s.gyro_rad_s * 180.0 / M_PI, s.yaw_rate_z * 180.0 / M_PI, std::chrono::duration<double>(ts.time_since_epoch()).count());
+          std::printf("acc_x=%.3fm/s, acc_y=%.3fm/s, acc_z=%.3fm/s, gyrv_x=%.3f°/s, gyrv_y=%.3f°/s, gyrv_z=%.3f°/s, time=%.3f\n",
+              acc[0], acc[1], acc[2], gyrv[0]*180.0/M_PI, gyrv[1]*180.0/M_PI, gyrv[2]*180.0/M_PI, std::chrono::duration<double>(ts.time_since_epoch()).count());
+        }
       };
       imu = std::make_unique<Ism330IioReader>(std::move(icfg));
       std::cout << "IIO IMU started at " << imu->devnode() << "\n";
@@ -107,11 +111,15 @@ public:
 
     while (std::chrono::steady_clock::now() < t_end
            && !g_stop.load(std::memory_order_relaxed)) {
-      pad.update();
+      float ly = 0.0;
+      float ry = 0;
 
-      // Sticks: map to forward & turn in [-1, 1].
-      float ly = pad.leftY();
-      float ry = pad.rightY();
+      if(xbox_control) {
+        pad->update();
+        // Sticks: map to forward & turn in [-1, 1].
+        ly = pad->leftY();
+        ry = pad->rightY();
+      }
       if (Config::invert_left)  ly = -ly;
       if (Config::invert_right) ry = -ry;
 
@@ -131,6 +139,7 @@ public:
     R.stop();
     return 0;
   }
+  std::unique_ptr<XboxController> pad;
 };
 
 // --------------------------- main -------------------------------------------
@@ -140,5 +149,5 @@ int main() {
 
   PigpioCtx _ctx;   // your pigpio context wrapper
   App app;
-  return app.run(_ctx);
+  return app.run(_ctx, false);
 }

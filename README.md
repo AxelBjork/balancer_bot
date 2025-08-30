@@ -86,17 +86,21 @@ dtparam=i2c_arm_baudrate=400000
 **Enable pigiod daemon** `sudo systemctl enable --now pigpiod`
 
 ## Motor Test
-
-g++ extras/motor_off.cpp -o motor_off -lpigpio -lrt
+**Stubs**
 g++ motor_controller.cpp -o motor_controller -lSDL2 -lrt -pthread -I./stubs -DPIGPIOD_STUB_IMPL
-g++ motor_controller.cpp -o motor_controller -lSDL2 -lpigpiod_if2 -lrt -pthread
-./motor_hat_test
-sudo ./motor_off
+**Pi Build**
+g++ motor_controller.cpp -o motor_controller -lSDL2 -lpigpiod_if2 -lrt -pthread -O2
+g++ extras/motor_off.cpp -o motor_off -lpigpiod_if2 -lrt -pthread
+
+./motor_controller
 
 
 ## Bluetooth connect
 bluetoothctl
 power on
+menu scan
+pattern Xbox
+back
 scan on
 pair 28:EA:0B:E1:04:E6
 connect 28:EA:0B:E1:04:E6
@@ -109,7 +113,78 @@ g++ extras/xbox_demo.cpp -o xbox_demo -lSDL2
 ./xbox_demo
 
 ## IMU Demo
+
+g++ extras/imu_demo.cpp -o imu_demo -pthread -O2
+
+
+`mkdir -p ~/lsm6dsx-oot && cd ~/lsm6dsx-oot`
+
+Download only the driver sources from the matching RPi kernel branch
+```
+BRANCH=rpi-6.12.y
+BASE=https://raw.githubusercontent.com/raspberrypi/linux/$BRANCH/drivers/iio/imu/st_lsm6dsx
+for f in st_lsm6dsx_core.c st_lsm6dsx_buffer.c st_lsm6dsx_shub.c st_lsm6dsx_i2c.c st_lsm6dsx.h; do
+  wget -q "$BASE/$f"
+done
+```
+**Create makefile**
+```
+obj-m += st_lsm6dsx.o
+obj-m += st_lsm6dsx_i2c.o
+
+# st_lsm6dsx.ko is built from these three objects:
+st_lsm6dsx-objs := st_lsm6dsx_core.o st_lsm6dsx_buffer.o st_lsm6dsx_shub.o
+```
+
+make -C /lib/modules/$(uname -r)/build M=$PWD modules
+
+sudo mkdir -p /lib/modules/$(uname -r)/kernel/drivers/iio/imu/st_lsm6dsx
+sudo cp st_lsm6dsx*.ko /lib/modules/$(uname -r)/kernel/drivers/iio/imu/st_lsm6dsx/
+sudo depmod -a
+
+// load and bind
+sudo modprobe industrialio industrialio_triggered_buffer
+sudo modprobe st_lsm6dsx_i2c
+
+echo 0x6a | sudo tee /sys/bus/i2c/devices/i2c-1/delete_device 2>/dev/null
+echo ism330dhcx 0x6a | sudo tee /sys/bus/i2c/devices/i2c-1/new_device
+
 g++ extras/imu_demo.cpp -o imu_demo
+
+### Configure auto setup
+printf "industrialio\nindustrialio_triggered_buffer\nst_lsm6dsx_i2c\n" | \
+  sudo tee /etc/modules-load.d/ism330dhcx.conf
+
+
+sudo tee /usr/local/sbin/add-ism330dhcx.sh >/dev/null <<'EOF'
+#!/bin/sh
+NODE="/sys/bus/i2c/devices/i2c-1/new_device"
+for i in $(seq 1 20); do
+  [ -e "$NODE" ] && { echo "ism330dhcx 0x6a" > "$NODE"; exit 0; }
+  sleep 0.25
+done
+exit 1
+EOF
+sudo chmod +x /usr/local/sbin/add-ism330dhcx.sh
+
+sudo tee /etc/udev/rules.d/60-ism330dhcx.rules >/dev/null <<'EOF'
+SUBSYSTEM=="i2c", KERNEL=="i2c-1", ACTION=="add", RUN+="/usr/local/sbin/add-ism330dhcx.sh"
+EOF
+sudo udevadm control --reload
+
+**Setup Kernel trigger & permissions**
+sudo mkdir -p /sys/kernel/config/iio/triggers/hrtimer/imu833
+sudo groupadd -f iio
+sudo usermod -aG iio "$USER"
+# Either re-login, or do:
+newgrp iio
+
+**Verify**
+i2cdetect -yr 1
+ls /sys/bus/iio/devices/
+echo 0x6a | sudo tee /sys/bus/i2c/devices/i2c-1/delete_device 2>/dev/null
+echo ism330dhcx 0x6a | sudo tee /sys/bus/i2c/devices/i2c-1/new_device
+ls /sys/bus/iio/devices/
 
 # Unittest
 

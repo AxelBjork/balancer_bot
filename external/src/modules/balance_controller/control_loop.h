@@ -6,21 +6,9 @@
 #include <thread>
 #include <algorithm>
 #include <functional>
+
 #include "config.h"
 
-
-// TODO
-// add a rate limiter on sps,
-
-
-// ---- IMU sample (from ISM330DHCX fusion later) ----
-// angle_rad: pitch angle (+ forward), gyro_rad_s: pitch rate (+ when nose down)
-struct ImuSample {
-  double angle_rad;
-  double gyro_rad_s;
-  double yaw_rate_z;
-  std::chrono::steady_clock::time_point t;
-};
 
 // ---- Joystick command (forward/turn normalized to [-1, 1]) ----
 struct JoyCmd {
@@ -42,7 +30,7 @@ struct ControlTunings {
   double k_turn = 600.0;    // [sps / unit turn]
 
   // Yaw PI (closed-loop steering) -- ENABLE THIS to use gyro Z
-  bool   yaw_pi_enabled = true;
+  bool   yaw_pi_enabled = false;
   double kp_yaw = 250.0;         // [sps / (rad/s)]
   double ki_yaw = 80.0;          // [sps / (rad/s * s)]
   double max_yaw_rate_cmd = 2.0; // [rad/s] from joystick at |turn|=1
