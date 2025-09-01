@@ -25,41 +25,35 @@ public:
     Stepper::Pins leftPins  {12, 19, 13}; // ENA, STEP, DIR
     Stepper::Pins rightPins { 4, 18, 24}; // ENB, STEP, DIR
     Stepper left(_ctx.handle(), leftPins), right(_ctx.handle(), rightPins);
-    MotorRunner L(left), R(right);
-
-    // Controller tunings (good starting points; adjust on hardware)
-    ControlTunings gains{};
-    gains.hz_balance       = 400;
-    gains.hz_outer         = 100;
-    gains.max_tilt_rad     = 6.0 * (M_PI / 180.0);
-    gains.max_sps          = Config::max_sps;
-    // Balance PD (maps tilt error -> sps)
-    gains.kp_bal           = 60.0;
-    gains.kd_bal           = 1.2;
-    // Velocity PI (maps speed error -> tilt target)
-    gains.kp_vel           = 1.2;
-    gains.ki_vel           = 0.4;
-    // Yaw PI (maps yaw-rate error -> steering split)
-    gains.yaw_pi_enabled   = true;
-    gains.kp_yaw           = 250.0;
-    gains.ki_yaw           = 80.0;
-    gains.max_yaw_rate_cmd = 1.5;          // rad/s at full stick
-    gains.max_steer_sps    = 800.0;        // clamp left/right split
+    MotorRunner L(left, Config::invert_left);
+    MotorRunner R(right, Config::invert_right);
 
     // Start cascaded controller (runs its own thread)
-    CascadedController<MotorRunner> ctrl(L, R, gains);
+    CascadedController<MotorRunner> ctrl(L, R);
 
     // Optional: telemetry print every N balance ticks for quick visibility
     // Set to 0 to disable.
-    constexpr int kPrintEvery = -1;
+    constexpr int kPrintEvery = 10;
     if constexpr (kPrintEvery != -1) {
       std::atomic<int> k{0};
       ctrl.setTelemetrySink([&](const Telemetry& t){
         if ((++k % kPrintEvery) == 0) {
-          std::printf("tilt=%.2f° tgt=%.2f° u=%.0f L=%.0f R=%.0f yawDes=%.2f yaw=%.2f\n",
-            t.tilt_rad * 180.0/M_PI, t.tilt_target_rad * 180.0/M_PI,
-            t.u_balance_sps, t.left_cmd_sps, t.right_cmd_sps,
-            t.desired_yaw_rate, t.actual_yaw_rate);
+          constexpr double deg = 180.0 / M_PI;
+          std::printf(
+            "time=%8.3fs  pitch=%8.2f°  gyro=%8.2f°/s  "
+            "target_pitch=%8.2f°%s  "
+            "balance_out=%7.0f  steer=%7.0f  "
+            "L=%7.0f  R=%7.0f\n",
+            std::chrono::duration<double>(t.ts.time_since_epoch()).count(),
+            t.tilt_rad * deg,
+            t.gyro_rad_s * deg,
+            t.tilt_target_rad * deg,
+            t.tilt_saturated ? "*" : " ",   // mark with * if saturated
+            t.u_balance_sps,
+            t.steer_split_sps,
+            t.left_cmd_sps,
+            t.right_cmd_sps
+          );
         }
       });
     }

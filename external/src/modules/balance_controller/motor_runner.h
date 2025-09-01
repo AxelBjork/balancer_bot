@@ -25,11 +25,13 @@ private: int pi{};
 
 class MotorRunner {
 public:
-  explicit MotorRunner(Stepper& m)
+  explicit MotorRunner(Stepper& m, bool invert = false)
     : motor_(m),
       alive_(true),
       slice_sec_(1.0 / static_cast<double>(Config::control_hz)),
-      worker_(&MotorRunner::loop, this) {}
+      invert_dir(invert),
+      worker_(&MotorRunner::loop, this)
+    {}
 
   ~MotorRunner() { stop(); }
 
@@ -46,7 +48,9 @@ private:
 
     while (alive_.load(std::memory_order_relaxed) && !g_stop.load(std::memory_order_relaxed)) {
       const double t   = target_sps_.load(std::memory_order_relaxed);
-      const bool   fwd = (t >= 0.0);
+      bool   fwd = (t >= 0.0);
+      if (invert_dir) fwd = !fwd;
+
       const double sps = std::fabs(t);
 
       if (sps < 1e-3) {
@@ -74,5 +78,6 @@ private:
   std::atomic<bool>   alive_;
   std::atomic<double> target_sps_{0.0};
   const double        slice_sec_;
+  bool                invert_dir;
   std::thread         worker_;
 };
