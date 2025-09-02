@@ -10,7 +10,7 @@
 #include "config.h"
 
 
-// ---- Simple speed estimator (fallback until encoders exist) ----
+// ---- Simple speed estimator ----
 // Smooths commanded sps into an "actual" estimate using a 1st-order LPF.
 struct SpeedEstimator {
   void reset() {
@@ -19,7 +19,7 @@ struct SpeedEstimator {
   }
 
   void updateTargets(double left_cmd_sps, double right_cmd_sps, double dt_s) {
-    const double alpha = std::clamp(dt_s * 8.0, 0.0, 1.0); // ~8 Hz cutoff
+    const double alpha = 1.0 - std::exp(-2.0 * M_PI * Config::fc_velocity_hz * dt_s);
     const double vl = v_left_sps.load(std::memory_order_relaxed);
     const double vr = v_right_sps.load(std::memory_order_relaxed);
     v_left_sps.store((1.0 - alpha) * vl + alpha * left_cmd_sps, std::memory_order_relaxed);
@@ -34,7 +34,14 @@ private:
   std::atomic<double> v_right_sps{0.0};
 };
 
-// ---- The cascaded controller (owns its own worker thread) ----
+/*
+ * LQR-based two-wheel balancer (balance-in-place only).
+ * - Keeps telemetry fields compatible with previous code.
+ * - Velocity and yaw control are disabled/zeroed.
+ * - Balance computed via a_cmd = -K * [theta, theta_dot, x, v].
+ * - Motor command u (steps/s) is integrated from acceleration with rate/amp limits.
+ */
+
 template <class MotorRunnerT>
 class CascadedController {
 public:
@@ -56,12 +63,12 @@ public:
     }
   }
 
-  // Push latest IMU sample (call from your IMU ISR/reader at ~1 kHz)
+  // Push latest IMU sample (call from your IMU ISR/reader)
   void pushImu(const ImuSample& s) {
     latest_imu_.store(s, std::memory_order_relaxed);
   }
 
-  // Provide joystick: forward, turn in [-1, 1]
+  // Joystick kept for API compatibility; ignored in LQR-only mode.
   void setJoystick(const JoyCmd& j) {
     joy_.store(j, std::memory_order_relaxed);
   }
@@ -71,35 +78,35 @@ public:
   }
 
   // For telemetry/debug
-  double lastTiltTargetRad() const { return tilt_target_rad_.load(std::memory_order_relaxed); }
+  double lastTiltTargetRad() const { return 0.0; } // LQR holds 0
   double lastUBalanceSps() const { return u_balance_sps_.load(std::memory_order_relaxed); }
 
 private:
   // Minimal lock-free “latest value” wrapper
-    struct AtomicImu {
-    std::atomic<double> angle{0.0}; // pitch
-    std::atomic<double> gyro{0.0};  // pitch rate
-    std::atomic<double> yaw_z{0.0}; // NEW: yaw rate
+  struct AtomicImu {
+    std::atomic<double> angle{0.0}; // pitch (rad, +forward)
+    std::atomic<double> gyro{0.0};  // pitch rate (rad/s, +nose-down)
+    std::atomic<double> yaw_z{0.0}; // yaw rate (rad/s) (unused here)
     std::atomic<std::int64_t> t_count{0};
 
     void store(const ImuSample& s, std::memory_order mo) {
-        angle.store(s.angle_rad, mo);
-        gyro.store(s.gyro_rad_s, mo);
-        yaw_z.store(s.yaw_rate_z, mo);
-        const auto d = s.t.time_since_epoch();
-        t_count.store(static_cast<std::int64_t>(d.count()), mo);
+      angle.store(s.angle_rad, mo);
+      gyro.store(s.gyro_rad_s, mo);
+      yaw_z.store(s.yaw_rate_z, mo);
+      const auto d = s.t.time_since_epoch();
+      t_count.store(static_cast<std::int64_t>(d.count()), mo);
     }
     ImuSample load(std::memory_order mo) const {
-        ImuSample s{};
-        s.angle_rad  = angle.load(mo);
-        s.gyro_rad_s = gyro.load(mo);
-        s.yaw_rate_z = yaw_z.load(mo);
-        using clock = std::chrono::steady_clock;
-        const auto cnt = static_cast<clock::duration::rep>(t_count.load(mo));
-        s.t = std::chrono::time_point<clock>(clock::duration(cnt));
-        return s;
+      ImuSample s{};
+      s.angle_rad  = angle.load(mo);
+      s.gyro_rad_s = gyro.load(mo);
+      s.yaw_rate_z = yaw_z.load(mo);
+      using clock = std::chrono::steady_clock;
+      const auto cnt = static_cast<clock::duration::rep>(t_count.load(mo));
+      s.t = std::chrono::time_point<clock>(clock::duration(cnt));
+      return s;
     }
-    };
+  };
 
   struct AtomicJoy {
     std::atomic<float> f{0.0f}, t{0.0f};
@@ -112,235 +119,157 @@ private:
     }
   };
 
-  // Main loop: interleaves fast and slow controllers
-void loop() {
-  using dur = std::chrono::steady_clock::duration;
 
-  const auto dt_out = std::chrono::duration_cast<dur>(
-      std::chrono::duration<double>(1.0 / std::max(20, Config::hz_outer)));
-  const auto dt_bal = std::chrono::duration_cast<dur>(
-      std::chrono::duration<double>(1.0 / std::max(50, Config::hz_balance)));
+  void loop() {
+    using dur = std::chrono::steady_clock::duration;
 
-  // Gating & shaping knobs (tune if needed)
-  constexpr double kTiltGateDeg   = 3.0;    // only run vel PI when |pitch| < 3°
-  constexpr double kRateGateDegS  = 30.0;   // and |gyro| < 30°/s
-  constexpr float  kStickDZ       = 0.02f;  // joystick deadzone
+    const auto dt_bal = std::chrono::duration_cast<dur>(
+        std::chrono::duration<double>(1.0 / std::max(50, Config::hz_balance)));
+    const double dt_sec = std::chrono::duration<double>(dt_bal).count();
 
-  auto t_next_out = std::chrono::steady_clock::now();
-  auto t_next_bal = t_next_out;
+    // Steps→rad/s and m/s scaling
+    const double ku = 2.0 * M_PI / static_cast<double>(Config::steps_per_rev); // rad/s per (steps/s)
+    const double r  = Config::wheel_radius_m;                                  // m per rad
+    const double sps_to_mps = ku * r;
 
-  double vel_int = 0.0;
-  SpeedEstimator v_est; v_est.reset();
+    // Speed estimator for base velocity (from commanded sps)
+    SpeedEstimator v_est; v_est.reset();
 
-  double cmd_left_sps  = 0.0;
-  double cmd_right_sps = 0.0;
+    // Command state
+    double u_prev = 0.0;               // steps/s (shared for both wheels here)
+    double cmd_left_sps  = 0.0;
+    double cmd_right_sps = 0.0;
 
-  // balance command slew state
-  double u_prev = 0.0;
+    auto t_next_bal = std::chrono::steady_clock::now();
 
-  while (alive_.load(std::memory_order_relaxed) && !g_stop.load(std::memory_order_relaxed)) {
-    const auto now = std::chrono::steady_clock::now();
+    while (alive_.load(std::memory_order_relaxed) && !g_stop.load(std::memory_order_relaxed)) {
+      const auto now = std::chrono::steady_clock::now();
 
-    // --- Outer (velocity PI + steering) ---
-    if (now >= t_next_out) {
-      t_next_out += dt_out;
-      const double dt_sec = std::chrono::duration<double>(dt_out).count();
+      if (now >= t_next_bal) {
+        t_next_bal += dt_bal;
 
-      JoyCmd j = joy_.load(std::memory_order_relaxed);
-      if (std::fabs(j.forward) < kStickDZ) j.forward = 0.0f;
-      if (std::fabs(j.turn)    < kStickDZ) j.turn    = 0.0f;
+        // ---- Read sensors ----
+        const ImuSample s = latest_imu_.load(std::memory_order_relaxed);
+        const double theta     = s.angle_rad;   // rad
+        const double theta_dot = s.gyro_rad_s;  // rad/s
 
-      const double actual_base_sps = 0.5 * (v_est.leftSps() + v_est.rightSps());
-      const double desired_base_sps = static_cast<double>(j.forward) * Config::max_sps;
-
-      // Gate velocity PI unless upright & calm (prevents target tilt dancing during recovery)
-      const ImuSample s_now = latest_imu_.load(std::memory_order_relaxed);
-      const double tilt_deg = s_now.angle_rad * 180.0 / M_PI;
-      const double gyro_deg = s_now.gyro_rad_s * 180.0 / M_PI;
-      const double u_abs    = std::abs(u_balance_sps_.load(std::memory_order_relaxed));
-
-      const bool ok_for_vel =
-          std::abs(tilt_deg) < kTiltGateDeg &&
-          std::abs(gyro_deg) < kRateGateDegS &&
-          u_abs < 0.8 * Config::max_sps; // also don’t integrate when we’re railing
-
-      // Estimate "actual" base speed from commanded (LPF estimator)
-      if (ok_for_vel && std::fabs(j.forward) > 0.0f) {
+        // ---- Update velocity estimate from current commanded speeds ----
         v_est.updateTargets(cmd_left_sps, cmd_right_sps, dt_sec);
-      } else {
-        // decay toward 0 so vel_est doesn’t fight around upright
-        const double decay = std::exp(-dt_sec * 4.0); // ~4 Hz decay
-        // TODO ADD DECAY
-        v_est.updateTargets(cmd_left_sps * 0, cmd_right_sps * 0, dt_sec);
-      }
+        const double base_sps_est = 0.5 * (v_est.leftSps() + v_est.rightSps()); // steps/s
+        const double x_vel = base_sps_est * sps_to_mps; // m/s
 
-      double tilt_target = 0.0;
-      bool saturated = false;
+      // ---- LQR control (per-term + total acceleration, m/s^2) ----
+        // Soft-limit the gyro term so it doesn't dominate at large tilts
+      const double w_lim_rs  = 180 * (M_PI / 180.0);  // rad/s
+      const double w_shaped  = w_lim_rs * std::tanh(theta_dot / w_lim_rs);
 
-      if (ok_for_vel && std::fabs(j.forward) > 0.0f) {
-        const double vel_err = desired_base_sps - actual_base_sps;
-        vel_int += vel_err * dt_sec;
+      const double a_theta  = -(Config::lqr_k_theta  * theta);
+      const double a_dtheta = -(Config::lqr_k_dtheta * w_shaped);
+      const double a_v      = -(Config::lqr_k_v      * x_vel);
+      const double a_cmd    = (a_theta + a_dtheta + a_v);
 
-        const double sps_max_d = static_cast<double>(Config::max_sps);
-        const double tilt_from_vel =
-          Config::kp_vel * vel_err * (1.0 / std::max(1.0, sps_max_d)) * Config::max_tilt_rad +
-          Config::ki_vel * vel_int * (1.0 / std::max(1.0, sps_max_d)) * Config::max_tilt_rad;
+      // ---- Integrate to steps/s with rate limit + leak ----
+      double du = (a_cmd / (r * ku)) * dt_sec;           // steps/s increment
+      bool du_rate_limited = false;
+      const double max_du = Config::max_du_per_sec * dt_sec;
+      if (du >  max_du) { du =  max_du; du_rate_limited = true; }
+      if (du < -max_du) { du = -max_du; du_rate_limited = true; }
 
-        tilt_target = tilt_from_vel;
-        if (tilt_target > Config::max_tilt_rad) { tilt_target = Config::max_tilt_rad; saturated = true; }
-        else if (tilt_target < -Config::max_tilt_rad) { tilt_target = -Config::max_tilt_rad; saturated = true; }
+      double u_try = u_prev + du;
 
-        // back-calc anti-windup on tilt clamp
-        if (saturated) {
-          const bool pushing_out =
-            (tilt_from_vel > Config::max_tilt_rad && vel_err > 0.0) ||
-            (tilt_from_vel < -Config::max_tilt_rad && vel_err < 0.0);
-          if (pushing_out) vel_int -= vel_err * dt_sec;
-        }
+      // amplitude anti-windup (only if pushing further into rail)
+      bool u_amp_limited = false;
+      if (u_try >  Config::max_sps && u_prev >= Config::max_sps && du > 0.0) { du = 0.0; u_try = Config::max_sps;  u_amp_limited = true; }
+      if (u_try < -Config::max_sps && u_prev <=-Config::max_sps && du < 0.0) { du = 0.0; u_try = -Config::max_sps; u_amp_limited = true; }
 
-        // Telemetry
-        tel_desired_base_sps_ = desired_base_sps;
-        tel_actual_base_sps_  = actual_base_sps;
-        tel_vel_err_sps_      = vel_err;
-        tel_vel_int_state_    = vel_int;
-      } else {
-        // Freeze the outer loop when not upright or no forward command
-        tilt_target = 0.0;
-        vel_int *= 0.98; // gentle decay so it returns toward zero naturally
-        tel_desired_base_sps_ = desired_base_sps;
-        tel_actual_base_sps_  = actual_base_sps;
-        tel_vel_err_sps_      = desired_base_sps - actual_base_sps;
-        tel_vel_int_state_    = vel_int;
-      }
+      u_prev = u_try;
 
-      tel_tilt_saturated_ = saturated;
-      tilt_target_rad_.store(tilt_target, std::memory_order_relaxed);
+      // leak toward 0 so u doesn't "run away"
+      u_prev -= (u_prev * dt_sec) / Config::tau_u_s;
 
-      // --- Yaw control (unchanged; off unless Config::yaw_pi_enabled) ---
-      const double actual_yaw = s_now.yaw_rate_z;
-      if (Config::yaw_pi_enabled) {
-        const double desired_yaw =
-          std::clamp(static_cast<double>(j.turn), -1.0, 1.0) * Config::max_yaw_rate_cmd;
-        const double yaw_err = desired_yaw - actual_yaw;
-        yaw_int_ += yaw_err * dt_sec;
-        double steer = Config::kp_yaw * yaw_err + Config::ki_yaw * yaw_int_;
-        const double pre = steer;
-        steer = std::clamp(steer, -Config::max_steer_sps, Config::max_steer_sps);
-        if (steer != pre) {
-          const bool pushing_out = (pre > steer && yaw_err > 0.0) ||
-                                   (pre < steer && yaw_err < 0.0);
-          if (pushing_out) yaw_int_ -= yaw_err * dt_sec;
-        }
-        steer_split_sps_ = steer;
-        tel_desired_yaw_rate_ = desired_yaw;
-        tel_actual_yaw_rate_  = actual_yaw;
-        tel_yaw_err_          = yaw_err;
-        tel_yaw_int_          = yaw_int_;
-      } else {
-        steer_split_sps_ = std::clamp(static_cast<double>(j.turn) * Config::k_turn,
-                                      -Config::max_steer_sps, Config::max_steer_sps);
-        tel_desired_yaw_rate_ = 0.0;
-        tel_actual_yaw_rate_  = actual_yaw;
-        tel_yaw_err_          = 0.0;
-        tel_yaw_int_          = 0.0;
-      }
-    }
-
-    // --- Balance PD ---
-    if (now >= t_next_bal) {
-      t_next_bal += dt_bal;
-
-      const ImuSample s = latest_imu_.load(std::memory_order_relaxed);
-      double tilt = s.angle_rad;
-      const double gyro_deg_s_raw = s.gyro_rad_s * 180.0 / M_PI;
-      const double gyro_deg_s     = std::clamp(gyro_deg_s_raw, -Config::gyro_d_abs_limit_deg_s, Config::gyro_d_abs_limit_deg_s);
-      const double gyro           = gyro_deg_s * M_PI / 180.0;
-      const double tilt_target = tilt_target_rad_.load(std::memory_order_relaxed);
-
-      // Error with a small deadband to avoid chatter
-      double err = tilt_target - tilt;
-
-      // Raw PD
-      const double u_raw = Config::kp_bal * err + Config::kd_bal * (-gyro);
-
-      // Slew limit (per balance tick) to avoid ping-pong
-      const double u_min = u_prev - Config::slew_per_sec;
-      const double u_max = u_prev + Config::slew_per_sec;
-      const double u_balance = std::clamp(u_raw, u_min, u_max);
-      u_prev = u_balance;
+      double u_balance = std::clamp(u_prev, -Config::max_sps, Config::max_sps);
       u_balance_sps_.store(u_balance, std::memory_order_relaxed);
 
-      // Split & clamp
-      double left  = u_balance + steer_split_sps_;
-      double right = u_balance - steer_split_sps_;
-      left  = std::clamp(left,  -Config::max_sps, Config::max_sps);
-      right = std::clamp(right, -Config::max_sps, Config::max_sps);
-
+      // ---- Split & clamp (no steering/yaw in this mode) ----
+      const double steer_split = 0.0;
+      double left  = std::clamp(u_balance + steer_split,  -Config::max_sps, Config::max_sps);
+      double right = std::clamp(u_balance - steer_split,  -Config::max_sps, Config::max_sps);
       cmd_left_sps  = left;
       cmd_right_sps = right;
 
       left_.setTarget(cmd_left_sps);
       right_.setTarget(cmd_right_sps);
 
-      // Telemetry at balance rate
-      emitTelemetryNow(now, tilt, gyro, tilt_target, u_balance,
-                       steer_split_sps_, left, right);
-    }
-
-    const auto t_min = (t_next_bal < t_next_out) ? t_next_bal : t_next_out;
-    const auto slack = t_min - std::chrono::steady_clock::now();
-    if (slack > std::chrono::microseconds(50)) {
+      // ---- Telemetry ----
+      emitTelemetryNow(now,
+                      theta,
+                      theta_dot,
+                      x_vel,
+                      a_theta,
+                      a_dtheta,
+                      a_v,
+                      a_cmd,
+                      du,
+                      du_rate_limited,
+                      u_balance,
+                      u_amp_limited,
+                      left,
+                      right);
+      }
+      // small sleep to avoid busy loop
       std::this_thread::sleep_for(std::chrono::microseconds(50));
     }
   }
-}
 
-private:
-
-  void emitTelemetryNow(std::chrono::steady_clock::time_point now,
-                        double tilt, double gyro,
-                        double tilt_target,
-                        double u_balance,
-                        double steer_split,
-                        double left_cmd, double right_cmd)
-  {
+void emitTelemetryNow(std::chrono::steady_clock::time_point now,
+                      double tilt, double gyro,
+                      double x_vel_est_mps,
+                      double a_theta_mps2,
+                      double a_dtheta_mps2,
+                      double a_v_mps2,
+                      double a_cmd_mps2,
+                      double du_sps,
+                      bool   du_rate_limited,
+                      double u_balance_sps,
+                      bool   u_amp_limited,
+                      double left_cmd, double right_cmd) {
     if (!tel_cb_) return;
     Telemetry t;
     t.ts               = now;
     t.tilt_rad         = tilt;
     t.gyro_rad_s       = gyro;
-    t.tilt_target_rad  = tilt_target;
-    t.tilt_saturated   = tel_tilt_saturated_;
-    t.desired_base_sps = tel_desired_base_sps_;
-    t.actual_base_sps  = tel_actual_base_sps_;
-    t.vel_err_sps      = tel_vel_err_sps_;
-    t.vel_int_state    = tel_vel_int_state_;
+    t.x_vel_est_mps    = x_vel_est_mps;
 
-    // yaw telemetry
-    t.desired_yaw_rate = tel_desired_yaw_rate_;
-    t.actual_yaw_rate  = tel_actual_yaw_rate_;
-    t.yaw_err          = tel_yaw_err_;
-    t.yaw_int_state    = tel_yaw_int_;
+    t.a_theta_mps2     = a_theta_mps2;
+    t.a_dtheta_mps2    = a_dtheta_mps2;
+    t.a_v_mps2         = a_v_mps2;
+    t.a_cmd_mps2       = a_cmd_mps2;
 
-    t.u_balance_sps    = u_balance;
-    t.steer_split_sps  = steer_split;
+    t.du_sps           = du_sps;
+    t.du_rate_limited  = du_rate_limited;
+    t.u_balance_sps    = u_balance_sps;
+    t.u_amp_limited    = u_amp_limited;
+
     t.left_cmd_sps     = left_cmd;
     t.right_cmd_sps    = right_cmd;
-    tel_cb_(t);
-    }
 
+    tel_cb_(t);
+  }
+
+private:
   MotorRunnerT& left_;
   MotorRunnerT& right_;
 
   std::atomic<bool> alive_{true};
   std::thread worker_;
 
-  // State shared between loops
+  // State shared with loop
   AtomicImu latest_imu_;
-  AtomicJoy joy_;
+  AtomicJoy joy_; // retained for API compat; unused
   std::function<void(const Telemetry&)> tel_cb_{};
-  std::atomic<double> tilt_target_rad_{0.0};
   std::atomic<double> u_balance_sps_{0.0};
+
+  // Telemetry scratch (kept for structure parity; unused here)
   double steer_split_sps_{0.0};
   double tel_desired_base_sps_ = 0.0;
   double tel_actual_base_sps_  = 0.0;

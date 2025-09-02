@@ -1,6 +1,8 @@
 #pragma once
-#include <pigpiod_if2.h>
 #include <algorithm>
+#include <chrono>
+#include <pigpiod_if2.h>
+#include <thread>
 
 class Stepper {
 public:
@@ -10,17 +12,17 @@ public:
     unsigned dir;
   };
 
-  Stepper(int pi, const Pins& pins) : pi_(pi), pins_(pins) {
-    set_mode(pi_, pins_.ena,  PI_OUTPUT);
+  Stepper(int pi, const Pins &pins) : pi_(pi), pins_(pins) {
+    set_mode(pi_, pins_.ena, PI_OUTPUT);
     set_mode(pi_, pins_.step, PI_OUTPUT);
-    set_mode(pi_, pins_.dir,  PI_OUTPUT);
+    set_mode(pi_, pins_.dir, PI_OUTPUT);
 
-    gpio_write(pi_, pins_.ena, 1);     // enable this motor
+    gpio_write(pi_, pins_.ena, 1); // enable this motor
     sleep_us(kWakeDelayUs);
   }
 
   virtual ~Stepper() {
-    gpio_write(pi_, pins_.ena, 0);     // de-energize
+    gpio_write(pi_, pins_.ena, 0); // de-energize
   }
 
   void stepOnce(unsigned periodUs) const {
@@ -35,15 +37,17 @@ public:
 
   virtual void stepN(unsigned steps, unsigned periodUs, bool dirForward) const {
     gpio_write(pi_, pins_.dir, dirForward ? 1 : 0);
-    sleep_us(kDirSetupDelayUs);
-    for (unsigned i = 0; i < steps; ++i) stepOnce(periodUs);
+    std::this_thread::sleep_for(std::chrono::microseconds(kDirSetupDelayUs));
+    for (unsigned i = 0; i < steps; ++i) {
+      stepOnce(periodUs);
+    }
   }
 
 private:
   static inline void sleep_us(unsigned us) { time_sleep(us / 1e6); }
 
-  int  pi_;
+  int pi_;
   Pins pins_;
-  static constexpr unsigned kWakeDelayUs    = 100'000; // 100 ms
-  static constexpr unsigned kDirSetupDelayUs=   2'000; // 2 ms
+  static constexpr unsigned kWakeDelayUs = 100'000;   // 100 ms
+  static constexpr unsigned kDirSetupDelayUs = 2'000; // 2 ms
 };

@@ -12,7 +12,7 @@
 #include "config.h"
 #include "control_loop.h"
 #include "ism330_iio_reader.h"
-#include "static_tilt_lpf.h"
+#include "pitch_lpf.h"
 
 // ---------------------- Motor control runner --------------------------------
 class App {
@@ -33,24 +33,22 @@ public:
 
     // Optional: telemetry print every N balance ticks for quick visibility
     // Set to 0 to disable.
-    constexpr int kPrintEvery = 10;
+    constexpr int kPrintEvery = 1;
     if constexpr (kPrintEvery != -1) {
       std::atomic<int> k{0};
       ctrl.setTelemetrySink([&](const Telemetry& t){
         if ((++k % kPrintEvery) == 0) {
           constexpr double deg = 180.0 / M_PI;
           std::printf(
-            "time=%8.3fs  pitch=%8.2f°  gyro=%8.2f°/s  "
-            "target_pitch=%8.2f°%s  "
-            "balance_out=%7.0f  steer=%7.0f  "
-            "L=%7.0f  R=%7.0f\n",
+            "t=%7.3f  θ=%6.2f°  θ̇=%6.2f°/s  aθ=%7.1f  aθ̇=%7.1f  av=%7.1f  u=%6.0f%s  L=%6.0f  R=%6.0f\n",
             std::chrono::duration<double>(t.ts.time_since_epoch()).count(),
             t.tilt_rad * deg,
             t.gyro_rad_s * deg,
-            t.tilt_target_rad * deg,
-            t.tilt_saturated ? "*" : " ",   // mark with * if saturated
+            t.a_theta_mps2,
+            t.a_dtheta_mps2,
+            t.a_v_mps2,
             t.u_balance_sps,
-            t.steer_split_sps,
+            (t.du_rate_limited || t.u_amp_limited) ? "*" : "",
             t.left_cmd_sps,
             t.right_cmd_sps
           );
@@ -59,7 +57,7 @@ public:
     }
 
     // IMU reader (IIO; runs its own thread). If not found, we’ll fall back to zeros.
-    StaticTiltLPF filt{};
+    PitchComplementaryFilter filt{};
     std::unique_ptr<Ism330IioReader> imu;
     try {
       Ism330IioReader::IMUConfig icfg;
@@ -72,11 +70,25 @@ public:
         ImuSample s = filt.read_latest();
         ctrl.pushImu(s);
         static int k = 0;
-        if ((++k % 1) == 1) {
-          std::printf("pitch=%.3f°, dpitch=%.3f°, yaw=%.3f°, time=%.3f\n",
-             s.angle_rad * 180.0 / M_PI, s.gyro_rad_s * 180.0 / M_PI, s.yaw_rate_z * 180.0 / M_PI, std::chrono::duration<double>(ts.time_since_epoch()).count());
-          std::printf("acc_x=%.3fm/s, acc_y=%.3fm/s, acc_z=%.3fm/s, gyrv_x=%.3f°/s, gyrv_y=%.3f°/s, gyrv_z=%.3f°/s, time=%.3f\n",
-              acc[0], acc[1], acc[2], gyrv[0]*180.0/M_PI, gyrv[1]*180.0/M_PI, gyrv[2]*180.0/M_PI, std::chrono::duration<double>(ts.time_since_epoch()).count());
+        if ((++k % 10) == -1) {
+          // std::printf("pitch=%.3f°, dpitch=%.3f°, yaw=%.3f°, time=%.3f\n",
+          //    s.angle_rad * 180.0 / M_PI, s.gyro_rad_s * 180.0 / M_PI, s.yaw_rate_z * 180.0 / M_PI, std::chrono::duration<double>(ts.time_since_epoch()).count());
+          // std::printf("acc_x=%.3fm/s, acc_y=%.3fm/s, acc_z=%.3fm/s, gyrv_x=%.3f°/s, gyrv_y=%.3f°/s, gyrv_z=%.3f°/s, time=%.3f\n",
+          //     acc[0], acc[1], acc[2], gyrv[0]*180.0/M_PI, gyrv[1]*180.0/M_PI, gyrv[2]*180.0/M_PI, std::chrono::duration<double>(ts.time_since_epoch()).count());
+          // Naive picth compare
+        static bool hdr = false;
+        if (!hdr) {
+          std::printf("pitch_f_deg,pitch_r_deg,dtheta_deg,dpitch_f_dps,dpitch_r_dps,domega_dps\n");
+          hdr = true;
+        }
+          std::printf("%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
+            s.angle_rad          * 180.0 / M_PI,
+            pitch                * 180.0 / M_PI,
+            (s.angle_rad-pitch)  * 180.0 / M_PI,
+            s.gyro_rad_s         * 180.0 / M_PI,
+            gyrv[1]              * 180.0 / M_PI,
+            (s.gyro_rad_s-gyrv[1])* 180.0 / M_PI);
+
         }
       };
       imu = std::make_unique<Ism330IioReader>(std::move(icfg));

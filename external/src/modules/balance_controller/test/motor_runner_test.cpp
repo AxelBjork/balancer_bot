@@ -1,7 +1,6 @@
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
 
-// Include your real declarations for Stepper and MotorRunner:
 #include "stepper.h"
 #include "motor_runner.h"
 #include <future>
