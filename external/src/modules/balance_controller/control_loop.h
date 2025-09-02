@@ -158,77 +158,97 @@ private:
         const double base_sps_est = 0.5 * (v_est.leftSps() + v_est.rightSps()); // steps/s
         const double x_vel = base_sps_est * sps_to_mps; // m/s
 
-        // ---- LQR control (acceleration command, m/s^2) ----
-        const double a_cmd = -(Config::lqr_k_theta * theta + Config::lqr_k_dtheta * theta_dot + Config::lqr_k_v * x_vel);
+      // ---- LQR control (per-term + total acceleration, m/s^2) ----
+      const double a_theta  = -(Config::lqr_k_theta  * theta);
+      const double a_dtheta = -(Config::lqr_k_dtheta * theta_dot);
+      const double a_v      = -(Config::lqr_k_v      * x_vel);
+      const double a_cmd    = (a_theta + a_dtheta + a_v);
 
-        // ---- Integrate to steps/s with rate limit + leak ----
-        double du = (a_cmd / (r * ku)) * dt_sec;                 // steps/s increment
-        const double max_du = Config::max_du_per_sec * dt_sec;   // per tick
-        if (du >  max_du) du =  max_du;
-        if (du < -max_du) du = -max_du;
+      // ---- Integrate to steps/s with rate limit + leak ----
+      double du = (a_cmd / (r * ku)) * dt_sec;           // steps/s increment
+      bool du_rate_limited = false;
+      const double max_du = Config::max_du_per_sec * dt_sec;
+      if (du >  max_du) { du =  max_du; du_rate_limited = true; }
+      if (du < -max_du) { du = -max_du; du_rate_limited = true; }
 
-        u_prev += du;
-        // leak toward 0 so u doesn't "run away" when a_cmd ≈ 0
-        u_prev -= (u_prev * dt_sec) / Config::tau_u_s;
+      double u_try = u_prev + du;
 
-        double u_balance = std::clamp(u_prev, -Config::max_sps, Config::max_sps);
-        u_balance_sps_.store(u_balance, std::memory_order_relaxed);
+      // amplitude anti-windup (only if pushing further into rail)
+      bool u_amp_limited = false;
+      if (u_try >  Config::max_sps && u_prev >= Config::max_sps && du > 0.0) { du = 0.0; u_try = Config::max_sps;  u_amp_limited = true; }
+      if (u_try < -Config::max_sps && u_prev <=-Config::max_sps && du < 0.0) { du = 0.0; u_try = -Config::max_sps; u_amp_limited = true; }
 
-        // ---- Split & clamp (no steering/yaw in this mode) ----
-        const double steer_split = 0.0;
-        double left  = std::clamp(u_balance + steer_split,  -Config::max_sps, Config::max_sps);
-        double right = std::clamp(u_balance - steer_split,  -Config::max_sps, Config::max_sps);
+      u_prev = u_try;
 
-        cmd_left_sps  = left;
-        cmd_right_sps = right;
+      // leak toward 0 so u doesn't "run away"
+      u_prev -= (u_prev * dt_sec) / Config::tau_u_s;
 
-        left_.setTarget(cmd_left_sps);
-        right_.setTarget(cmd_right_sps);
+      double u_balance = std::clamp(u_prev, -Config::max_sps, Config::max_sps);
+      u_balance_sps_.store(u_balance, std::memory_order_relaxed);
 
-        // ---- Telemetry ----
-        emitTelemetryNow(now,
-                        theta, theta_dot,
-                        /*tilt_target=*/0.0,
-                        u_balance,
-                        steer_split,
-                        left, right);
+      // ---- Split & clamp (no steering/yaw in this mode) ----
+      const double steer_split = 0.0;
+      double left  = std::clamp(u_balance + steer_split,  -Config::max_sps, Config::max_sps);
+      double right = std::clamp(u_balance - steer_split,  -Config::max_sps, Config::max_sps);
+      cmd_left_sps  = left;
+      cmd_right_sps = right;
+
+      left_.setTarget(cmd_left_sps);
+      right_.setTarget(cmd_right_sps);
+
+      // ---- Telemetry ----
+      emitTelemetryNow(now,
+                      theta,
+                      theta_dot,
+                      x_vel,
+                      a_theta,
+                      a_dtheta,
+                      a_v,
+                      a_cmd,
+                      du,
+                      du_rate_limited,
+                      u_balance,
+                      u_amp_limited,
+                      left,
+                      right);
       }
-
       // small sleep to avoid busy loop
       std::this_thread::sleep_for(std::chrono::microseconds(50));
     }
   }
 
-  void emitTelemetryNow(std::chrono::steady_clock::time_point now,
-                        double tilt, double gyro,
-                        double tilt_target,
-                        double u_balance,
-                        double steer_split,
-                        double left_cmd, double right_cmd) {
+void emitTelemetryNow(std::chrono::steady_clock::time_point now,
+                      double tilt, double gyro,
+                      double x_vel_est_mps,
+                      double a_theta_mps2,
+                      double a_dtheta_mps2,
+                      double a_v_mps2,
+                      double a_cmd_mps2,
+                      double du_sps,
+                      bool   du_rate_limited,
+                      double u_balance_sps,
+                      bool   u_amp_limited,
+                      double left_cmd, double right_cmd) {
     if (!tel_cb_) return;
     Telemetry t;
     t.ts               = now;
     t.tilt_rad         = tilt;
     t.gyro_rad_s       = gyro;
-    t.tilt_target_rad  = tilt_target;
-    t.tilt_saturated   = false; // no outer tilt clamp in LQR mode
+    t.x_vel_est_mps    = x_vel_est_mps;
 
-    // Velocity telemetry retained for compatibility; zeros for now
-    t.desired_base_sps = 0.0;
-    t.actual_base_sps  = 0.0;
-    t.vel_err_sps      = 0.0;
-    t.vel_int_state    = 0.0;
+    t.a_theta_mps2     = a_theta_mps2;
+    t.a_dtheta_mps2    = a_dtheta_mps2;
+    t.a_v_mps2         = a_v_mps2;
+    t.a_cmd_mps2       = a_cmd_mps2;
 
-    // Yaw telemetry retained; zeros for now
-    t.desired_yaw_rate = 0.0;
-    t.actual_yaw_rate  = 0.0;
-    t.yaw_err          = 0.0;
-    t.yaw_int_state    = 0.0;
+    t.du_sps           = du_sps;
+    t.du_rate_limited  = du_rate_limited;
+    t.u_balance_sps    = u_balance_sps;
+    t.u_amp_limited    = u_amp_limited;
 
-    t.u_balance_sps    = u_balance;
-    t.steer_split_sps  = steer_split;
     t.left_cmd_sps     = left_cmd;
     t.right_cmd_sps    = right_cmd;
+
     tel_cb_(t);
   }
 
