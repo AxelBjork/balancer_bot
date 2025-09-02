@@ -159,8 +159,12 @@ private:
         const double x_vel = base_sps_est * sps_to_mps; // m/s
 
       // ---- LQR control (per-term + total acceleration, m/s^2) ----
+        // Soft-limit the gyro term so it doesn't dominate at large tilts
+      const double w_lim_rs  = 180 * (M_PI / 180.0);  // rad/s
+      const double w_shaped  = w_lim_rs * std::tanh(theta_dot / w_lim_rs);
+
       const double a_theta  = -(Config::lqr_k_theta  * theta);
-      const double a_dtheta = -(Config::lqr_k_dtheta * theta_dot);
+      const double a_dtheta = -(Config::lqr_k_dtheta * w_shaped);
       const double a_v      = -(Config::lqr_k_v      * x_vel);
       const double a_cmd    = (a_theta + a_dtheta + a_v);
 

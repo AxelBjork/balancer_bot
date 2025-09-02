@@ -47,9 +47,9 @@ struct Config {
   static constexpr int    steps_per_rev   = 360/1.8 * microstep_mult;   // includes microsteps
   static constexpr double wheel_radius_m  = 0.04;   // m
 
-  static constexpr double lqr_k_theta     = 20.00;
-  static constexpr double lqr_k_dtheta    = 10.00;
-  static constexpr double lqr_k_v         = 5.00;
+  static constexpr double lqr_k_theta     = 4.00;
+  static constexpr double lqr_k_dtheta    = 2.50;
+  static constexpr double lqr_k_v         = 1.50;
   static constexpr double tau_u_s         = 0.45;
 
   // ========= App I/O =========
