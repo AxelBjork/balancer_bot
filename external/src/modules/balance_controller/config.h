@@ -8,7 +8,8 @@ struct AxisCfg {
   int x = 0, y = 1, z = 2;
   bool invert_x = false, invert_y = false, invert_z = false;
 };
-// ---------------------- Compile-time configuration ---------------------------
+
+
 struct Config {
   // ========= General =========
   static constexpr int   run_seconds   = 30;
@@ -19,64 +20,37 @@ struct Config {
   static constexpr AxisCfg gyro_cfg  = {.x = 0, .y = 2, .z = 1, .invert_x = true, .invert_z = true};
 
   // LPFs (angles from accel, magnitude-to-g estimate, final angle LPF)
-  static constexpr double fc_acc_hz      = 10.0;
-  static constexpr double fc_g_hz        = 0.15;
-  static constexpr double fc_angle_hz    = 1.50;
-  static constexpr double g_rel_band     = 0.10;
-  static constexpr double g0_guess       = 9.81;
-  static constexpr double fallback_dt_s  = 1.0 / 400.0;
-  static constexpr double yaw_fixed_deg  = 0.0;
-  // D-path gyro LPF (pitch axis) — calmer D = 20–35 Hz is typical
-  static constexpr double fc_gyro_pitch_hz = 40.0;   // Hz
+  static constexpr double fallback_dt_s        = 1.0 / 400.0;  // Sampling + fallbacks
+  static constexpr double fc_gyro_lpf_hz       = 35.0;         // Gyro path, 30–45 Hz: low lag, tame noise
+  static constexpr double fc_acc_corr_hz       = 0.8;    // Complementary accel correction (slow), 0.5–1.2 Hz: drift trim without lag
+  static constexpr double fc_velocity_hz       = 22.0;   // Velocity estimate (fast), 20–30 Hz: smooths out noise
+  static constexpr double g0                   = 9.81;
+  static constexpr double g_band_rel           = 0.12;   // accept |a| in [g*(1-..), g*(1+..)]
+  static constexpr double max_use_pitch_deg    = 75.0;   // ignore accel when near ±90°
+  static constexpr double still_max_rate_dps   = 2.0;    // Stationary detector for gyro bias learning |gyro| < this
+  static constexpr double still_max_err_deg    = 3.0;    // |acc_pitch - est| < this
+  static constexpr double fc_gyro_bias_hz      = 0.1;    // very slow bias update (~10 s τ)
+  static constexpr double fc_acc_prefilt_hz    = 15.0;   // prefilter on accel (helps with vibey bots) 10–20 Hz
 
   // ========= Controller rates & limits =========
-  static constexpr int   hz_balance      = 100;
+  static constexpr int   hz_balance      = 416;
   static constexpr int   hz_outer        = 100;
   static constexpr double max_tilt_rad   = 5.0 * (M_PI / 180.0);
 
   // ====== Motor / speed ceiling (primary scaling knob) ======
   // Set this to your *true* max steps-per-second at the wheels.
-  static constexpr double max_sps        = 26500.0;   // example for 16× microstepping; adjust as needed
+  static constexpr double max_sps        = 3000.0;
 
-  // ========= Balance PD (tilt error -> sps) =========
-  // Scale Kp as a fraction of max_sps per rad.
-  // Example: kp_frac = 0.30 means 0.30*max_sps per 1 rad (~17.45°) of error.
-  static constexpr double kp_bal_frac    = -0.04;     // unit: (sps/rad) / max_sps
-  // Use derivative time so Kd tracks Kp automatically (Kd = Kp * Td).
-  // 0.06–0.09 s is a good starting range; smaller = snappier, larger = more damping.
-  static constexpr double Td_bal_s       = 0.6;     // seconds
+  // ========= Balancer LQR (tilt error -> sps) =========
+  static constexpr double max_du_per_sec  = 9000;
+  static constexpr int    microstep_mult  = 16;
+  static constexpr int    steps_per_rev   = 360/1.8 * microstep_mult;   // includes microsteps
+  static constexpr double wheel_radius_m  = 0.04;   // m
 
-  static constexpr double kp_bal         = kp_bal_frac * max_sps;
-  static constexpr double kd_bal         = kp_bal * Td_bal_s;  // [sps/(rad/s)]
-
-  // ========= Velocity PI (speed error -> tilt target) =========
-  // These already normalize by max_sps in your code; keep as-is.
-  static constexpr double kp_vel         = 0.8;
-  static constexpr double ki_vel         = 0.1;
-
-  // ========= Steering =========
-  // Open-loop steering gain (unit turn -> sps), as a fraction of max_sps.
-  static constexpr double k_turn_frac    = 0.75;
-  static constexpr double k_turn         = k_turn_frac * max_sps;
-
-  // Yaw PI (if you enable later). Gains scale with max_sps too.
-  static constexpr bool   yaw_pi_enabled   = false;
-  static constexpr double kp_yaw_frac      = 0.20;   // per (rad/s), scaled by max_sps
-  static constexpr double ki_yaw_frac      = 0.14;   // per (rad/s*s), scaled by max_sps
-  static constexpr double kp_yaw           = kp_yaw_frac * max_sps;
-  static constexpr double ki_yaw           = ki_yaw_frac * max_sps;
-  static constexpr double max_yaw_rate_cmd = 1.5;    // [rad/s] at |turn|=1
-  static constexpr double max_steer_frac   = 0.90;
-  static constexpr double max_steer_sps    = max_steer_frac * max_sps;
-
-  // ========= Command shaping (scales with max_sps) =========
-  // // Slew: fraction of max_sps per second (e.g., 0.35 * max_sps / s)
-  static constexpr double slew_per_sec_frac   = 0.35;
-  static constexpr double slew_per_sec         = slew_per_sec_frac * max_sps;
-
-
-  // // Gyro clamp for D path (deg/s) — not tied to max_sps; hardware/IMU dependent.
-  static constexpr double gyro_d_abs_limit_deg_s = 500.0;
+  static constexpr double lqr_k_theta     = 88.1637;
+  static constexpr double lqr_k_dtheta    = 12.98;
+  static constexpr double lqr_k_v         = 5.72;
+  static constexpr double tau_u_s         = 0.45;
 
   // ========= App I/O =========
   static constexpr int    control_hz    = 100;

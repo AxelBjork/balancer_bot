@@ -181,18 +181,21 @@ private:
     }
   }
 
-static fs::path findTriggerDirByName(const std::string& name) {
-  const fs::path base{"/sys/bus/iio/devices"};
-  for (auto& ent : fs::directory_iterator(base)) {
-    if (!ent.is_directory()) continue;
-    const std::string fn = ent.path().filename().string();
-    if (fn.rfind("trigger", 0) != 0) continue;
-    std::string n;
-    try { n = readOneLine(ent.path() / "name"); } catch (...) { continue; }
-    if (n == name) return ent.path();
+  static fs::path findTriggerDirByName(const std::string& name) {
+    const fs::path base{"/sys/bus/iio/devices"};
+    for (auto& ent : fs::directory_iterator(base)) {
+      if (ent.is_directory() && ent.path().filename().string().rfind("trigger",0)==0) {
+        try { if (readOneLine(ent.path()/"name") == name) return ent.path(); } catch(...) {}
+      }
+    }
+    fs::create_directories("/sys/kernel/config/iio/triggers/hrtimer/" + name);
+    for (auto& ent : fs::directory_iterator(base)) {
+      if (ent.is_directory() && ent.path().filename().string().rfind("trigger",0)==0) {
+        try { if (readOneLine(ent.path()/"name") == name) return ent.path(); } catch(...) {}
+      }
+    }
+    throw std::runtime_error("Failed to create IIO trigger '"+name+"'");
   }
-  throw std::runtime_error("Required IIO trigger '" + name + "' not found. Did you run: sudo mkdir -p /sys/kernel/config/iio/triggers/hrtimer/imu833 ?");
-}
 
   void setupBuffer(const fs::path& dev, bool is_accel) {
     tryWrite(dev / "buffer" / "enable", "0");

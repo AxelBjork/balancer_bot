@@ -1,5 +1,5 @@
 #include "../ism330_iio_reader.h"
-#include "../static_tilt_lpf.h"
+#include "../pitch_lpf.h"
 
 #include <thread>
 #include <chrono>
@@ -8,7 +8,7 @@
 
 int main() {
     // Filter Setup
-    StaticTiltLPF filt{};
+    PitchComplementaryFilter filt{};
 
     // IMU Setup
     Ism330IioReader::IMUConfig imu_cfg;
