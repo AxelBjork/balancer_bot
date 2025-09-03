@@ -24,55 +24,74 @@ static inline double wrap_pi(double x) {
   return x;
 }
 
-TEST(DataPathSanity, StepperStepN_ManyDirFlips_NoCumulativeMilliseconds) {
+TEST(DataPathSanity, StepperStepN_NoDirChange_IsFast) {
   Stepper step(0, Stepper::Pins{5u, 6u, 13u});
 
   using clock = std::chrono::steady_clock;
+
+  constexpr unsigned period_us   = 50u;
+  constexpr int      iterations  = 200;
+  const long expected_us = static_cast<long>(iterations) * period_us; // ~10,000 us
+
   const auto t0 = clock::now();
-
-  // Alternate direction many times; if each call slept 2 ms, this explodes.
-  for (int i = 0; i < 200; ++i) {
-    step.stepN(1u, 50u, (i & 1) == 0);
+  for (int i = 0; i < iterations; ++i) {
+    step.stepN(1u, period_us, true); // no dir flip => no DIR setup delay
   }
-
   const auto us =
-      std::chrono::duration_cast<std::chrono::microseconds>(clock::now() - t0)
-          .count();
+      std::chrono::duration_cast<std::chrono::microseconds>(clock::now() - t0).count();
 
-  // With stubs this should be well under a few milliseconds total.
-  // If real 2 ms sleeps were present, you’d see ~400,000 us.
-  EXPECT_LT(us, 5000) << "Cumulative latency suspiciously high: " << us
-                      << " us";
+  // Accept reasonable runtime overhead, but make sure we’re nowhere near the “2 ms per call” disaster.
+  // If we were wrongly sleeping 2 ms per call, we'd see ~400,000 us here.
+  const long max_reasonable_us = expected_us + 25'000; // expected + 25 ms slack
+  EXPECT_LT(us, max_reasonable_us)
+      << "Cumulative latency too high for fast path (no dir flips): " << us
+      << " us; expected ~" << expected_us << " us";
 }
 
-// Optional: explicitly probe the DIR change case. Call with one dir, then flip.
-// If your implementation sleeps *unconditionally* on every call, this helps
-// make the failure obvious.
-TEST(DataPathSanity, StepperStepN_DirFlip_DoesNotAddMilliseconds) {
+TEST(DataPathSanity, StepperStepN_DirFlip_PaysSetupDelayOnce) {
   Stepper::Pins pins{5u, 6u, 13u};
   Stepper step(0 /*pi*/, pins);
 
   using clock = std::chrono::steady_clock;
 
-  // First call (forward)
+  // First call (forward): fast
   const auto t0 = clock::now();
   step.stepN(1u, 100, true);
   const auto t1 = clock::now();
+  const auto first_us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
 
-  // Second call (reverse) — should not add ~2ms of delay
+  // Second call (reverse): should incur DIR setup delay (~2000 µs) once
   const auto t2 = clock::now();
   step.stepN(1u, 100, false);
   const auto t3 = clock::now();
+  const auto second_us = std::chrono::duration_cast<std::chrono::microseconds>(t3 - t2).count();
 
-  const auto first_us =
-      std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
-  const auto second_us =
-      std::chrono::duration_cast<std::chrono::microseconds>(t3 - t2).count();
-
-  // Both should be sub-millisecond. If second_us ≈ 2000, you’ve got the bug.
+  // Fast path budget (pulse only)
   EXPECT_LT(first_us, 300) << "First stepN too slow: " << first_us << " us";
-  EXPECT_LT(second_us, 300)
-      << "Dir-flip stepN too slow: " << second_us << " us";
+
+  // Expect ≈ 2 ms (+ a little pulse time and scheduler jitter).
+  constexpr int kDirSetupUs = 2000;
+  EXPECT_GE(second_us, kDirSetupUs - 300) << "Dir-flip did not pay expected setup delay.";
+  EXPECT_LE(second_us, kDirSetupUs + 600) << "Dir-flip stepN too slow: " << second_us << " us";
+}
+
+TEST(DataPathSanity, StepperStepN_ManyDirFlips_CumulativeMatchesSetupDelay) {
+  Stepper step(0, Stepper::Pins{5u, 6u, 13u});
+
+  using clock = std::chrono::steady_clock;
+  const auto t0 = clock::now();
+
+  const int flips = 200;
+  for (int i = 0; i < flips; ++i) {
+    step.stepN(1u, 50u, (i & 1) == 0);
+  }
+
+  const auto us = std::chrono::duration_cast<std::chrono::microseconds>(clock::now() - t0).count();
+
+  // Expect around flips * 2000 µs +/- some margin
+  const long expected = flips * 2000L;
+  const long tol = static_cast<long>(expected * 0.1); // 10% tolerance
+  EXPECT_NEAR(us, expected, tol) << "Cumulative latency differs from expected DIR setup total.";
 }
 
 // ------------------------------------------------------------
