@@ -74,10 +74,12 @@ if (BUILD_TESTS)
     ${SDL2_LIBS}
   )
 
+  set(TEST_DIR ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/test)
   # 2) motor_controller_test (existing)
   add_executable(balancer_tests
-    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/test/motor_runner_test.cpp
-    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/test/control_loop_test.cpp
+    ${TEST_DIR}/motor_runner_test.cpp
+    ${TEST_DIR}/control_loop_test.cpp
+    ${TEST_DIR}/latency_test.cpp
   )
 
   target_link_libraries(balancer_tests PRIVATE balancer_common)

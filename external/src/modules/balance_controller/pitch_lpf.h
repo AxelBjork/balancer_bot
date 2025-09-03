@@ -67,7 +67,9 @@ public:
         std::abs(rad2deg(wrap_pi(ap - pitch_))) < Config::still_max_err_deg) {
       gyro_bias_ = a_bias * gyro_bias_ + (1.0 - a_bias) * gyro_lpf_;
     }
-
+    printf("Publish, accel_reliable %d, pitch pitch_rad=%.3f°, gyro_lpf=%.3f°/s, yaw=%.3f°/s\n", 
+      accel_ok ? 1 : 0, pitch_ * 180.0 / M_PI, gyro_lpf_ * 180.0 / M_PI, gyrv[2] * 180.0 / M_PI);
+           
     publish(pitch_, gyro_lpf_, gyrv[2], ts);
   }
 

@@ -22,7 +22,7 @@ struct Config {
   // LPFs (angles from accel, magnitude-to-g estimate, final angle LPF)
   static constexpr double fallback_dt_s        = 1.0 / 400.0;  // Sampling + fallbacks
   static constexpr double fc_gyro_lpf_hz       = 80.0;         // Gyro path, 30–45 Hz: low lag, tame noise
-  static constexpr double fc_acc_corr_hz       = 0.8;    // Complementary accel correction (slow), 0.5–1.2 Hz: drift trim without lag
+  static constexpr double fc_acc_corr_hz       = 4;    // Complementary accel correction (slow), 0.5–1.2 Hz: drift trim without lag
   static constexpr double fc_velocity_hz       = 80.0;   // Velocity estimate (fast), 20–30 Hz: smooths out noise
   static constexpr double g0                   = 9.81;
   static constexpr double g_band_rel           = 0.12;   // accept |a| in [g*(1-..), g*(1+..)]
@@ -53,11 +53,24 @@ struct Config {
   static constexpr double tau_u_s         = 0.45;
 
   // ========= App I/O =========
-  static constexpr int    control_hz    = 416;
+  static constexpr int    control_hz    = 100;
   static constexpr float  deadzone      = 0.05f;
   static constexpr bool   invert_left   = true;
   static constexpr bool   invert_right  = false;
+
+// ========= Time Budget =========
+  static constexpr double pitch_rise_ms = 200.0;     // accel correction must be <= 200 ms (10->90)
+  static constexpr double dpitch_rise_ms = 6.0;   // gyro path must be <= ~6 ms 10->90
 };
+
+
+
+static_assert(Config::fc_acc_corr_hz >= 0.35 / (Config::pitch_rise_ms/1000.0),
+              "fc_acc_corr_hz too low for required rise time budget");
+
+static_assert( (2.2 / (2*M_PI*Config::fc_gyro_lpf_hz)) * 1e3 <= Config::dpitch_rise_ms,
+               "fc_gyro_lpf_hz too low for required gyro rise-time budget" );
+
 
 // ---------------------------------------------------------------------------
 
