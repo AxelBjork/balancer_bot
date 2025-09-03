@@ -17,37 +17,55 @@ public:
     set_mode(pi_, pins_.step, PI_OUTPUT);
     set_mode(pi_, pins_.dir, PI_OUTPUT);
 
-    gpio_write(pi_, pins_.ena, 1); // enable this motor
-    sleep_us(kWakeDelayUs);
+    // Energize driver; use pigpio time_sleep so unit-test stubs skip the delay.
+    gpio_write(pi_, pins_.ena, 1);
+    time_sleep(kWakeDelayUs / 1e6);
+
+    // Initialize DIR to a known state and remember it so we only delay on real
+    // changes.
+    gpio_write(pi_, pins_.dir, 1);
+    last_dir_forward_ = true;
   }
 
   virtual ~Stepper() {
     gpio_write(pi_, pins_.ena, 0); // de-energize
   }
 
-  void stepOnce(unsigned periodUs) const {
-    constexpr unsigned kMinPulse = 2;
-    const unsigned half = std::max(periodUs / 2, kMinPulse);
+  inline void stepOnce(unsigned periodUs) const {
+    // Respect minimum pulse width; split the remaining time evenly.
+    const unsigned half_hi = std::max<unsigned>(periodUs / 2, kMinPulseUs);
+    const unsigned half_lo =
+        (periodUs > half_hi) ? (periodUs - half_hi) : kMinPulseUs;
 
     gpio_write(pi_, pins_.step, 1);
-    sleep_us(half);
+    std::this_thread::sleep_for(std::chrono::microseconds(half_hi));
     gpio_write(pi_, pins_.step, 0);
-    sleep_us(half);
+    std::this_thread::sleep_for(std::chrono::microseconds(half_lo));
   }
 
   virtual void stepN(unsigned steps, unsigned periodUs, bool dirForward) const {
-    gpio_write(pi_, pins_.dir, dirForward ? 1 : 0);
-    std::this_thread::sleep_for(std::chrono::microseconds(kDirSetupDelayUs));
+    // Only pay DIR setup delay if direction actually changed.
+    if (dirForward != last_dir_forward_) {
+      gpio_write(pi_, pins_.dir, dirForward ? 1 : 0);
+      std::this_thread::sleep_for(std::chrono::microseconds(kDirSetupDelayUs));
+      last_dir_forward_ = dirForward;
+    } else {
+      // Keep GPIO in the requested state in case something else touched it.
+      gpio_write(pi_, pins_.dir, dirForward ? 1 : 0);
+    }
+
     for (unsigned i = 0; i < steps; ++i) {
       stepOnce(periodUs);
     }
   }
 
 private:
-  static inline void sleep_us(unsigned us) { time_sleep(us / 1e6); }
-
   int pi_;
   Pins pins_;
   static constexpr unsigned kWakeDelayUs = 100'000;   // 100 ms
-  static constexpr unsigned kDirSetupDelayUs = 2'000; // 2 ms
+  static constexpr unsigned kDirSetupDelayUs = 2'000; // 2 ms (on dir changes)
+  static constexpr unsigned kMinPulseUs = 2;          // STEP high/low minimum
+
+  // Mutable so stepN can remember last direction with a const interface.
+  mutable bool last_dir_forward_ = true;
 };

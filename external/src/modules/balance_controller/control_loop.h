@@ -9,34 +9,8 @@
 
 #include "config.h"
 
-// ---- Simple speed estimator ----
-// Smooths commanded sps into an "actual" estimate using a 1st-order LPF.
-struct SpeedEstimator {
-  void reset() {
-    v_left_sps.store(0.0, std::memory_order_relaxed);
-    v_right_sps.store(0.0, std::memory_order_relaxed);
-  }
+static inline double rad2deg(double x) { return x * (180.0 / M_PI); }
 
-  void updateTargets(double left_cmd_sps, double right_cmd_sps, double dt_s) {
-    const double alpha =
-        1.0 - std::exp(-2.0 * M_PI * Config::fc_velocity_hz * dt_s);
-    const double vl = v_left_sps.load(std::memory_order_relaxed);
-    const double vr = v_right_sps.load(std::memory_order_relaxed);
-    v_left_sps.store((1.0 - alpha) * vl + alpha * left_cmd_sps,
-                     std::memory_order_relaxed);
-    v_right_sps.store((1.0 - alpha) * vr + alpha * right_cmd_sps,
-                      std::memory_order_relaxed);
-  }
-
-  double leftSps() const { return v_left_sps.load(std::memory_order_relaxed); }
-  double rightSps() const {
-    return v_right_sps.load(std::memory_order_relaxed);
-  }
-
-private:
-  std::atomic<double> v_left_sps{0.0};
-  std::atomic<double> v_right_sps{0.0};
-};
 
 /*
  * LQR-based two-wheel balancer (balance-in-place only).
@@ -123,118 +97,164 @@ private:
     }
   };
 
-  void loop() {
-    using dur = std::chrono::steady_clock::duration;
 
-    const auto dt_bal = std::chrono::duration_cast<dur>(
-        std::chrono::duration<double>(1.0 / std::max(50, Config::hz_balance)));
-    const double dt_sec = std::chrono::duration<double>(dt_bal).count();
+void loop() {
+  using dur = std::chrono::steady_clock::duration;
 
-    // Steps→rad/s and m/s scaling
-    const double ku =
-        2.0 * M_PI /
-        static_cast<double>(Config::steps_per_rev); // rad/s per (steps/s)
-    const double r = Config::wheel_radius_m;        // m per rad
-    const double sps_to_mps = ku * r;
+  // ====== Local/Niche knobs (stay inside this function) ======
+  const double a_max_mps2       = 6.0;     // soft cap on accel [m/s^2]
+  const double tau_aw_s         = 0.030;   // back-calc anti-windup τ (amplitude clamp)
+  const double tau_aw_slew_s    = 0.020;   // back-calc anti-windup τ (slew clamp)
+  const double tau_jerk_s       = 0.020;   // accel 1st-order shaping (jerk limit)
+  const double du_boost_factor  = 5.0;     // extra slew when falling (× base)
+  const double th_fall_rad      = 0.35;    // ~20°
+  const double w_fall_rad_s     = 2.5 * M_PI; // ~450°/s
+  const double kcap_th          = 0.80;    // capture velocity = kθ*θ + kw*θ̇
+  const double kcap_w           = 0.18;
+  const double v_capture_max    = 3.0;     // [m/s] cap capture speed
 
-    // Speed estimator for base velocity (from commanded sps)
-    SpeedEstimator v_est;
-    v_est.reset();
+  const double ki_theta        = 0.55;   // [ (m/s^2) / (rad·s) ], tiny integral on angle
+  const double tau_i_leak_s    = 3.0;    // slow leak on integral (prevents creep if left leaning on a wall)
+  const double a_i_abs_max     = 0.35;   //  cap integral’s accel contribution
+  static double th_int = 0.0;            // ∫θ dt state
 
-    // Command state
-    double u_prev = 0.0; // steps/s (shared for both wheels here)
-    double cmd_left_sps = 0.0;
-    double cmd_right_sps = 0.0;
+  // ====== Timing ======
+  const auto dt_bal = std::chrono::duration_cast<dur>(
+      std::chrono::duration<double>(1.0 / std::max(50, Config::hz_balance)));
+  const double dt = std::chrono::duration<double>(dt_bal).count();
 
-    auto t_next_bal = std::chrono::steady_clock::now();
+  // ====== Geometry / scales ======
+  const double ku = 2.0 * M_PI / double(Config::steps_per_rev); // [rad/step]
+  const double r  = Config::wheel_radius_m;                     // [m]
+  const double m_per_step = r * ku;                             // [m/step]
 
-    while (alive_.load(std::memory_order_relaxed) &&
-           !g_stop.load(std::memory_order_relaxed)) {
-      const auto now = std::chrono::steady_clock::now();
+  // ====== Persistent state inside this function ======
+  static double u_int     = 0.0;  // internal (pre-clamp) command [steps/s]
+  static double a_cmd_f   = 0.0;  // jerk-shaped accel [m/s^2]
 
-      if (now >= t_next_bal) {
-        t_next_bal += dt_bal;
-
-        // ---- Read sensors ----
-        const ImuSample s = latest_imu_.load(std::memory_order_relaxed);
-        const double theta = s.angle_rad;      // rad
-        const double theta_dot = s.gyro_rad_s; // rad/s
-
-        // ---- Update velocity estimate from current commanded speeds ----
-        v_est.updateTargets(cmd_left_sps, cmd_right_sps, dt_sec);
-        const double base_sps_est =
-            0.5 * (v_est.leftSps() + v_est.rightSps()); // steps/s
-        const double x_vel = base_sps_est * sps_to_mps; // m/s
-
-        // ---- LQR control (per-term + total acceleration, m/s^2) ----
-        // Soft-limit the gyro term so it doesn't dominate at large tilts
-        const double w_lim_rs = 180 * (M_PI / 180.0); // rad/s
-        const double w_shaped = w_lim_rs * std::tanh(theta_dot / w_lim_rs);
-
-        const double a_theta = -(Config::lqr_k_theta * theta);
-        const double a_dtheta = -(Config::lqr_k_dtheta * w_shaped);
-        const double a_v = -(Config::lqr_k_v * x_vel);
-        const double a_cmd = (a_theta + a_dtheta + a_v);
-
-        // ---- Integrate to steps/s with rate limit + leak ----
-        double du = (a_cmd / (r * ku)) * dt_sec; // steps/s increment
-        bool du_rate_limited = false;
-        const double max_du = Config::max_du_per_sec * dt_sec;
-        if (du > max_du) {
-          du = max_du;
-          du_rate_limited = true;
-        }
-        if (du < -max_du) {
-          du = -max_du;
-          du_rate_limited = true;
-        }
-
-        double u_try = u_prev + du;
-
-        // amplitude anti-windup (only if pushing further into rail)
-        bool u_amp_limited = false;
-        if (u_try > Config::max_sps && u_prev >= Config::max_sps && du > 0.0) {
-          du = 0.0;
-          u_try = Config::max_sps;
-          u_amp_limited = true;
-        }
-        if (u_try < -Config::max_sps && u_prev <= -Config::max_sps &&
-            du < 0.0) {
-          du = 0.0;
-          u_try = -Config::max_sps;
-          u_amp_limited = true;
-        }
-
-        u_prev = u_try;
-
-        // leak toward 0 so u doesn't "run away"
-        u_prev -= (u_prev * dt_sec) / Config::tau_u_s;
-
-        double u_balance =
-            std::clamp(u_prev, -Config::max_sps, Config::max_sps);
-        u_balance_sps_.store(u_balance, std::memory_order_relaxed);
-
-        // ---- Split & clamp (no steering/yaw in this mode) ----
-        const double steer_split = 0.0;
-        double left = std::clamp(u_balance + steer_split, -Config::max_sps,
-                                 Config::max_sps);
-        double right = std::clamp(u_balance - steer_split, -Config::max_sps,
-                                  Config::max_sps);
-        cmd_left_sps = left;
-        cmd_right_sps = right;
-
-        left_.setTarget(cmd_left_sps);
-        right_.setTarget(cmd_right_sps);
-
-        // ---- Telemetry ----
-        emitTelemetryNow(now, theta, theta_dot, x_vel, a_theta, a_dtheta, a_v,
-                         a_cmd, du, du_rate_limited, u_balance, u_amp_limited,
-                         left, right);
-      }
-      // small sleep to avoid busy loop
+  auto t_next = std::chrono::steady_clock::now();
+  while (alive_.load(std::memory_order_relaxed) && !g_stop.load(std::memory_order_relaxed)) {
+    if (std::chrono::steady_clock::now() < t_next) {
       std::this_thread::sleep_for(std::chrono::microseconds(50));
+      continue;
     }
+    t_next += dt_bal;
+
+    // --- sensors ---
+    const ImuSample s = latest_imu_.load(std::memory_order_relaxed);
+    const double th   = s.angle_rad;
+    const double w    = s.gyro_rad_s;
+
+    // lead
+    const double th_pred = th + Config::lead_T_s * w;
+
+    // measured forward speed (for a_v)
+    const double sps_meas  = 0.5 * (left_.actualSps() + right_.actualSps());
+    const double v_meas    = sps_meas * m_per_step; // [m/s]
+
+    // --- LQR → accel (m/s^2) ---
+    const double a_theta  = -(Config::lqr_k_theta  * th_pred);
+    const double a_dtheta = -(Config::lqr_k_dtheta * w);
+    const double a_v      = -(Config::lqr_k_v      * v_meas);
+
+    th_int += th * dt;
+    th_int -= th_int * (dt / std::max(tau_i_leak_s, 1e-3));     // leak
+    double a_i = -ki_theta * th_int;
+    a_i = std::clamp(a_i, -a_i_abs_max, +a_i_abs_max);
+
+    double a_cmd_raw      = a_theta + a_dtheta + a_v + a_i;
+
+    // Falling severity (0..1)
+    const double sev_th = std::clamp(std::abs(th) / th_fall_rad, 0.0, 1.0);
+    const double sev_w  = std::clamp(std::abs(w)  / w_fall_rad_s, 0.0, 1.0);
+    const double sev    = std::max(sev_th, sev_w);
+    const bool   falling = (sev > 1e-6);
+
+    // Soft accel cap; allow a bit more when falling
+    const double a_cap = (falling ? 1.8 : 1.0) * a_max_mps2;
+    a_cmd_raw = std::clamp(a_cmd_raw, -a_cap, +a_cap);
+
+    // Jerk-shape the accel (first-order toward target)
+    const double alpha_jerk = dt / std::max(tau_jerk_s, 1e-3);
+    a_cmd_f += (a_cmd_raw - a_cmd_f) * alpha_jerk;
+
+    // --- accel → Δu (steps/s) ---
+    double du_req = (a_cmd_f / m_per_step) * dt;
+
+    // Capture when far: command towards a velocity target
+    if (falling) {
+      const double v_cap = std::clamp(kcap_th * th + kcap_w * w, -v_capture_max, +v_capture_max);
+      const double u_tgt = v_cap / m_per_step;     // [steps/s]
+      du_req = (u_tgt - u_int);                    // jump toward target this tick; will be slewed
+    }
+
+    // --- Adaptive slew limit on Δu ---
+    const double base_du = Config::max_du_per_sec;
+    const double max_du_per_sec = base_du * (1.0 + sev * (du_boost_factor - 1.0));
+    const double max_du = max_du_per_sec * dt;
+
+    bool du_limited = false;
+    double du = du_req;
+    if (du >  max_du) { du =  max_du; du_limited = true; }
+    if (du < -max_du) { du = -max_du; du_limited = true; }
+
+    // Predict unclamped next value (for leak and conditional integration)
+    const double u_unclamped = u_int + du;
+
+    // Leak (bias drain) before amplitude clamp
+    const double leak = (u_unclamped * dt) / std::max(Config::tau_u_s, 1e-6);
+    double u_leaked = u_unclamped - leak;
+
+    // Hard clamp to actuator limits
+    const double u_clamped = std::clamp(u_leaked, -Config::max_sps, Config::max_sps);
+    const bool   amp_limited = (u_clamped != u_leaked);
+
+    // -------- anti-windup ----------
+    // (1) Conditional integration: if pushing further into the clamp, drop this step
+    const bool pushing_into_clamp =
+      (amp_limited && ((u_leaked >  u_clamped && du > 0.0) ||
+                       (u_leaked <  u_clamped && du < 0.0)));
+
+    double u_next = pushing_into_clamp ? u_int : u_leaked;
+
+    // (2) Back-calculation toward *both* clamps
+    // toward slew-limited path (if any)
+    if (du_limited) {
+      const double kaw_slew = dt / std::max(tau_aw_slew_s, 1e-3);
+      const double u_slew_path = u_int + du; // the value allowed by slew clamp
+      u_next += kaw_slew * (u_slew_path - u_next);
+    }
+    // toward amplitude rail (if any)
+    if (amp_limited) {
+      const double kaw_amp = dt / std::max(tau_aw_s, 1e-3);
+      u_next += kaw_amp * (u_clamped - u_next);
+    }
+
+    // finalize internal state
+    u_int = u_next;
+
+    // deadzone on the value we actually send
+    const double dead = Config::deadzone_frac * Config::max_sps;
+    const double u_val = std::clamp(u_clamped, -Config::max_sps, Config::max_sps);
+    double u_out = (std::abs(u_val) < dead) ? 0.0 : u_val;
+
+    // split (no steer here)
+    const double left_cmd  = u_out;
+    const double right_cmd = u_out;
+
+    left_.setTarget(left_cmd);
+    right_.setTarget(right_cmd);
+    u_balance_sps_.store(u_out, std::memory_order_relaxed);
+
+    // telemetry
+    emitTelemetryNow(std::chrono::steady_clock::now(),
+      th, w, v_meas,
+      a_theta, a_dtheta, a_v, a_cmd_raw,
+      du, du_limited, u_out, amp_limited,
+      left_cmd, right_cmd);
   }
+}
+
 
   void emitTelemetryNow(std::chrono::steady_clock::time_point now, double tilt,
                         double gyro, double x_vel_est_mps, double a_theta_mps2,

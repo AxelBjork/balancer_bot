@@ -12,7 +12,7 @@ struct AxisCfg {
 
 struct Config {
   // ========= General =========
-  static constexpr int   run_seconds   = 30;
+  static constexpr int   run_seconds   = 50;
 
   // ========= IMU =========
   static constexpr double sampling_hz  = 833.000; // available 12.500 26.000 52.000 104.000 208.000 416.000 833.000
@@ -21,19 +21,19 @@ struct Config {
 
   // LPFs (angles from accel, magnitude-to-g estimate, final angle LPF)
   static constexpr double fallback_dt_s        = 1.0 / 400.0;  // Sampling + fallbacks
-  static constexpr double fc_gyro_lpf_hz       = 80.0;         // Gyro path, 30–45 Hz: low lag, tame noise
-  static constexpr double fc_acc_corr_hz       = 4;    // Complementary accel correction (slow), 0.5–1.2 Hz: drift trim without lag
-  static constexpr double fc_velocity_hz       = 80.0;   // Velocity estimate (fast), 20–30 Hz: smooths out noise
+  static constexpr double fc_gyro_lpf_hz       = 100.0;         // Gyro path, 30–45 Hz: low lag, tame noise
+  static constexpr double fc_acc_corr_hz       = 2.2;    // Complementary accel correction (slow), 0.5–1.2 Hz: drift trim without lag
+  static constexpr double fc_velocity_hz       = 50.0;   // Velocity estimate (fast), 20–30 Hz: smooths out noise
   static constexpr double g0                   = 9.81;
   static constexpr double g_band_rel           = 0.12;   // accept |a| in [g*(1-..), g*(1+..)]
   static constexpr double max_use_pitch_deg    = 75.0;   // ignore accel when near ±90°
   static constexpr double still_max_rate_dps   = 2.0;    // Stationary detector for gyro bias learning |gyro| < this
   static constexpr double still_max_err_deg    = 3.0;    // |acc_pitch - est| < this
-  static constexpr double fc_gyro_bias_hz      = 0.1;    // very slow bias update (~10 s τ)
-  static constexpr double fc_acc_prefilt_hz    = 15.0;   // prefilter on accel (helps with vibey bots) 10–20 Hz
+  static constexpr double fc_gyro_bias_hz      = 0.2;    // very slow bias update (~10 s τ)
+  static constexpr double fc_acc_prefilt_hz    = 30.0;   // prefilter on accel (helps with vibey bots) 10–20 Hz
 
   // ========= Controller rates & limits =========
-  static constexpr int   hz_balance      = 416;
+  static constexpr int   hz_balance      = 400;
   static constexpr int   hz_outer        = 100;
   static constexpr double max_tilt_rad   = 5.0 * (M_PI / 180.0);
 
@@ -43,17 +43,23 @@ struct Config {
 
   // ========= Balancer LQR (tilt error -> sps) =========
   static constexpr double max_du_per_sec  = 120000;
+  static constexpr double deadzone_frac   = 0.01;     // 5–10% of max_sps
+
   static constexpr int    microstep_mult  = 16;
   static constexpr int    steps_per_rev   = 360/1.8 * microstep_mult;   // includes microsteps
   static constexpr double wheel_radius_m  = 0.04;   // m
 
-  static constexpr double lqr_k_theta     = 4.00;
-  static constexpr double lqr_k_dtheta    = 2.50;
-  static constexpr double lqr_k_v         = 1.50;
-  static constexpr double tau_u_s         = 0.45;
 
+  static constexpr double lqr_k_theta     = 10.00;
+  static constexpr double lqr_k_dtheta    = 1.00;
+  static constexpr double lqr_k_v         = 0.60;
+  // Decay time constants
+  static constexpr double lead_T_s        = 0.015;     // 30–60 ms works well; start 0.04
+  static constexpr double desat_alpha     = 0.06;     // 0..1, pull toward clamp while saturated
+  static constexpr double tau_u_s         = 2.00;
+  
   // ========= App I/O =========
-  static constexpr int    control_hz    = 100;
+  static constexpr int    control_hz    = 400;
   static constexpr float  deadzone      = 0.05f;
   static constexpr bool   invert_left   = true;
   static constexpr bool   invert_right  = false;
