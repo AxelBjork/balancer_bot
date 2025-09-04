@@ -9,34 +9,8 @@
 
 #include "config.h"
 
-// ---- Simple speed estimator ----
-// Smooths commanded sps into an "actual" estimate using a 1st-order LPF.
-struct SpeedEstimator {
-  void reset() {
-    v_left_sps.store(0.0, std::memory_order_relaxed);
-    v_right_sps.store(0.0, std::memory_order_relaxed);
-  }
+static inline double rad2deg(double x) { return x * (180.0 / M_PI); }
 
-  void updateTargets(double left_cmd_sps, double right_cmd_sps, double dt_s) {
-    const double alpha =
-        1.0 - std::exp(-2.0 * M_PI * Config::fc_velocity_hz * dt_s);
-    const double vl = v_left_sps.load(std::memory_order_relaxed);
-    const double vr = v_right_sps.load(std::memory_order_relaxed);
-    v_left_sps.store((1.0 - alpha) * vl + alpha * left_cmd_sps,
-                     std::memory_order_relaxed);
-    v_right_sps.store((1.0 - alpha) * vr + alpha * right_cmd_sps,
-                      std::memory_order_relaxed);
-  }
-
-  double leftSps() const { return v_left_sps.load(std::memory_order_relaxed); }
-  double rightSps() const {
-    return v_right_sps.load(std::memory_order_relaxed);
-  }
-
-private:
-  std::atomic<double> v_left_sps{0.0};
-  std::atomic<double> v_right_sps{0.0};
-};
 
 /*
  * LQR-based two-wheel balancer (balance-in-place only).
@@ -123,118 +97,131 @@ private:
     }
   };
 
-  void loop() {
-    using dur = std::chrono::steady_clock::duration;
+void loop() {
+  using dur = std::chrono::steady_clock::duration;
 
-    const auto dt_bal = std::chrono::duration_cast<dur>(
-        std::chrono::duration<double>(1.0 / std::max(50, Config::hz_balance)));
-    const double dt_sec = std::chrono::duration<double>(dt_bal).count();
+  const auto dt_bal = std::chrono::duration_cast<dur>(
+      std::chrono::duration<double>(1.0 / std::max(50, Config::hz_balance)));
+  const double dt_sec = std::chrono::duration<double>(dt_bal).count();
 
-    // Steps→rad/s and m/s scaling
-    const double ku =
-        2.0 * M_PI /
-        static_cast<double>(Config::steps_per_rev); // rad/s per (steps/s)
-    const double r = Config::wheel_radius_m;        // m per rad
-    const double sps_to_mps = ku * r;
+  // Steps→rad/s and m/s scaling
+  const double ku = 2.0 * M_PI / static_cast<double>(Config::steps_per_rev);
+  const double r  = Config::wheel_radius_m;
+  const double sps_to_mps = ku * r;
 
-    // Speed estimator for base velocity (from commanded sps)
-    SpeedEstimator v_est;
-    v_est.reset();
+  double u_prev = 0.0;        // shared for both wheels
+  double cmd_left_sps = 0.0;
+  double cmd_right_sps = 0.0;
 
-    // Command state
-    double u_prev = 0.0; // steps/s (shared for both wheels here)
-    double cmd_left_sps = 0.0;
-    double cmd_right_sps = 0.0;
+  // Dead-zone memory
+  static double dz_state = 0.0;
+  const double dead = Config::deadzone_frac * Config::max_sps;
 
-    auto t_next_bal = std::chrono::steady_clock::now();
+  // Local helpers (not in Config)
+  constexpr double kCrossBoost = 4.0;         // dynamic slew boost on reversal/toward-zero
+  constexpr double kJerkTau_s  = 0.0025;      // tiny jerk filter on du
+  // Low-rate angle boost: full boost at 0 dps, fades out by ~40 dps
+  constexpr double kLowRateDps = 40.0;        // “small rate” scale
+  constexpr double kThetaBoostMax = 0.8;      // up to +80% more θ gain at very low |θ̇|
 
-    while (alive_.load(std::memory_order_relaxed) &&
-           !g_stop.load(std::memory_order_relaxed)) {
-      const auto now = std::chrono::steady_clock::now();
+  static double du_filt = 0.0;
 
-      if (now >= t_next_bal) {
-        t_next_bal += dt_bal;
+  auto t_next_bal = std::chrono::steady_clock::now();
 
-        // ---- Read sensors ----
-        const ImuSample s = latest_imu_.load(std::memory_order_relaxed);
-        const double theta = s.angle_rad;      // rad
-        const double theta_dot = s.gyro_rad_s; // rad/s
+  while (alive_.load(std::memory_order_relaxed) && !g_stop.load(std::memory_order_relaxed)) {
+    const auto now = std::chrono::steady_clock::now();
 
-        // ---- Update velocity estimate from current commanded speeds ----
-        v_est.updateTargets(cmd_left_sps, cmd_right_sps, dt_sec);
-        const double base_sps_est =
-            0.5 * (v_est.leftSps() + v_est.rightSps()); // steps/s
-        const double x_vel = base_sps_est * sps_to_mps; // m/s
+    if (now >= t_next_bal) {
+      t_next_bal += dt_bal;
 
-        // ---- LQR control (per-term + total acceleration, m/s^2) ----
-        // Soft-limit the gyro term so it doesn't dominate at large tilts
-        const double w_lim_rs = 180 * (M_PI / 180.0); // rad/s
-        const double w_shaped = w_lim_rs * std::tanh(theta_dot / w_lim_rs);
+      // ---- Read sensors ----
+      const ImuSample s = latest_imu_.load(std::memory_order_relaxed);
+      const double theta     = s.angle_rad;   // pitch [rad]
+      const double theta_dot = s.gyro_rad_s;  // filtered gyro [rad/s]
 
-        const double a_theta = -(Config::lqr_k_theta * theta);
-        const double a_dtheta = -(Config::lqr_k_dtheta * w_shaped);
-        const double a_v = -(Config::lqr_k_v * x_vel);
-        const double a_cmd = (a_theta + a_dtheta + a_v);
+      // ---- Phase lead (predict a little into the future) ----
+      const double theta_pred = theta + Config::lead_T_s * theta_dot;
 
-        // ---- Integrate to steps/s with rate limit + leak ----
-        double du = (a_cmd / (r * ku)) * dt_sec; // steps/s increment
-        bool du_rate_limited = false;
-        const double max_du = Config::max_du_per_sec * dt_sec;
-        if (du > max_du) {
-          du = max_du;
-          du_rate_limited = true;
-        }
-        if (du < -max_du) {
-          du = -max_du;
-          du_rate_limited = true;
-        }
+      // ---- Measured base velocity from runners (steps/s → m/s) ----
+      const double left_sps_meas  = left_.actualSps();
+      const double right_sps_meas = right_.actualSps();
+      const double base_sps_meas  = 0.5 * (left_sps_meas + right_sps_meas);
+      const double x_vel          = base_sps_meas * sps_to_mps;
 
-        double u_try = u_prev + du;
+      // ---- LQR (with low-rate angle boost) ----
+      // Boost θ contribution when |θ̇| is small to overcome leak / inertia early
+      const double rate_dps = std::abs(rad2deg(theta_dot));
+      const double rate_scale = std::clamp(rate_dps / kLowRateDps, 0.0, 1.0);
+      const double theta_boost = 1.0 + kThetaBoostMax * (1.0 - rate_scale); // ∈ [1, 1+boost]
 
-        // amplitude anti-windup (only if pushing further into rail)
-        bool u_amp_limited = false;
-        if (u_try > Config::max_sps && u_prev >= Config::max_sps && du > 0.0) {
-          du = 0.0;
-          u_try = Config::max_sps;
-          u_amp_limited = true;
-        }
-        if (u_try < -Config::max_sps && u_prev <= -Config::max_sps &&
-            du < 0.0) {
-          du = 0.0;
-          u_try = -Config::max_sps;
-          u_amp_limited = true;
-        }
+      const double a_theta  = -(Config::lqr_k_theta  * theta_pred) * theta_boost;
+      const double a_dtheta = -(Config::lqr_k_dtheta * theta_dot);
+      const double a_v      = -(Config::lqr_k_v      * x_vel);
+      const double a_cmd    = (a_theta + a_dtheta + a_v);
 
-        u_prev = u_try;
+      // ---- Integrate to steps/s with dynamic rate limit → leak → desat ----
+      double du = (a_cmd / (r * ku)) * dt_sec;
 
-        // leak toward 0 so u doesn't "run away"
-        u_prev -= (u_prev * dt_sec) / Config::tau_u_s;
+      // Dynamic slew: faster when reversing / pushing toward zero (no new Config)
+      const double u_des        = u_prev + du;
+      const bool reversing      = (u_prev > 0.0 && u_des < 0.0) || (u_prev < 0.0 && u_des > 0.0);
+      const bool toward_zero    = (u_prev * a_cmd) < 0.0;
 
-        double u_balance =
-            std::clamp(u_prev, -Config::max_sps, Config::max_sps);
-        u_balance_sps_.store(u_balance, std::memory_order_relaxed);
+      double max_du = Config::max_du_per_sec * (reversing || toward_zero ? kCrossBoost : 1.0);
+      max_du *= dt_sec;
 
-        // ---- Split & clamp (no steering/yaw in this mode) ----
-        const double steer_split = 0.0;
-        double left = std::clamp(u_balance + steer_split, -Config::max_sps,
-                                 Config::max_sps);
-        double right = std::clamp(u_balance - steer_split, -Config::max_sps,
-                                  Config::max_sps);
-        cmd_left_sps = left;
-        cmd_right_sps = right;
+      bool du_rate_limited = false;
+      if (du >  max_du) { du =  max_du; du_rate_limited = true; }
+      if (du < -max_du) { du = -max_du; du_rate_limited = true; }
 
-        left_.setTarget(cmd_left_sps);
-        right_.setTarget(cmd_right_sps);
+      // tiny jerk smoothing to avoid edgey reversals
+      const double a_jerk = std::exp(-dt_sec / std::max(1e-6, kJerkTau_s));
+      const double du_smooth = a_jerk * du_filt + (1.0 - a_jerk) * du;
+      du_filt = du_smooth;
 
-        // ---- Telemetry ----
-        emitTelemetryNow(now, theta, theta_dot, x_vel, a_theta, a_dtheta, a_v,
-                         a_cmd, du, du_rate_limited, u_balance, u_amp_limited,
-                         left, right);
+      u_prev += du_smooth;
+
+      // leak: consider increasing Config::tau_u_s slightly if still “too leaky”
+      u_prev -= (u_prev * dt_sec) / Config::tau_u_s;
+
+      // clamp + soft desaturation
+      const double u_clamped = std::clamp(u_prev, -Config::max_sps, Config::max_sps);
+      const bool   u_amp_limited = (u_clamped != u_prev);
+      u_prev += Config::desat_alpha * (u_clamped - u_prev);
+      double u_balance = u_clamped;
+
+      // ---- Dead-zone only when near upright and slow ----
+      const bool near_upright = std::abs(theta) < 0.5 * Config::max_tilt_rad;
+      const bool slow_rate    = rate_dps < (2.0 * Config::still_max_rate_dps);
+
+      if (near_upright && slow_rate && std::abs(u_balance) < dead) {
+        u_balance = 0.0;
+      } else {
+        dz_state = (u_balance > 0.0) ? 1.0 : (u_balance < 0.0 ? -1.0 : dz_state);
       }
-      // small sleep to avoid busy loop
-      std::this_thread::sleep_for(std::chrono::microseconds(50));
+
+      u_balance_sps_.store(u_balance, std::memory_order_relaxed);
+
+      // ---- Split & clamp (no steer) ----
+      const double steer_split = 0.0;
+      double left  = std::clamp(u_balance + steer_split, -Config::max_sps, Config::max_sps);
+      double right = std::clamp(u_balance - steer_split, -Config::max_sps, Config::max_sps);
+      cmd_left_sps = left;
+      cmd_right_sps = right;
+
+      left_.setTarget(cmd_left_sps);
+      right_.setTarget(cmd_right_sps);
+
+      // ---- Telemetry ----
+      emitTelemetryNow(now, theta, theta_dot, x_vel,
+                       a_theta, a_dtheta, a_v, a_cmd, du_smooth,
+                       du_rate_limited, u_balance, u_amp_limited,
+                       left, right);
     }
+
+    std::this_thread::sleep_for(std::chrono::microseconds(50));
   }
+}
 
   void emitTelemetryNow(std::chrono::steady_clock::time_point now, double tilt,
                         double gyro, double x_vel_est_mps, double a_theta_mps2,

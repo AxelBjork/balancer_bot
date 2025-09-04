@@ -33,7 +33,7 @@ public:
 
     // Optional: telemetry print every N balance ticks for quick visibility
     // Set to 0 to disable.
-    constexpr int kPrintEvery = 1;
+    constexpr int kPrintEvery = 10;
     if constexpr (kPrintEvery != -1) {
       std::atomic<int> k{0};
       ctrl.setTelemetrySink([&](const Telemetry &t) {
