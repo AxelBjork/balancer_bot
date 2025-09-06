@@ -40,13 +40,14 @@ public:
         if ((++k % kPrintEvery) == 0) {
           constexpr double deg = 180.0 / M_PI;
           std::printf(
-              "t=%7.3f  θ=%6.2f°  θ̇=%6.2f°/s  aθ=%7.1f  aθ̇=%7.1f  av=%7.1f  "
-              "u=%6.0f%s  L=%6.0f  R=%6.0f\n",
+              "t=%7.3f  θ=%6.2f°  θ̇=%6.2f°/s  aθ=%7.2f  aθ̇=%7.2f  av=%7.3f  "
+              "u=%6.0f%s%s  L=%6.0f  R=%6.0f\n",
               std::chrono::duration<double>(t.ts.time_since_epoch()).count(),
               t.tilt_rad * deg, t.gyro_rad_s * deg, t.a_theta_mps2,
               t.a_dtheta_mps2, t.a_v_mps2, t.u_balance_sps,
-              (t.du_rate_limited || t.u_amp_limited) ? "*" : "", t.left_cmd_sps,
-              t.right_cmd_sps);
+              (t.u_amp_limited) ? "*" : "",
+              (t.du_rate_limited) ? "!" : "",
+               t.left_cmd_sps, t.right_cmd_sps);
         }
       });
     }
