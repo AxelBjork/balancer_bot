@@ -111,9 +111,28 @@ else()
     message(FATAL_ERROR "libpigpiod_if2 not found. Install pigpio (daemon client).")
   endif()
 
-  add_executable(motor_controller
-    ${CMAKE_SOURCE_DIR}/src/motor_controller.cpp
+  set(PX4_DIR ${CMAKE_SOURCE_DIR}/PX4-Autopilot)
+  add_library(px4_ratecontrol STATIC
+    ${PX4_DIR}/src/lib/rate_control/rate_control.cpp
   )
+
+  target_include_directories(px4_ratecontrol PUBLIC
+    ${PX4_DIR}/src/lib/rate_control   # RateControl.hpp
+    ${PX4_DIR}/src/lib/matrix                            # PX4 matrix headers
+    ${PX4_DIR}/src/lib                                   # mathlib lives here
+    ${PX4_DIR}/src/lib/mathlib              # math::Functions/Limits/radians
+    ${PX4_DIR}/platforms                # px4_platform_common/defines.h
+    ${PX4_DIR}/platforms/common/include                  # common px4 includes (harmless)
+    ${CMAKE_SOURCE_DIR}/px4_stub/
+)
+
+  add_executable(motor_controller
+    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/motor_controller.cpp
+  )
+
+  target_link_libraries(motor_controller PRIVATE px4_ratecontrol)
+
+
   target_include_directories(motor_controller PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${SDL2_INCS}
