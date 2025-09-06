@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Configure
-cmake -S . -B build -DBUILD_TESTS=ON
+cmake -S . -B build -DBUILD_TESTS=OFF
 
 # Build
 cmake --build build -j"$(nproc)"

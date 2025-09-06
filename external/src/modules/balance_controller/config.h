@@ -43,20 +43,22 @@ struct Config {
 
   // ========= Balancer LQR (tilt error -> sps) =========
   static constexpr double max_du_per_sec  = 120000;
-  static constexpr double deadzone_frac   = 0.01;     // 5–10% of max_sps
+  static constexpr double deadzone_frac   = 0.005;     // 5–10% of max_sps
 
   static constexpr int    microstep_mult  = 16;
   static constexpr int    steps_per_rev   = 360/1.8 * microstep_mult;   // includes microsteps
   static constexpr double wheel_radius_m  = 0.04;   // m
 
 
-  static constexpr double lqr_k_theta     = 10.00;
-  static constexpr double lqr_k_dtheta    = 1.00;
-  static constexpr double lqr_k_v         = 0.60;
+  static constexpr double lqr_k_theta     = 2.50;
+  static constexpr double lqr_k_dtheta    = 1.60;
+  static constexpr double lqr_k_itheta    = 0.05;   // [ (m/s^2) / (rad·s) ], tiny integral on angle
+  static constexpr double lqr_k_v         = 0.20;
+
   // Decay time constants
   static constexpr double lead_T_s        = 0.015;     // 30–60 ms works well; start 0.04
   static constexpr double desat_alpha     = 0.06;     // 0..1, pull toward clamp while saturated
-  static constexpr double tau_u_s         = 2.00;
+  static constexpr double tau_u_s         = 0.1;
   
   // ========= App I/O =========
   static constexpr int    control_hz    = 400;
@@ -101,29 +103,12 @@ struct JoyCmd {
 
 // ---- Telemetry (per-term LQR contributions) ----
 struct Telemetry {
-  // timing
-  std::chrono::steady_clock::time_point ts{};
-
-  // IMU
-  double tilt_rad     = 0.0;  // θ
-  double gyro_rad_s   = 0.0;  // θ̇
-
-  // Velocity estimate (from SpeedEstimator on commanded sps)
-  double x_vel_est_mps = 0.0; // m/s
-
-  // LQR contributions (all in m/s², sign as applied to a_cmd)
-  double a_theta_mps2   = 0.0; // -Kθ * θ
-  double a_dtheta_mps2  = 0.0; // -Kdθ * θ̇
-  double a_v_mps2       = 0.0; // -Kv  * ẋ
-  double a_cmd_mps2     = 0.0; // sum
-
-  // Inner speed integrator
-  double du_sps          = 0.0; // steps/s increment this tick (after rate limit)
-  bool   du_rate_limited = false;
-  double u_balance_sps   = 0.0; // commanded base steps/s (post-leak/clamp)
-  bool   u_amp_limited   = false;
-
-  // Motor commands
-  double left_cmd_sps  = 0.0;
-  double right_cmd_sps = 0.0;
+  double t_sec;
+  double pitch_deg;
+  double pitch_rate_dps;
+  double rate_sp_dps;
+  double out_norm;     // PX4 rate controller normalized output (pitch axis)
+  double u_sps;        // wheel command [steps/s]
+  double integ_pitch;  // PX4 integral state for pitch
 };
+
