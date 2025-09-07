@@ -101,6 +101,8 @@ if (BUILD_TESTS)
 #                       App (opt-in, hard checks)
 # ================================================================
 else()
+  set(CMAKE_CXX_COMPILER_LAUNCHER ccache)           # ccache
+
   if (NOT HAVE_SDL2)
     message(FATAL_ERROR "SDL2 not found. Install libsdl2-dev.")
   endif()
@@ -111,7 +113,7 @@ else()
     message(FATAL_ERROR "libpigpiod_if2 not found. Install pigpio (daemon client).")
   endif()
 
-  set(PX4_DIR ${CMAKE_SOURCE_DIR}/PX4-Autopilot)
+  set(PX4_DIR ${CMAKE_SOURCE_DIR}/../PX4-Autopilot)
   add_library(px4_ratecontrol STATIC
     ${PX4_DIR}/src/lib/rate_control/rate_control.cpp
   )
@@ -126,25 +128,47 @@ else()
     ${CMAKE_SOURCE_DIR}/px4_stub/
 )
 
-  add_executable(motor_controller
-    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/motor_controller.cpp
+set(SRC_DIR ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller)
+
+  add_library(balancer_common STATIC
+    ${SRC_DIR}/xbox_controller.cpp
+    ${SRC_DIR}/control_loop.cpp
+    ${SRC_DIR}/ism330_iio_reader.cpp
+    ${SRC_DIR}/pitch_lpf.cpp
   )
 
-  target_link_libraries(motor_controller PRIVATE px4_ratecontrol)
+  target_precompile_headers(balancer_common PRIVATE
+    <atomic> <thread> <chrono> <vector> <string> <unordered_map> <array> <algorithm> <cstdio> <cmath>
+  )
+
+  add_executable(motor_controller
+    ${SRC_DIR}/motor_controller.cpp
+  )
+
+  target_link_libraries(balancer_common
+  PUBLIC px4_ratecontrol
+  )
+
+  target_link_libraries(motor_controller
+  PRIVATE balancer_common
+  )
 
 
-  target_include_directories(motor_controller PRIVATE
+  target_include_directories(balancer_common PUBLIC
     ${CMAKE_SOURCE_DIR}/src
     ${SDL2_INCS}
   )
-  target_link_libraries(motor_controller PRIVATE
+  target_link_libraries(balancer_common PUBLIC
     Threads::Threads
     ${SDL2_LIBS}
     ${PIGPIOD_LIB}
   )
-  # Optional librt if present (Linux)
-  find_library(RT_LIB rt)
-  if (RT_LIB)
-    target_link_libraries(motor_controller PRIVATE ${RT_LIB})
-  endif()
+  add_executable(imu_demo
+    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/extras/imu_demo.cpp
+  )
+
+  target_link_libraries(imu_demo
+  PRIVATE balancer_common
+  )
+
 endif()

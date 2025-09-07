@@ -33,35 +33,10 @@ struct Config {
   static constexpr double fc_acc_prefilt_hz    = 30.0;   // prefilter on accel (helps with vibey bots) 10–20 Hz
 
   // ========= Controller rates & limits =========
-  static constexpr int   hz_balance      = 400;
-  static constexpr int   hz_outer        = 100;
   static constexpr double max_tilt_rad   = 5.0 * (M_PI / 180.0);
 
-  // ====== Motor / speed ceiling (primary scaling knob) ======
-  // Set this to your *true* max steps-per-second at the wheels.
-  static constexpr double max_sps        = 6000.0;
-
-  // ========= Balancer LQR (tilt error -> sps) =========
-  static constexpr double max_du_per_sec  = 120000;
-  static constexpr double deadzone_frac   = 0.005;     // 5–10% of max_sps
-
-  static constexpr int    microstep_mult  = 16;
-  static constexpr int    steps_per_rev   = 360/1.8 * microstep_mult;   // includes microsteps
-  static constexpr double wheel_radius_m  = 0.04;   // m
-
-
-  static constexpr double lqr_k_theta     = 2.50;
-  static constexpr double lqr_k_dtheta    = 1.60;
-  static constexpr double lqr_k_itheta    = 0.05;   // [ (m/s^2) / (rad·s) ], tiny integral on angle
-  static constexpr double lqr_k_v         = 0.20;
-
-  // Decay time constants
-  static constexpr double lead_T_s        = 0.015;     // 30–60 ms works well; start 0.04
-  static constexpr double desat_alpha     = 0.06;     // 0..1, pull toward clamp while saturated
-  static constexpr double tau_u_s         = 0.1;
-  
-  // ========= App I/O =========
-  static constexpr int    control_hz    = 400;
+  static constexpr int    command_hz    = 100;
+  static constexpr int    kPrintEvery   = 50;
   static constexpr float  deadzone      = 0.05f;
   static constexpr bool   invert_left   = true;
   static constexpr bool   invert_right  = false;
@@ -84,31 +59,3 @@ static_assert( (2.2 / (2*M_PI*Config::fc_gyro_lpf_hz)) * 1e3 <= Config::dpitch_r
 
 static std::atomic<bool> g_stop{false};
 static void on_signal(int) { g_stop.store(true, std::memory_order_relaxed); }
-
-
-// ---- IMU sample (from ISM330DHCX fusion later) ----
-// angle_rad: pitch angle (+ forward), gyro_rad_s: pitch rate (+ when nose down)
-struct ImuSample {
-  double angle_rad = 0.0;
-  double gyro_rad_s = 0.0;
-  double yaw_rate_z = 0.0;
-  std::chrono::steady_clock::time_point t{};
-};
-
-// ---- Joystick command (forward/turn normalized to [-1, 1]) ----
-struct JoyCmd {
-  float forward;    // + forward speed command
-  float turn;       // + left faster, right slower (CCW yaw)
-};
-
-// ---- Telemetry (per-term LQR contributions) ----
-struct Telemetry {
-  double t_sec;
-  double pitch_deg;
-  double pitch_rate_dps;
-  double rate_sp_dps;
-  double out_norm;     // PX4 rate controller normalized output (pitch axis)
-  double u_sps;        // wheel command [steps/s]
-  double integ_pitch;  // PX4 integral state for pitch
-};
-

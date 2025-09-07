@@ -1,0 +1,139 @@
+// control_loop.cpp
+#include "control_loop.h"
+#include "config_pid.h"
+
+#include <algorithm>
+#include <atomic>
+#include <cmath>
+#include <thread>
+#include <utility>
+
+// PX4 includes live ONLY here
+#include <rate_control.hpp>
+#include <matrix/matrix/math.hpp>
+#include <uORB/topics/rate_ctrl_status.h>  // if you need the status struct
+
+using matrix::Vector3f;
+
+namespace {
+}
+
+struct RateControllerCore::Impl {
+  std::thread worker{};
+  std::atomic<bool> alive{false};
+
+  // IO
+  std::function<void(float)> left_out, right_out;
+  std::function<void(const Telemetry&)> tel_cb;
+
+  // State
+  struct AtomicImu {
+    std::atomic<double> angle{0.0}, gyro{0.0};
+    std::atomic<std::int64_t> t_count{0};
+    void store(const ImuSample& s) {
+      angle.store(s.angle_rad, std::memory_order_relaxed);
+      gyro.store(s.gyro_rad_s, std::memory_order_relaxed);
+      auto d = s.t.time_since_epoch();
+      t_count.store((std::int64_t)d.count(), std::memory_order_relaxed);
+    }
+    ImuSample load() const {
+      ImuSample s{};
+      s.angle_rad = angle.load(std::memory_order_relaxed);
+      s.gyro_rad_s = gyro.load(std::memory_order_relaxed);
+      using clk = std::chrono::steady_clock;
+      auto cnt = t_count.load(std::memory_order_relaxed);
+      s.t = std::chrono::time_point<clk>(clk::duration((clk::duration::rep)cnt));
+      return s;
+    }
+  } latest{};
+
+  std::chrono::steady_clock::time_point last_ts{};
+  RateControl rc{};  // PX4 rate PID
+
+  void thread_fn() {
+    using namespace std::chrono;
+    alive.store(true, std::memory_order_relaxed);
+    last_ts = steady_clock::now();
+    auto next = last_ts;
+    const auto dt_nom = duration<double>(1.0 / ConfigPid::control_hz);
+
+    while (alive.load(std::memory_order_relaxed)) {
+      next += duration_cast<steady_clock::duration>(dt_nom);
+      std::this_thread::sleep_until(next);
+
+      // read imu
+      ImuSample s = latest.load();
+      float pitch_rad   = (float)s.angle_rad;
+      float gyro_rad_s  = (float)s.gyro_rad_s;
+      float dt = std::clamp((float)duration<double>(s.t - last_ts).count(), 1.f/2000.f, 0.05f);
+      last_ts = s.t;
+
+      // outer loop: angle -> pitch rate setpoint
+      float rate_sp_rad_s = (float)(-ConfigPid::angle_to_rate_k * pitch_rad);
+
+      // inner PX4 rate PID
+      const Vector3f rate    {0.f, gyro_rad_s,     0.f};
+      const Vector3f rate_sp {0.f, rate_sp_rad_s,  0.f};
+      const Vector3f ang_acc {0.f, 0.f,            0.f};
+
+      const Vector3f u = rc.update(rate, rate_sp, ang_acc, dt, /*landed=*/false);
+
+      float u_sps = u(1) * (float)ConfigPid::pitch_out_to_sps;
+      u_sps = std::clamp(u_sps, -(float)ConfigPid::max_sps, +(float)ConfigPid::max_sps);
+
+      if (left_out)  left_out(u_sps);
+      if (right_out) right_out(u_sps);
+
+      if (tel_cb) {
+        rate_ctrl_status_s st{}; rc.getRateControlStatus(st);
+        Telemetry t{};
+        t.t_sec          = duration<double>(last_ts.time_since_epoch()).count();
+        t.age_ms         = duration<double, std::milli>(steady_clock::now() - last_ts).count();
+        t.pitch_deg      = pitch_rad * 180.0 / M_PI;
+        t.pitch_rate_dps = gyro_rad_s * 180.0 / M_PI;
+        t.rate_sp_dps    = rate_sp_rad_s * 180.0 / M_PI;
+        t.out_norm       = (double)u(1);
+        t.u_sps          = (double)u_sps;
+        t.integ_pitch    = (double)st.pitchspeed_integ;
+        tel_cb(std::move(t));
+      }
+    }
+  }
+};
+
+RateControllerCore::RateControllerCore() : p_(new Impl) {
+  // Configure PX4 PID gains once
+  p_->rc.setPidGains(
+    /*P*/ Vector3f(0.f, ConfigPid::rate_P, 0.f),
+    /*I*/ Vector3f(0.f, ConfigPid::rate_I, 0.f),
+    /*D*/ Vector3f(0.f, ConfigPid::rate_D, 0.f));
+  p_->rc.setIntegratorLimit(Vector3f(0.f, ConfigPid::rate_I_lim, 0.f));
+  p_->rc.setFeedForwardGain(Vector3f(0.f, ConfigPid::rate_FF, 0.f));
+}
+
+RateControllerCore::~RateControllerCore() { stop(); delete p_; }
+
+void RateControllerCore::start() {
+  if (p_->alive.load(std::memory_order_relaxed)) return;
+  p_->worker = std::thread(&Impl::thread_fn, p_);
+}
+
+void RateControllerCore::stop() {
+  if (!p_->alive.load(std::memory_order_relaxed)) return;
+  p_->alive.store(false, std::memory_order_relaxed);
+  if (p_->worker.joinable()) p_->worker.join();
+}
+
+void RateControllerCore::pushImu(const ImuSample& s) {
+    p_->latest.store(s);
+}
+void RateControllerCore::setJoystick(const JoyCmd& j) {
+    (void)j;
+}
+void RateControllerCore::setTelemetrySink(std::function<void(const Telemetry&)> cb) {
+    p_->tel_cb = std::move(cb);
+}
+void RateControllerCore::setMotorOutputs(std::function<void(float)> l, std::function<void(float)> r) {
+  p_->left_out = std::move(l);
+  p_->right_out = std::move(r);
+}

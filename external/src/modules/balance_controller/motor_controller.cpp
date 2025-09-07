@@ -3,7 +3,6 @@
 #include <cmath>
 #include <csignal>
 #include <iostream>
-#include <pigpiod_if2.h>
 #include <thread>
 
 #include "config.h"
@@ -11,7 +10,6 @@
 #include "ism330_iio_reader.h"
 #include "motor_runner.h"
 #include "pitch_lpf.h"
-#include "stepper.h"
 #include "xbox_controller.h"
 
 // ---------------------- Motor control runner --------------------------------
@@ -22,32 +20,38 @@ public:
       pad = std::make_unique<XboxController>();
     }
     // Hardware setup
-    Stepper::Pins leftPins{12, 19, 13}; // ENA, STEP, DIR
-    Stepper::Pins rightPins{4, 18, 24}; // ENB, STEP, DIR
-    Stepper left(_ctx.handle(), leftPins), right(_ctx.handle(), rightPins);
-    MotorRunner L(left, Config::invert_left);
-    MotorRunner R(right, Config::invert_right);
+    Stepper::Pins leftPins  {12, 19, 13}; // ENA, STEP(PWM1), DIR
+    Stepper::Pins rightPins { 4, 18, 24}; // ENB, STEP(PWM0), DIR
+
+    Stepper left (_ctx.handle(), leftPins,  Config::invert_left,  /*energize_now=*/true);
+    Stepper right(_ctx.handle(), rightPins, Config::invert_right, /*energize_now=*/true);
+
+    // Coordinator at 1 kHz
+    MotorRunner motors(left, right, ConfigPid::control_hz, 250000.0, 20.0);
 
     // Start cascaded controller (runs its own thread)
-    CascadedController<MotorRunner> ctrl(L, R);
+    CascadedController<MotorRunner> ctrl(motors);
 
     // Optional: telemetry print every N balance ticks for quick visibility
     // Set to 0 to disable.
-    constexpr int kPrintEvery = 10;
-    if constexpr (kPrintEvery != -1) {
+    if constexpr (Config::kPrintEvery != -1) {
       std::atomic<int> k{0};
       ctrl.setTelemetrySink([&](const Telemetry &t) {
-        if ((++k % kPrintEvery) == 0) {
-          constexpr double deg = 180.0 / M_PI;
-          // std::printf(
-          //     "t=%7.3f  θ=%6.2f°  θ̇=%6.2f°/s  aθ=%7.2f  aθ̇=%7.2f  av=%7.3f  "
-          //     "u=%6.0f%s%s  L=%6.0f  R=%6.0f\n",
-          //     std::chrono::duration<double>(t.ts.time_since_epoch()).count(),
-          //     t.tilt_rad * deg, t.gyro_rad_s * deg, t.a_theta_mps2,
-          //     t.a_dtheta_mps2, t.a_v_mps2, t.u_balance_sps,
-          //     (t.u_amp_limited) ? "*" : "",
-          //     (t.du_rate_limited) ? "!" : "",
-          //      t.left_cmd_sps, t.right_cmd_sps);
+        if ((++k % Config::kPrintEvery) == 0) {
+          std::printf(
+              "t=%7.3f  θ=%6.2f°  θ̇=%6.2f°/s  r_sp=%6.2f°/s  out=%6.3f  "
+              "u=%6.0f%s  I=%7.3f, age_ms %7.3f\n",
+              t.t_sec,
+              t.pitch_deg,
+              t.pitch_rate_dps,
+              t.rate_sp_dps,
+              t.out_norm,
+              t.u_sps,
+              (std::abs(t.u_sps) >= 0.99 * ConfigPid::max_sps) ? "*" : "",  // rail hint
+              t.integ_pitch,
+              t.age_ms
+          );
+
         }
       });
     }
@@ -117,7 +121,7 @@ public:
     // Main app loop: read gamepad and feed controller setpoints
     const auto t_end = std::chrono::steady_clock::now() +
                        std::chrono::seconds(Config::run_seconds);
-    const auto tick = std::chrono::milliseconds(1000 / Config::control_hz);
+    const auto tick = std::chrono::milliseconds(1000 / Config::command_hz);
 
     while (std::chrono::steady_clock::now() < t_end &&
            !g_stop.load(std::memory_order_relaxed)) {
@@ -147,8 +151,7 @@ public:
     // shutdown
     g_stop.store(true, std::memory_order_relaxed);
     // ctrl destructor joins its thread; MotorRunner has stop()
-    L.stop();
-    R.stop();
+    motors.stop();
     return 0;
   }
   std::unique_ptr<XboxController> pad;
