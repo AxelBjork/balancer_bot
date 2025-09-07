@@ -33,21 +33,23 @@ public:
 
     // Optional: telemetry print every N balance ticks for quick visibility
     // Set to 0 to disable.
-    constexpr int kPrintEvery = 10;
-    if constexpr (kPrintEvery != -1) {
+    if constexpr (Config::kPrintEvery != -1) {
       std::atomic<int> k{0};
       ctrl.setTelemetrySink([&](const Telemetry &t) {
-        if ((++k % kPrintEvery) == 0) {
-          constexpr double deg = 180.0 / M_PI;
-          // std::printf(
-          //     "t=%7.3f  θ=%6.2f°  θ̇=%6.2f°/s  aθ=%7.2f  aθ̇=%7.2f  av=%7.3f  "
-          //     "u=%6.0f%s%s  L=%6.0f  R=%6.0f\n",
-          //     std::chrono::duration<double>(t.ts.time_since_epoch()).count(),
-          //     t.tilt_rad * deg, t.gyro_rad_s * deg, t.a_theta_mps2,
-          //     t.a_dtheta_mps2, t.a_v_mps2, t.u_balance_sps,
-          //     (t.u_amp_limited) ? "*" : "",
-          //     (t.du_rate_limited) ? "!" : "",
-          //      t.left_cmd_sps, t.right_cmd_sps);
+        if ((++k % Config::kPrintEvery) == 0) {
+          std::printf(
+              "t=%7.3f  θ=%6.2f°  θ̇=%6.2f°/s  r_sp=%6.2f°/s  out=%6.3f  "
+              "u=%6.0f%s  I=%7.3f\n",
+              t.t_sec,
+              t.pitch_deg,
+              t.pitch_rate_dps,
+              t.rate_sp_dps,
+              t.out_norm,
+              t.u_sps,
+              (std::abs(t.u_sps) >= 0.99 * Config::max_sps) ? "*" : "",  // rail hint
+              t.integ_pitch
+          );
+
         }
       });
     }

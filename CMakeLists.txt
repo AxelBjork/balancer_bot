@@ -111,7 +111,7 @@ else()
     message(FATAL_ERROR "libpigpiod_if2 not found. Install pigpio (daemon client).")
   endif()
 
-  set(PX4_DIR ${CMAKE_SOURCE_DIR}/PX4-Autopilot)
+  set(PX4_DIR ${CMAKE_SOURCE_DIR}/../PX4-Autopilot)
   add_library(px4_ratecontrol STATIC
     ${PX4_DIR}/src/lib/rate_control/rate_control.cpp
   )
@@ -147,4 +147,11 @@ else()
   if (RT_LIB)
     target_link_libraries(motor_controller PRIVATE ${RT_LIB})
   endif()
+
+  add_executable(imu_demo
+    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/extras/imu_demo.cpp
+  )
+  target_include_directories(imu_demo PRIVATE
+    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/
+  )
 endif()
