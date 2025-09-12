@@ -38,45 +38,24 @@ struct Config {
   static constexpr double max_tilt_rad   = 5.0 * (M_PI / 180.0);
 
   // ====== Motor / speed ceiling (primary scaling knob) ======
-  // Set this to your *true* max steps-per-second at the wheels.
-  static constexpr double max_sps        = 6000.0;
 
-  // ========= Balancer LQR (tilt error -> sps) =========
-  static constexpr double max_du_per_sec  = 120000;
-  static constexpr double deadzone_frac   = 0.005;     // 5–10% of max_sps
+  static constexpr double max_sps           = 6000.0;      // clamp for wheel speed command (steps/s)
+  static constexpr double pitch_out_to_sps  = 3200.0;      // PX4 normalized -> steps/s
 
-  static constexpr int    microstep_mult  = 16;
-  static constexpr int    steps_per_rev   = 360/1.8 * microstep_mult;   // includes microsteps
-  static constexpr double wheel_radius_m  = 0.04;   // m
-  static constexpr double lead_T_s        = 0.010;     // 30–60 ms works well; start 0.04
+  // PX4 Rate PID (inner loop, pitch axis only)
+  // Start simple: P only (I,D = 0). Tune rate_P first.
+  static constexpr double rate_P      = 0.18;  // try 0.12–0.30
+  static constexpr double rate_I      = 0.00;  // keep 0 while tuning
+  static constexpr double rate_D      = 0.00;  // keep 0 while tuning
+  static constexpr double rate_I_lim  = 0.30;  // unused when I=0
+  static constexpr double rate_FF     = 0.00;  // usually 0 for balancing
 
+  // Minimal outer mapping: angle(rad) -> rate_sp(rad/s)
+  // This is effectively a proportional controller on angle.
+  static constexpr double angle_to_rate_k = 8.0; // rad/s per rad (≈ 0.14 * 180 for deg->dps intuition)
 
-  // ===== PX4 Rate PID (inner loop, pitch axis only) =====
-  static constexpr double rate_P      = 0.14;   // P gain on pitch rate error
-  static constexpr double rate_I      = 0.10;   // I gain on pitch rate error
-  static constexpr double rate_D      = 0.006;   // D gain on angular accel (start 0; 0.001–0.003 later)
-  static constexpr double rate_I_lim  = 0.40;   // integrator clamp (rad/s units inside PX4 rate_control)
-  static constexpr double rate_FF     = 0.00;   // feed-forward on rate setpoint (usually 0 for balancing)
-
-  // ===== Outer attitude PI (deg -> deg/s setpoint) =====
-  static constexpr double att_kp_deg_s_per_deg    = 4.5;  // P: deg/s per deg of pitch error
-  static constexpr double att_ki_deg_s_per_deg_s  = 0.10;  // I: deg/s per (deg·s) (start 0)
-  static constexpr double att_int_lim_deg_s       = 40.0; // clamp for outer I (deg/s)
-  static constexpr double att_i_freeze_deg        = 18.0; // freeze outer I beyond this |pitch| (set 180 to disable)
-
-  // ===== Outer shaping =====
-  static constexpr double rate_sp_max_dps   = 80.0; // soft cap for rate setpoint
-  static constexpr double outer_knee_deg    = 6.0;   // linear region around upright
-
-  // ===== D-term accel LPF =====
-  static constexpr double acc_lpf_hz        = 50.0;  // 50–90 Hz is a good start
-
-  // ===== Output mapping (controller -> wheels) =====
-  static constexpr double pitch_out_to_sps = 3200.0; // normalized PX4 output → steps/s scaling
-
-  
-  // ========= App I/O =========
-  static constexpr int    control_hz    = 400;
+  // Loop rate
+  static constexpr int control_hz = 400;
   static constexpr int    kPrintEvery   = 50;
   static constexpr float  deadzone      = 0.05f;
   static constexpr bool   invert_left   = true;
@@ -127,4 +106,3 @@ struct Telemetry {
   double u_sps;        // wheel command [steps/s]
   double integ_pitch;  // PX4 integral state for pitch
 };
-
