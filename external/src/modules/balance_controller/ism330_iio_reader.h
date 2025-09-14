@@ -16,6 +16,7 @@
 #include <unistd.h>
 
 #include "config.h"
+#include <cstring>
 
 namespace fs = std::filesystem;
 
@@ -55,6 +56,16 @@ applyAxisMap(const AxisCfg &c, const std::array<double, 3> &src) {
   return out;
 }
 
+static inline std::chrono::steady_clock::time_point iio_realtime_ns_to_steady(int64_t ts_ns) {
+  // compute offset at the *same moment* to avoid drift/leaps
+  const auto sys_now      = std::chrono::system_clock::now();
+  const auto steady_now   = std::chrono::steady_clock::now();
+  const auto sys_to_steady= steady_now.time_since_epoch() - sys_now.time_since_epoch();
+
+  const auto sys_tp = std::chrono::system_clock::time_point(std::chrono::nanoseconds{ts_ns});
+  return std::chrono::steady_clock::time_point(sys_tp.time_since_epoch() + sys_to_steady);
+}
+
 class Ism330IioReader {
 public:
   struct IMUConfig {
@@ -73,8 +84,8 @@ public:
   static constexpr std::size_t kOffX = 0;
   static constexpr std::size_t kOffY = 2;
   static constexpr std::size_t kOffZ = 4;
-  static constexpr std::size_t kOffTS = 6;
-  static constexpr std::size_t kStride = 14;
+  static constexpr std::size_t kOffTS = 8;
+  static constexpr std::size_t kStride = 16;
 
   explicit Ism330IioReader(IMUConfig cfg) : cfg_(std::move(cfg)) {
     if (!cfg_.on_sample)
@@ -129,11 +140,10 @@ private:
     return (uint16_t)p[0] | (uint16_t(p[1]) << 8);
   }
 
-  static inline uint64_t rd64le(const uint8_t *p) {
-    return (uint64_t)p[0] | (uint64_t(p[1]) << 8) | (uint64_t(p[2]) << 16) |
-           (uint64_t(p[3]) << 24) | (uint64_t(p[4]) << 32) |
-           (uint64_t(p[5]) << 40) | (uint64_t(p[6]) << 48) |
-           (uint64_t(p[7]) << 56);
+  static inline int64_t rd64le_s(const uint8_t* p) {
+    int64_t v;
+    std::memcpy(&v, p, sizeof(v));
+    return v;
   }
 
   void discoverSplitDevices() {
@@ -295,6 +305,19 @@ private:
       throw std::runtime_error(dev.string() + ": ts index != 3");
   }
 
+static inline std::chrono::steady_clock::time_point iio_realtime_ns_to_steady(int64_t ts_ns) {
+  using sc  = std::chrono::steady_clock;
+  using sys = std::chrono::system_clock;
+
+  // Pair sys_now and steady_now to compute an offset for THIS call
+  const auto sys_now    = sys::now();
+  const auto steady_now = sc::now();
+  const auto sys_to_steady = steady_now.time_since_epoch() - sys_now.time_since_epoch();
+
+  const auto sys_tp = sys::time_point(std::chrono::nanoseconds{ts_ns});
+  return sc::time_point(sys_tp.time_since_epoch() + sys_to_steady);
+}
+
   void loop() {
     alignas(8) uint8_t bufA[kStride * 512];
     alignas(8) uint8_t bufG[kStride * 512];
@@ -302,20 +325,20 @@ private:
       double ax;
       double ay;
       double az;
-      uint64_t ts;
+      int64_t ts;
       bool updated;
     };
     struct Gyr {
       double gx;
       double gy;
       double gz;
-      uint64_t ts;
+      int64_t ts;
       bool updated;
     };
     Acc lastA{0.0, 0.0, 0.0, 0ULL, false};
     Gyr lastG{0.0, 0.0, 0.0, 0ULL, false};
-    uint64_t tsA_emitted = 0ULL;
-    uint64_t tsG_emitted = 0ULL;
+    int64_t tsA_emitted = 0;
+    int64_t tsG_emitted = 0;
 
     std::printf("Polling for IMU data...\n");
     while (alive_.load(std::memory_order_relaxed)) {
@@ -331,8 +354,6 @@ private:
       if (r <= 0)
         continue;
 
-      const auto now = std::chrono::steady_clock::now();
-
       if (pfds[0].revents & POLLIN) {
         ssize_t n = ::read(fd_accel_, bufA, sizeof(bufA));
         if (n > 0) {
@@ -341,7 +362,7 @@ private:
             int16_t xr = (int16_t)rd16le(p + kOffX);
             int16_t yr = (int16_t)rd16le(p + kOffY);
             int16_t zr = (int16_t)rd16le(p + kOffZ);
-            uint64_t ts = rd64le(p + kOffTS);
+            int64_t ts = rd64le_s(p + kOffTS);
             lastA.ax = double(xr) * kAccelScale;
             lastA.ay = double(yr) * kAccelScale;
             lastA.az = double(zr) * kAccelScale;
@@ -359,7 +380,7 @@ private:
             int16_t xr = (int16_t)rd16le(p + kOffX);
             int16_t yr = (int16_t)rd16le(p + kOffY);
             int16_t zr = (int16_t)rd16le(p + kOffZ);
-            uint64_t ts = rd64le(p + kOffTS);
+            int64_t ts = rd64le_s(p + kOffTS);
             lastG.gx = double(xr) * kGyroScale;
             lastG.gy = double(yr) * kGyroScale;
             lastG.gz = double(zr) * kGyroScale;
@@ -378,7 +399,9 @@ private:
           const std::array<double, 3> gyr =
               applyAxisMap(Config::gyro_cfg, gyr_src);
           const double pitch = std::atan2(-acc[0], acc[2]);
-          cfg_.on_sample(pitch, acc, gyr, now);
+
+          const int64_t ts_pair = (lastA.ts > lastG.ts) ? lastA.ts : lastG.ts;
+          cfg_.on_sample(pitch, acc, gyr, iio_realtime_ns_to_steady(ts_pair));
           tsA_emitted = lastA.ts;
           tsG_emitted = lastG.ts;
           lastA.updated = false;

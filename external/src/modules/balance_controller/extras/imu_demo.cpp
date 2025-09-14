@@ -17,26 +17,19 @@ int main() {
   imu_cfg.on_sample = [&](double pitch, std::array<double, 3> acc,
                           std::array<double, 3> gyrv,
                           std::chrono::steady_clock::time_point ts) {
-    // 4) print a richer line
     filt.push_sample(acc, gyrv, ts);
-
-    static int k = 0;
-    if ((++k % 1) == -1) {
-      // std::printf("acc_x=%.3fm/s, acc_y=%.3fm/s, acc_z=%.3fm/s,
-      // gyrv_x=%.3f°/s, gyrv_y=%.3f°/s, gyrv_z=%.3f°/s, time=%.3f\n",
-      //     acc[0], acc[1], acc[2], gyrv[0]*180.0/M_PI, gyrv[1]*180.0/M_PI,
-      //     gyrv[2]*180.0/M_PI,
-      //     std::chrono::duration<double>(ts.time_since_epoch()).count());
-    }
   };
   Ism330IioReader imu(imu_cfg);
   for (int i = 0; i < 10000; ++i) {
     ImuSample s = filt.read_latest();
-    std::printf("pitch=%.3f°, dpitch=%.3f°, yaw=%.3f°, time=%.3f\n",
+    const auto now = std::chrono::steady_clock::now();
+    const auto age_ms = std::chrono::duration<double, std::milli>(now - s.t).count();
+
+    std::printf("pitch=%.3f°, dpitch=%.3f°, yaw=%.3f°, age=%.3f ms\n",
                 s.angle_rad * 180.0 / M_PI, s.gyro_rad_s * 180.0 / M_PI,
                 s.yaw_rate_z * 180.0 / M_PI,
-                std::chrono::duration<double>(s.t.time_since_epoch()).count());
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                age_ms);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
   return 0;
 }
