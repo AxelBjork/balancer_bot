@@ -65,8 +65,7 @@ struct RateControllerCore::Impl {
       ImuSample s = latest.load();
       float pitch_rad   = (float)s.angle_rad;
       float gyro_rad_s  = (float)s.gyro_rad_s;
-      float dt = std::clamp((float)duration<double>(last_ts - s.t).count(),
-                            1.f/2000.f, 0.05f);
+      float dt = std::clamp((float)duration<double>(s.t - last_ts).count(), 1.f/2000.f, 0.05f);
       last_ts = s.t;
 
       // outer loop: angle -> pitch rate setpoint

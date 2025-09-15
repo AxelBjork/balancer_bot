@@ -20,14 +20,17 @@ public:
       pad = std::make_unique<XboxController>();
     }
     // Hardware setup
-    Stepper::Pins leftPins{12, 19, 13}; // ENA, STEP, DIR
-    Stepper::Pins rightPins{4, 18, 24}; // ENB, STEP, DIR
-    Stepper left(_ctx.handle(), leftPins), right(_ctx.handle(), rightPins);
-    MotorRunner L(left, Config::invert_left);
-    MotorRunner R(right, Config::invert_right);
+    Stepper::Pins leftPins  {12, 19, 13}; // ENA, STEP(PWM1), DIR
+    Stepper::Pins rightPins { 4, 18, 24}; // ENB, STEP(PWM0), DIR
+
+    Stepper left (_ctx.handle(), leftPins,  Config::invert_left,  /*energize_now=*/true);
+    Stepper right(_ctx.handle(), rightPins, Config::invert_right, /*energize_now=*/true);
+
+    // Coordinator at 1 kHz
+    MotorRunner motors(left, right, ConfigPid::control_hz, 250000.0, 20.0);
 
     // Start cascaded controller (runs its own thread)
-    CascadedController<MotorRunner> ctrl(L, R);
+    CascadedController<MotorRunner> ctrl(motors);
 
     // Optional: telemetry print every N balance ticks for quick visibility
     // Set to 0 to disable.
@@ -148,8 +151,7 @@ public:
     // shutdown
     g_stop.store(true, std::memory_order_relaxed);
     // ctrl destructor joins its thread; MotorRunner has stop()
-    L.stop();
-    R.stop();
+    motors.stop();
     return 0;
   }
   std::unique_ptr<XboxController> pad;

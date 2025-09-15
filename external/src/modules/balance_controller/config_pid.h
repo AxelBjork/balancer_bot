@@ -4,14 +4,14 @@
 struct ConfigPid {
 // ====== Motor / speed ceiling (primary scaling knob) ======
 
-  static constexpr double max_sps           = 12000.0;      // clamp for wheel speed command (steps/s)
+  static constexpr double max_sps           = 3000.0;      // clamp for wheel speed command (steps/s)
   static constexpr double pitch_out_to_sps  = 3200.0;      // PX4 normalized -> steps/s
 
   // PX4 Rate PID (inner loop, pitch axis only)
   // Start simple: P only (I,D = 0). Tune rate_P first.
-  static constexpr double rate_P      = 0.34;  // try 0.12–0.30
-  static constexpr double rate_I      = 0.02;  // keep 0 while tuning
-  static constexpr double rate_D      = 0.15;  // keep 0 while tuning
+  static constexpr double rate_P      = 0.07;  // try 0.12–0.30
+  static constexpr double rate_I      = 0.0000;  // keep 0 while tuning
+  static constexpr double rate_D      = 0.00;  // keep 0 while tuning
   static constexpr double rate_I_lim  = 0.30;  // unused when I=0
   static constexpr double rate_FF     = 0.00;  // usually 0 for balancing
 

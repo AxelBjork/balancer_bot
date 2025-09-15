@@ -35,11 +35,11 @@ private:
 template <class MotorRunnerT>
 class CascadedController {
 public:
-  CascadedController(MotorRunnerT& left, MotorRunnerT& right)
-  : left_(left), right_(right) {
+  CascadedController(MotorRunnerT& motors)
+  : motors_(motors) {
     core_.setMotorOutputs(
-      [this](float sps) { left_.setTarget(sps);  },
-      [this](float sps) { right_.setTarget(sps); });
+      [this](float sps) { motors_.setLeft(sps);  },
+      [this](float sps) { motors_.setRight(sps); });
     core_.start();
   }
 
@@ -50,7 +50,6 @@ public:
   void setTelemetrySink(std::function<void(const Telemetry&)> cb) { core_.setTelemetrySink(std::move(cb)); }
 
 private:
-  MotorRunnerT& left_;
-  MotorRunnerT& right_;
+  MotorRunnerT& motors_;
   RateControllerCore core_;
 };

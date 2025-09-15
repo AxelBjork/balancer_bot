@@ -1,71 +1,81 @@
+// Stepper.h  (unchanged API)
 #pragma once
-#include <algorithm>
-#include <chrono>
+#include <atomic>
 #include <pigpiod_if2.h>
-#include <thread>
+#include <stdexcept>
+#include <cmath>
 
 class Stepper {
 public:
-  struct Pins {
-    unsigned ena;
-    unsigned step;
-    unsigned dir;
-  };
+  struct Pins { unsigned ena; unsigned step; unsigned dir; };
 
-  Stepper(int pi, const Pins &pins) : pi_(pi), pins_(pins) {
-    set_mode(pi_, pins_.ena, PI_OUTPUT);
+  Stepper(int pi, const Pins& pins, bool invert=false, bool energize_now=true)
+  : pi_(pi), pins_(pins), invert_(invert) {
+    if (pi_<0) throw std::runtime_error("pigpio not initialized");
+    set_mode(pi_, pins_.ena,  PI_OUTPUT);
     set_mode(pi_, pins_.step, PI_OUTPUT);
-    set_mode(pi_, pins_.dir, PI_OUTPUT);
-
-    // Energize driver; use pigpio time_sleep so unit-test stubs skip the delay.
-    gpio_write(pi_, pins_.ena, 1);
-    time_sleep(kWakeDelayUs / 1e6);
-
-    // Initialize DIR to a known state and remember it so we only delay on real
-    // changes.
+    set_mode(pi_, pins_.dir,  PI_OUTPUT);
     gpio_write(pi_, pins_.dir, 1);
     last_dir_forward_ = true;
+    if (energize_now) { gpio_write(pi_, pins_.ena, 1); time_sleep(0.1); energized_=true; }
   }
 
-  virtual ~Stepper() {
-    gpio_write(pi_, pins_.ena, 0); // de-energize
-  }
+  ~Stepper(){ stop(); if (energized_) gpio_write(pi_, pins_.ena, 0); }
 
-  inline void stepOnce(unsigned periodUs) const {
-    // Respect minimum pulse width; split the remaining time evenly.
-    const unsigned half_hi = std::max<unsigned>(periodUs / 2, kMinPulseUs);
-    const unsigned half_lo =
-        (periodUs > half_hi) ? (periodUs - half_hi) : kMinPulseUs;
+  // Called by PID thread (cheap): just stores.
+  void setTarget(double sps){ target_sps_.store(sps, std::memory_order_relaxed); }
 
-    gpio_write(pi_, pins_.step, 1);
-    std::this_thread::sleep_for(std::chrono::microseconds(half_hi));
-    gpio_write(pi_, pins_.step, 0);
-    std::this_thread::sleep_for(std::chrono::microseconds(half_lo));
-  }
+  double target()   const { return target_sps_.load(std::memory_order_relaxed); }
+  double actual()   const { return actual_sps_.load(std::memory_order_relaxed); }
 
-  virtual void stepN(unsigned steps, unsigned periodUs, bool dirForward) const {
-    // Only pay DIR setup delay if direction actually changed.
-    if (dirForward != last_dir_forward_) {
-      gpio_write(pi_, pins_.dir, dirForward ? 1 : 0);
-      std::this_thread::sleep_for(std::chrono::microseconds(kDirSetupDelayUs));
-      last_dir_forward_ = dirForward;
+  // Called by coordinator to (re)apply PWM settings NOW (no smoothing here).
+  // Returns the pwm frequency actually set (signed sps after invert).
+  double applyNow() {
+    double sps = target();
+    bool forward = (sps >= 0.0);
+    if (invert_) forward = !forward;
+
+    double freq = std::fabs(sps);
+    const double max_by_pulse = 1e6 / (2.0 * kMinPulseUs);
+    if (freq > kMaxFreqHz)   freq = kMaxFreqHz;
+    if (freq > max_by_pulse) freq = max_by_pulse;
+
+    // If direction changed while running, stop, flip DIR, wait setup
+    if (running_ && (forward != last_dir_forward_)) {
+      hardware_PWM(pi_, pins_.step, 0, 0); running_ = false;
+      gpio_write(pi_, pins_.dir, forward ? 1 : 0);
+      time_sleep(kDirSetupDelayUs / 1e6);
+      last_dir_forward_ = forward;
     } else {
-      // Keep GPIO in the requested state in case something else touched it.
-      gpio_write(pi_, pins_.dir, dirForward ? 1 : 0);
+      gpio_write(pi_, pins_.dir, forward ? 1 : 0);
+      last_dir_forward_ = forward;
     }
 
-    for (unsigned i = 0; i < steps; ++i) {
-      stepOnce(periodUs);
+    if (freq < 1.0) {
+      hardware_PWM(pi_, pins_.step, 0, 0); running_ = false;
+      actual_sps_.store(0.0, std::memory_order_relaxed);
+      return 0.0;
     }
+
+    const unsigned pwm_freq = static_cast<unsigned>(freq);
+    hardware_PWM(pi_, pins_.step, pwm_freq, 500'000); // 50% duty
+    running_ = true;
+
+    const double signed_sps = (forward ? +1.0 : -1.0) * static_cast<double>(pwm_freq) * (invert_ ? -1.0 : 1.0);
+    actual_sps_.store(signed_sps, std::memory_order_relaxed);
+    return signed_sps;
+  }
+
+  void stop(){
+    if (running_) { hardware_PWM(pi_, pins_.step, 0, 0); running_=false; actual_sps_.store(0.0,std::memory_order_relaxed); }
   }
 
 private:
   int pi_;
   Pins pins_;
-  static constexpr unsigned kWakeDelayUs = 100'000;   // 100 ms
-  static constexpr unsigned kDirSetupDelayUs = 2'000; // 2 ms (on dir changes)
-  static constexpr unsigned kMinPulseUs = 2;          // STEP high/low minimum
-
-  // Mutable so stepN can remember last direction with a const interface.
-  mutable bool last_dir_forward_ = true;
+  bool invert_{false}, energized_{false}, running_{false}, last_dir_forward_{true};
+  std::atomic<double> target_sps_{0.0}, actual_sps_{0.0};
+  static constexpr unsigned kDirSetupDelayUs = 200;
+  static constexpr unsigned kMinPulseUs      = 2;
+  static constexpr double   kMaxFreqHz       = 50'000.0;
 };
