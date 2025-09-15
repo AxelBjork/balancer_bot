@@ -4,13 +4,29 @@
 #include <csignal>
 #include <iostream>
 #include <thread>
+#include <pigpiod_if2.h>
 
 #include "config.h"
+#include "config_pid.h"
 #include "control_loop.h"
 #include "ism330_iio_reader.h"
-#include "motor_runner.h"
 #include "pitch_lpf.h"
 #include "xbox_controller.h"
+#include "stepper.h"
+#include "motor_runner.h"
+
+
+struct PigpioCtx {
+  explicit PigpioCtx(const char* host = nullptr, const char* port = nullptr) {
+    pi = pigpio_start(host, port);
+    if (pi < 0) throw std::runtime_error("pigpio_start failed");
+  }
+  ~PigpioCtx() { pigpio_stop(pi); }
+  int handle() const { return pi; }
+private:
+  int pi{};
+};
+
 
 // ---------------------- Motor control runner --------------------------------
 class App {
@@ -151,7 +167,8 @@ public:
     // shutdown
     g_stop.store(true, std::memory_order_relaxed);
     // ctrl destructor joins its thread; MotorRunner has stop()
-    motors.stop();
+    left.stop();
+    right.stop();
     return 0;
   }
   std::unique_ptr<XboxController> pad;

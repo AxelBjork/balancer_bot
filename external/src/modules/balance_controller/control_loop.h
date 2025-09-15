@@ -38,8 +38,10 @@ public:
   CascadedController(MotorRunnerT& motors)
   : motors_(motors) {
     core_.setMotorOutputs(
-      [this](float sps) { motors_.setLeft(sps);  },
-      [this](float sps) { motors_.setRight(sps); });
+  [&](float sps){ motors.setLeft(sps);  },
+  [&](float sps){ motors.setRight(sps); }
+    );
+
     core_.start();
   }
 
