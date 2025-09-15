@@ -9,7 +9,7 @@ struct ConfigPid {
 
   // PX4 Rate PID (inner loop, pitch axis only)
   // Start simple: P only (I,D = 0). Tune rate_P first.
-  static constexpr double rate_P      = 0.07;  // try 0.12–0.30
+  static constexpr double rate_P      = 0.10;  // try 0.12–0.30
   static constexpr double rate_I      = 0.0000;  // keep 0 while tuning
   static constexpr double rate_D      = 0.00;  // keep 0 while tuning
   static constexpr double rate_I_lim  = 0.30;  // unused when I=0
@@ -20,5 +20,5 @@ struct ConfigPid {
   static constexpr double angle_to_rate_k = 8.0; // rad/s per rad (≈ 0.14 * 180 for deg->dps intuition)
 
   // Loop rate
-  static constexpr int control_hz       = 1000;
+  static constexpr int control_hz       = 100;
 };
