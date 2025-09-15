@@ -1,6 +1,6 @@
 #include "../ism330_iio_reader.h"
 #include "../pitch_lpf.h"
-
+#include <cmath>
 #include <chrono>
 #include <thread>
 

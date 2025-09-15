@@ -1,6 +1,8 @@
 #pragma once
 
 #include "config.h"
+#include "config_pid.h"
+
 #include "stepper.h"
 
 #include <atomic>
@@ -28,7 +30,7 @@ class MotorRunner {
 public:
   explicit MotorRunner(Stepper &m, bool invert = false)
       : motor_(m), alive_(true),
-        slice_sec_(1.0 / static_cast<double>(Config::control_hz)),
+        slice_sec_(1.0 / static_cast<double>(ConfigPid::control_hz)),
         invert_dir(invert), worker_(&MotorRunner::loop, this) {}
 
   ~MotorRunner() { stop(); }

@@ -101,6 +101,8 @@ if (BUILD_TESTS)
 #                       App (opt-in, hard checks)
 # ================================================================
 else()
+  set(CMAKE_CXX_COMPILER_LAUNCHER ccache)           # ccache
+
   if (NOT HAVE_SDL2)
     message(FATAL_ERROR "SDL2 not found. Install libsdl2-dev.")
   endif()
@@ -126,18 +128,29 @@ else()
     ${CMAKE_SOURCE_DIR}/px4_stub/
 )
 
+set(SRC_DIR ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller)
+
   add_library(balancer_common STATIC
-    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/xbox_controller.cpp
+    ${SRC_DIR}/xbox_controller.cpp
+    ${SRC_DIR}/control_loop.cpp
+    ${SRC_DIR}/ism330_iio_reader.cpp
+    ${SRC_DIR}/pitch_lpf.cpp
   )
 
+  target_precompile_headers(balancer_common PRIVATE
+    <atomic> <thread> <chrono> <vector> <string> <unordered_map> <array> <algorithm> <cstdio> <cmath>
+  )
 
   add_executable(motor_controller
-    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/motor_controller.cpp
+    ${SRC_DIR}/motor_controller.cpp
+  )
+
+  target_link_libraries(balancer_common
+  PUBLIC px4_ratecontrol
   )
 
   target_link_libraries(motor_controller
-  PRIVATE px4_ratecontrol
-  balancer_common
+  PRIVATE balancer_common
   )
 
 
@@ -153,12 +166,9 @@ else()
   add_executable(imu_demo
     ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/extras/imu_demo.cpp
   )
-  target_include_directories(imu_demo PRIVATE
-    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/
+
+  target_link_libraries(imu_demo
+  PRIVATE balancer_common
   )
+
 endif()
-
-
-set_source_files_properties(${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/motor_controller.cpp
-  PROPERTIES
-    COMPILE_OPTIONS "-ftime-report;-fopt-info-optimized=heavy.opt;-save-temps=obj")

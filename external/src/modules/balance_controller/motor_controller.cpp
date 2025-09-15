@@ -3,7 +3,6 @@
 #include <cmath>
 #include <csignal>
 #include <iostream>
-#include <pigpiod_if2.h>
 #include <thread>
 
 #include "config.h"
@@ -11,7 +10,6 @@
 #include "ism330_iio_reader.h"
 #include "motor_runner.h"
 #include "pitch_lpf.h"
-#include "stepper.h"
 #include "xbox_controller.h"
 
 // ---------------------- Motor control runner --------------------------------
@@ -46,7 +44,7 @@ public:
               t.rate_sp_dps,
               t.out_norm,
               t.u_sps,
-              (std::abs(t.u_sps) >= 0.99 * Config::max_sps) ? "*" : "",  // rail hint
+              (std::abs(t.u_sps) >= 0.99 * ConfigPid::max_sps) ? "*" : "",  // rail hint
               t.integ_pitch,
               t.age_ms
           );
@@ -120,7 +118,7 @@ public:
     // Main app loop: read gamepad and feed controller setpoints
     const auto t_end = std::chrono::steady_clock::now() +
                        std::chrono::seconds(Config::run_seconds);
-    const auto tick = std::chrono::milliseconds(1000 / Config::control_hz);
+    const auto tick = std::chrono::milliseconds(1000 / Config::command_hz);
 
     while (std::chrono::steady_clock::now() < t_end &&
            !g_stop.load(std::memory_order_relaxed)) {

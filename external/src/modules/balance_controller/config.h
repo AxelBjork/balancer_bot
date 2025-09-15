@@ -35,25 +35,7 @@ struct Config {
   // ========= Controller rates & limits =========
   static constexpr double max_tilt_rad   = 5.0 * (M_PI / 180.0);
 
-  // ====== Motor / speed ceiling (primary scaling knob) ======
-
-  static constexpr double max_sps           = 6000.0;      // clamp for wheel speed command (steps/s)
-  static constexpr double pitch_out_to_sps  = 3200.0;      // PX4 normalized -> steps/s
-
-  // PX4 Rate PID (inner loop, pitch axis only)
-  // Start simple: P only (I,D = 0). Tune rate_P first.
-  static constexpr double rate_P      = 0.22;  // try 0.12–0.30
-  static constexpr double rate_I      = 0.00;  // keep 0 while tuning
-  static constexpr double rate_D      = 0.05;  // keep 0 while tuning
-  static constexpr double rate_I_lim  = 0.30;  // unused when I=0
-  static constexpr double rate_FF     = 0.00;  // usually 0 for balancing
-
-  // Minimal outer mapping: angle(rad) -> rate_sp(rad/s)
-  // This is effectively a proportional controller on angle.
-  static constexpr double angle_to_rate_k = 8.0; // rad/s per rad (≈ 0.14 * 180 for deg->dps intuition)
-
-  // Loop rate
-  static constexpr int control_hz       = 1000;
+  static constexpr int    command_hz    = 100;
   static constexpr int    kPrintEvery   = 50;
   static constexpr float  deadzone      = 0.05f;
   static constexpr bool   invert_left   = true;
@@ -77,31 +59,3 @@ static_assert( (2.2 / (2*M_PI*Config::fc_gyro_lpf_hz)) * 1e3 <= Config::dpitch_r
 
 static std::atomic<bool> g_stop{false};
 static void on_signal(int) { g_stop.store(true, std::memory_order_relaxed); }
-
-
-// ---- IMU sample (from ISM330DHCX fusion later) ----
-// angle_rad: pitch angle (+ forward), gyro_rad_s: pitch rate (+ when nose down)
-struct ImuSample {
-  double angle_rad = 0.0;
-  double gyro_rad_s = 0.0;
-  double yaw_rate_z = 0.0;
-  std::chrono::steady_clock::time_point t{};
-};
-
-// ---- Joystick command (forward/turn normalized to [-1, 1]) ----
-struct JoyCmd {
-  float forward;    // + forward speed command
-  float turn;       // + left faster, right slower (CCW yaw)
-};
-
-// ---- Telemetry (per-term LQR contributions) ----
-struct Telemetry {
-  double t_sec;
-  double age_ms;
-  double pitch_deg;
-  double pitch_rate_dps;
-  double rate_sp_dps;
-  double out_norm;     // PX4 rate controller normalized output (pitch axis)
-  double u_sps;        // wheel command [steps/s]
-  double integ_pitch;  // PX4 integral state for pitch
-};
