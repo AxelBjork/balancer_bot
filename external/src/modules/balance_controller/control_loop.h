@@ -98,8 +98,8 @@ private:
         ImuSample s = latest_filtered_.load(std::memory_order_relaxed);
         pitch_rad = (float)s.angle_rad;
         gyro_rad_s = (float)s.gyro_rad_s;
-        dt = std::clamp((float)duration<double>(now - last_ts_).count(), 1.f / 2000.f, 0.05f);
-        last_ts_ = now;
+        dt = std::clamp((float)duration<double>(last_ts_ - s.t).count(), 1.f / 2000.f, 0.05f);
+        last_ts_ = s.t;
       }
 
       // ----- Minimal outer loop: angle -> pitch rate setpoint (rad/s)
@@ -124,7 +124,8 @@ private:
       if (tel_cb_) {
         rate_ctrl_status_s st{}; rc_.getRateControlStatus(st);
         Telemetry t{};
-        t.t_sec          = duration<double>(now.time_since_epoch()).count();
+        t.t_sec          = duration<double>(last_ts_.time_since_epoch()).count();
+        t.age_ms        = duration<double, std::milli>(now - last_ts_).count();
         t.pitch_deg      = pitch_rad * 180.0 / M_PI;
         t.pitch_rate_dps = gyro_rad_s * 180.0 / M_PI;
         t.rate_sp_dps    = rate_sp_rad_s * 180.0 / M_PI;

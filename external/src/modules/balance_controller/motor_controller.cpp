@@ -39,7 +39,7 @@ public:
         if ((++k % Config::kPrintEvery) == 0) {
           std::printf(
               "t=%7.3f  θ=%6.2f°  θ̇=%6.2f°/s  r_sp=%6.2f°/s  out=%6.3f  "
-              "u=%6.0f%s  I=%7.3f\n",
+              "u=%6.0f%s  I=%7.3f, age_ms %7.3f\n",
               t.t_sec,
               t.pitch_deg,
               t.pitch_rate_dps,
@@ -47,7 +47,8 @@ public:
               t.out_norm,
               t.u_sps,
               (std::abs(t.u_sps) >= 0.99 * Config::max_sps) ? "*" : "",  // rail hint
-              t.integ_pitch
+              t.integ_pitch,
+              t.age_ms
           );
 
         }

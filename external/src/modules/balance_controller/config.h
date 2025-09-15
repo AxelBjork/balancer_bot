@@ -33,8 +33,6 @@ struct Config {
   static constexpr double fc_acc_prefilt_hz    = 30.0;   // prefilter on accel (helps with vibey bots) 10–20 Hz
 
   // ========= Controller rates & limits =========
-  static constexpr int   hz_balance      = 400;
-  static constexpr int   hz_outer        = 100;
   static constexpr double max_tilt_rad   = 5.0 * (M_PI / 180.0);
 
   // ====== Motor / speed ceiling (primary scaling knob) ======
@@ -44,9 +42,9 @@ struct Config {
 
   // PX4 Rate PID (inner loop, pitch axis only)
   // Start simple: P only (I,D = 0). Tune rate_P first.
-  static constexpr double rate_P      = 0.18;  // try 0.12–0.30
+  static constexpr double rate_P      = 0.22;  // try 0.12–0.30
   static constexpr double rate_I      = 0.00;  // keep 0 while tuning
-  static constexpr double rate_D      = 0.00;  // keep 0 while tuning
+  static constexpr double rate_D      = 0.05;  // keep 0 while tuning
   static constexpr double rate_I_lim  = 0.30;  // unused when I=0
   static constexpr double rate_FF     = 0.00;  // usually 0 for balancing
 
@@ -55,7 +53,7 @@ struct Config {
   static constexpr double angle_to_rate_k = 8.0; // rad/s per rad (≈ 0.14 * 180 for deg->dps intuition)
 
   // Loop rate
-  static constexpr int control_hz = 400;
+  static constexpr int control_hz       = 1000;
   static constexpr int    kPrintEvery   = 50;
   static constexpr float  deadzone      = 0.05f;
   static constexpr bool   invert_left   = true;
@@ -99,6 +97,7 @@ struct JoyCmd {
 // ---- Telemetry (per-term LQR contributions) ----
 struct Telemetry {
   double t_sec;
+  double age_ms;
   double pitch_deg;
   double pitch_rate_dps;
   double rate_sp_dps;

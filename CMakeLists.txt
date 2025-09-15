@@ -126,28 +126,30 @@ else()
     ${CMAKE_SOURCE_DIR}/px4_stub/
 )
 
+  add_library(balancer_common STATIC
+    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/xbox_controller.cpp
+  )
+
+
   add_executable(motor_controller
     ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/motor_controller.cpp
   )
 
-  target_link_libraries(motor_controller PRIVATE px4_ratecontrol)
+  target_link_libraries(motor_controller
+  PRIVATE px4_ratecontrol
+  balancer_common
+  )
 
 
-  target_include_directories(motor_controller PRIVATE
+  target_include_directories(balancer_common PUBLIC
     ${CMAKE_SOURCE_DIR}/src
     ${SDL2_INCS}
   )
-  target_link_libraries(motor_controller PRIVATE
+  target_link_libraries(balancer_common PUBLIC
     Threads::Threads
     ${SDL2_LIBS}
     ${PIGPIOD_LIB}
   )
-  # Optional librt if present (Linux)
-  find_library(RT_LIB rt)
-  if (RT_LIB)
-    target_link_libraries(motor_controller PRIVATE ${RT_LIB})
-  endif()
-
   add_executable(imu_demo
     ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/extras/imu_demo.cpp
   )
@@ -155,3 +157,8 @@ else()
     ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/
   )
 endif()
+
+
+set_source_files_properties(${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/motor_controller.cpp
+  PROPERTIES
+    COMPILE_OPTIONS "-ftime-report;-fopt-info-optimized=heavy.opt;-save-temps=obj")

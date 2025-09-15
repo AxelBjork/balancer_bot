@@ -2,7 +2,6 @@
 
 #include "config.h"
 #include "stepper.h"
-#include "xbox_controller.h"
 
 #include <atomic>
 #include <chrono>
