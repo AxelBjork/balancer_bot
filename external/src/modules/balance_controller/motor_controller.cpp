@@ -43,7 +43,7 @@ public:
     Stepper right(_ctx.handle(), rightPins, Config::invert_right, /*energize_now=*/true);
 
     // Coordinator at 1 kHz
-    MotorRunner motors(left, right, ConfigPid::control_hz, 250000.0, 20.0);
+    MotorRunner motors(left, right, ConfigPid::control_hz, 250000.0);
 
     // Start cascaded controller (runs its own thread)
     CascadedController<MotorRunner> ctrl(motors);
@@ -167,8 +167,6 @@ public:
     // shutdown
     g_stop.store(true, std::memory_order_relaxed);
     // ctrl destructor joins its thread; MotorRunner has stop()
-    left.stop();
-    right.stop();
     return 0;
   }
   std::unique_ptr<XboxController> pad;

@@ -23,9 +23,7 @@ public:
   void setTelemetrySink(std::function<void(const Telemetry&)> cb);
 
   // Callbacks to drive motors (steps/s). You wire these from the wrapper.
-  void setMotorOutputs(std::function<void(float)> left_cb,
-                       std::function<void(float)> right_cb);
-
+  void setMotorOutputs(std::function<void(float, float)> motor_cb);
 private:
   struct Impl;          // PIMPL hides PX4/Matrix + thread
   Impl* p_;             // or std::unique_ptr<Impl>
@@ -38,8 +36,7 @@ public:
   CascadedController(MotorRunnerT& motors)
   : motors_(motors) {
     core_.setMotorOutputs(
-  [&](float sps){ motors.setLeft(sps);  },
-  [&](float sps){ motors.setRight(sps); }
+      [&](float left_sps, float right_sps){ motors.setTargets(left_sps, right_sps); }
     );
 
     core_.start();
