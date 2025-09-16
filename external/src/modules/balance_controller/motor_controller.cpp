@@ -167,8 +167,6 @@ public:
     // shutdown
     g_stop.store(true, std::memory_order_relaxed);
     // ctrl destructor joins its thread; MotorRunner has stop()
-    left.stop();
-    right.stop();
     return 0;
   }
   std::unique_ptr<XboxController> pad;
