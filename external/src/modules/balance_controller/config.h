@@ -38,8 +38,8 @@ struct Config {
   static constexpr int    command_hz    = 100;
   static constexpr int    kPrintEvery   = 50;
   static constexpr float  deadzone      = 0.05f;
-  static constexpr bool   invert_left   = true;
-  static constexpr bool   invert_right  = false;
+  static constexpr bool   invert_left   = false;
+  static constexpr bool   invert_right  = true;
 
 // ========= Time Budget =========
   static constexpr double pitch_rise_ms = 200.0;     // accel correction must be <= 200 ms (10->90)

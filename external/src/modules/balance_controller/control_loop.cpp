@@ -23,7 +23,7 @@ struct RateControllerCore::Impl {
   std::atomic<bool> alive{false};
 
   // IO
-  std::function<void(float)> left_out, right_out;
+  std::function<void(float, float)> motors_cb;
   std::function<void(const Telemetry&)> tel_cb;
 
   // State
@@ -81,8 +81,7 @@ struct RateControllerCore::Impl {
       float u_sps = u(1) * (float)ConfigPid::pitch_out_to_sps;
       u_sps = std::clamp(u_sps, -(float)ConfigPid::max_sps, +(float)ConfigPid::max_sps);
 
-      if (left_out)  left_out(u_sps);
-      if (right_out) right_out(u_sps);
+      if (motors_cb)  motors_cb(u_sps, u_sps);
 
       if (tel_cb) {
         rate_ctrl_status_s st{}; rc.getRateControlStatus(st);
@@ -133,7 +132,6 @@ void RateControllerCore::setJoystick(const JoyCmd& j) {
 void RateControllerCore::setTelemetrySink(std::function<void(const Telemetry&)> cb) {
     p_->tel_cb = std::move(cb);
 }
-void RateControllerCore::setMotorOutputs(std::function<void(float)> l, std::function<void(float)> r) {
-  p_->left_out = std::move(l);
-  p_->right_out = std::move(r);
+void RateControllerCore::setMotorOutputs(std::function<void(float, float)> motors_cb) {
+  p_->motors_cb = std::move(motors_cb);
 }
