@@ -13,6 +13,9 @@ struct AxisCfg {
 struct Config {
   // ========= General =========
   static constexpr int   run_seconds   = 50;
+  static constexpr double wheel_diam_m       = 0.080;   // 80 mm
+  static constexpr double steps_per_rev      = 360/1.8 * 16.0; // 1.8° * 16x
+  static constexpr double meters_per_step    = M_PI * wheel_diam_m / steps_per_rev;
 
   // ========= IMU =========
   static constexpr double sampling_hz  = 833.000; // available 12.500 26.000 52.000 104.000 208.000 416.000 833.000
