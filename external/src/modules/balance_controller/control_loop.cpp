@@ -63,9 +63,9 @@ struct RateControllerCore::Impl {
 
       // read imu
       ImuSample s = latest.load();
-      float pitch_rad   = (float)s.angle_rad;
-      float gyro_rad_s  = (float)s.gyro_rad_s;
-      float dt = std::clamp((float)duration<double>(s.t - last_ts).count(), 1.f/2000.f, 0.05f);
+      float pitch_rad   = s.angle_rad;
+      float gyro_rad_s  = s.gyro_rad_s;
+      float dt = std::clamp(duration<float>(s.t - last_ts).count(), 1.f/2000.f, 0.05f);
       last_ts = s.t;
 
       // outer loop: angle -> pitch rate setpoint
@@ -78,8 +78,8 @@ struct RateControllerCore::Impl {
 
       const Vector3f u = rc.update(rate, rate_sp, ang_acc, dt, /*landed=*/false);
 
-      float u_sps = u(1) * (float)ConfigPid::pitch_out_to_sps;
-      u_sps = std::clamp(u_sps, -(float)ConfigPid::max_sps, +(float)ConfigPid::max_sps);
+      float u_sps = u(1) * ConfigPid::pitch_out_to_sps;
+      u_sps = std::clamp<float>(u_sps, -ConfigPid::max_sps, +ConfigPid::max_sps);
 
       if (motors_cb)  motors_cb(u_sps, u_sps);
 
@@ -91,9 +91,9 @@ struct RateControllerCore::Impl {
         t.pitch_deg      = pitch_rad * 180.0 / M_PI;
         t.pitch_rate_dps = gyro_rad_s * 180.0 / M_PI;
         t.rate_sp_dps    = rate_sp_rad_s * 180.0 / M_PI;
-        t.out_norm       = (double)u(1);
-        t.u_sps          = (double)u_sps;
-        t.integ_pitch    = (double)st.pitchspeed_integ;
+        t.out_norm       = u(1);
+        t.u_sps          = u_sps;
+        t.integ_pitch    = st.pitchspeed_integ;
         tel_cb(std::move(t));
       }
     }
