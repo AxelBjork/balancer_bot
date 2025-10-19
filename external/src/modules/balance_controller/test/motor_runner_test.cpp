@@ -1,24 +1,21 @@
-#include <gtest/gtest.h>
 #include <gmock/gmock.h>
+#include <gtest/gtest.h>
 
-// Include your real declarations for Stepper and MotorRunner:
-#include "stepper.h"
 #include "motor_runner.h"
+#include "stepper.h"
 #include <future>
-
-#include "control_loop.h"
-
 
 // ==== Mock Stepper ====
 class MockStepper : public Stepper {
 public:
   using Stepper::Stepper;
-  MOCK_METHOD(void, stepN, (unsigned steps, unsigned periodUs, bool dirForward), (const, override));
+  MOCK_METHOD(void, stepN, (unsigned steps, unsigned periodUs, bool dirForward),
+              (const, override));
 };
 
 // ---- Helpers ----
 static Stepper::Pins makePins() {
-  return Stepper::Pins{ .ena = 5u, .step = 6u, .dir = 13u };
+  return Stepper::Pins{.ena = 5u, .step = 6u, .dir = 13u};
 }
 
 using ::testing::_;
@@ -113,7 +110,8 @@ TEST(MotorRunnerTest, RetargetMidRunAdjustsStepsAndPeriod) {
   NiceMock<MockStepper> m(0, makePins());
 
   // Start at 200 sps -> 2 steps/slice (period 5000 us),
-  // then jump to 750 sps -> steps alternate around 7.5 (7 or 8), period 1333 us.
+  // then jump to 750 sps -> steps alternate around 7.5 (7 or 8), period 1333
+  // us.
   std::promise<void> got_new_speed;
 
   // Let the low-speed phase run for a few slices.
@@ -121,15 +119,18 @@ TEST(MotorRunnerTest, RetargetMidRunAdjustsStepsAndPeriod) {
       .Times(AtLeast(1))
       .WillRepeatedly(Invoke([](unsigned, unsigned, bool) {}));
 
-  // After retarget, accept either 7 or 8 steps (residual-dependent), period fixed at 1333 us.
+  // After retarget, accept either 7 or 8 steps (residual-dependent), period
+  // fixed at 1333 us.
   EXPECT_CALL(m, stepN(::testing::AnyOf(7u, 8u), 1333u, true))
       .Times(AtLeast(1))
-      .WillOnce(Invoke([&](unsigned, unsigned, bool) { got_new_speed.set_value(); }))
+      .WillOnce(
+          Invoke([&](unsigned, unsigned, bool) { got_new_speed.set_value(); }))
       .WillRepeatedly(Invoke([](unsigned, unsigned, bool) {}));
 
   MotorRunner runner(m);
   runner.setTarget(200.0);
-  std::this_thread::sleep_for(std::chrono::milliseconds(30)); // give the first target time to take effect
+  std::this_thread::sleep_for(std::chrono::milliseconds(
+      30)); // give the first target time to take effect
   runner.setTarget(750.0);
 
   ASSERT_EQ(got_new_speed.get_future().wait_for(std::chrono::milliseconds(400)),
@@ -141,7 +142,8 @@ TEST(MotorRunnerTest, DirectionFlipFromForwardToReverse) {
   g_stop.store(false);
   NiceMock<MockStepper> m(0, makePins());
 
-  // +300 sps -> 3 steps/slice (period 3333 us), then -300 sps -> same steps, dir=false.
+  // +300 sps -> 3 steps/slice (period 3333 us), then -300 sps -> same steps,
+  // dir=false.
   std::promise<void> saw_reverse;
 
   EXPECT_CALL(m, stepN(3u, 3333u, true))
@@ -150,7 +152,8 @@ TEST(MotorRunnerTest, DirectionFlipFromForwardToReverse) {
 
   EXPECT_CALL(m, stepN(3u, 3333u, false))
       .Times(AtLeast(1))
-      .WillOnce(Invoke([&](unsigned, unsigned, bool) { saw_reverse.set_value(); }))
+      .WillOnce(
+          Invoke([&](unsigned, unsigned, bool) { saw_reverse.set_value(); }))
       .WillRepeatedly(Invoke([](unsigned, unsigned, bool) {}));
 
   MotorRunner runner(m);

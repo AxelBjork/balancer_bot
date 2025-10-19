@@ -152,7 +152,7 @@ echo ism330dhcx 0x6a | sudo tee /sys/bus/i2c/devices/i2c-1/new_device
 g++ extras/imu_demo.cpp -o imu_demo
 
 ### Configure auto setup
-printf "industrialio\nindustrialio_triggered_buffer\nst_lsm6dsx_i2c\n" | \
+printf "industrialio\nindustrialio_triggered_buffer\nst_lsm6dsx_i2c\niio-trig-hrtimer\n" | \
   sudo tee /etc/modules-load.d/ism330dhcx.conf
 
 
@@ -180,7 +180,7 @@ sudo usermod -aG iio "$USER"
 newgrp iio
 
 **Verify**
-i2cdetect -yr 1
+i2cdetect -y 1
 ls /sys/bus/iio/devices/
 echo 0x6a | sudo tee /sys/bus/i2c/devices/i2c-1/delete_device 2>/dev/null
 echo ism330dhcx 0x6a | sudo tee /sys/bus/i2c/devices/i2c-1/new_device

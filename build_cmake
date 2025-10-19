@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+TEST=OFF
 # Configure
-cmake -S . -B build -DBUILD_TESTS=ON
+cmake -S . -B build -DBUILD_TESTS=$TEST
 
 # Build
 cmake --build build -j"$(nproc)"
 
 # Run tests
-ctest --test-dir build --output-on-failure
+if [ "$TEST" = "ON" ]; then
+    ctest --test-dir build --output-on-failure
+fi

@@ -43,9 +43,12 @@ endif()
 # ================================================================
 if (BUILD_TESTS)
   include(CTest)
+  include(GoogleTest)
+
   enable_testing()
   # GoogleTest via FetchContent
   include(FetchContent)
+
   FetchContent_Declare(
     googletest
     URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
@@ -71,28 +74,35 @@ if (BUILD_TESTS)
     ${SDL2_LIBS}
   )
 
+  set(TEST_DIR ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/test)
   # 2) motor_controller_test (existing)
-  add_executable(motor_controller_test
-    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/motor_controller_test.cpp
+  add_executable(balancer_tests
+    ${TEST_DIR}/motor_runner_test.cpp
+    ${TEST_DIR}/control_loop_test.cpp
+    ${TEST_DIR}/latency_test.cpp
   )
-  target_link_libraries(motor_controller_test PRIVATE
-    balancer_common
-  )
-  add_test(NAME motor_controller_test COMMAND motor_controller_test)
+
+  target_link_libraries(balancer_tests PRIVATE balancer_common)
+  ## add_test(NAME motor_controller_test COMMAND motor_controller_test)
 
   # 3) control_loop_test (new)
-  add_executable(control_loop_test
-    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/control_loop_test.cpp
-  )
-  target_link_libraries(control_loop_test PRIVATE
-    balancer_common
-  )
-  add_test(NAME control_loop_test COMMAND control_loop_test)
+  #add_executable(control_loop_test
+  #  ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/control_loop_test.cpp
+  #)
+  #target_link_libraries(control_loop_test PRIVATE
+  #  balancer_common
+  #)
 
-# ================================================================
+  #add_test(NAME control_loop_test COMMAND control_loop_test)
+  gtest_discover_tests(balancer_tests
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    DISCOVERY_TIMEOUT 60
+  )# ================================================================
 #                       App (opt-in, hard checks)
 # ================================================================
 else()
+  set(CMAKE_CXX_COMPILER_LAUNCHER ccache)           # ccache
+
   if (NOT HAVE_SDL2)
     message(FATAL_ERROR "SDL2 not found. Install libsdl2-dev.")
   endif()
@@ -103,21 +113,62 @@ else()
     message(FATAL_ERROR "libpigpiod_if2 not found. Install pigpio (daemon client).")
   endif()
 
-  add_executable(motor_controller
-    ${CMAKE_SOURCE_DIR}/src/motor_controller.cpp
+  set(PX4_DIR ${CMAKE_SOURCE_DIR}/../PX4-Autopilot)
+  add_library(px4_ratecontrol STATIC
+    ${PX4_DIR}/src/lib/rate_control/rate_control.cpp
   )
-  target_include_directories(motor_controller PRIVATE
+
+  target_include_directories(px4_ratecontrol PUBLIC
+    ${PX4_DIR}/src/lib/rate_control   # RateControl.hpp
+    ${PX4_DIR}/src/lib/matrix                            # PX4 matrix headers
+    ${PX4_DIR}/src/lib                                   # mathlib lives here
+    ${PX4_DIR}/src/lib/mathlib              # math::Functions/Limits/radians
+    ${PX4_DIR}/platforms                # px4_platform_common/defines.h
+    ${PX4_DIR}/platforms/common/include                  # common px4 includes (harmless)
+    ${CMAKE_SOURCE_DIR}/px4_stub/
+)
+
+set(SRC_DIR ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller)
+
+  add_library(balancer_common STATIC
+    ${SRC_DIR}/xbox_controller.cpp
+    ${SRC_DIR}/control_loop.cpp
+    ${SRC_DIR}/ism330_iio_reader.cpp
+    ${SRC_DIR}/pitch_lpf.cpp
+  )
+
+  target_precompile_headers(balancer_common PRIVATE
+    <atomic> <thread> <chrono> <vector> <string> <unordered_map> <array> <algorithm> <cstdio> <cmath>
+  )
+
+  add_executable(motor_controller
+    ${SRC_DIR}/motor_controller.cpp
+  )
+
+  target_link_libraries(balancer_common
+  PUBLIC px4_ratecontrol
+  )
+
+  target_link_libraries(motor_controller
+  PRIVATE balancer_common
+  )
+
+
+  target_include_directories(balancer_common PUBLIC
     ${CMAKE_SOURCE_DIR}/src
     ${SDL2_INCS}
   )
-  target_link_libraries(motor_controller PRIVATE
+  target_link_libraries(balancer_common PUBLIC
     Threads::Threads
     ${SDL2_LIBS}
     ${PIGPIOD_LIB}
   )
-  # Optional librt if present (Linux)
-  find_library(RT_LIB rt)
-  if (RT_LIB)
-    target_link_libraries(motor_controller PRIVATE ${RT_LIB})
-  endif()
+  add_executable(imu_demo
+    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/extras/imu_demo.cpp
+  )
+
+  target_link_libraries(imu_demo
+  PRIVATE balancer_common
+  )
+
 endif()

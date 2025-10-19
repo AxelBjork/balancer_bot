@@ -6,17 +6,17 @@
 extern "C" {
 #endif
 
-#define PI_INPUT  0
+#define PI_INPUT 0
 #define PI_OUTPUT 1
 
 #ifndef PIGPIOD_STUB_IMPL
 // ---- Declarations only, real lib expected at link time ----
-int  set_mode   (int pi, unsigned gpio, unsigned mode);
-int  gpio_write (int pi, unsigned gpio, unsigned level);
-void time_sleep (double seconds);
+int set_mode(int pi, unsigned gpio, unsigned mode);
+int gpio_write(int pi, unsigned gpio, unsigned level);
+void time_sleep(double seconds);
 
-int  pigpio_start(const char *addr, const char *port);
-void pigpio_stop (int pi);
+int pigpio_start(const char *addr, const char *port);
+void pigpio_stop(int pi);
 
 #else
 // ---- Inline stub implementations for tests ----

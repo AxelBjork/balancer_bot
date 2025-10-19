@@ -1,68 +1,23 @@
-// XboxController.h
+// XboxController.h  (header-only includes kept tiny)
 #pragma once
-
-#include <SDL2/SDL.h>
-#include <stdexcept>
-#include <cmath>
-#include <algorithm>
+#include <memory>
 
 class XboxController {
 public:
-    XboxController() {
-        if (SDL_Init(SDL_INIT_JOYSTICK) < 0) {
-            throw std::runtime_error("SDL_Init failed");
-        }
-        if (SDL_NumJoysticks() < 1) {
-            throw std::runtime_error("No joystick found");
-        }
-        joystick_ = SDL_JoystickOpen(0);
-        if (!joystick_) {
-            throw std::runtime_error("Failed to open joystick 0");
-        }
-    }
+  XboxController();
+  ~XboxController();
 
-    ~XboxController() {
-        if (joystick_) SDL_JoystickClose(joystick_);
-        SDL_Quit();
-    }
+  XboxController(XboxController&&) noexcept;
+  XboxController& operator=(XboxController&&) noexcept;
 
-    void update() {
-        SDL_JoystickUpdate();
-    }
+  void update();
+  void setDeadzone(float dz);
+  void setAxisMap(int leftY_axis, int rightY_axis);
 
-    // Set deadzone [0..1). Default 0.05.
-    void setDeadzone(float dz) {
-        deadzone_ = std::clamp(dz, 0.0f, 0.9f);
-    }
-
-    // Optional: remap which axes are used for left/right Y
-    void setAxisMap(int leftY_axis, int rightY_axis) {
-        axis_leftY_  = leftY_axis;
-        axis_rightY_ = rightY_axis;
-    }
-
-    float leftY() const {
-        return apply_deadzone(normalize(SDL_JoystickGetAxis(joystick_, axis_leftY_)));
-    }
-
-    float rightY() const {
-        return apply_deadzone(normalize(SDL_JoystickGetAxis(joystick_, axis_rightY_)));
-    }
+  float leftY() const;
+  float rightY() const;
 
 private:
-    SDL_Joystick* joystick_{nullptr};
-    int   axis_leftY_  = 1;  // your working mapping
-    int   axis_rightY_ = 4;  // your working mapping
-    float deadzone_    = 0.05f;
-
-    static float normalize(Sint16 value) {
-        return static_cast<float>(value) / 32768.0f; // [-1,1]
-    }
-
-    float apply_deadzone(float v) const {
-        float a = std::fabs(v);
-        if (a < deadzone_) return 0.0f;
-        float s = (a - deadzone_) / (1.0f - deadzone_);
-        return (v < 0 ? -s : s);
-    }
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
 };
