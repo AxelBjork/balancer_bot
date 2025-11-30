@@ -45,6 +45,13 @@ struct FakeMotorRunner {
     return calls.load(std::memory_order_relaxed);
   }
 
+  int64_t getLeftSteps() const {
+    return 0;
+  }  // Fake implementation
+  int64_t getRightSteps() const {
+    return 0;
+  }
+
  private:
   std::atomic<double> last_left{0.0};
   std::atomic<double> last_right{0.0};

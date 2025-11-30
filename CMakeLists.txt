@@ -83,12 +83,15 @@ if (BUILD_TESTS)
   set(PX4_DIR ${CMAKE_SOURCE_DIR}/PX4-Autopilot)
   add_library(px4_ratecontrol STATIC
     ${PX4_DIR}/src/lib/rate_control/rate_control.cpp
+    ${PX4_DIR}/src/lib/pid/PID.cpp
   )
   target_include_directories(px4_ratecontrol PUBLIC
     ${PX4_DIR}/src/lib/rate_control
     ${PX4_DIR}/src/lib/matrix
     ${PX4_DIR}/src/lib
     ${PX4_DIR}/src/lib/mathlib
+    ${PX4_DIR}/src/lib/mathlib/math
+    ${PX4_DIR}/src
     ${PX4_DIR}/platforms
     ${PX4_DIR}/platforms/common/include
     ${CMAKE_SOURCE_DIR}/px4_stub
@@ -103,6 +106,7 @@ if (BUILD_TESTS)
     ${TEST_DIR}/latency_test.cpp
     ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/control_loop.cpp
     ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/pitch_lpf.cpp
+    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/stubs/pigpiod_stub.cpp
   )
 
   target_link_libraries(balancer_tests PRIVATE balancer_common)
@@ -139,15 +143,17 @@ else()
   set(PX4_DIR ${CMAKE_SOURCE_DIR}/PX4-Autopilot)
   add_library(px4_ratecontrol STATIC
     ${PX4_DIR}/src/lib/rate_control/rate_control.cpp
+    ${PX4_DIR}/src/lib/pid/PID.cpp
   )
 
   target_include_directories(px4_ratecontrol PUBLIC
     ${PX4_DIR}/src/lib/rate_control   # RateControl.hpp
     ${PX4_DIR}/src/lib/matrix                            # PX4 matrix headers
     ${PX4_DIR}/src/lib                                   # mathlib lives here
-    ${PX4_DIR}/src/lib/mathlib              # math::Functions/Limits/radians
+    ${PX4_DIR}/src
     ${PX4_DIR}/platforms                # px4_platform_common/defines.h
     ${PX4_DIR}/platforms/common/include                  # common px4 includes (harmless)
+    ${CMAKE_SOURCE_DIR}/px4_stub                         # px4_boardconfig.h stub
 )
 
 set(SRC_DIR ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller)
@@ -193,4 +199,33 @@ set(SRC_DIR ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller)
   PRIVATE balancer_common
   )
 
+endif()
+
+# ============================================================
+# Production executable for Raspberry Pi (when not building tests)
+# ============================================================
+if(NOT BUILD_TESTS)
+  message(STATUS "Building production executable for Raspberry Pi")
+  
+  # Main balancer executable
+  add_executable(balancer_pi
+    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/motor_controller.cpp
+    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/control_loop.cpp
+    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/pitch_lpf.cpp
+  )
+  
+  target_link_libraries(balancer_pi PRIVATE
+    balancer_common
+    pigpiod_if2
+    ${SDL2_LIBS}
+    Threads::Threads
+  )
+  
+  target_include_directories(balancer_pi PRIVATE
+    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller
+    ${SDL2_INCS}
+  )
+  
+  # Install to system (optional)
+  install(TARGETS balancer_pi DESTINATION bin)
 endif()

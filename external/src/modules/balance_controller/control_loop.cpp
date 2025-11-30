@@ -13,6 +13,7 @@
 #include <uORB/topics/rate_ctrl_status.h>  // if you need the status struct
 
 #include <matrix/matrix/math.hpp>
+#include <pid/PID.hpp>
 #include <rate_control.hpp>
 
 using matrix::Vector3f;
@@ -26,6 +27,7 @@ struct RateControllerCore::Impl {
   // IO
   std::function<void(float, float)> motors_cb;
   std::function<void(const Telemetry&)> tel_cb;
+  std::function<float()> velocity_cb;  // Velocity feedback in steps/s
 
   // State
   struct AtomicImu {
@@ -60,7 +62,8 @@ struct RateControllerCore::Impl {
   } latest_joy{};
 
   std::chrono::steady_clock::time_point last_ts{};
-  RateControl rc{};  // PX4 rate PID
+  RateControl rc{};    // PX4 rate PID
+  PID velocity_pid{};  // Velocity PID (steps/s error -> pitch angle setpoint)
 
   void thread_fn() {
     using namespace std::chrono;
@@ -80,8 +83,17 @@ struct RateControllerCore::Impl {
       float dt = std::clamp(duration<float>(s.t - last_ts).count(), 1.f / 2000.f, 0.05f);
       last_ts = s.t;
 
-      // outer loop: angle -> pitch rate setpoint
-      float rate_sp_rad_s = (float)(-ConfigPid::angle_to_rate_k * pitch_rad);
+      // Get velocity feedback (steps/s)
+      float current_velocity_sps = velocity_cb ? velocity_cb() : 0.0f;
+
+      // Outermost loop: velocity PID -> pitch angle setpoint
+      float pitch_setpoint_rad = velocity_pid.update(current_velocity_sps, dt);
+      pitch_setpoint_rad = std::clamp(pitch_setpoint_rad, -(float)ConfigPid::max_pitch_setpoint_rad,
+                                      (float)ConfigPid::max_pitch_setpoint_rad);
+
+      // Middle loop: pitch angle error -> pitch rate setpoint
+      float pitch_error_rad = pitch_setpoint_rad - pitch_rad;
+      float rate_sp_rad_s = (float)(ConfigPid::angle_to_rate_k * pitch_error_rad);
 
       // inner PX4 rate PID
       const Vector3f rate{0.f, gyro_rad_s, 0.f};
@@ -127,6 +139,11 @@ RateControllerCore::RateControllerCore() : p_(new Impl) {
       /*D*/ Vector3f(0.f, ConfigPid::rate_D, 0.f));
   p_->rc.setIntegratorLimit(Vector3f(0.f, ConfigPid::rate_I_lim, 0.f));
   p_->rc.setFeedForwardGain(Vector3f(0.f, ConfigPid::rate_FF, 0.f));
+
+  // Configure velocity PID
+  p_->velocity_pid.setGains(ConfigPid::vel_P, ConfigPid::vel_I, ConfigPid::vel_D);
+  p_->velocity_pid.setIntegralLimit(ConfigPid::vel_I_lim);
+  p_->velocity_pid.setSetpoint(0.0f);  // Target velocity = 0 (maintain position)
 }
 
 RateControllerCore::~RateControllerCore() {
@@ -156,4 +173,7 @@ void RateControllerCore::setTelemetrySink(std::function<void(const Telemetry&)> 
 }
 void RateControllerCore::setMotorOutputs(std::function<void(float, float)> motors_cb) {
   p_->motors_cb = std::move(motors_cb);
+}
+void RateControllerCore::setVelocityFeedback(std::function<float()> velocity_cb) {
+  p_->velocity_cb = std::move(velocity_cb);
 }
