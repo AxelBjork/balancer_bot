@@ -18,7 +18,8 @@
 
 struct PigpioCtx {
   explicit PigpioCtx(const char* host = nullptr, const char* port = nullptr) {
-    pi = pigpio_start(host, port);
+    pi = pigpio_start(const_cast<char*>(host),
+                      const_cast<char*>(port));
     if (pi < 0) throw std::runtime_error("pigpio_start failed");
   }
   ~PigpioCtx() { pigpio_stop(pi); }

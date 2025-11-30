@@ -1,0 +1,36 @@
+# Dockerfile for cross-compiling balancer_bot for Raspberry Pi 4
+FROM debian:bookworm-slim
+
+# Avoid interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install cross-compilation toolchain and build dependencies
+RUN dpkg --add-architecture arm64 && \
+    apt-get update && \
+    apt-get install -y \
+        cmake \
+        gcc-aarch64-linux-gnu \
+        g++-aarch64-linux-gnu \
+        build-essential \
+        git \
+        pkg-config \
+        ccache
+
+# Install pigpio 
+RUN apt-get install -y \
+        libsdl2-dev:arm64 \
+        libpigpiod-if-dev:arm64 \
+        curl \
+    && curl -L "https://raw.githubusercontent.com/joan2937/pigpio/master/pigpio.h" \
+         -o /usr/include/pigpio.h \
+    && rm -rf /var/lib/apt/lists/*
+
+# Make pkg-config prefer the ARM64 .pc files
+ENV PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig \
+    PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+
+# Set working directory
+WORKDIR /workspace
+
+# Default command
+CMD ["/bin/bash"]

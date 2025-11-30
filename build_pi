@@ -1,0 +1,31 @@
+#!/bin/bash
+# Cross-compile for Raspberry Pi 4 using Docker
+
+set -e
+
+IMAGE_NAME="balancer-cross"
+BUILD_DIR="build-pi"
+
+echo "Building Docker image with ARM64 toolchain..."
+docker build -f Dockerfile.cross -t ${IMAGE_NAME} .
+
+echo ""
+echo "Cross-compiling for Raspberry Pi..."
+docker run --rm \
+    -v "$(pwd):/workspace" \
+    -w /workspace \
+    ${IMAGE_NAME} \
+    bash -c "cmake -S . -B ${BUILD_DIR} \
+        -DCMAKE_TOOLCHAIN_FILE=toolchain-rpi4.cmake \
+        -DBUILD_TESTS=OFF \
+        -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build ${BUILD_DIR} -j\$(nproc)"
+
+echo ""
+echo "Build complete! Binary: ${BUILD_DIR}/balancer_pi"
+echo ""
+echo "Verify architecture:"
+file ${BUILD_DIR}/balancer_pi
+echo ""
+echo "Deploy to Pi:"
+echo "  scp ${BUILD_DIR}/balancer_pi pi@<ip>:~/"
