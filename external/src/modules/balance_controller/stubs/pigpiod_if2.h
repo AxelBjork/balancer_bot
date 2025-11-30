@@ -2,6 +2,7 @@
 #ifndef PIGPIOD_IF2_STUB_H
 #define PIGPIOD_IF2_STUB_H
 
+#include <cstdint>
 #ifdef __cplusplus
 extern "C" {
 #endif
