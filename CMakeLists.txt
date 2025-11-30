@@ -63,6 +63,12 @@ if (BUILD_TESTS)
     ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller
     ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/stubs
     ${SDL2_INCS}
+    ${CMAKE_SOURCE_DIR}/PX4-Autopilot/src/lib/rate_control
+    ${CMAKE_SOURCE_DIR}/PX4-Autopilot/src/lib/matrix
+    ${CMAKE_SOURCE_DIR}/PX4-Autopilot/src/lib
+    ${CMAKE_SOURCE_DIR}/PX4-Autopilot/platforms/common/include
+    ${CMAKE_SOURCE_DIR}/PX4-Autopilot/src/modules
+    ${CMAKE_SOURCE_DIR}/px4_stub
   )
 
   target_compile_definitions(balancer_common INTERFACE
@@ -74,12 +80,29 @@ if (BUILD_TESTS)
     ${SDL2_LIBS}
   )
 
+  set(PX4_DIR ${CMAKE_SOURCE_DIR}/PX4-Autopilot)
+  add_library(px4_ratecontrol STATIC
+    ${PX4_DIR}/src/lib/rate_control/rate_control.cpp
+  )
+  target_include_directories(px4_ratecontrol PUBLIC
+    ${PX4_DIR}/src/lib/rate_control
+    ${PX4_DIR}/src/lib/matrix
+    ${PX4_DIR}/src/lib
+    ${PX4_DIR}/src/lib/mathlib
+    ${PX4_DIR}/platforms
+    ${PX4_DIR}/platforms/common/include
+    ${CMAKE_SOURCE_DIR}/px4_stub
+  )
+  target_link_libraries(balancer_common INTERFACE px4_ratecontrol)
+
   set(TEST_DIR ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/test)
   # 2) motor_controller_test (existing)
   add_executable(balancer_tests
     ${TEST_DIR}/motor_runner_test.cpp
     ${TEST_DIR}/control_loop_test.cpp
     ${TEST_DIR}/latency_test.cpp
+    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/control_loop.cpp
+    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/pitch_lpf.cpp
   )
 
   target_link_libraries(balancer_tests PRIVATE balancer_common)
@@ -113,7 +136,7 @@ else()
     message(FATAL_ERROR "libpigpiod_if2 not found. Install pigpio (daemon client).")
   endif()
 
-  set(PX4_DIR ${CMAKE_SOURCE_DIR}/../PX4-Autopilot)
+  set(PX4_DIR ${CMAKE_SOURCE_DIR}/PX4-Autopilot)
   add_library(px4_ratecontrol STATIC
     ${PX4_DIR}/src/lib/rate_control/rate_control.cpp
   )
@@ -125,7 +148,6 @@ else()
     ${PX4_DIR}/src/lib/mathlib              # math::Functions/Limits/radians
     ${PX4_DIR}/platforms                # px4_platform_common/defines.h
     ${PX4_DIR}/platforms/common/include                  # common px4 includes (harmless)
-    ${CMAKE_SOURCE_DIR}/px4_stub/
 )
 
 set(SRC_DIR ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller)
