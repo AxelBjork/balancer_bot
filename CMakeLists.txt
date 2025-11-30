@@ -83,12 +83,15 @@ if (BUILD_TESTS)
   set(PX4_DIR ${CMAKE_SOURCE_DIR}/PX4-Autopilot)
   add_library(px4_ratecontrol STATIC
     ${PX4_DIR}/src/lib/rate_control/rate_control.cpp
+    ${PX4_DIR}/src/lib/pid/PID.cpp
   )
   target_include_directories(px4_ratecontrol PUBLIC
     ${PX4_DIR}/src/lib/rate_control
     ${PX4_DIR}/src/lib/matrix
     ${PX4_DIR}/src/lib
     ${PX4_DIR}/src/lib/mathlib
+    ${PX4_DIR}/src/lib/mathlib/math
+    ${PX4_DIR}/src
     ${PX4_DIR}/platforms
     ${PX4_DIR}/platforms/common/include
     ${CMAKE_SOURCE_DIR}/px4_stub
@@ -103,6 +106,7 @@ if (BUILD_TESTS)
     ${TEST_DIR}/latency_test.cpp
     ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/control_loop.cpp
     ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/pitch_lpf.cpp
+    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/stubs/pigpiod_stub.cpp
   )
 
   target_link_libraries(balancer_tests PRIVATE balancer_common)

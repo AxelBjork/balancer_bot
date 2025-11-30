@@ -21,7 +21,7 @@ int set_mode(int pi, unsigned gpio, unsigned mode);
 int gpio_write(int pi, unsigned gpio, unsigned level);
 void time_sleep(double seconds);
 
-int pigpio_start(const char *addr, const char *port);
+int pigpio_start(const char* addr, const char* port);
 void pigpio_stop(int pi);
 
 typedef struct {
@@ -31,26 +31,24 @@ typedef struct {
 } gpioPulse_t;
 
 #else
-// ---- Inline stub implementations for tests ----
-static inline int set_mode(int, unsigned, unsigned) { return 0; }
-static inline int gpio_write(int, unsigned, unsigned) { return 0; }
-static inline void time_sleep(double) {}
+// ---- Declarations for test stubs (implemented in pigpiod_stub.cpp) ----
+int set_mode(int pi, unsigned gpio, unsigned mode);
+int gpio_write(int pi, unsigned gpio, unsigned level);
+void time_sleep(double seconds);
 
-static inline int pigpio_start(const char * /*addr*/, const char * /*port*/) {
-  // Return a dummy handle >=0 so PigpioCtx sees success
-  return 1;
-}
-static inline void pigpio_stop(int /*pi*/) {
-  // no-op
-}
+int pigpio_start(const char* addr, const char* port);
+void pigpio_stop(int pi);
 
 // Wave stubs
-static inline int wave_clear(int) { return 0; }
-static inline int wave_add_generic(int, unsigned, gpioPulse_t *) { return 0; }
-static inline int wave_create(int) { return 0; }
-static inline int wave_delete(int, int) { return 0; }
-static inline int wave_send_repeat(int, int) { return 0; }
-static inline int wave_tx_stop(int) { return 0; }
+int wave_clear(int pi);
+int wave_add_generic(int pi, unsigned numPulses, gpioPulse_t* pulses);
+int wave_create(int pi);
+int wave_delete(int pi, int wave_id);
+int wave_send_repeat(int pi, int wave_id);
+int wave_tx_stop(int pi);
+
+// Helper to reset stub state (not part of pigpio API)
+void pigpio_stub_reset();
 #endif
 
 #ifdef __cplusplus
