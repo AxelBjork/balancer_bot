@@ -8,6 +8,29 @@ cd /home/axel/Public/Project/vscode/balancer_bot/PX4-Autopilot
 make px4_sitl_default -j$(nproc) EXTERNAL_MODULES_LOCATION=../external
 ```
 
+## Build Options
+
+### Simulator & Tests
+To build the stand-alone simulator and unit tests, enable the `BUILD_TESTS` option. This allows developing and testing the control logic without physical hardware.
+
+```bash
+cmake -B build -DBUILD_TESTS=ON .
+cmake --build build
+```
+
+**Running the Simulator:**
+```bash
+./build/balancer_simulator
+```
+The simulator runs the full control loop against a mock hardware environment (physics model + mock IMU + mock motors).
+
+### Production Build (Hardware)
+For the actual robot (Cross-compilation or on-device build), standard build without tests is sufficient:
+```bash
+cmake -B build .
+cmake --build build
+```
+
 ## Run SITL
 ```
 make px4_sitl none

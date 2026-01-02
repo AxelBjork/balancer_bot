@@ -46,3 +46,4 @@ external/src/modules/balance_controller/imu_demo
 external/src/modules/balance_controller/xbox_demo
 external/src/modules/balance_controller/motor_off
 build-pi/*
+PX4-Autopilot/*

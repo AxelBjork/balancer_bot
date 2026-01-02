@@ -21,8 +21,8 @@ struct ConfigPid {
 
   // Velocity PID (outermost loop): velocity error -> pitch angle setpoint
   // Start with P only, add I for steady-state error elimination, D for damping
-  static constexpr double vel_P = 0.001;                 // rad per (steps/s) error
-  static constexpr double vel_I = 0.0005;                // integral gain
+  static constexpr double vel_P = 0.0005;                 // rad per (steps/s) error
+  static constexpr double vel_I = 0.002;                // integral gain
   static constexpr double vel_D = 0.0;                   // derivative gain
   static constexpr double vel_I_lim = 0.2;               // max integral contribution (rad)
   static constexpr double max_pitch_setpoint_rad = 0.3;  // ~17 degrees max lean

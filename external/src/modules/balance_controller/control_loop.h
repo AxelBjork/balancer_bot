@@ -2,6 +2,7 @@
 #pragma once
 #include <chrono>
 #include <functional>
+#include <cstdio>
 
 #include "control_interface.h"
 
@@ -38,7 +39,9 @@ class CascadedController {
  public:
   CascadedController(MotorRunnerT& motors) : motors_(motors) {
     core_.setMotorOutputs(
-        [&](float left_sps, float right_sps) { motors.setTargets(left_sps, right_sps); });
+        [this](float left_sps, float right_sps) { 
+            motors_.setTargets(left_sps, right_sps); 
+        });
 
     core_.setVelocityFeedback([this]() -> float {
       // Velocity estimator using step tracking
@@ -66,10 +69,9 @@ class CascadedController {
       int64_t left_delta = left_steps - last_left_steps_;
       int64_t right_delta = right_steps - last_right_steps_;
 
-      float left_velocity = left_delta / dt_sec;
-      float right_velocity = right_delta / dt_sec;
+      float left_velocity = (float)left_delta / dt_sec;
+      float right_velocity = (float)right_delta / dt_sec;
 
-      // Average left and right for forward velocity
       float velocity = (left_velocity + right_velocity) / 2.0f;
 
       // Update state

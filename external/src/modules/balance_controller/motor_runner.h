@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cmath>
 #include <mutex>
+#include <cstdio>
 
 #include "stepper.h"
 
@@ -243,6 +244,25 @@ class MotorRunner {
     return steps_right_.load(std::memory_order_relaxed);
   }
 
+  double getAverageSpeedSps() const {
+      // Return average commanded speed from last cycle
+       double L = last_applied_fwdL_ ? (double)last_applied_hzL_ : -(double)last_applied_hzL_;
+       double R = last_applied_fwdR_ ? (double)last_applied_hzR_ : -(double)last_applied_hzR_;
+       // Note: "Forward" direction depends on robot frame. 
+       // In MotorRunner, fwdL/fwdR are raw DIR pin states (or logic states).
+       // We need to know if "Forward" means "Robot Forward".
+       // The Stepper object handles invert logic. 
+       // If L_.forwardFromSps(positive_val) sets fwdL=true, then positive sps is forward.
+       // So we can just trust the signed SPS command.
+       
+       // Better: just use last_cmd_L_ and last_cmd_R_ which are signed SPS requests?
+       // Yes, last_applied_hz is derived from last_cmd. 
+       // Actually, last_applied_hz is the quantization. 
+       // But for feedback, the quantized value is closer to truth.
+       
+       return (L + R) / 2.0;
+  }
+
  private:
   static inline double clampDelta(double from, double to, double max_delta) {
     const double d = to - from;
@@ -318,14 +338,19 @@ class MotorRunner {
       // We need to know what was running.
       // Let's store what we applied last time.
 
-      long stepsL = std::llround(last_applied_hzL_ * d_sec);
-      long stepsR = std::llround(last_applied_hzR_ * d_sec);
+      double stepsL = last_applied_hzL_ * d_sec;
+      double stepsR = last_applied_hzR_ * d_sec;
 
-      if (!last_applied_fwdL_) stepsL = -stepsL;
-      if (!last_applied_fwdR_) stepsR = -stepsR;
+      if (last_cmd_L_ < 0.0) stepsL = -stepsL;
+      if (last_cmd_R_ < 0.0) stepsR = -stepsR;
 
-      steps_left_ += stepsL;
-      steps_right_ += stepsR;
+      accum_L_ += stepsL;
+      accum_R_ += stepsR;
+
+      int64_t totalL = static_cast<int64_t>(accum_L_);
+      int64_t totalR = static_cast<int64_t>(accum_R_);
+      steps_left_.store(totalL, std::memory_order_relaxed);
+      steps_right_.store(totalR, std::memory_order_relaxed);
     }
     last_call_time_ = now;
     last_applied_hzL_ = hzL;
@@ -351,4 +376,5 @@ class MotorRunner {
   unsigned last_applied_hzL_{0}, last_applied_hzR_{0};
   bool last_applied_fwdL_{true}, last_applied_fwdR_{true};
   std::atomic<int64_t> steps_left_{0}, steps_right_{0};
+  double accum_L_{0.0}, accum_R_{0.0};
 };

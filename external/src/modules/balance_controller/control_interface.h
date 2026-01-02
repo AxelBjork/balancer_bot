@@ -25,4 +25,9 @@ struct Telemetry {
   double out_norm;     // PX4 rate controller normalized output (pitch axis)
   double u_sps;        // wheel command [steps/s]
   double integ_pitch;  // PX4 integral state for pitch
+  // Velocity PID debug
+  double vel_error;
+  double vel_p_term;
+  double vel_i_term;
+  double pitch_sp_deg;
 };

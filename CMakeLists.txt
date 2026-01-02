@@ -52,7 +52,6 @@ if (BUILD_TESTS)
   FetchContent_Declare(
     googletest
     URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
-    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   )
   set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
   FetchContent_MakeAvailable(googletest)
@@ -124,7 +123,20 @@ if (BUILD_TESTS)
   gtest_discover_tests(balancer_tests
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     DISCOVERY_TIMEOUT 60
-  )# ================================================================
+  )
+
+  # 4) balancer_simulator (standalone sim)
+  add_executable(balancer_simulator
+    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/simulator_main.cpp
+    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/simulator/balancer_simulator.cpp
+    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/control_loop.cpp
+    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/pitch_lpf.cpp
+    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/ism330_iio_reader.cpp
+    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/xbox_controller.cpp
+    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/stubs/pigpiod_stub.cpp
+  )
+  target_link_libraries(balancer_simulator PRIVATE balancer_common)
+# ================================================================
 #                       App (opt-in, hard checks)
 # ================================================================
 else()

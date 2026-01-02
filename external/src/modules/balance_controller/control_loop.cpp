@@ -62,13 +62,15 @@ struct RateControllerCore::Impl {
   } latest_joy{};
 
   std::chrono::steady_clock::time_point last_ts{};
+  std::chrono::steady_clock::time_point start_ts{};
   RateControl rc{};    // PX4 rate PID
   PID velocity_pid{};  // Velocity PID (steps/s error -> pitch angle setpoint)
 
   void thread_fn() {
     using namespace std::chrono;
     alive.store(true, std::memory_order_relaxed);
-    last_ts = steady_clock::now();
+    start_ts = steady_clock::now();
+    last_ts = start_ts;
     auto next = last_ts;
     const auto dt_nom = duration<double>(1.0 / ConfigPid::control_hz);
 
@@ -117,14 +119,20 @@ struct RateControllerCore::Impl {
         rate_ctrl_status_s st{};
         rc.getRateControlStatus(st);
         Telemetry t{};
-        t.t_sec = duration<double>(last_ts.time_since_epoch()).count();
+        t.t_sec = duration<double>(last_ts - start_ts).count();
         t.age_ms = duration<double, std::milli>(steady_clock::now() - last_ts).count();
         t.pitch_deg = pitch_rad * 180.0 / M_PI;
         t.pitch_rate_dps = gyro_rad_s * 180.0 / M_PI;
         t.rate_sp_dps = rate_sp_rad_s * 180.0 / M_PI;
         t.out_norm = u(1);
         t.u_sps = u_sps;
-        t.integ_pitch = st.pitchspeed_integ;
+        t.integ_pitch = st.pitchspeed_integ;        
+        // Debug Vel PID
+        t.vel_error = 0.0f - current_velocity_sps; // Setpoint is 0
+        t.vel_i_term = velocity_pid.getIntegral();
+        t.vel_p_term = t.vel_error * ConfigPid::vel_P; // Approximate P-term
+        t.pitch_sp_deg = pitch_setpoint_rad * 180.0 / M_PI;
+        
         tel_cb(std::move(t));
       }
     }
@@ -143,6 +151,7 @@ RateControllerCore::RateControllerCore() : p_(new Impl) {
   // Configure velocity PID
   p_->velocity_pid.setGains(ConfigPid::vel_P, ConfigPid::vel_I, ConfigPid::vel_D);
   p_->velocity_pid.setIntegralLimit(ConfigPid::vel_I_lim);
+  p_->velocity_pid.setOutputLimit(ConfigPid::max_pitch_setpoint_rad);
   p_->velocity_pid.setSetpoint(0.0f);  // Target velocity = 0 (maintain position)
 }
 

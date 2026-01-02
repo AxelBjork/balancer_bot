@@ -24,6 +24,10 @@ namespace {
 constexpr double kAccelScale = 0.000598205;
 constexpr double kGyroScale  = 0.000152716;
 constexpr const char* kTriggerName = "imu833";
+const char* get_iio_root() {
+  const char* env = std::getenv("IIO_ROOT");
+  return env ? env : "/sys";
+}
 
 // Fixed packed layout: s16 x3 + s64 ts => 2+2+2+8 = 14 bytes (stride aligned to 16)
 constexpr std::size_t kOffX = 0;
@@ -84,11 +88,14 @@ inline Ism330IioReader::TimePoint iio_realtime_ns_to_steady(int64_t ts_ns) {
 }
 
 inline std::string devCharFromSysfs(const fs::path& sys) {
-  return "/dev/" + sys.filename().string();
+  const char* env = std::getenv("IIO_ROOT");
+  std::string prefix = env ? (std::string(env) + "/dev/") : "/dev/";
+  return prefix + sys.filename().string();
 }
 
 fs::path findTriggerDirByName(const std::string& name) {
-  const fs::path base{"/sys/bus/iio/devices"};
+  const fs::path root{get_iio_root()};
+  const fs::path base = root / "bus/iio/devices";
   for (auto& ent : fs::directory_iterator(base)) {
     if (!ent.is_directory()) continue;
     if (ent.path().filename().string().rfind("trigger", 0) != 0) continue;
@@ -96,7 +103,7 @@ fs::path findTriggerDirByName(const std::string& name) {
       if (readOneLineStrict(ent.path() / "name") == name) return ent.path();
     } catch (...) {}
   }
-  fs::create_directories("/sys/kernel/config/iio/triggers/hrtimer/" + name);
+  fs::create_directories(root / "kernel/config/iio/triggers/hrtimer/" / name);
   for (auto& ent : fs::directory_iterator(base)) {
     if (!ent.is_directory()) continue;
     if (ent.path().filename().string().rfind("trigger", 0) != 0) continue;
@@ -118,7 +125,8 @@ struct Ism330IioReader::Impl {
   int fd_gyro{-1};
 
   void discoverSplitDevices() {
-    const fs::path base{"/sys/bus/iio/devices"};
+    const fs::path root{get_iio_root()};
+    const fs::path base = root / "bus/iio/devices";
     if (!fs::exists(base)) throw std::runtime_error("No IIO sysfs at " + base.string());
     for (auto& ent : fs::directory_iterator(base)) {
       if (!ent.is_directory()) continue;
