@@ -25,7 +25,9 @@ cmake --build build
 The simulator runs the full control loop against a mock hardware environment (physics model + mock IMU + mock motors).
 
 ### Production Build (Hardware)
-For the actual robot (Cross-compilation or on-device build), standard build without tests is sufficient:
+For cross-compilation instructions and deployment to the Raspberry Pi, see [Cross Compilation Guide](doc/cross_compile.md).
+
+For native on-device builds:
 ```bash
 cmake -B build .
 cmake --build build

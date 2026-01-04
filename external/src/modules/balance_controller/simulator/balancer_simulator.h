@@ -16,8 +16,9 @@ int pigpio_stub_get_gpio_level(int pin);
 
 struct SimulatorConfig {
   std::filesystem::path iio_root = "/tmp/balancer_sim_root";
-  double dt = 0.005; // Simulation step 5ms (200Hz)
-  double com_angle_offset_rad = 0.0; // COM angular offset (positive = COM forward)
+  double dt = 0.001; // Simulation step 1ms (1000Hz)
+  double com_angle_offset_rad = 0.001; // COM angular offset (positive = COM forward)
+  double initial_pitch_deg = 2.0; // Initial pitch angle (positive = forward)
 };
 
 class BalancerSimulator {
@@ -56,7 +57,7 @@ private:
   const double gravity = 9.81;
   const double wheel_radius = 0.081 / 2.0; // 81mm diameter
   const double robot_mass = 1.0; // kg
-  const double center_of_mass_height = 0.16 / 2.0; // Assume COM is at half height of 16cm
+  const double center_of_mass_height = 0.05; // Lower COM (motors are heavy and low)
   // Moment of Inertia about Axle: I = I_com + m*l^2. 
   // Modeling as a rod of height h: I_com = 1/12 * m * h^2.
   // I_axle = m * (h^2/12 + (h/2)^2) = m * (h^2/12 + h^2/4) = m * h^2 * (1+3)/12 = m * h^2 / 3.

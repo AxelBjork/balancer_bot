@@ -66,6 +66,11 @@ struct RateControllerCore::Impl {
   RateControl rc{};    // PX4 rate PID
   PID velocity_pid{};  // Velocity PID (steps/s error -> pitch angle setpoint)
 
+  // Split-rate state
+  int vel_decimation_counter{0};
+  float dt_velocity_accum{0.0f};
+  float pitch_setpoint_rad{0.0f};
+
   void thread_fn() {
     using namespace std::chrono;
     alive.store(true, std::memory_order_relaxed);
@@ -88,10 +93,19 @@ struct RateControllerCore::Impl {
       // Get velocity feedback (steps/s)
       float current_velocity_sps = velocity_cb ? velocity_cb() : 0.0f;
 
-      // Outermost loop: velocity PID -> pitch angle setpoint
-      float pitch_setpoint_rad = velocity_pid.update(current_velocity_sps, dt);
-      pitch_setpoint_rad = std::clamp(pitch_setpoint_rad, -(float)ConfigPid::max_pitch_setpoint_rad,
-                                      (float)ConfigPid::max_pitch_setpoint_rad);
+      // Decimate Velocity Loop (e.g. 100Hz -> 10Hz)
+      dt_velocity_accum += dt;
+      if (++vel_decimation_counter >= ConfigPid::velocity_decimation) {
+          vel_decimation_counter = 0;
+          
+          // Outermost loop: velocity PID -> pitch angle setpoint
+          // Update using accumulated time since last update
+          pitch_setpoint_rad = velocity_pid.update(current_velocity_sps, dt_velocity_accum);
+          pitch_setpoint_rad = std::clamp(pitch_setpoint_rad, -(float)ConfigPid::max_pitch_setpoint_rad,
+                                          (float)ConfigPid::max_pitch_setpoint_rad);
+          
+          dt_velocity_accum = 0.0f;
+      }
 
       // Middle loop: pitch angle error -> pitch rate setpoint
       float pitch_error_rad = pitch_setpoint_rad - pitch_rad;

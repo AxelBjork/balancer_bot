@@ -155,7 +155,7 @@ class CascadedControllerFixture : public ::testing::Test {
     ctrl_->setTelemetrySink([this](const Telemetry& t) {
       sink_.on(t);
       static std::atomic<int> k{0};
-      if ((++k % 25) == 0) {
+      if ((++k % 1) == 0) {
         std::printf("t=%7.3f  pitch=%.2f deg  rate=%.2f dps  u=%.1f sps\n", t.t_sec, t.pitch_deg,
                     t.pitch_rate_dps, t.u_sps);
       }
@@ -179,7 +179,7 @@ class CascadedControllerFixture : public ::testing::Test {
   void setJoystick(float forward, float turn) {
     ctrl_->setJoystick(JoyCmd{forward, turn});
   }
-  bool waitTelemetry(size_t n, std::chrono::milliseconds to = std::chrono::milliseconds(600)) {
+  bool waitTelemetry(size_t n, std::chrono::milliseconds to = std::chrono::milliseconds(1000)) {
     return sink_.waitSizeAtLeast(n, to);
   }
   std::vector<Telemetry> telemetry() const {

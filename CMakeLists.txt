@@ -8,7 +8,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Options: build the quick test by default; app is opt-in and *hard* requires libs.
-option(BUILD_TESTS "Build motor_controller_test with stubbed pigpio + SDL2" ON)
+option(BUILD_TESTS "Build unit tests" ON)
 
 find_package(Threads REQUIRED)
 

@@ -109,6 +109,22 @@ RUN wget https://packages.osrfoundation.org/gazebo.gpg -O /usr/share/keyrings/pk
     protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
 
+# Cross-Compilation Support (Raspberry Pi 4 / ARM64)
+RUN dpkg --add-architecture arm64 \
+    && cp /etc/apt/sources.list /etc/apt/sources.list.bak \
+    && sed -i 's/^deb http/deb [arch=amd64] http/' /etc/apt/sources.list \
+    && echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse" | tee /etc/apt/sources.list.d/arm64.list \
+    && echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe multiverse" | tee -a /etc/apt/sources.list.d/arm64.list \
+    && echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe multiverse" | tee -a /etc/apt/sources.list.d/arm64.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        crossbuild-essential-arm64 \
+        libsdl2-dev:arm64 \
+        libpigpiod-if-dev:arm64 \
+        curl \
+    && curl -L "https://raw.githubusercontent.com/joan2937/pigpio/master/pigpio.h" \
+         -o /usr/include/pigpio.h \
+    && rm -rf /var/lib/apt/lists/*
+
 # Setup a non-root user 'vscode' with sudo access
 ARG USERNAME=vscode
 ARG USER_UID=1000

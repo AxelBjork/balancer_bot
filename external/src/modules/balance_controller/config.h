@@ -11,7 +11,7 @@ struct AxisCfg {
 
 struct Config {
   // ========= General =========
-  static constexpr int   run_seconds   = 8;
+  static constexpr int   run_seconds   = 60;
   static constexpr double wheel_diam_m       = 0.080;   // 80 mm
   static constexpr double steps_per_rev      = 360/1.8 * 16.0; // 1.8° * 16x
   static constexpr double meters_per_step    = M_PI * wheel_diam_m / steps_per_rev;
@@ -38,7 +38,7 @@ struct Config {
   static constexpr double max_tilt_rad   = 5.0 * (M_PI / 180.0);
 
   static constexpr int    command_hz    = 100;
-  static constexpr int    kPrintEvery   = 25;
+  static constexpr int    kPrintEvery   = 15;
   static constexpr float  deadzone      = 0.05f;
   static constexpr bool   invert_left   = false;
   static constexpr bool   invert_right  = true;

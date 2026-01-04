@@ -15,9 +15,12 @@ int main() {
 
   std::cout << "Starting Balancer Simulator..." << std::endl;
 
-  // Initialize Simulator (creates device files)
+  // Initialize Simulator
   BalancerSimulator::Config sim_cfg;
-  sim_cfg.com_angle_offset_rad = 0.0 * M_PI / 180.0; // 0.1 degree COM offset
+  // COM angular offset (positive = COM forward)
+  sim_cfg.com_angle_offset_rad = 0.005; 
+  // Initial pitch angle (positive = forward)
+  sim_cfg.initial_pitch_deg = 5.0;
   
   BalancerSimulator sim(sim_cfg);
   sim.start();

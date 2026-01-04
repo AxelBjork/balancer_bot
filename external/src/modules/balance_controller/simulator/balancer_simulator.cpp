@@ -13,7 +13,7 @@
 namespace fs = std::filesystem;
 
 BalancerSimulator::BalancerSimulator(const Config& cfg) : cfg_(cfg) {
-  state_.pitch = 1.0 * M_PI / 180.0; // Initial tilt 1.0 degrees
+  state_.pitch = cfg_.initial_pitch_deg * M_PI / 180.0; // Initial tilt 1.0 degrees
   setup_mock_hw();
 }
 
