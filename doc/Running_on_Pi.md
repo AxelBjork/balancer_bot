@@ -27,7 +27,7 @@ This will:
 You can deploy and run the application on the Raspberry Pi with a single command (run from the host machine):
 
 ```bash
-scp build-pi/balancer_pi pi@rpi4:~/ && ssh -t pi@rpi4 'sudo pigpiod 2>/dev/null || true; chmod +x ~/balancer_pi && sudo ./balancer_pi'
+scp build-pi/balancer_pi pi@rpi4:~/ && ssh -t pi@rpi4 "echo ism330dhcx 0x6a | sudo tee /sys/bus/i2c/devices/i2c-1/new_device; chmod +x ~/balancer_pi && sudo ~/balancer_pi"
 ```
 
 This command will:

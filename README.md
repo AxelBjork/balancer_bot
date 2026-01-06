@@ -210,6 +210,7 @@ ls /sys/bus/iio/devices/
 echo 0x6a | sudo tee /sys/bus/i2c/devices/i2c-1/delete_device 2>/dev/null
 echo ism330dhcx 0x6a | sudo tee /sys/bus/i2c/devices/i2c-1/new_device
 ls /sys/bus/iio/devices/
+sudo chmod 0777 /sys/kernel/config/iio/triggers
 
 # Unittest
 

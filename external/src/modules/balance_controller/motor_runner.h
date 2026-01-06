@@ -3,8 +3,8 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
-#include <mutex>
 #include <cstdio>
+#include <mutex>
 
 #include "stepper.h"
 
@@ -244,23 +244,57 @@ class MotorRunner {
     return steps_right_.load(std::memory_order_relaxed);
   }
 
+  int64_t getActualLeftSteps() const {
+    return actual_steps_left_.load(std::memory_order_relaxed);
+  }
+  int64_t getActualRightSteps() const {
+    return actual_steps_right_.load(std::memory_order_relaxed);
+  }
+
   double getAverageSpeedSps() const {
-      // Return average commanded speed from last cycle
-       double L = last_applied_fwdL_ ? (double)last_applied_hzL_ : -(double)last_applied_hzL_;
-       double R = last_applied_fwdR_ ? (double)last_applied_hzR_ : -(double)last_applied_hzR_;
-       // Note: "Forward" direction depends on robot frame. 
-       // In MotorRunner, fwdL/fwdR are raw DIR pin states (or logic states).
-       // We need to know if "Forward" means "Robot Forward".
-       // The Stepper object handles invert logic. 
-       // If L_.forwardFromSps(positive_val) sets fwdL=true, then positive sps is forward.
-       // So we can just trust the signed SPS command.
-       
-       // Better: just use last_cmd_L_ and last_cmd_R_ which are signed SPS requests?
-       // Yes, last_applied_hz is derived from last_cmd. 
-       // Actually, last_applied_hz is the quantization. 
-       // But for feedback, the quantized value is closer to truth.
-       
-       return (L + R) / 2.0;
+    // Return average of CURRENT commanded targets (no lag)
+    // Reading atomics is thread-safe and gives immediate feedback
+    double L = tgt_left_.load(std::memory_order_relaxed);
+    double R = tgt_right_.load(std::memory_order_relaxed);
+    return (L + R) / 2.0;
+  }
+
+  // Stateful velocity feedback based on actual steps
+  // Call this periodically (e.g. at 10Hz or 100Hz) to get the average speed over the interval.
+  float getActualSpeedSps() {
+    std::lock_guard<std::mutex> lk(vel_mu_);
+    auto now = std::chrono::steady_clock::now();
+
+    int64_t left_steps = actual_steps_left_.load(std::memory_order_relaxed);
+    int64_t right_steps = actual_steps_right_.load(std::memory_order_relaxed);
+
+    if (last_vel_time_.time_since_epoch().count() == 0) {
+      last_vel_left_ = left_steps;
+      last_vel_right_ = right_steps;
+      last_vel_time_ = now;
+      return 0.0f;
+    }
+
+    std::chrono::duration<float> dt = now - last_vel_time_;
+    float dt_sec = dt.count();
+
+    if (dt_sec < 0.0001f) {
+      return last_vel_val_;
+    }
+
+    int64_t dl = left_steps - last_vel_left_;
+    int64_t dr = right_steps - last_vel_right_;
+
+    float vL = (float)dl / dt_sec;
+    float vR = (float)dr / dt_sec;
+    float v = (vL + vR) / 2.0f;
+
+    last_vel_left_ = left_steps;
+    last_vel_right_ = right_steps;
+    last_vel_time_ = now;
+    last_vel_val_ = v;
+
+    return v;
   }
 
  private:
@@ -271,14 +305,37 @@ class MotorRunner {
     return to;
   }
 
-  static inline unsigned clampSpsToHzRounded(
-      double sps, unsigned kMinPulse = (DualWave::kMinPulseUs ? DualWave::kMinPulseUs : 1),
-      double kMaxFreqHz = 50'000.0) {
+  // Sigma-Delta Error State
+  double sd_error_L_{0.0};
+  double sd_error_R_{0.0};
+
+  static inline std::pair<unsigned, unsigned> calculatePulsesPerFrame(
+      double sps, double& error_acc, unsigned kFrameUs = DualWave::kFrameUs,
+      unsigned kMinPulse = DualWave::kMinPulse) {
     double f = std::fabs(sps);
-    const double max_by_pulse = 1e6 / (2.0 * double(kMinPulse));
-    if (f > kMaxFreqHz) f = kMaxFreqHz;
-    if (f > max_by_pulse) f = max_by_pulse;
-    return (f < 1.0) ? 0u : static_cast<unsigned>(std::llround(f));
+    // Max theoretical pulses per frame
+    const double max_pulses_possible = double(kFrameUs) / (2.0 * double(kMinPulse));
+
+    // Desired pulses this frame
+    double desired_pulses = f * double(kFrameUs) / 1e6;
+    if (desired_pulses > max_pulses_possible) desired_pulses = max_pulses_possible;
+
+    // Sigma-Delta modulation
+    double total = desired_pulses + error_acc;
+    unsigned pulses = (unsigned)std::llround(total);
+    // Clamp to valid range
+    if (pulses > (unsigned)max_pulses_possible) pulses = (unsigned)max_pulses_possible;
+
+    // Update error for next frame
+    error_acc = total - pulses;
+
+    // Convert back to "Hz" for DualWave API
+    // DualWave does: n = llround(hz * kFrameUs / 1e6)
+    // We want n = pulses. So hz = pulses * 1e6 / kFrameUs.
+    // This results in exact integer pulses in DualWave.
+    if (pulses == 0) return {0, 0};
+    unsigned hz = (unsigned)std::llround(double(pulses) * 1e6 / double(kFrameUs));
+    return {hz, pulses};
   }
 
   void applyOnce() {
@@ -292,12 +349,20 @@ class MotorRunner {
     const bool fwdL = L_.forwardFromSps(tgtL);
     const bool fwdR = R_.forwardFromSps(tgtR);
 
-    const unsigned hzL = clampSpsToHzRounded(tgtL);
-    const unsigned hzR = clampSpsToHzRounded(tgtR);
+    // Calculate Hz using Sigma-Delta
+    auto resL = calculatePulsesPerFrame(tgtL, sd_error_L_);
+    auto resR = calculatePulsesPerFrame(tgtR, sd_error_R_);
+    const unsigned hzL = resL.first;
+    const unsigned pulsesL = resL.second;
+    const unsigned hzR = resR.first;
+    const unsigned pulsesR = resR.second;
+
+    // Actual steps are now integrated below based on active Hz
 
     if (hzL == 0u && hzR == 0u) {
       wave_.stop();
-      last_cmd_L_ = last_cmd_R_ = 0.0;
+      last_cmd_L_ = tgtL;
+      last_cmd_R_ = tgtR;
       return;
     }
 
@@ -312,37 +377,15 @@ class MotorRunner {
     wave_.apply(hzL, hzR);
 
     // Step tracking
-    // We approximate steps by integrating the commanded rate over the interval.
-    // Ideally we would count actual pulses generated, but for now this is a good approximation
-    // assuming the motors keep up.
-    // Note: This is "open loop" tracking.
-    // Interval is roughly 1.0 / control_hz (e.g. 1ms)
-    // But we don't have exact dt here easily without measuring time.
-    // However, MotorRunner is typically called at a fixed rate.
-    // Let's assume the caller calls us at the expected rate for now, or we could measure time.
-    // Better: The wave engine generates pulses. If we trust the wave engine, we know exactly how
-    // many pulses are generated per second (hzL, hzR). But we only know the RATE, not the duration
-    // until the next call. Actually, DualWave generates a repeating train. It runs UNTIL we change
-    // it. So we should integrate (rate * dt).
-
     auto now = std::chrono::steady_clock::now();
     if (last_call_time_.time_since_epoch().count() > 0) {
       std::chrono::duration<double> dt = now - last_call_time_;
       double d_sec = dt.count();
 
-      // Integrate the PREVIOUS command, because that's what was running during dt.
-      // Or should we integrate the average?
-      // The wave was running at (cur_hzL_, cur_hzR_) from DualWave (which we don't expose easily).
-      // Let's use the last commanded Hz.
-
-      // We need to know what was running.
-      // Let's store what we applied last time.
-
-      double stepsL = last_applied_hzL_ * d_sec;
-      double stepsR = last_applied_hzR_ * d_sec;
-
-      if (last_cmd_L_ < 0.0) stepsL = -stepsL;
-      if (last_cmd_R_ < 0.0) stepsR = -stepsR;
+      // Integrate the commanded rate (smooth), not the quantized Hz
+      // This matches the velocity feedback which also uses commanded values
+      double stepsL = last_cmd_L_ * d_sec;
+      double stepsR = last_cmd_R_ * d_sec;
 
       accum_L_ += stepsL;
       accum_R_ += stepsR;
@@ -351,6 +394,19 @@ class MotorRunner {
       int64_t totalR = static_cast<int64_t>(accum_R_);
       steps_left_.store(totalL, std::memory_order_relaxed);
       steps_right_.store(totalR, std::memory_order_relaxed);
+
+      // Integrate actual rate (based on applied Hz)
+      double actL = (double)last_applied_hzL_ * d_sec;
+      double actR = (double)last_applied_hzR_ * d_sec;
+
+      if (!last_applied_fwdL_) actL = -actL;
+      if (!last_applied_fwdR_) actR = -actR;
+
+      accum_actual_L_ += actL;
+      accum_actual_R_ += actR;
+
+      actual_steps_left_.store((int64_t)accum_actual_L_, std::memory_order_relaxed);
+      actual_steps_right_.store((int64_t)accum_actual_R_, std::memory_order_relaxed);
     }
     last_call_time_ = now;
     last_applied_hzL_ = hzL;
@@ -376,5 +432,15 @@ class MotorRunner {
   unsigned last_applied_hzL_{0}, last_applied_hzR_{0};
   bool last_applied_fwdL_{true}, last_applied_fwdR_{true};
   std::atomic<int64_t> steps_left_{0}, steps_right_{0};
+
+  std::atomic<int64_t> actual_steps_left_{0}, actual_steps_right_{0};
+
   double accum_L_{0.0}, accum_R_{0.0};
+  double accum_actual_L_{0.0}, accum_actual_R_{0.0};
+
+  // State for getActualSpeedSps
+  std::mutex vel_mu_;
+  std::chrono::steady_clock::time_point last_vel_time_;
+  int64_t last_vel_left_{0}, last_vel_right_{0};
+  float last_vel_val_{0.0f};
 };

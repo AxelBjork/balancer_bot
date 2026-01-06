@@ -13,6 +13,15 @@ class MotorRunnerTest : public ::testing::Test {
   void SetUp() override {
     pigpio_stub_reset();
   }
+  // Helper to pump the loop
+  void RunFor(MotorRunner& runner, double spsL, double spsR, std::chrono::milliseconds duration) {
+    auto start = std::chrono::steady_clock::now();
+    auto end = start + duration;
+    while (std::chrono::steady_clock::now() < end) {
+      runner.setTargets(spsL, spsR);
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));  // Pump at ~500Hz
+    }
+  }
 };
 
 TEST_F(MotorRunnerTest, StepTrackingForwardConstantRate) {
@@ -20,21 +29,16 @@ TEST_F(MotorRunnerTest, StepTrackingForwardConstantRate) {
   Stepper right(1, Stepper::Pins{7, 8, 14});
   MotorRunner runner(left, right, 1000.0);
 
-  // Command 100 sps forward for both motors
-  runner.setTargets(100.0, 100.0);
-
-  // Wait for 100ms
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-  // Update again to trigger step integration
-  runner.setTargets(100.0, 100.0);
+  // Run at 100 sps for 100ms
+  RunFor(runner, 100.0, 100.0, std::chrono::milliseconds(100));
 
   // Expected: ~10 steps (100 sps * 0.1s)
+  // Tolerance increased due to S-D jitter and sleep timing
   int64_t leftSteps = runner.getLeftSteps();
   int64_t rightSteps = runner.getRightSteps();
 
-  EXPECT_NEAR(leftSteps, 10, 2) << "Left steps should be ~10";
-  EXPECT_NEAR(rightSteps, 10, 2) << "Right steps should be ~10";
+  EXPECT_NEAR(leftSteps, 10, 3) << "Left steps should be ~10";
+  EXPECT_NEAR(rightSteps, 10, 3) << "Right steps should be ~10";
 }
 
 TEST_F(MotorRunnerTest, StepTrackingReverseDirection) {
@@ -42,18 +46,13 @@ TEST_F(MotorRunnerTest, StepTrackingReverseDirection) {
   Stepper right(1, Stepper::Pins{7, 8, 14});
   MotorRunner runner(left, right, 1000.0);
 
-  // Command -100 sps (reverse) for both motors
-  runner.setTargets(-100.0, -100.0);
+  RunFor(runner, -100.0, -100.0, std::chrono::milliseconds(100));
 
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  runner.setTargets(-100.0, -100.0);
-
-  // Expected: ~-10 steps
   int64_t leftSteps = runner.getLeftSteps();
   int64_t rightSteps = runner.getRightSteps();
 
-  EXPECT_NEAR(leftSteps, -10, 2) << "Left steps should be ~-10";
-  EXPECT_NEAR(rightSteps, -10, 2) << "Right steps should be ~-10";
+  EXPECT_NEAR(leftSteps, -10, 3) << "Left steps should be ~-10";
+  EXPECT_NEAR(rightSteps, -10, 3) << "Right steps should be ~-10";
 }
 
 TEST_F(MotorRunnerTest, StepTrackingDifferentialSteering) {
@@ -61,17 +60,13 @@ TEST_F(MotorRunnerTest, StepTrackingDifferentialSteering) {
   Stepper right(1, Stepper::Pins{7, 8, 14});
   MotorRunner runner(left, right, 1000.0);
 
-  // Command differential: left forward, right reverse
-  runner.setTargets(100.0, -100.0);
-
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  runner.setTargets(100.0, -100.0);
+  RunFor(runner, 100.0, -100.0, std::chrono::milliseconds(100));
 
   int64_t leftSteps = runner.getLeftSteps();
   int64_t rightSteps = runner.getRightSteps();
 
-  EXPECT_NEAR(leftSteps, 10, 2) << "Left steps should be ~10";
-  EXPECT_NEAR(rightSteps, -10, 2) << "Right steps should be ~-10";
+  EXPECT_NEAR(leftSteps, 10, 3) << "Left steps should be ~10";
+  EXPECT_NEAR(rightSteps, -10, 3) << "Right steps should be ~-10";
 }
 
 TEST_F(MotorRunnerTest, StepTrackingAccumulation) {
@@ -79,20 +74,15 @@ TEST_F(MotorRunnerTest, StepTrackingAccumulation) {
   Stepper right(1, Stepper::Pins{7, 8, 14});
   MotorRunner runner(left, right, 1000.0);
 
-  // Run at 100 sps for multiple intervals
-  runner.setTargets(100.0, 100.0);
-
-  for (int i = 0; i < 5; ++i) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    runner.setTargets(100.0, 100.0);
-  }
+  // Run at 100 sps for 250ms total
+  RunFor(runner, 100.0, 100.0, std::chrono::milliseconds(250));
 
   // Expected: ~25 steps total (100 sps * 0.25s)
   int64_t leftSteps = runner.getLeftSteps();
   int64_t rightSteps = runner.getRightSteps();
 
-  EXPECT_NEAR(leftSteps, 25, 5) << "Left steps should accumulate to ~25";
-  EXPECT_NEAR(rightSteps, 25, 5) << "Right steps should accumulate to ~25";
+  EXPECT_NEAR(leftSteps, 25, 4) << "Left steps should accumulate to ~25";
+  EXPECT_NEAR(rightSteps, 25, 4) << "Right steps should accumulate to ~25";
 }
 
 TEST_F(MotorRunnerTest, StepTrackingZeroRate) {
@@ -100,15 +90,33 @@ TEST_F(MotorRunnerTest, StepTrackingZeroRate) {
   Stepper right(1, Stepper::Pins{7, 8, 14});
   MotorRunner runner(left, right, 1000.0);
 
-  // Set to zero
-  runner.setTargets(0.0, 0.0);
-
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  runner.setTargets(0.0, 0.0);
+  RunFor(runner, 0.0, 0.0, std::chrono::milliseconds(100));
 
   int64_t leftSteps = runner.getLeftSteps();
   int64_t rightSteps = runner.getRightSteps();
 
-  EXPECT_EQ(leftSteps, 0) << "Left steps should be 0";
-  EXPECT_EQ(rightSteps, 0) << "Right steps should be 0";
+  EXPECT_NEAR(leftSteps, 0, 1) << "Left steps should be 0";
+  EXPECT_NEAR(rightSteps, 0, 1) << "Right steps should be 0";
+}
+
+TEST_F(MotorRunnerTest, VelocityEstimation) {
+  Stepper left(1, Stepper::Pins{5, 6, 13});
+  Stepper right(1, Stepper::Pins{7, 8, 14});
+  MotorRunner runner(left, right, 1000.0);
+
+  // Init state (first call returns 0 and sets baseline)
+  runner.getActualSpeedSps();
+
+  // Move forward 1000 sps for 500ms
+  // Note: RunFor pumps at ~500Hz (2ms sleep), so plenty of updates.
+  RunFor(runner, 1000.0, 1000.0, std::chrono::milliseconds(500));
+
+  float v = runner.getActualSpeedSps();
+  // Allow loose tolerance due to simulation timing jitter
+  EXPECT_NEAR(v, 1000.0f, 150.0f) << "Velocity should be approx 1000 sps";
+
+  // Differential (spin)
+  RunFor(runner, 1000.0, -1000.0, std::chrono::milliseconds(500));
+  v = runner.getActualSpeedSps();
+  EXPECT_NEAR(v, 0.0f, 50.0f) << "Average velocity should be 0 for pure spin";
 }

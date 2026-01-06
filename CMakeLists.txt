@@ -37,6 +37,17 @@ else()
     endif()
   endif()
 endif()
+# ================================================================
+#                       Source Definition
+# ================================================================
+set(SRC_DIR ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller)
+set(BALANCER_SOURCES
+    ${SRC_DIR}/xbox_controller.cpp
+    ${SRC_DIR}/control_loop.cpp
+    ${SRC_DIR}/ism330_iio_reader.cpp
+    ${SRC_DIR}/pitch_lpf.cpp
+    ${SRC_DIR}/config_pid_io.cpp
+)
 
 # ================================================================
 #                       Tests (default ON)
@@ -57,10 +68,10 @@ if (BUILD_TESTS)
   FetchContent_MakeAvailable(googletest)
 
   message(STATUS "Building tests")
-  add_library(balancer_common INTERFACE)
-  target_include_directories(balancer_common INTERFACE
-    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller
-    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/stubs
+  add_library(balancer_common STATIC ${BALANCER_SOURCES})
+  target_include_directories(balancer_common PUBLIC
+    ${SRC_DIR}
+    ${SRC_DIR}/stubs
     ${SDL2_INCS}
     ${CMAKE_SOURCE_DIR}/PX4-Autopilot/src/lib/rate_control
     ${CMAKE_SOURCE_DIR}/PX4-Autopilot/src/lib/matrix
@@ -70,10 +81,10 @@ if (BUILD_TESTS)
     ${CMAKE_SOURCE_DIR}/px4_stub
   )
 
-  target_compile_definitions(balancer_common INTERFACE
+  target_compile_definitions(balancer_common PUBLIC
     PIGPIOD_STUB_IMPL
   )
-  target_link_libraries(balancer_common INTERFACE
+  target_link_libraries(balancer_common PUBLIC
     GTest::gmock_main GTest::gtest
     Threads::Threads
     ${SDL2_LIBS}
@@ -95,7 +106,7 @@ if (BUILD_TESTS)
     ${PX4_DIR}/platforms/common/include
     ${CMAKE_SOURCE_DIR}/px4_stub
   )
-  target_link_libraries(balancer_common INTERFACE px4_ratecontrol)
+  target_link_libraries(balancer_common PUBLIC px4_ratecontrol)
 
   set(TEST_DIR ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/test)
   # 2) motor_controller_test (existing)
@@ -103,8 +114,6 @@ if (BUILD_TESTS)
     ${TEST_DIR}/motor_runner_test.cpp
     ${TEST_DIR}/control_loop_test.cpp
     ${TEST_DIR}/latency_test.cpp
-    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/control_loop.cpp
-    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/pitch_lpf.cpp
     ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/stubs/pigpiod_stub.cpp
   )
 
@@ -127,12 +136,8 @@ if (BUILD_TESTS)
 
   # 4) balancer_simulator (standalone sim)
   add_executable(balancer_simulator
-    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/simulator_main.cpp
-    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/simulator/balancer_simulator.cpp
-    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/control_loop.cpp
-    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/pitch_lpf.cpp
-    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/ism330_iio_reader.cpp
-    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/xbox_controller.cpp
+    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/test/simulator_main.cpp
+    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/test/simulator/balancer_simulator.cpp
     ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/stubs/pigpiod_stub.cpp
   )
   target_link_libraries(balancer_simulator PRIVATE balancer_common)
@@ -168,31 +173,19 @@ else()
     ${CMAKE_SOURCE_DIR}/px4_stub                         # px4_boardconfig.h stub
 )
 
-set(SRC_DIR ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller)
 
-  add_library(balancer_common STATIC
-    ${SRC_DIR}/xbox_controller.cpp
-    ${SRC_DIR}/control_loop.cpp
-    ${SRC_DIR}/ism330_iio_reader.cpp
-    ${SRC_DIR}/pitch_lpf.cpp
-  )
+  # Define balancer_common for App (if NOT building tests)
+  # But we also used it above. Wait, if we are in else(), we are NOT building tests.
+  # So we define it here for the App case.
+  add_library(balancer_common STATIC ${BALANCER_SOURCES})
 
   target_precompile_headers(balancer_common PRIVATE
     <atomic> <thread> <chrono> <vector> <string> <unordered_map> <array> <algorithm> <cstdio> <cmath>
   )
 
-  add_executable(motor_controller
-    ${SRC_DIR}/motor_controller.cpp
-  )
-
   target_link_libraries(balancer_common
   PUBLIC px4_ratecontrol
   )
-
-  target_link_libraries(motor_controller
-  PRIVATE balancer_common
-  )
-
 
   target_include_directories(balancer_common PUBLIC
     ${CMAKE_SOURCE_DIR}/src
@@ -221,9 +214,7 @@ if(NOT BUILD_TESTS)
   
   # Main balancer executable
   add_executable(balancer_pi
-    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/motor_controller.cpp
-    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/control_loop.cpp
-    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/pitch_lpf.cpp
+    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/main.cpp
   )
   
   target_link_libraries(balancer_pi PRIVATE

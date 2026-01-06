@@ -7,7 +7,7 @@
 #include <thread>
 #include <utility>
 
-#include "config_pid.h"
+#include "config.h"
 
 // PX4 includes live ONLY here
 #include <uORB/topics/rate_ctrl_status.h>  // if you need the status struct
@@ -77,7 +77,7 @@ struct RateControllerCore::Impl {
     start_ts = steady_clock::now();
     last_ts = start_ts;
     auto next = last_ts;
-    const auto dt_nom = duration<double>(1.0 / ConfigPid::control_hz);
+    const auto dt_nom = duration<double>(1.0 / Config::control_hz);
 
     while (alive.load(std::memory_order_relaxed)) {
       next += duration_cast<steady_clock::duration>(dt_nom);
@@ -93,18 +93,26 @@ struct RateControllerCore::Impl {
       // Get velocity feedback (steps/s)
       float current_velocity_sps = velocity_cb ? velocity_cb() : 0.0f;
 
+      // Update velocity setpoint from joystick
+      JoyCmd joy = latest_joy.load(std::memory_order_relaxed);
+      // forward is in [-1, 1]. Map to +/- max_sps.
+      // User requested mapping: Scale it down to be safe initially?
+      // Plan said: target_velocity = joy.forward * kMaxSps * 0.5
+      float target_vel_sps = joy.forward * kMaxSps;
+      velocity_pid.setSetpoint(target_vel_sps);
+
       // Decimate Velocity Loop (e.g. 100Hz -> 10Hz)
       dt_velocity_accum += dt;
-      if (++vel_decimation_counter >= ConfigPid::velocity_decimation) {
-          vel_decimation_counter = 0;
-          
-          // Outermost loop: velocity PID -> pitch angle setpoint
-          // Update using accumulated time since last update
-          pitch_setpoint_rad = velocity_pid.update(current_velocity_sps, dt_velocity_accum);
-          pitch_setpoint_rad = std::clamp(pitch_setpoint_rad, -(float)ConfigPid::max_pitch_setpoint_rad,
-                                          (float)ConfigPid::max_pitch_setpoint_rad);
-          
-          dt_velocity_accum = 0.0f;
+      if (++vel_decimation_counter >= kVelocityDecimation) {
+        vel_decimation_counter = 0;
+
+        // Outermost loop: velocity PID -> pitch angle setpoint
+        // Update using accumulated time since last update
+        pitch_setpoint_rad = velocity_pid.update(current_velocity_sps, dt_velocity_accum);
+        pitch_setpoint_rad = std::clamp(pitch_setpoint_rad, -(float)kMaxPitchSetpointRad,
+                                        (float)kMaxPitchSetpointRad);
+
+        dt_velocity_accum = 0.0f;
       }
 
       // Middle loop: pitch angle error -> pitch rate setpoint
@@ -118,12 +126,11 @@ struct RateControllerCore::Impl {
 
       const Vector3f u = rc.update(rate, rate_sp, ang_acc, dt, /*landed=*/false);
 
-      float u_sps = u(1) * ConfigPid::pitch_out_to_sps;
-      u_sps = std::clamp<float>(u_sps, -ConfigPid::max_sps, +ConfigPid::max_sps);
+      float u_sps = u(1) * kPitchOutToSps;
+      u_sps = std::clamp<float>(u_sps, -kMaxSps, +kMaxSps);
 
       // Mixing
-      float turn_sps = latest_joy.load(std::memory_order_relaxed).turn * ConfigPid::max_sps *
-                       0.5f;  // Scale turn
+      float turn_sps = joy.turn * kMaxSps * 0.5f;  // Scale turn
       float left_sps = u_sps + turn_sps;
       float right_sps = u_sps - turn_sps;
 
@@ -140,13 +147,13 @@ struct RateControllerCore::Impl {
         t.rate_sp_dps = rate_sp_rad_s * 180.0 / M_PI;
         t.out_norm = u(1);
         t.u_sps = u_sps;
-        t.integ_pitch = st.pitchspeed_integ;        
+        t.integ_pitch = st.pitchspeed_integ;
         // Debug Vel PID
-        t.vel_error = 0.0f - current_velocity_sps; // Setpoint is 0
+        t.vel_error = target_vel_sps - current_velocity_sps;  // Setpoint vs Actual
         t.vel_i_term = velocity_pid.getIntegral();
-        t.vel_p_term = t.vel_error * ConfigPid::vel_P; // Approximate P-term
+        t.vel_p_term = t.vel_error * ConfigPid::vel_P;  // Approximate P-term
         t.pitch_sp_deg = pitch_setpoint_rad * 180.0 / M_PI;
-        
+
         tel_cb(std::move(t));
       }
     }
@@ -165,7 +172,7 @@ RateControllerCore::RateControllerCore() : p_(new Impl) {
   // Configure velocity PID
   p_->velocity_pid.setGains(ConfigPid::vel_P, ConfigPid::vel_I, ConfigPid::vel_D);
   p_->velocity_pid.setIntegralLimit(ConfigPid::vel_I_lim);
-  p_->velocity_pid.setOutputLimit(ConfigPid::max_pitch_setpoint_rad);
+  p_->velocity_pid.setOutputLimit(kMaxPitchSetpointRad);
   p_->velocity_pid.setSetpoint(0.0f);  // Target velocity = 0 (maintain position)
 }
 

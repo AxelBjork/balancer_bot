@@ -4,6 +4,7 @@ TEST=${1:-ON}
 # Configure
 if [ "$TEST" = "ON" ]; then 
 BUILD_DIR=build
+TOOLCHAIN=""
 else 
 BUILD_DIR=build-pi
 TOOLCHAIN=toolchain-rpi4.cmake
@@ -18,5 +19,5 @@ cmake --build $BUILD_DIR -j"$(nproc)"
 
 # Run tests
 if [ "$TEST" = "ON" ]; then
-    ctest --test-dir $BUILD_DIR --output-on-failure
+    ctest --test-dir $BUILD_DIR --output-on-failure -j8
 fi
