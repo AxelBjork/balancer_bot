@@ -132,7 +132,7 @@ bool PitchComplementaryFilter::accel_reliable(const Acc3& a, double pitch_pred) 
   const double g_lo = Config::g0 * (1.0 - Config::g_band_rel);
   const double g_hi = Config::g0 * (1.0 + Config::g_band_rel);
   if (!(n >= g_lo && n <= g_hi)) return false;  // high linear accel or free-fall
-  if (std::abs(rad2deg(std::cos(pitch_pred))) < 1e-6) return false;  // avoid near singularity
+  if (std::abs(std::cos(pitch_pred)) < 1e-3) return false;  // avoid near singularity
   if (std::abs(rad2deg(pitch_pred)) > Config::max_use_pitch_deg) return false;  // near ±90°
   return true;
 }

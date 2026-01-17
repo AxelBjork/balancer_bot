@@ -23,7 +23,7 @@ int main() {
   // COM angular offset (positive = COM forward)
   sim_cfg.com_angle_offset_rad = 0.000;
   // Initial pitch angle (positive = forward)
-  sim_cfg.initial_pitch_deg = 10;
+  sim_cfg.initial_pitch_deg = 0.1;
 
   BalancerSimulator sim(sim_cfg);
   sim.start();

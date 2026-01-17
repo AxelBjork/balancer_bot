@@ -260,41 +260,12 @@ class MotorRunner {
   }
 
   // Stateful velocity feedback based on actual steps
-  // Call this periodically (e.g. at 10Hz or 100Hz) to get the average speed over the interval.
+  // Call this periodically to get the average speed.
+  // For open-loop steppers, "Actual" speed is best approximated by the slew-limited command.
+  // Differentiating integer steps adds quantization noise (e.g. 400 SPS steps at 400Hz).
   float getActualSpeedSps() {
-    std::lock_guard<std::mutex> lk(vel_mu_);
-    auto now = std::chrono::steady_clock::now();
-
-    int64_t left_steps = actual_steps_left_.load(std::memory_order_relaxed);
-    int64_t right_steps = actual_steps_right_.load(std::memory_order_relaxed);
-
-    if (last_vel_time_.time_since_epoch().count() == 0) {
-      last_vel_left_ = left_steps;
-      last_vel_right_ = right_steps;
-      last_vel_time_ = now;
-      return 0.0f;
-    }
-
-    std::chrono::duration<float> dt = now - last_vel_time_;
-    float dt_sec = dt.count();
-
-    if (dt_sec < 0.0001f) {
-      return last_vel_val_;
-    }
-
-    int64_t dl = left_steps - last_vel_left_;
-    int64_t dr = right_steps - last_vel_right_;
-
-    float vL = (float)dl / dt_sec;
-    float vR = (float)dr / dt_sec;
-    float v = (vL + vR) / 2.0f;
-
-    last_vel_left_ = left_steps;
-    last_vel_right_ = right_steps;
-    last_vel_time_ = now;
-    last_vel_val_ = v;
-
-    return v;
+    std::lock_guard<std::mutex> lk(mu_);  // Lock consistent with applyOnce
+    return (float)(last_cmd_L_ + last_cmd_R_) / 2.0f;
   }
 
  private:
@@ -399,8 +370,8 @@ class MotorRunner {
       double actL = (double)last_applied_hzL_ * d_sec;
       double actR = (double)last_applied_hzR_ * d_sec;
 
-      if (!last_applied_fwdL_) actL = -actL;
-      if (!last_applied_fwdR_) actR = -actR;
+      if (last_cmd_L_ < 0.0) actL = -actL;
+      if (last_cmd_R_ < 0.0) actR = -actR;
 
       accum_actual_L_ += actL;
       accum_actual_R_ += actR;

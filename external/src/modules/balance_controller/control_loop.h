@@ -2,7 +2,6 @@
 #pragma once
 #include <cstdio>
 #include <functional>
-#include <optional>
 
 #include "types.h"
 

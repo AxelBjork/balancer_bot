@@ -102,103 +102,91 @@ void BalancerSimulator::stop() {
 }
 
 void BalancerSimulator::step() {
-  // 1. Read Motor Input (Mock) and Determine Base Velocity
-  double wheel_velocity = 0.0;
+  // 1. Determine Target Wheel Velocity from Stepper Pulses
+  double target_wheel_velocity = 0.0;
   int wave = pigpio_stub_get_active_wave();
 
   if (wave >= 0) {
     auto pulses = pigpio_stub_get_wave_pulses(wave);
-    // Simple frequency estimation:
-    // Count pulses in the wave, divide by total duration of wave.
-    // Or just look at pulse length.
-    // Stub is simple: a wave is a sequence of pulses.
-    // Pulse struct: {gpioOn, gpioOff, usDelay}
-
     if (!pulses.empty()) {
-      // Calculate period of one cycle (assuming uniform pulsetrain for now)
-      // cycle_us = sum(usDelay) / num_on_off_pairs?
-      // Or just take the first pulse delay if it's a square wave?
-      // A standard stepper wave might be: ON(bit), delay(half_period), OFF(bit),
-      // delay(half_period). So period = sum of delays.
-
       uint32_t total_us = 0;
       for (auto& p : pulses) total_us += p.usDelay;
-
       double duration_s = total_us / 1000000.0;
+
       if (duration_s > 1e-6) {
-        // pulses.size() is number of pulse structs.
-        // If generic wave, might be transitions.
-        // Assuming simple stepper driver logic: 1 pulse = 1 step.
-        // Usually 1 pulse struct = 1 change.
-        // A SET/CLEAR pair is often 2 structs or 1 struct with both if simultaneous (unlikely for
-        // PWM). Let's approximate: 2 structs per step (On -> Delay -> Off -> Delay).
         double steps = pulses.size() / 2.0;
         double steps_per_sec = steps / duration_s;
 
-        // Direction Check using Stub GPIO state
-        // Left Motor (Pin 13): Config::invert_left = true.
-        //   Logic: If Inverted, Stepper driver gets !(dir).
-        //   If Controller wants FWD (Speed > 0), Stepper logic: if(inv) dir=!1=0.
-        //   If Controller wants BWD (Speed < 0) -> "Forward" for Balance?
-        //   Analysis of loop instability: Negative u (L=1, R=0) MUST mean Forward Velocity.
-        //   So Pin 13 == 1 => Forward. Pin 13 == 0 => Backward.
-
-        // Right Motor (Pin 24): Config::invert_right = false.
-        //   Logic: If !Inverted, Stepper driver gets (dir).
-        //   Negative u -> R=0.
-        //   So Pin 24 == 0 => Forward. Pin 24 == 1 => Backward.
-
-        int level_left = pigpio_stub_get_gpio_level(13);
-        int level_right = pigpio_stub_get_gpio_level(24);
+        // Determine direction from GPIO pins
+        int level_left = pigpio_stub_get_gpio_level(13);   // L: inv=true -> level 1=FWD
+        int level_right = pigpio_stub_get_gpio_level(24);  // R: inv=false -> level 0=FWD
 
         double dir_left = (level_left == 1) ? 1.0 : -1.0;
         double dir_right = (level_right == 0) ? 1.0 : -1.0;
-
-        // Average direction (ignore turning for 2D physics)
         double avg_dir = (dir_left + dir_right) / 2.0;
 
-        wheel_velocity = (steps_per_sec / steps_per_rev) * 2.0 * M_PI * wheel_radius * avg_dir;
+        target_wheel_velocity =
+            (steps_per_sec / steps_per_rev) * 2.0 * M_PI * wheel_radius * avg_dir;
       }
     }
   }
 
-  // Smooth/Low-pass the velocity change to simulate inertia/finite torque?
-  // Ideally steppers are stiff, so velocity is exactly as commanded.
+  // 2. Motor / Wheel Dynamics (Torque Generation)
+  double current_wheel_v = state_.v();
+  double v_err = target_wheel_velocity - current_wheel_v;
 
-  state_.velocity = wheel_velocity;
-  state_.position += state_.velocity * cfg_.dt;
+  // Driver Stiffness (Proportional Control)
+  double K_driver_p = 500.0;  // N / (m/s)
+  double F_cmd = K_driver_p * v_err;
 
-  // 2. Physics Update (Inverted Pendulum)
-  // Base acceleration
-  double base_accel = (state_.velocity - last_wheel_velocity_) / cfg_.dt;
-  last_wheel_velocity_ = state_.velocity;
+  // Saturation (Max Force ~ 20N approx for Nema17 pair)
+  double F_max = 20.0;
+  double F_app = std::max(-F_max, std::min(F_max, F_cmd));
 
-  // Equation of Motion:
-  // I_pivot * alpha = m * g * l * sin(theta) - m * l * a_base * cos(theta)
-  // alpha = (m*g*l*sin(theta) - m*l*a_base*cos(theta)) / I_pivot
+  // 3. Coupled Equations of Motion
+  double Q = state_.theta();
+  double Q_dot = state_.theta_dot();
+  double sQ = std::sin(Q);
+  double cQ = std::cos(Q);
 
-  double m = robot_mass;
+  double M = cart_mass;
+  double m = body_mass;
   double l = center_of_mass_height;
-  double I = moment_of_inertia;
+  double I = I_com;
 
-  // Calculate torques
-  // Gravity torque: depends on angle of COM vector relative to vertical.
-  // theta = 0 means chassis is vertical.
-  // If COM offset is positive (forward), effective angle is theta + offset.
-  double torque_grav = m * gravity * l * std::sin(state_.pitch + cfg_.com_angle_offset_rad);
-  double torque_inertial = -m * l * base_accel * std::cos(state_.pitch);
-  double alpha = (torque_grav + torque_inertial) / I;
+  double d11 = M + m;
+  double d12 = m * l * cQ;
+  double d21 = m * l * cQ;
+  double d22 = I + m * l * l;
 
-  state_.pitch_rate += alpha * cfg_.dt;
-  state_.pitch += state_.pitch_rate * cfg_.dt;
+  // Friction / Damping
+  double c_x = 2.0;    // N / (m/s)  Viscous friction cart
+  double c_th = 0.05;  // Nm / (rad/s) Viscous friction pendulum
 
-  // Simple ground collision
-  if (std::abs(state_.pitch) > M_PI / 2.0) {
-    state_.pitch = (state_.pitch > 0) ? M_PI / 2.0 : -M_PI / 2.0;
-    state_.pitch_rate = 0;
+  double rhs1 = F_app + m * l * Q_dot * Q_dot * sQ - c_x * state_.v();
+  double rhs2 = m * gravity * l * sQ - c_th * state_.theta_dot();  // Gravity - Damping
+
+  double det = d11 * d22 - d12 * d21;
+  double x_ddot = (d22 * rhs1 - d12 * rhs2) / det;
+  double theta_ddot = (d11 * rhs2 - d21 * rhs1) / det;
+
+  // 4. Integration (Semi-Implicit Euler)
+  state_.v() += x_ddot * cfg_.dt;
+  state_.x() += state_.v() * cfg_.dt;
+
+  state_.theta_dot() += theta_ddot * cfg_.dt;
+  state_.theta() += state_.theta_dot() * cfg_.dt;
+
+  // Ground Collision
+  if (std::abs(state_.theta()) > M_PI / 2.0) {
+    state_.theta() = (state_.theta() > 0) ? M_PI / 2.0 : -M_PI / 2.0;
+    state_.theta_dot() = 0.0;
+    state_.v() = 0.0;
   }
 
-  // 3. Update IMU data
+  // Store x_ddot for IMU
+  last_x_ddot_ = x_ddot;
+
   update_imu_files();
 }
 
@@ -213,25 +201,31 @@ void BalancerSimulator::update_imu_files() {
     int64_t ts;
   } packet;
 
-  // Accel: gravity vector rotated by pitch
-  // If robot pitches FWD (positive pitch?), gravity (down) vector in body frame:
-  // Body X is forward, Z is up?
-  // If upright: Z sees +1g (or -1g?), X sees 0.
-  // If pitch=+90deg (nose down), X sees +1g
+  // IMU Accelerometer Model (Specific Force)
+  // f_meas = R^T * (a_world - g_world)
+  // a_world = [x_ddot, 0, 0]
+  // g_world = [0, 0, -g]
+  // term (a - g) = [x_ddot, 0, g]
 
-  // Accel scale: 1 unit = kAccelScale m/s^2? No, kAccelScale converts raw to m/s^2.
-  // Standard gravity 9.81 m/s^2.
-  // raw values approx 16384 per g (if +/- 2g scale)
-
+  double Q = state_.theta();
+  double x_ddot = last_x_ddot_;  // Retrieves stored accel
   const double g = 9.81;
-  const double scale_accel = 16384.0 / 9.81;  // approx
 
-  double ax = -g * std::sin(state_.pitch);
-  double az = g * std::cos(state_.pitch);
+  // Body Frame Specific Force (X=Fwd, Z=Up)
+  double ax_mps2 = x_ddot * std::cos(Q) + g * std::sin(Q);
+  double az_mps2 = -x_ddot * std::sin(Q) + g * std::cos(Q);
 
-  packet.x = (int16_t)(ax * scale_accel);
-  packet.y = 0;
-  packet.z = (int16_t)(az * scale_accel);
+  const double scale_accel = 16384.0 / 9.81;
+
+  // Mapping to "Raw" Packet Indices based on config.h:
+  // accel_cfg = {x=0, y=2, z=1, inv_x=1, inv_z=1}
+  // BodyX = -src[0] => src[0] = -BodyX
+  // BodyZ = -src[1] => src[1] = -BodyZ
+  // BodyY = src[2]  => src[2] = BodyY (0)
+
+  packet.x = (int16_t)(-ax_mps2 * scale_accel);  // Index 0
+  packet.y = (int16_t)(-az_mps2 * scale_accel);  // Index 1
+  packet.z = 0;                                  // Index 2
   packet.ts =
       std::chrono::duration_cast<std::chrono::nanoseconds>(simulated_clock_.time_since_epoch())
           .count();
@@ -243,7 +237,7 @@ void BalancerSimulator::update_imu_files() {
   if (fd_accel_ >= 0) {
     int ret = write(fd_accel_, &packet, 16);
     if (ret != 16) {
-      if (errno != EAGAIN) {  // EAGAIN is just buffer full
+      if (errno != EAGAIN) {
         close(fd_accel_);
         fd_accel_ = -1;
       }
@@ -251,11 +245,15 @@ void BalancerSimulator::update_imu_files() {
   }
 
   // Gyro
-  double scale_gyro = 1000.0;  // approx raw per rad/s
+  // gyro_cfg = {x=0, y=2, z=1, inv_x=1, inv_z=1}
+  // BodyY (PitchRate) = src[2] => src[2] = BodyY
+  double scale_gyro = 6550.0;  // Match Reader kGyroScale
   packet.x = 0;
-  packet.y = state_.pitch_rate * scale_gyro;
+  packet.y = 0;
 
-  packet.z = 0;
+  double val_pitch = -state_.theta_dot() * scale_gyro;
+  val_pitch = std::max(-32767.0, std::min(32767.0, val_pitch));
+  packet.z = (int16_t)val_pitch;  // Index 2
   simulated_clock_ += std::chrono::nanoseconds((int64_t)(cfg_.dt * 1e9));
   packet.ts =
       std::chrono::duration_cast<std::chrono::nanoseconds>(simulated_clock_.time_since_epoch())
