@@ -1,13 +1,13 @@
-// PitchComplementaryFilter.h
 #pragma once
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <functional>
-#include "control_interface.h"
+
+#include "types.h"
 
 class PitchComplementaryFilter {
-public:
+ public:
   using Acc3 = std::array<double, 3>;
   using Gyr3 = std::array<double, 3>;
   using TimePoint = std::chrono::steady_clock::time_point;
@@ -24,15 +24,15 @@ public:
   ImuSample read_latest() const;
   void reset();
 
-private:
+ private:
   // state
   bool init_{false};
   bool have_last_ts_{false};
   TimePoint last_ts_{};
   Acc3 acc_f_{0.0, 0.0, 0.0};
-  double pitch_{0.0};     // fused estimate (rad, +forward)
-  double gyro_lpf_{0.0};  // rad/s (pitch axis)
-  double gyro_bias_{0.0}; // rad/s
+  double pitch_{0.0};      // fused estimate (rad, +forward)
+  double gyro_lpf_{0.0};   // rad/s (pitch axis)
+  double gyro_bias_{0.0};  // rad/s
 
   // lock-free publish
   mutable std::atomic<uint64_t> seq_{0};

@@ -3,7 +3,7 @@
 #include <memory>
 
 class XboxController {
-public:
+ public:
   XboxController();
   ~XboxController();
 
@@ -14,10 +14,12 @@ public:
   void setDeadzone(float dz);
   void setAxisMap(int leftY_axis, int rightY_axis);
 
+  float leftX() const;
+  float rightX() const;
   float leftY() const;
   float rightY() const;
 
-private:
+ private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };

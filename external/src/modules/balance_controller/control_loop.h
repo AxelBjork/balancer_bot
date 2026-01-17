@@ -1,13 +1,22 @@
 // rate_controller_core.h
 #pragma once
+#include <cstdio>
 #include <functional>
-#include <chrono>
-#include "control_interface.h"
 
+#include "types.h"
+
+// ====== Control Loop Constants ======
+// Motor / speed ceiling (primary scaling knob)
+static constexpr double kMaxSps = 4000.0;         // clamp for wheel speed command (steps/s)
+static constexpr double kPitchOutToSps = 3200.0;  // PX4 normalized -> steps/s
+
+// Velocity loop decimation
+static constexpr int kVelocityDecimation = 40;       // Run every 40th cycle (400Hz -> 10Hz)
+static constexpr double kMaxPitchSetpointRad = 0.3;  // ~17 degrees max lean
 
 // Non-template core; hides PX4/Matrix in the .cpp
 class RateControllerCore {
-public:
+ public:
   RateControllerCore();
   ~RateControllerCore();
 
@@ -19,36 +28,16 @@ public:
   void stop();
 
   void pushImu(const ImuSample& s);
-  void setJoystick(const JoyCmd& j); // kept for API compat; may be no-op
+  void setJoystick(const JoyCmd& j);  // kept for API compat; may be no-op
   void setTelemetrySink(std::function<void(const Telemetry&)> cb);
 
   // Callbacks to drive motors (steps/s). You wire these from the wrapper.
   void setMotorOutputs(std::function<void(float, float)> motor_cb);
-private:
-  struct Impl;          // PIMPL hides PX4/Matrix + thread
-  Impl* p_;             // or std::unique_ptr<Impl>
-};
 
+  // Callback to get velocity feedback (average of left+right in steps/s)
+  void setVelocityFeedback(std::function<float()> velocity_cb);
 
-template <class MotorRunnerT>
-class CascadedController {
-public:
-  CascadedController(MotorRunnerT& motors)
-  : motors_(motors) {
-    core_.setMotorOutputs(
-      [&](float left_sps, float right_sps){ motors.setTargets(left_sps, right_sps); }
-    );
-
-    core_.start();
-  }
-
-  ~CascadedController() { core_.stop(); }
-
-  void pushImu(const ImuSample& s) { core_.pushImu(s); }
-  void setJoystick(const JoyCmd& j) { core_.setJoystick(j); }
-  void setTelemetrySink(std::function<void(const Telemetry&)> cb) { core_.setTelemetrySink(std::move(cb)); }
-
-private:
-  MotorRunnerT& motors_;
-  RateControllerCore core_;
+ private:
+  struct Impl;  // PIMPL hides PX4/Matrix + thread
+  Impl* p_;     // or std::unique_ptr<Impl>
 };

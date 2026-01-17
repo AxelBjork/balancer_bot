@@ -1,167 +1,122 @@
+#include "motor_runner.h"
+
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
-#include "motor_runner.h"
-#include "stepper.h"
-#include <future>
+#include <chrono>
+#include <thread>
 
-// ==== Mock Stepper ====
-class MockStepper : public Stepper {
-public:
-  using Stepper::Stepper;
-  MOCK_METHOD(void, stepN, (unsigned steps, unsigned periodUs, bool dirForward),
-              (const, override));
+extern "C" void pigpio_stub_reset();
+
+class MotorRunnerTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    pigpio_stub_reset();
+  }
+  // Helper to pump the loop
+  void RunFor(MotorRunner& runner, double spsL, double spsR, std::chrono::milliseconds duration) {
+    auto start = std::chrono::steady_clock::now();
+    auto end = start + duration;
+    while (std::chrono::steady_clock::now() < end) {
+      runner.setTargets(spsL, spsR);
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));  // Pump at ~500Hz
+    }
+  }
 };
 
-// ---- Helpers ----
-static Stepper::Pins makePins() {
-  return Stepper::Pins{.ena = 5u, .step = 6u, .dir = 13u};
+TEST_F(MotorRunnerTest, StepTrackingForwardConstantRate) {
+  Stepper left(1, Stepper::Pins{5, 6, 13});
+  Stepper right(1, Stepper::Pins{7, 8, 14});
+  MotorRunner runner(left, right, 1000.0);
+
+  // Run at 100 sps for 100ms
+  RunFor(runner, 100.0, 100.0, std::chrono::milliseconds(100));
+
+  // Expected: ~10 steps (100 sps * 0.1s)
+  // Tolerance increased due to S-D jitter and sleep timing
+  int64_t leftSteps = runner.getLeftSteps();
+  int64_t rightSteps = runner.getRightSteps();
+
+  EXPECT_NEAR(leftSteps, 10, 3) << "Left steps should be ~10";
+  EXPECT_NEAR(rightSteps, 10, 3) << "Right steps should be ~10";
 }
 
-using ::testing::_;
-using ::testing::AtLeast;
-using ::testing::InSequence;
-using ::testing::Invoke;
-using ::testing::NiceMock;
+TEST_F(MotorRunnerTest, StepTrackingReverseDirection) {
+  Stepper left(1, Stepper::Pins{5, 6, 13});
+  Stepper right(1, Stepper::Pins{7, 8, 14});
+  MotorRunner runner(left, right, 1000.0);
 
-TEST(MotorRunnerTest, PositiveTargetCallsStepNWithExpectedArgs) {
-  g_stop.store(false);
-  NiceMock<MockStepper> m(0 /*pi*/, makePins());
+  RunFor(runner, -100.0, -100.0, std::chrono::milliseconds(100));
 
-  // control_hz = 100 -> slice = 0.01 s
-  // target = +500 sps => want = 500 * 0.01 = 5 steps per slice
-  // period_us = round(1e6 / 500) = 2000 us, dirForward = true
-  std::promise<void> called;
-  EXPECT_CALL(m, stepN(5u, 2000u, true))
-      .Times(AtLeast(1))
-      .WillOnce(Invoke([&](unsigned, unsigned, bool) { called.set_value(); }))
-      .WillRepeatedly(Invoke([](unsigned, unsigned, bool) {})); // ignore extras
+  int64_t leftSteps = runner.getLeftSteps();
+  int64_t rightSteps = runner.getRightSteps();
 
-  MotorRunner runner(m);
-  runner.setTarget(500.0);
-
-  ASSERT_EQ(called.get_future().wait_for(std::chrono::milliseconds(250)),
-            std::future_status::ready);
-  runner.stop();
+  EXPECT_NEAR(leftSteps, -10, 3) << "Left steps should be ~-10";
+  EXPECT_NEAR(rightSteps, -10, 3) << "Right steps should be ~-10";
 }
 
-TEST(MotorRunnerTest, NegativeTargetSetsReverseAndExpectedArgs) {
-  g_stop.store(false);
-  NiceMock<MockStepper> m(0 /*pi*/, makePins());
+TEST_F(MotorRunnerTest, StepTrackingDifferentialSteering) {
+  Stepper left(1, Stepper::Pins{5, 6, 13});
+  Stepper right(1, Stepper::Pins{7, 8, 14});
+  MotorRunner runner(left, right, 1000.0);
 
-  // target = -1000 sps => sps=1000, want = 1000 * 0.01 = 10
-  // period = 1000 us, dir=false
-  std::promise<void> called;
-  EXPECT_CALL(m, stepN(10u, 1000u, false))
-      .Times(AtLeast(1))
-      .WillOnce(Invoke([&](unsigned, unsigned, bool) { called.set_value(); }))
-      .WillRepeatedly(Invoke([](unsigned, unsigned, bool) {}));
+  RunFor(runner, 100.0, -100.0, std::chrono::milliseconds(100));
 
-  MotorRunner runner(m);
-  runner.setTarget(-1000.0);
+  int64_t leftSteps = runner.getLeftSteps();
+  int64_t rightSteps = runner.getRightSteps();
 
-  ASSERT_EQ(called.get_future().wait_for(std::chrono::milliseconds(250)),
-            std::future_status::ready);
-  runner.stop();
+  EXPECT_NEAR(leftSteps, 10, 3) << "Left steps should be ~10";
+  EXPECT_NEAR(rightSteps, -10, 3) << "Right steps should be ~-10";
 }
 
-TEST(MotorRunnerTest, ResidualAccumulationYieldsOneStepPerSliceFor55Sps) {
-  g_stop.store(false);
-  NiceMock<MockStepper> m(0 /*pi*/, makePins());
+TEST_F(MotorRunnerTest, StepTrackingAccumulation) {
+  Stepper left(1, Stepper::Pins{5, 6, 13});
+  Stepper right(1, Stepper::Pins{7, 8, 14});
+  MotorRunner runner(left, right, 1000.0);
 
-  // control_hz = 100 -> slice = 0.01 s
-  // target = 55 sps => want per slice = 0.55
-  // Calls pattern over slices: 0,1,0,1,... (period_us = round(1e6/55)=18182)
-  std::promise<void> done;
+  // Run at 100 sps for 250ms total
+  RunFor(runner, 100.0, 100.0, std::chrono::milliseconds(250));
 
-  {
-    InSequence seq;
-    EXPECT_CALL(m, stepN(1u, 18182u, true))
-        .WillOnce(Invoke([&](unsigned, unsigned, bool) {
-          // let loop continue
-        }));
-    EXPECT_CALL(m, stepN(1u, 18182u, true))
-        .WillOnce(Invoke([&](unsigned, unsigned, bool) { done.set_value(); }));
-  }
+  // Expected: ~25 steps total (100 sps * 0.25s)
+  int64_t leftSteps = runner.getLeftSteps();
+  int64_t rightSteps = runner.getRightSteps();
 
-  MotorRunner runner(m);
-  runner.setTarget(55.0);
-
-  ASSERT_EQ(done.get_future().wait_for(std::chrono::milliseconds(400)),
-            std::future_status::ready);
-  runner.stop();
+  EXPECT_NEAR(leftSteps, 25, 4) << "Left steps should accumulate to ~25";
+  EXPECT_NEAR(rightSteps, 25, 4) << "Right steps should accumulate to ~25";
 }
 
-TEST(MotorRunnerTest, ZeroOrTinyTargetSleepsAndDoesNotCallStepN) {
-  g_stop.store(false);
-  NiceMock<MockStepper> m(0 /*pi*/, makePins());
+TEST_F(MotorRunnerTest, StepTrackingZeroRate) {
+  Stepper left(1, Stepper::Pins{5, 6, 13});
+  Stepper right(1, Stepper::Pins{7, 8, 14});
+  MotorRunner runner(left, right, 1000.0);
 
-  EXPECT_CALL(m, stepN(_, _, _)).Times(0);
+  RunFor(runner, 0.0, 0.0, std::chrono::milliseconds(100));
 
-  MotorRunner runner(m);
-  runner.setTarget(5e-4); // below threshold
+  int64_t leftSteps = runner.getLeftSteps();
+  int64_t rightSteps = runner.getRightSteps();
 
-  std::this_thread::sleep_for(std::chrono::milliseconds(80));
-  runner.stop();
+  EXPECT_NEAR(leftSteps, 0, 1) << "Left steps should be 0";
+  EXPECT_NEAR(rightSteps, 0, 1) << "Right steps should be 0";
 }
 
-TEST(MotorRunnerTest, RetargetMidRunAdjustsStepsAndPeriod) {
-  g_stop.store(false);
-  NiceMock<MockStepper> m(0, makePins());
+TEST_F(MotorRunnerTest, VelocityEstimation) {
+  Stepper left(1, Stepper::Pins{5, 6, 13});
+  Stepper right(1, Stepper::Pins{7, 8, 14});
+  MotorRunner runner(left, right, 1000.0);
 
-  // Start at 200 sps -> 2 steps/slice (period 5000 us),
-  // then jump to 750 sps -> steps alternate around 7.5 (7 or 8), period 1333
-  // us.
-  std::promise<void> got_new_speed;
+  // Init state (first call returns 0 and sets baseline)
+  runner.getActualSpeedSps();
 
-  // Let the low-speed phase run for a few slices.
-  EXPECT_CALL(m, stepN(2u, 5000u, true))
-      .Times(AtLeast(1))
-      .WillRepeatedly(Invoke([](unsigned, unsigned, bool) {}));
+  // Move forward 1000 sps for 500ms
+  // Note: RunFor pumps at ~500Hz (2ms sleep), so plenty of updates.
+  RunFor(runner, 1000.0, 1000.0, std::chrono::milliseconds(500));
 
-  // After retarget, accept either 7 or 8 steps (residual-dependent), period
-  // fixed at 1333 us.
-  EXPECT_CALL(m, stepN(::testing::AnyOf(7u, 8u), 1333u, true))
-      .Times(AtLeast(1))
-      .WillOnce(
-          Invoke([&](unsigned, unsigned, bool) { got_new_speed.set_value(); }))
-      .WillRepeatedly(Invoke([](unsigned, unsigned, bool) {}));
+  float v = runner.getActualSpeedSps();
+  // Allow loose tolerance due to simulation timing jitter
+  EXPECT_NEAR(v, 1000.0f, 150.0f) << "Velocity should be approx 1000 sps";
 
-  MotorRunner runner(m);
-  runner.setTarget(200.0);
-  std::this_thread::sleep_for(std::chrono::milliseconds(
-      30)); // give the first target time to take effect
-  runner.setTarget(750.0);
-
-  ASSERT_EQ(got_new_speed.get_future().wait_for(std::chrono::milliseconds(400)),
-            std::future_status::ready);
-  runner.stop();
-}
-
-TEST(MotorRunnerTest, DirectionFlipFromForwardToReverse) {
-  g_stop.store(false);
-  NiceMock<MockStepper> m(0, makePins());
-
-  // +300 sps -> 3 steps/slice (period 3333 us), then -300 sps -> same steps,
-  // dir=false.
-  std::promise<void> saw_reverse;
-
-  EXPECT_CALL(m, stepN(3u, 3333u, true))
-      .Times(AtLeast(1))
-      .WillRepeatedly(Invoke([](unsigned, unsigned, bool) {}));
-
-  EXPECT_CALL(m, stepN(3u, 3333u, false))
-      .Times(AtLeast(1))
-      .WillOnce(
-          Invoke([&](unsigned, unsigned, bool) { saw_reverse.set_value(); }))
-      .WillRepeatedly(Invoke([](unsigned, unsigned, bool) {}));
-
-  MotorRunner runner(m);
-  runner.setTarget(300.0);
-  std::this_thread::sleep_for(std::chrono::milliseconds(30));
-  runner.setTarget(-300.0);
-
-  ASSERT_EQ(saw_reverse.get_future().wait_for(std::chrono::milliseconds(400)),
-            std::future_status::ready);
-  runner.stop();
+  // Differential (spin)
+  RunFor(runner, 1000.0, -1000.0, std::chrono::milliseconds(500));
+  v = runner.getActualSpeedSps();
+  EXPECT_NEAR(v, 0.0f, 50.0f) << "Average velocity should be 0 for pure spin";
 }
