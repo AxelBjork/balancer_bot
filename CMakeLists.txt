@@ -77,7 +77,7 @@ if (BUILD_TESTS)
     ${CMAKE_SOURCE_DIR}/PX4-Autopilot/src/lib/matrix
     ${CMAKE_SOURCE_DIR}/PX4-Autopilot/src/lib
     ${CMAKE_SOURCE_DIR}/PX4-Autopilot/platforms/common/include
-    ${CMAKE_SOURCE_DIR}/PX4-Autopilot/src/modules
+    ${CMAKE_SOURCE_DIR}/px4_stub/src/modules
     ${CMAKE_SOURCE_DIR}/px4_stub
   )
 
@@ -90,10 +90,11 @@ if (BUILD_TESTS)
     ${SDL2_LIBS}
   )
 
-  set(PX4_DIR ${CMAKE_SOURCE_DIR}/PX4-Autopilot)
+  set(PX4_DIR ${CMAKE_SOURCE_DIR}/px4_stub)
   add_library(px4_ratecontrol STATIC
     ${PX4_DIR}/src/lib/rate_control/rate_control.cpp
     ${PX4_DIR}/src/lib/pid/PID.cpp
+    ${PX4_DIR}/src/modules/attitude_estimator_q/AttitudeEstimatorQ.cpp
   )
   target_include_directories(px4_ratecontrol PUBLIC
     ${PX4_DIR}/src/lib/rate_control
@@ -101,10 +102,9 @@ if (BUILD_TESTS)
     ${PX4_DIR}/src/lib
     ${PX4_DIR}/src/lib/mathlib
     ${PX4_DIR}/src/lib/mathlib/math
+    ${PX4_DIR}/src/modules/attitude_estimator_q
     ${PX4_DIR}/src
-    ${PX4_DIR}/platforms
-    ${PX4_DIR}/platforms/common/include
-    ${CMAKE_SOURCE_DIR}/px4_stub
+    ${PX4_DIR}
   )
   target_link_libraries(balancer_common PUBLIC px4_ratecontrol)
 
@@ -152,25 +152,27 @@ else()
   endif()
 
   # Require libpigpiod_if2 for the app
-  find_library(PIGPIOD_LIB pigpiod_if2)
+  find_library(PIGPIOD_LIB pigpiod_if2 HINTS /usr/lib/aarch64-linux-gnu)
   if (NOT PIGPIOD_LIB)
     message(FATAL_ERROR "libpigpiod_if2 not found. Install pigpio (daemon client).")
   endif()
 
-  set(PX4_DIR ${CMAKE_SOURCE_DIR}/PX4-Autopilot)
+  set(PX4_DIR ${CMAKE_SOURCE_DIR}/px4_stub)
   add_library(px4_ratecontrol STATIC
     ${PX4_DIR}/src/lib/rate_control/rate_control.cpp
     ${PX4_DIR}/src/lib/pid/PID.cpp
+    ${PX4_DIR}/src/modules/attitude_estimator_q/AttitudeEstimatorQ.cpp
   )
 
   target_include_directories(px4_ratecontrol PUBLIC
     ${PX4_DIR}/src/lib/rate_control   # RateControl.hpp
     ${PX4_DIR}/src/lib/matrix                            # PX4 matrix headers
     ${PX4_DIR}/src/lib                                   # mathlib lives here
+    ${PX4_DIR}/src/modules/attitude_estimator_q
     ${PX4_DIR}/src
     ${PX4_DIR}/platforms                # px4_platform_common/defines.h
     ${PX4_DIR}/platforms/common/include                  # common px4 includes (harmless)
-    ${CMAKE_SOURCE_DIR}/px4_stub                         # px4_boardconfig.h stub
+    ${PX4_DIR}                          # px4_boardconfig.h stub
 )
 
 

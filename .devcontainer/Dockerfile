@@ -15,7 +15,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     software-properties-common \
     sudo \
     wget \
+    git \
     && rm -rf /var/lib/apt/lists/*
+
+# ── GCC Trunk Compilation for C++26 Reflection ───────────────────────────────
+# Compile GCC from current trunk source to leverage new P2996 reflection merge
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    flex \
+    bison \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git clone --depth 1 git://gcc.gnu.org/git/gcc.git /tmp/gcc-source && \
+    cd /tmp/gcc-source && \
+    ./contrib/download_prerequisites && \
+    mkdir build && cd build && \
+    ../configure --disable-bootstrap --enable-languages=c,c++ --disable-multilib --prefix=/usr/local/gcc-trunk && \
+    make -j$(nproc) && \
+    make install && \
+    rm -rf /tmp/gcc-source
 
 # PX4 General Dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -38,6 +55,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-dev \
     python3-pip \
+    libsdl2-dev \
     python3-setuptools \
     python3-wheel \
     rsync \
@@ -118,6 +136,8 @@ RUN dpkg --add-architecture arm64 \
     && echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe multiverse" | tee -a /etc/apt/sources.list.d/arm64.list \
     && apt-get update && apt-get install -y --no-install-recommends \
         crossbuild-essential-arm64 \
+        gcc-aarch64-linux-gnu \
+        g++-aarch64-linux-gnu \
         libsdl2-dev:arm64 \
         libpigpiod-if-dev:arm64 \
         curl \

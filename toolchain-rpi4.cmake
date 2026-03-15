@@ -11,6 +11,10 @@ set(CMAKE_CXX_COMPILER aarch64-linux-gnu-g++)
 # set(CMAKE_SYSROOT /path/to/rpi-sysroot)
 # set(CMAKE_FIND_ROOT_PATH ${CMAKE_SYSROOT})
 
+# For Ubuntu multiarch cross-compilation:
+set(CMAKE_LIBRARY_ARCHITECTURE aarch64-linux-gnu)
+set(CMAKE_FIND_ROOT_PATH /usr/aarch64-linux-gnu /usr)
+
 # Search for programs in the build host directories
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 # Search for libraries and headers in the target directories
