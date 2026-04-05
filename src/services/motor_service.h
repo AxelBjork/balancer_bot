@@ -6,7 +6,7 @@
 
 namespace sil {
 
-class MotorService {
+class DOC_DESC("Consumes wheel-speed targets and forwards them to the motor runner when hardware is attached.") MotorService {
 public:
     using Publishes = ipc::MsgList<>;
     using Subscribes = ipc::MsgList<ipc::MotorTargets>;

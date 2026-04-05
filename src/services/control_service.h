@@ -6,7 +6,7 @@
 
 namespace sil {
 
-class ControlService {
+class DOC_DESC("Consumes IMU and joystick inputs, runs the cascaded balancing controller, and publishes motor targets plus lightweight telemetry.") ControlService {
 public:
     using Publishes = ipc::MsgList<ipc::MotorTargets, ipc::SystemTelemetry>;
     using Subscribes = ipc::MsgList<ipc::ImuData, ipc::JoystickCommand>;

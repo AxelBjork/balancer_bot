@@ -14,13 +14,11 @@ find_package(Threads REQUIRED)
 
 # ── IPC Hub ───────────────────────────────────────────────────────────────────
 add_library(ipc_hub STATIC
-    ${CMAKE_SOURCE_DIR}/reflect_pytest/src/message_bus.cpp
-    ${CMAKE_SOURCE_DIR}/reflect_pytest/src/udp_bridge.cpp
-    ${CMAKE_SOURCE_DIR}/reflect_pytest/src/component_logger.cpp
+    ${CMAKE_SOURCE_DIR}/src/ipc/message_bus.cpp
+    ${CMAKE_SOURCE_DIR}/src/ipc/udp_bridge.cpp
 )
 target_include_directories(ipc_hub PUBLIC 
-    ${CMAKE_SOURCE_DIR}/reflect_pytest/src 
-    ${CMAKE_SOURCE_DIR}/reflect_pytest/messages
+    ${CMAKE_SOURCE_DIR}/src/ipc
     ${CMAKE_SOURCE_DIR}/messages
 )
 # ──────────────────────────────────────────────────────────────────────────────

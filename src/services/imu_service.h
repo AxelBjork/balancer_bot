@@ -9,7 +9,7 @@ class Ism330IioReader;
 
 namespace sil {
 
-class ImuService {
+class DOC_DESC("Publishes fused IMU samples onto the internal message bus. In SIL mode the hardware reader can be disabled and samples are injected over UDP instead.") ImuService {
 public:
     using Publishes = ipc::MsgList<ipc::ImuData>;
     using Subscribes = ipc::MsgList<>;
