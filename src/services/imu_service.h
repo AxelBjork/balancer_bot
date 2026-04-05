@@ -1,8 +1,11 @@
 #pragma once
 
-#include "ism330_iio_reader.h"
-#include "publisher.h"
 #include "balancer_msgs.h"
+#include "publisher.h"
+
+#include <memory>
+
+class Ism330IioReader;
 
 namespace sil {
 
@@ -11,7 +14,7 @@ public:
     using Publishes = ipc::MsgList<ipc::ImuData>;
     using Subscribes = ipc::MsgList<>;
 
-    explicit ImuService(ipc::MessageBus& bus);
+    explicit ImuService(ipc::MessageBus& bus, bool enable_hardware_reader = true);
     ~ImuService();
 
     void start() {}
@@ -19,7 +22,7 @@ public:
 
 private:
     ipc::TypedPublisher<ImuService> bus_;
-    Ism330IioReader reader_;
+    std::unique_ptr<Ism330IioReader> reader_;
 };
 
 } // namespace sil

@@ -25,6 +25,9 @@ target_include_directories(ipc_hub PUBLIC
 )
 # ──────────────────────────────────────────────────────────────────────────────
 
+# ── C++26 Reflection (isolated to gcc-trunk) ──────────────────────────────────
+include(cmake/reflection.cmake)
+
 # ---------- SDL2 finder (module first, then pkg-config) ----------
 set(HAVE_SDL2 FALSE)
 set(SDL2_INCS "")
@@ -79,6 +82,7 @@ if (BUILD_TESTS)
   FetchContent_Declare(
     googletest
     URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   )
   set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
   FetchContent_MakeAvailable(googletest)
@@ -159,6 +163,14 @@ if (BUILD_TESTS)
     ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/stubs/pigpiod_stub.cpp
   )
   target_link_libraries(balancer_simulator PRIVATE balancer_common)
+
+  # 5) sil_app (Hardware-in-the-loop simulation/testing)
+  add_executable(sil_app
+    ${CMAKE_SOURCE_DIR}/src/sil_app.cpp
+    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/stubs/pigpiod_stub.cpp # Stub pigpiod for SIL
+  )
+  target_link_libraries(sil_app PRIVATE balancer_common)
+  target_include_directories(sil_app PRIVATE ${CMAKE_SOURCE_DIR}/src)
 # ================================================================
 #                       App (opt-in, hard checks)
 # ================================================================

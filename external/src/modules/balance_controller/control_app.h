@@ -24,6 +24,7 @@
 #include "services/control_service.h"
 #include "services/motor_service.h"
 #include "services/imu_service.h"
+#include "udp_bridge.h"
 
 struct PigpioCtx {
   explicit PigpioCtx(const char* host = nullptr, const char* port = nullptr) {
@@ -45,7 +46,9 @@ struct AppServices {
   sil::MotorService ms;
   sil::ControlService cs;
   sil::ImuService is;
-  AppServices(ipc::MessageBus& bus, MotorRunner* runner) : ms(bus, runner), cs(bus), is(bus) {}
+  ipc::UdpBridge udp;
+  AppServices(ipc::MessageBus& bus, MotorRunner* runner)
+      : ms(bus, runner), cs(bus), is(bus, true), udp(bus) {}
 };
 
 struct BusContainer {
@@ -62,7 +65,12 @@ void app_dispatcher(void* ctx, MsgId id, const void* payload) {
   } else if (id == ipc::JoystickCommand) {
     s->cs.on_message<ipc::JoystickCommand>(*static_cast<const ipc::JoystickCommandPayload*>(payload));
   } else if (id == ipc::MotorTargets) {
-    s->ms.on_message<ipc::MotorTargets>(*static_cast<const ipc::MotorTargetsPayload*>(payload));
+    const auto& p = *static_cast<const ipc::MotorTargetsPayload*>(payload);
+    s->ms.on_message<ipc::MotorTargets>(p);
+    s->udp.on_message<ipc::MotorTargets>(p); // relay to Python
+  } else if (id == ipc::SystemTelemetry) {
+    const auto& p = *static_cast<const ipc::SystemTelemetryPayload*>(payload);
+    s->udp.on_message<ipc::SystemTelemetry>(p); // relay to Python
   }
 }
 
@@ -120,6 +128,14 @@ class ControlApp {
     app_bus.services.cs.start();
     app_bus.services.ms.start();
     app_bus.services.is.start();
+
+    // Start UDP Bridge if not in testing, or depending on config. For now, try to start it on port 9000
+    try {
+        app_bus.services.udp.start();
+        std::cout << "UDP Bridge started on default port 9000\n";
+    } catch (const std::exception& e) {
+        std::cerr << "Failed to start UDP Bridge (expected if port in use): " << e.what() << "\n";
+    }
 
     // Note: ImuService internally configures its IioReader, which runs its own thread.
     // Telemetry is now published to the bus as SystemTelemetry, so we can ignore it here 
