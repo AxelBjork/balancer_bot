@@ -7,6 +7,7 @@
 #include "message_bus.h"
 #include "balancer_msgs.h"
 #include "udp_bridge.h"
+#include "types.h"
 #include "services/control_service.h"
 #include "services/motor_service.h"
 #include "services/imu_service.h"
@@ -36,6 +37,8 @@ void sil_dispatcher(void* ctx, MsgId id, const void* payload) {
     if (id == ipc::ImuData) {
         s->cs.on_message<ipc::ImuData>(*static_cast<const ipc::ImuSamplePayload*>(payload));
         s->udp.on_message<ipc::ImuData>(*static_cast<const ipc::ImuSamplePayload*>(payload));
+    } else if (id == MsgId::PhysicsTick) {
+        s->cs.on_message<MsgId::PhysicsTick>(*static_cast<const PhysicsTickPayload*>(payload));
     } else if (id == ipc::JoystickCommand) {
         s->cs.on_message<ipc::JoystickCommand>(*static_cast<const ipc::JoystickCommandPayload*>(payload));
     } else if (id == ipc::MotorTargets) {
@@ -63,6 +66,7 @@ int main() {
     std::signal(SIGTERM, signal_handler);
 
     std::cout << "Starting sil_app (SIL Mode)..." << std::endl;
+    ConfigPid::load("pid.conf");
 
     BusContainer container;
 

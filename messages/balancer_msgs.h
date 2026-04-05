@@ -1,6 +1,7 @@
 #pragma once
 
 #include "msg_base.h" // pull in global MsgId
+#include "core_msgs.h"
 #include <array>
 #include <cstdint>
 #include <string_view>
@@ -30,9 +31,19 @@ struct DOC_DESC("Wheel speed targets emitted by the controller in steps per seco
     float right_sps;
 };
 
-struct DOC_DESC("Compact controller telemetry streamed out over UDP for SIL observation.") SystemTelemetryPayload {
-    float core_cpu_usage;
-    float loop_time_us;
+struct DOC_DESC("Detailed controller telemetry streamed out over UDP and used for runtime logging/visibility.") SystemTelemetryPayload {
+    float t_sec;
+    float age_ms;
+    float pitch_deg;
+    float pitch_rate_dps;
+    float rate_sp_dps;
+    float out_norm;
+    float u_sps;
+    float integ_pitch;
+    float vel_error;
+    float vel_p_term;
+    float vel_i_term;
+    float pitch_sp_deg;
 };
 
 } // namespace ipc

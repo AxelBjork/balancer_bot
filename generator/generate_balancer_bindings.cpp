@@ -164,12 +164,14 @@ int main() {
 
   // Emit a mini MsgId enum for just our messages
   std::cout << "class BalancerMsgId(IntEnum):\n";
+  std::cout << "    PhysicsTick = " << static_cast<uint16_t>(MsgId::PhysicsTick) << "\n";
   std::cout << "    ImuData = " << static_cast<uint16_t>(ipc::ImuData) << "\n";
   std::cout << "    JoystickCommand = " << static_cast<uint16_t>(ipc::JoystickCommand) << "\n";
   std::cout << "    MotorTargets = " << static_cast<uint16_t>(ipc::MotorTargets) << "\n";
   std::cout << "    SystemTelemetry = " << static_cast<uint16_t>(ipc::SystemTelemetry) << "\n\n";
 
   // Generate dataclasses via reflection
+  emit_struct<PhysicsTickPayload>("PhysicsTickPayload");
   emit_struct<ipc::ImuSamplePayload>("ImuSamplePayload");
   emit_struct<ipc::JoystickCommandPayload>("JoystickCommandPayload");
   emit_struct<ipc::MotorTargetsPayload>("MotorTargetsPayload");
@@ -177,6 +179,7 @@ int main() {
 
   // Lookup table
   std::cout << "MESSAGE_BY_ID = {\n";
+  std::cout << "    BalancerMsgId.PhysicsTick: PhysicsTickPayload,\n";
   std::cout << "    BalancerMsgId.ImuData: ImuSamplePayload,\n";
   std::cout << "    BalancerMsgId.JoystickCommand: JoystickCommandPayload,\n";
   std::cout << "    BalancerMsgId.MotorTargets: MotorTargetsPayload,\n";

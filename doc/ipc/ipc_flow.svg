@@ -12,8 +12,8 @@
 <text text-anchor="start" x="866.5" y="-703.4" font-family="Helvetica,Arial,sans-serif" font-weight="bold" font-size="52.00" fill="#f1f5f9">balancer_bot IPC Flow</text>
 <g id="clust1" class="cluster">
 <title>cluster_sim</title>
-<path fill="#1e293b" stroke="#475569" stroke-width="4" d="M689.5,-338C689.5,-338 2362,-338 2362,-338 2368,-338 2374,-344 2374,-350 2374,-350 2374,-663 2374,-663 2374,-669 2368,-675 2362,-675 2362,-675 689.5,-675 689.5,-675 683.5,-675 677.5,-669 677.5,-663 677.5,-663 677.5,-350 677.5,-350 677.5,-344 683.5,-338 689.5,-338"/>
-<text text-anchor="start" x="1324.75" y="-640" font-family="Helvetica,Arial,sans-serif" font-weight="bold" font-size="40.00" fill="#f1f5f9">Balancer Services</text>
+<path fill="#1e293b" stroke="#475569" stroke-width="4" d="M680.5,-338C680.5,-338 2362,-338 2362,-338 2368,-338 2374,-344 2374,-350 2374,-350 2374,-663 2374,-663 2374,-669 2368,-675 2362,-675 2362,-675 680.5,-675 680.5,-675 674.5,-675 668.5,-669 668.5,-663 668.5,-663 668.5,-350 668.5,-350 668.5,-344 674.5,-338 680.5,-338"/>
+<text text-anchor="start" x="1320.25" y="-640" font-family="Helvetica,Arial,sans-serif" font-weight="bold" font-size="40.00" fill="#f1f5f9">Balancer Services</text>
 </g>
 <g id="clust2" class="cluster">
 <title>cluster_sockets</title>
@@ -28,26 +28,33 @@
 <!-- ImuService -->
 <g id="node1" class="node">
 <title>ImuService</title>
-<path fill="#0369a1" stroke="#f1f5f9" stroke-width="4" d="M907.5,-450C907.5,-450 723.5,-450 723.5,-450 717.5,-450 711.5,-444 711.5,-438 711.5,-438 711.5,-396 711.5,-396 711.5,-390 717.5,-384 723.5,-384 723.5,-384 907.5,-384 907.5,-384 913.5,-384 919.5,-390 919.5,-396 919.5,-396 919.5,-438 919.5,-438 919.5,-444 913.5,-450 907.5,-450"/>
-<text text-anchor="start" x="720.5" y="-421" font-family="Helvetica,Arial,sans-serif" font-weight="bold" font-size="30.00" fill="#ffffff">ImuService</text>
-<text text-anchor="start" x="748" y="-395.8" font-family="Helvetica,Arial,sans-serif" font-size="24.00" fill="#ffffff">ImuService</text>
+<path fill="#0369a1" stroke="#f1f5f9" stroke-width="4" d="M907.5,-549C907.5,-549 723.5,-549 723.5,-549 717.5,-549 711.5,-543 711.5,-537 711.5,-537 711.5,-495 711.5,-495 711.5,-489 717.5,-483 723.5,-483 723.5,-483 907.5,-483 907.5,-483 913.5,-483 919.5,-489 919.5,-495 919.5,-495 919.5,-537 919.5,-537 919.5,-543 913.5,-549 907.5,-549"/>
+<text text-anchor="start" x="720.5" y="-520" font-family="Helvetica,Arial,sans-serif" font-weight="bold" font-size="30.00" fill="#ffffff">ImuService</text>
+<text text-anchor="start" x="748" y="-494.8" font-family="Helvetica,Arial,sans-serif" font-size="24.00" fill="#ffffff">ImuService</text>
 </g>
 <!-- UdpBridge -->
-<g id="node4" class="node">
+<g id="node5" class="node">
 <title>UdpBridge</title>
-<path fill="#0f766e" stroke="#f1f5f9" stroke-width="4" d="M1662,-454C1662,-454 1442,-454 1442,-454 1436,-454 1430,-448 1430,-442 1430,-442 1430,-392 1430,-392 1430,-386 1436,-380 1442,-380 1442,-380 1662,-380 1662,-380 1668,-380 1674,-386 1674,-392 1674,-392 1674,-442 1674,-442 1674,-448 1668,-454 1662,-454"/>
-<text text-anchor="start" x="1439" y="-418.6" font-family="Helvetica,Arial,sans-serif" font-weight="bold" font-size="38.00" fill="#ffffff">UdpBridge</text>
-<text text-anchor="start" x="1489" y="-391.8" font-family="Helvetica,Arial,sans-serif" font-size="24.00" fill="#ffffff">UdpBridge</text>
+<path fill="#0f766e" stroke="#f1f5f9" stroke-width="4" d="M1662,-478C1662,-478 1442,-478 1442,-478 1436,-478 1430,-472 1430,-466 1430,-466 1430,-416 1430,-416 1430,-410 1436,-404 1442,-404 1442,-404 1662,-404 1662,-404 1668,-404 1674,-410 1674,-416 1674,-416 1674,-466 1674,-466 1674,-472 1668,-478 1662,-478"/>
+<text text-anchor="start" x="1439" y="-442.6" font-family="Helvetica,Arial,sans-serif" font-weight="bold" font-size="38.00" fill="#ffffff">UdpBridge</text>
+<text text-anchor="start" x="1489" y="-415.8" font-family="Helvetica,Arial,sans-serif" font-size="24.00" fill="#ffffff">UdpBridge</text>
 </g>
 <!-- ImuService&#45;&gt;UdpBridge -->
 <g id="edge5" class="edge">
 <title>ImuService&#45;&gt;UdpBridge</title>
-<path fill="none" stroke="#64748b" stroke-width="3" stroke-dasharray="5,2" d="M919.79,-417C1049.52,-417 1272.42,-417 1415.66,-417"/>
-<polygon fill="#64748b" stroke="#64748b" stroke-width="3" points="1415.7,-421.9 1429.7,-417 1415.7,-412.1 1415.7,-421.9"/>
-<text text-anchor="middle" x="1232.5" y="-423.4" font-family="Helvetica,Arial,sans-serif" font-size="22.00" fill="#cbd5e1">ImuData</text>
+<path fill="none" stroke="#64748b" stroke-width="3" stroke-dasharray="5,2" d="M919.79,-505.45C1049.52,-492.21 1272.42,-469.45 1415.66,-454.82"/>
+<polygon fill="#64748b" stroke="#64748b" stroke-width="3" points="1416.27,-459.68 1429.7,-453.39 1415.27,-449.93 1416.27,-459.68"/>
+<text text-anchor="middle" x="1232.5" y="-495.4" font-family="Helvetica,Arial,sans-serif" font-size="22.00" fill="#cbd5e1">ImuData</text>
+</g>
+<!-- TimeService -->
+<g id="node2" class="node">
+<title>TimeService</title>
+<path fill="#0369a1" stroke="#f1f5f9" stroke-width="4" d="M916.5,-438C916.5,-438 714.5,-438 714.5,-438 708.5,-438 702.5,-432 702.5,-426 702.5,-426 702.5,-384 702.5,-384 702.5,-378 708.5,-372 714.5,-372 714.5,-372 916.5,-372 916.5,-372 922.5,-372 928.5,-378 928.5,-384 928.5,-384 928.5,-426 928.5,-426 928.5,-432 922.5,-438 916.5,-438"/>
+<text text-anchor="start" x="711.5" y="-409" font-family="Helvetica,Arial,sans-serif" font-weight="bold" font-size="30.00" fill="#ffffff">TimeService</text>
+<text text-anchor="start" x="741" y="-383.8" font-family="Helvetica,Arial,sans-serif" font-size="24.00" fill="#ffffff">TimeService</text>
 </g>
 <!-- ControlService -->
-<g id="node2" class="node">
+<g id="node3" class="node">
 <title>ControlService</title>
 <path fill="#0369a1" stroke="#f1f5f9" stroke-width="4" d="M2328,-464C2328,-464 2085,-464 2085,-464 2079,-464 2073,-458 2073,-452 2073,-452 2073,-410 2073,-410 2073,-404 2079,-398 2085,-398 2085,-398 2328,-398 2328,-398 2334,-398 2340,-404 2340,-410 2340,-410 2340,-452 2340,-452 2340,-458 2334,-464 2328,-464"/>
 <text text-anchor="start" x="2082" y="-435" font-family="Helvetica,Arial,sans-serif" font-weight="bold" font-size="30.00" fill="#ffffff">ControlService</text>
@@ -56,12 +63,12 @@
 <!-- ControlService&#45;&gt;UdpBridge -->
 <g id="edge4" class="edge">
 <title>ControlService&#45;&gt;UdpBridge</title>
-<path fill="none" stroke="#64748b" stroke-width="3" stroke-dasharray="5,2" d="M2072.75,-441.58C1970.44,-447.88 1825.53,-452.75 1699,-442 1695.47,-441.7 1691.89,-441.36 1688.29,-440.98"/>
-<polygon fill="#64748b" stroke="#64748b" stroke-width="3" points="1688.76,-436.11 1674.29,-439.37 1687.64,-445.84 1688.76,-436.11"/>
-<text text-anchor="middle" x="1873.5" y="-454.4" font-family="Helvetica,Arial,sans-serif" font-size="22.00" fill="#cbd5e1">MotorTargets, SystemTelemetry</text>
+<path fill="none" stroke="#64748b" stroke-width="3" stroke-dasharray="5,2" d="M2072.77,-440.93C2064.39,-441.36 2056.08,-441.72 2048,-442 1892.98,-447.41 1854.11,-442.53 1699,-442 1695.45,-441.99 1691.85,-441.97 1688.22,-441.96"/>
+<polygon fill="#64748b" stroke="#64748b" stroke-width="3" points="1688.12,-437.06 1674.1,-441.89 1688.07,-446.86 1688.12,-437.06"/>
+<text text-anchor="middle" x="1873.5" y="-450.4" font-family="Helvetica,Arial,sans-serif" font-size="22.00" fill="#cbd5e1">MotorTargets, SystemTelemetry</text>
 </g>
 <!-- MotorService -->
-<g id="node3" class="node">
+<g id="node4" class="node">
 <title>MotorService</title>
 <path fill="#0369a1" stroke="#f1f5f9" stroke-width="4" d="M2316.5,-589C2316.5,-589 2096.5,-589 2096.5,-589 2090.5,-589 2084.5,-583 2084.5,-577 2084.5,-577 2084.5,-535 2084.5,-535 2084.5,-529 2090.5,-523 2096.5,-523 2096.5,-523 2316.5,-523 2316.5,-523 2322.5,-523 2328.5,-529 2328.5,-535 2328.5,-535 2328.5,-577 2328.5,-577 2328.5,-583 2322.5,-589 2316.5,-589"/>
 <text text-anchor="start" x="2093.5" y="-560" font-family="Helvetica,Arial,sans-serif" font-weight="bold" font-size="30.00" fill="#ffffff">MotorService</text>
@@ -70,19 +77,19 @@
 <!-- UdpBridge&#45;&gt;ControlService -->
 <g id="edge6" class="edge">
 <title>UdpBridge&#45;&gt;ControlService</title>
-<path fill="none" stroke="#64748b" stroke-width="3" stroke-dasharray="5,2" d="M1674.22,-408.09C1774.54,-402.27 1920.72,-397.36 2048,-407 2051.56,-407.27 2055.16,-407.57 2058.79,-407.91"/>
+<path fill="none" stroke="#64748b" stroke-width="3" stroke-dasharray="5,2" d="M1674.12,-410.58C1682.5,-409.16 1690.86,-407.94 1699,-407 1853.1,-389.29 1893.33,-395.28 2048,-407 2051.56,-407.27 2055.16,-407.57 2058.79,-407.91"/>
 <polygon fill="#64748b" stroke="#64748b" stroke-width="3" points="2058.48,-412.8 2072.9,-409.33 2059.46,-403.05 2058.48,-412.8"/>
 <text text-anchor="middle" x="1873.5" y="-413.4" font-family="Helvetica,Arial,sans-serif" font-size="22.00" fill="#cbd5e1">ImuData, JoystickCommand</text>
 </g>
 <!-- UdpBridge&#45;&gt;MotorService -->
 <g id="edge7" class="edge">
 <title>UdpBridge&#45;&gt;MotorService</title>
-<path fill="none" stroke="#64748b" stroke-width="3" stroke-dasharray="5,2" d="M1624.25,-454.04C1647.55,-464.83 1673.9,-475.68 1699,-483 1821.92,-518.86 1966.97,-537.48 2070.28,-546.91"/>
-<polygon fill="#64748b" stroke="#64748b" stroke-width="3" points="2069.87,-551.79 2084.25,-548.15 2070.74,-542.03 2069.87,-551.79"/>
-<text text-anchor="middle" x="1873.5" y="-550.4" font-family="Helvetica,Arial,sans-serif" font-size="22.00" fill="#cbd5e1">MotorTargets</text>
+<path fill="none" stroke="#64748b" stroke-width="3" stroke-dasharray="5,2" d="M1674.27,-473.58C1682.62,-475.51 1690.92,-477.34 1699,-479 1823.92,-504.68 1967.79,-525.75 2070.2,-539.32"/>
+<polygon fill="#64748b" stroke="#64748b" stroke-width="3" points="2069.85,-544.21 2084.37,-541.18 2071.13,-534.49 2069.85,-544.21"/>
+<text text-anchor="middle" x="1873.5" y="-542.4" font-family="Helvetica,Arial,sans-serif" font-size="22.00" fill="#cbd5e1">MotorTargets</text>
 </g>
 <!-- TX -->
-<g id="node5" class="node">
+<g id="node6" class="node">
 <title>TX</title>
 <path fill="#b45309" stroke="#f1f5f9" stroke-width="4" d="M931.5,-254C931.5,-254 699.5,-254 699.5,-254 693.5,-254 687.5,-248 687.5,-242 687.5,-242 687.5,-200 687.5,-200 687.5,-194 693.5,-188 699.5,-188 699.5,-188 931.5,-188 931.5,-188 937.5,-188 943.5,-194 943.5,-200 943.5,-200 943.5,-242 943.5,-242 943.5,-248 937.5,-254 931.5,-254"/>
 <text text-anchor="start" x="731" y="-225" font-family="Helvetica,Arial,sans-serif" font-weight="bold" font-size="30.00" fill="#ffffff">TX Socket</text>
@@ -91,14 +98,14 @@
 <!-- TX&#45;&gt;UdpBridge -->
 <g id="edge3" class="edge">
 <title>TX&#45;&gt;UdpBridge</title>
-<path fill="none" stroke="#f1f5f9" stroke-width="5" d="M943.6,-227.92C1065.56,-237.98 1253.1,-262.49 1405,-322 1436.13,-334.2 1467.61,-353.58 1493.32,-371.67"/>
-<polygon fill="#f1f5f9" stroke="#f1f5f9" stroke-width="5" points="1489.77,-376.65 1504.71,-379.85 1496.92,-366.71 1489.77,-376.65"/>
-<text text-anchor="middle" x="1232.5" y="-386" font-family="Helvetica,Arial,sans-serif" font-size="25.00" fill="#cbd5e1">Inbound Traffic:</text>
-<text text-anchor="middle" x="1232.5" y="-358" font-family="Helvetica,Arial,sans-serif" font-size="25.00" fill="#cbd5e1">ImuData, JoystickCommand</text>
-<text text-anchor="middle" x="1232.5" y="-330" font-family="Helvetica,Arial,sans-serif" font-size="25.00" fill="#cbd5e1">MotorTargets</text>
+<path fill="none" stroke="#f1f5f9" stroke-width="5" d="M943.64,-241.55C1064.81,-263.42 1251.08,-303.08 1405,-362 1429.75,-371.48 1455.57,-384.34 1478.48,-396.93"/>
+<polygon fill="#f1f5f9" stroke="#f1f5f9" stroke-width="5" points="1475.68,-402.38 1490.89,-403.88 1481.66,-391.69 1475.68,-402.38"/>
+<text text-anchor="middle" x="1232.5" y="-426" font-family="Helvetica,Arial,sans-serif" font-size="25.00" fill="#cbd5e1">Inbound Traffic:</text>
+<text text-anchor="middle" x="1232.5" y="-398" font-family="Helvetica,Arial,sans-serif" font-size="25.00" fill="#cbd5e1">ImuData, JoystickCommand</text>
+<text text-anchor="middle" x="1232.5" y="-370" font-family="Helvetica,Arial,sans-serif" font-size="25.00" fill="#cbd5e1">MotorTargets</text>
 </g>
 <!-- RX -->
-<g id="node6" class="node">
+<g id="node7" class="node">
 <title>RX</title>
 <path fill="#b45309" stroke="#f1f5f9" stroke-width="4" d="M1016,-98C1016,-98 615,-98 615,-98 609,-98 603,-92 603,-86 603,-86 603,-44 603,-44 603,-38 609,-32 615,-32 615,-32 1016,-32 1016,-32 1022,-32 1028,-38 1028,-44 1028,-44 1028,-86 1028,-86 1028,-92 1022,-98 1016,-98"/>
 <text text-anchor="start" x="729.5" y="-69" font-family="Helvetica,Arial,sans-serif" font-weight="bold" font-size="30.00" fill="#ffffff">RX Socket</text>
@@ -108,14 +115,14 @@
 <!-- RX&#45;&gt;UdpBridge -->
 <g id="edge8" class="edge">
 <title>RX&#45;&gt;UdpBridge</title>
-<path fill="none" stroke="#f1f5f9" stroke-width="5" d="M1042.24,-48.77C1159.79,-51.24 1300.4,-72.41 1405,-145 1486.9,-201.83 1526.86,-319.67 1542.59,-379.86"/>
-<polygon fill="#f1f5f9" stroke="#f1f5f9" stroke-width="5" points="1042.11,-42.64 1028.02,-48.55 1041.93,-54.89 1042.11,-42.64"/>
-<text text-anchor="middle" x="1232.5" y="-209" font-family="Helvetica,Arial,sans-serif" font-size="25.00" fill="#cbd5e1">Outbound Traffic:</text>
-<text text-anchor="middle" x="1232.5" y="-181" font-family="Helvetica,Arial,sans-serif" font-size="25.00" fill="#cbd5e1">ImuData, MotorTargets</text>
-<text text-anchor="middle" x="1232.5" y="-153" font-family="Helvetica,Arial,sans-serif" font-size="25.00" fill="#cbd5e1">SystemTelemetry</text>
+<path fill="none" stroke="#f1f5f9" stroke-width="5" d="M1042.49,-60.85C1160.28,-69.19 1301.04,-96.72 1405,-172 1484.62,-229.65 1525.41,-344.46 1541.91,-403.71"/>
+<polygon fill="#f1f5f9" stroke="#f1f5f9" stroke-width="5" points="1042.61,-54.72 1028.24,-59.93 1041.82,-66.95 1042.61,-54.72"/>
+<text text-anchor="middle" x="1232.5" y="-236" font-family="Helvetica,Arial,sans-serif" font-size="25.00" fill="#cbd5e1">Outbound Traffic:</text>
+<text text-anchor="middle" x="1232.5" y="-208" font-family="Helvetica,Arial,sans-serif" font-size="25.00" fill="#cbd5e1">ImuData, MotorTargets</text>
+<text text-anchor="middle" x="1232.5" y="-180" font-family="Helvetica,Arial,sans-serif" font-size="25.00" fill="#cbd5e1">SystemTelemetry</text>
 </g>
 <!-- TestCase -->
-<g id="node7" class="node">
+<g id="node8" class="node">
 <title>TestCase</title>
 <path fill="#047857" stroke="#f1f5f9" stroke-width="4" d="M415,-177.5C415,-177.5 44,-177.5 44,-177.5 38,-177.5 32,-171.5 32,-165.5 32,-165.5 32,-140.5 32,-140.5 32,-134.5 38,-128.5 44,-128.5 44,-128.5 415,-128.5 415,-128.5 421,-128.5 427,-134.5 427,-140.5 427,-140.5 427,-165.5 427,-165.5 427,-171.5 421,-177.5 415,-177.5"/>
 <text text-anchor="start" x="41" y="-145.3" font-family="Helvetica,Arial,sans-serif" font-weight="bold" font-size="34.00" fill="#ffffff">Test Case / Fixtures</text>

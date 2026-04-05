@@ -11,17 +11,27 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(BUILD_TESTS "Build unit tests" ON)
 
 find_package(Threads REQUIRED)
+include(cmake/balancer_common.cmake)
 
-# ── IPC Hub ───────────────────────────────────────────────────────────────────
-add_library(ipc_hub STATIC
-    ${CMAKE_SOURCE_DIR}/src/ipc/message_bus.cpp
-    ${CMAKE_SOURCE_DIR}/src/ipc/udp_bridge.cpp
+add_library(project_warnings INTERFACE)
+target_compile_options(project_warnings INTERFACE
+  $<$<COMPILE_LANG_AND_ID:CXX,GNU,Clang>:-Wall;-Wextra;-Werror>
 )
-target_include_directories(ipc_hub PUBLIC 
-    ${CMAKE_SOURCE_DIR}/src/ipc
-    ${CMAKE_SOURCE_DIR}/messages
+
+add_library(project_pi_optimization INTERFACE)
+target_compile_options(project_pi_optimization INTERFACE
+  $<$<COMPILE_LANG_AND_ID:CXX,GNU,Clang>:-O2>
 )
-# ──────────────────────────────────────────────────────────────────────────────
+
+function(enable_project_warnings target_name)
+  target_link_libraries(${target_name} PUBLIC project_warnings)
+endfunction()
+
+function(enable_pi_optimization target_name)
+  target_link_libraries(${target_name} PUBLIC project_pi_optimization)
+endfunction()
+
+add_ipc_hub_target()
 
 # ── C++26 Reflection (isolated to gcc-trunk) ──────────────────────────────────
 include(cmake/reflection.cmake)
@@ -51,20 +61,7 @@ else()
     endif()
   endif()
 endif()
-# ================================================================
-#                       Source Definition
-# ================================================================
-set(SRC_DIR ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller)
-set(BALANCER_SOURCES
-    ${SRC_DIR}/xbox_controller.cpp
-    ${SRC_DIR}/control_loop.cpp
-    ${SRC_DIR}/ism330_iio_reader.cpp
-    ${SRC_DIR}/pitch_lpf.cpp
-    ${SRC_DIR}/config_pid_io.cpp
-    ${CMAKE_SOURCE_DIR}/src/services/imu_service.cpp
-    ${CMAKE_SOURCE_DIR}/src/services/control_service.cpp
-    ${CMAKE_SOURCE_DIR}/src/services/motor_service.cpp
-)
+set(SRC_DIR ${CMAKE_SOURCE_DIR}/src/balance_controller)
 
 # ================================================================
 #                       Tests (default ON)
@@ -86,69 +83,25 @@ if (BUILD_TESTS)
   FetchContent_MakeAvailable(googletest)
 
   message(STATUS "Building tests")
-  add_library(balancer_common STATIC ${BALANCER_SOURCES})
-  target_include_directories(balancer_common PUBLIC
-    ${CMAKE_SOURCE_DIR}/src
-    ${SRC_DIR}
-    ${SRC_DIR}/stubs
-    ${SDL2_INCS}
-    ${CMAKE_SOURCE_DIR}/PX4-Autopilot/src/lib/rate_control
-    ${CMAKE_SOURCE_DIR}/PX4-Autopilot/src/lib/matrix
-    ${CMAKE_SOURCE_DIR}/PX4-Autopilot/src/lib
-    ${CMAKE_SOURCE_DIR}/PX4-Autopilot/platforms/common/include
-    ${CMAKE_SOURCE_DIR}/px4_stub/src/modules
-    ${CMAKE_SOURCE_DIR}/px4_stub
+  add_px4_ratecontrol_target()
+  add_balancer_common_target(
+    USE_PIGPIO_STUB
+    SDL_LIBS "${SDL2_LIBS}"
   )
 
-  target_compile_definitions(balancer_common PUBLIC
-    PIGPIOD_STUB_IMPL
-  )
-  target_link_libraries(balancer_common PUBLIC
-    GTest::gmock_main GTest::gtest
-    Threads::Threads
-    ${SDL2_LIBS}
-    ipc_hub
-  )
-
-  set(PX4_DIR ${CMAKE_SOURCE_DIR}/px4_stub)
-  add_library(px4_ratecontrol STATIC
-    ${PX4_DIR}/src/lib/rate_control/rate_control.cpp
-    ${PX4_DIR}/src/lib/pid/PID.cpp
-    ${PX4_DIR}/src/modules/attitude_estimator_q/AttitudeEstimatorQ.cpp
-  )
-  target_include_directories(px4_ratecontrol PUBLIC
-    ${PX4_DIR}/src/lib/rate_control
-    ${PX4_DIR}/src/lib/matrix
-    ${PX4_DIR}/src/lib
-    ${PX4_DIR}/src/lib/mathlib
-    ${PX4_DIR}/src/lib/mathlib/math
-    ${PX4_DIR}/src/modules/attitude_estimator_q
-    ${PX4_DIR}/src
-    ${PX4_DIR}
-  )
-  target_link_libraries(balancer_common PUBLIC px4_ratecontrol)
-
-  set(TEST_DIR ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/test)
+  set(TEST_DIR ${CMAKE_SOURCE_DIR}/src/balance_controller/test)
   # 2) motor_controller_test (existing)
   add_executable(balancer_tests
     ${TEST_DIR}/motor_runner_test.cpp
     ${TEST_DIR}/control_loop_test.cpp
+    ${TEST_DIR}/time_service_test.cpp
     ${TEST_DIR}/latency_test.cpp
-    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/stubs/pigpiod_stub.cpp
+    ${CMAKE_SOURCE_DIR}/src/balance_controller/stubs/pigpiod_stub.cpp
   )
 
   target_link_libraries(balancer_tests PRIVATE balancer_common)
   ## add_test(NAME motor_controller_test COMMAND motor_controller_test)
 
-  # 3) control_loop_test (new)
-  #add_executable(control_loop_test
-  #  ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/control_loop_test.cpp
-  #)
-  #target_link_libraries(control_loop_test PRIVATE
-  #  balancer_common
-  #)
-
-  #add_test(NAME control_loop_test COMMAND control_loop_test)
   gtest_discover_tests(balancer_tests
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     DISCOVERY_TIMEOUT 60
@@ -156,16 +109,16 @@ if (BUILD_TESTS)
 
   # 4) balancer_simulator (standalone sim)
   add_executable(balancer_simulator
-    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/test/simulator_main.cpp
-    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/test/simulator/balancer_simulator.cpp
-    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/stubs/pigpiod_stub.cpp
+    ${CMAKE_SOURCE_DIR}/src/balance_controller/test/simulator_main.cpp
+    ${CMAKE_SOURCE_DIR}/src/balance_controller/test/simulator/balancer_simulator.cpp
+    ${CMAKE_SOURCE_DIR}/src/balance_controller/stubs/pigpiod_stub.cpp
   )
   target_link_libraries(balancer_simulator PRIVATE balancer_common)
 
   # 5) sil_app (Hardware-in-the-loop simulation/testing)
   add_executable(sil_app
     ${CMAKE_SOURCE_DIR}/src/sil_app.cpp
-    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/stubs/pigpiod_stub.cpp # Stub pigpiod for SIL
+    ${CMAKE_SOURCE_DIR}/src/balance_controller/stubs/pigpiod_stub.cpp # Stub pigpiod for SIL
   )
   target_link_libraries(sil_app PRIVATE balancer_common)
   target_include_directories(sil_app PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -185,50 +138,15 @@ else()
     message(FATAL_ERROR "libpigpiod_if2 not found. Install pigpio (daemon client).")
   endif()
 
-  set(PX4_DIR ${CMAKE_SOURCE_DIR}/px4_stub)
-  add_library(px4_ratecontrol STATIC
-    ${PX4_DIR}/src/lib/rate_control/rate_control.cpp
-    ${PX4_DIR}/src/lib/pid/PID.cpp
-    ${PX4_DIR}/src/modules/attitude_estimator_q/AttitudeEstimatorQ.cpp
+  add_px4_ratecontrol_target()
+  add_balancer_common_target(
+    PI_OPTIMIZED
+    SDL_LIBS "${SDL2_LIBS}"
+    PIGPIOD_LIB "${PIGPIOD_LIB}"
   )
 
-  target_include_directories(px4_ratecontrol PUBLIC
-    ${PX4_DIR}/src/lib/rate_control   # RateControl.hpp
-    ${PX4_DIR}/src/lib/matrix                            # PX4 matrix headers
-    ${PX4_DIR}/src/lib                                   # mathlib lives here
-    ${PX4_DIR}/src/modules/attitude_estimator_q
-    ${PX4_DIR}/src
-    ${PX4_DIR}/platforms                # px4_platform_common/defines.h
-    ${PX4_DIR}/platforms/common/include                  # common px4 includes (harmless)
-    ${PX4_DIR}                          # px4_boardconfig.h stub
-)
-
-
-  # Define balancer_common for App (if NOT building tests)
-  # But we also used it above. Wait, if we are in else(), we are NOT building tests.
-  # So we define it here for the App case.
-  add_library(balancer_common STATIC ${BALANCER_SOURCES})
-
-  target_precompile_headers(balancer_common PRIVATE
-    <atomic> <thread> <chrono> <vector> <string> <unordered_map> <array> <algorithm> <cstdio> <cmath>
-  )
-
-  target_link_libraries(balancer_common
-  PUBLIC px4_ratecontrol
-  )
-
-  target_include_directories(balancer_common PUBLIC
-    ${CMAKE_SOURCE_DIR}/src
-    ${SDL2_INCS}
-  )
-  target_link_libraries(balancer_common PUBLIC
-    Threads::Threads
-    ${SDL2_LIBS}
-    ${PIGPIOD_LIB}
-    ipc_hub
-  )
   add_executable(imu_demo
-    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/extras/imu_demo.cpp
+    ${CMAKE_SOURCE_DIR}/src/balance_controller/extras/imu_demo.cpp
   )
 
   target_link_libraries(imu_demo
@@ -245,7 +163,7 @@ if(NOT BUILD_TESTS)
   
   # Main balancer executable
   add_executable(balancer_pi
-    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/main.cpp
+    ${CMAKE_SOURCE_DIR}/src/balance_controller/main.cpp
   )
   
   target_link_libraries(balancer_pi PRIVATE
@@ -254,9 +172,11 @@ if(NOT BUILD_TESTS)
     ${SDL2_LIBS}
     Threads::Threads
   )
+  enable_project_warnings(balancer_pi)
+  enable_pi_optimization(balancer_pi)
   
   target_include_directories(balancer_pi PRIVATE
-    ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller
+    ${CMAKE_SOURCE_DIR}/src/balance_controller
     ${SDL2_INCS}
   )
   

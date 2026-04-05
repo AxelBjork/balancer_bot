@@ -22,12 +22,20 @@ ControlService::ControlService(ipc::MessageBus& bus)
     // Telemetry publishing
     core_.setTelemetrySink([this](const Telemetry& t) {
         ipc::SystemTelemetryPayload p{};
-        p.core_cpu_usage = static_cast<float>(t.u_sps); // Example mapping
-        p.loop_time_us = static_cast<float>(t.t_sec * 1e6);
+        p.t_sec = static_cast<float>(t.t_sec);
+        p.age_ms = static_cast<float>(t.age_ms);
+        p.pitch_deg = static_cast<float>(t.pitch_deg);
+        p.pitch_rate_dps = static_cast<float>(t.pitch_rate_dps);
+        p.rate_sp_dps = static_cast<float>(t.rate_sp_dps);
+        p.out_norm = static_cast<float>(t.out_norm);
+        p.u_sps = static_cast<float>(t.u_sps);
+        p.integ_pitch = static_cast<float>(t.integ_pitch);
+        p.vel_error = static_cast<float>(t.vel_error);
+        p.vel_p_term = static_cast<float>(t.vel_p_term);
+        p.vel_i_term = static_cast<float>(t.vel_i_term);
+        p.pitch_sp_deg = static_cast<float>(t.pitch_sp_deg);
         bus_.publish<ipc::SystemTelemetry>(p);
     });
-    
-    core_.start();
 }
 
 } // namespace sil

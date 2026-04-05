@@ -44,11 +44,13 @@ def pytest_sessionstart(session):
         "-DBUILD_TESTS=ON",
     ]
     build_cmd = ["cmake", "--build", str(_BUILD_DIR), "-j8"]
+    bindings_cmd = ["cmake", "--build", str(_BUILD_DIR), "--target", "balancer_bindings"]
     ctest_cmd = ["ctest", "--test-dir", str(_BUILD_DIR), "--output-on-failure", "-j8"]
 
     try:
         subprocess.run(configure_cmd, check=True, cwd=_REPO_ROOT)
         subprocess.run(build_cmd, check=True, cwd=_REPO_ROOT)
+        subprocess.run(bindings_cmd, check=True, cwd=_REPO_ROOT)
         subprocess.run(ctest_cmd, check=True, cwd=_REPO_ROOT)
     except subprocess.CalledProcessError as exc:
         pytest.exit(f"C++ build or CTest failed (rc={exc.returncode})", returncode=1)

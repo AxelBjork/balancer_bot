@@ -48,3 +48,4 @@ external/src/modules/balance_controller/motor_off
 build-pi/*
 PX4-Autopilot/*
 *.pyc
+build-pi-arm/*

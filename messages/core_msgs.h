@@ -26,10 +26,9 @@ struct DOC_DESC("Response containing the system revision and protocol hash.") Re
   char protocol_hash[65];
 };
 
-struct DOC_DESC("Internal IPC: Broadcast at 100Hz during sequence execution to drive kinematics and power integration.") PhysicsTickPayload {
-  uint32_t cmd_id;
-  int16_t speed_rpm;
-  uint32_t dt_us;
+struct DOC_DESC("Global runtime tick. Published by the time service to advance deterministic simulation and controller execution using an explicit delta time plus accumulated monotonic time.") PhysicsTickPayload {
+  double dt_s;
+  uint64_t sim_time_us;
 };
 
 template <>

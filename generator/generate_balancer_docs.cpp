@@ -27,12 +27,17 @@ struct DOC_DESC("Publishes fused IMU samples onto the internal message bus. In S
 
 struct DOC_DESC("Consumes IMU and joystick inputs, runs the cascaded balancing controller, and publishes motor targets plus lightweight telemetry.") ControlService {
   using Publishes = ipc::MsgList<ipc::MotorTargets, ipc::SystemTelemetry>;
-  using Subscribes = ipc::MsgList<ipc::ImuData, ipc::JoystickCommand>;
+  using Subscribes = ipc::MsgList<MsgId::PhysicsTick, ipc::ImuData, ipc::JoystickCommand>;
 };
 
 struct DOC_DESC("Consumes wheel-speed targets and forwards them to the motor runner when hardware is attached.") MotorService {
   using Publishes = ipc::MsgList<>;
   using Subscribes = ipc::MsgList<ipc::MotorTargets>;
+};
+
+struct DOC_DESC("Publishes the global runtime tick used to drive deterministic controller execution.") TimeService {
+  using Publishes = ipc::MsgList<MsgId::PhysicsTick>;
+  using Subscribes = ipc::MsgList<>;
 };
 
 }  // namespace balancer_doc
@@ -138,10 +143,11 @@ consteval bool component_publishes() {
 }
 
 using Components = std::tuple<balancer_doc::ImuService,
+                              balancer_doc::TimeService,
                               balancer_doc::ControlService,
                               balancer_doc::MotorService,
                               ipc::UdpBridge>;
-using BalancerMessages = ipc::MsgList<ipc::ImuData, ipc::JoystickCommand, ipc::MotorTargets, ipc::SystemTelemetry>;
+using BalancerMessages = ipc::MsgList<MsgId::PhysicsTick, ipc::ImuData, ipc::JoystickCommand, ipc::MotorTargets, ipc::SystemTelemetry>;
 
 template <typename Tuple, MsgId Id, std::size_t... Is>
 void print_publishers_impl(std::index_sequence<Is...>) {

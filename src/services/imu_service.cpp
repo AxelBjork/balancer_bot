@@ -1,5 +1,5 @@
 #include "imu_service.h"
-#include "ism330_iio_reader.h"
+#include "services/imu/ism330_iio_reader.h"
 
 namespace sil {
 

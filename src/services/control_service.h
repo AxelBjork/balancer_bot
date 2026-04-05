@@ -1,6 +1,6 @@
 #pragma once
 
-#include "control_loop.h"
+#include "services/control/rate_controller_core.h"
 #include "publisher.h"
 #include "balancer_msgs.h"
 
@@ -9,7 +9,7 @@ namespace sil {
 class DOC_DESC("Consumes IMU and joystick inputs, runs the cascaded balancing controller, and publishes motor targets plus lightweight telemetry.") ControlService {
 public:
     using Publishes = ipc::MsgList<ipc::MotorTargets, ipc::SystemTelemetry>;
-    using Subscribes = ipc::MsgList<ipc::ImuData, ipc::JoystickCommand>;
+    using Subscribes = ipc::MsgList<MsgId::PhysicsTick, ipc::ImuData, ipc::JoystickCommand>;
 
     explicit ControlService(ipc::MessageBus& bus);
     ~ControlService() = default;
@@ -43,6 +43,12 @@ inline void ControlService::on_message<ipc::ImuData>(const ipc::ImuSamplePayload
     s.yaw_rate_z = p.gyr[2]; 
     s.t = std::chrono::steady_clock::time_point(std::chrono::microseconds(p.timestamp_us));
     core_.pushImu(s);
+}
+
+template <>
+inline void ControlService::on_message<MsgId::PhysicsTick>(const PhysicsTickPayload& p) {
+    const auto now = std::chrono::steady_clock::time_point(std::chrono::microseconds(p.sim_time_us));
+    core_.step(p.dt_s, now);
 }
 
 } // namespace sil

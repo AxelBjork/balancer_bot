@@ -2,9 +2,11 @@ import time
 
 from generated_balancer import (
     BalancerMsgId,
+    PhysicsTickPayload,
     ImuSamplePayload,
     JoystickCommandPayload,
     MotorTargetsPayload,
+    SystemTelemetryPayload,
 )
 
 
@@ -21,11 +23,12 @@ def test_joystick_to_motor_targets(udp):
     cmd = JoystickCommandPayload(forward=1.0, turn=0.5)
     udp.send(BalancerMsgId.JoystickCommand, cmd.pack())
 
-    base_ts_us = time.monotonic_ns() // 1000
-    for i in range(8):
-        imu = make_imu_sample(base_ts_us + i * 5_000)
+    sim_time_us = 0
+    for _ in range(32):
+        sim_time_us += 2_500
+        imu = make_imu_sample(sim_time_us)
         udp.send(BalancerMsgId.ImuData, imu.pack())
-        time.sleep(0.01)
+        udp.send(BalancerMsgId.PhysicsTick, PhysicsTickPayload(dt_s=0.0025, sim_time_us=sim_time_us).pack())
 
     start_time = time.time()
     found = False
@@ -42,3 +45,32 @@ def test_joystick_to_motor_targets(udp):
             pass
 
     assert found, "Did not receive MotorTargets message from sil_app"
+
+
+def test_tick_driven_telemetry_stream(udp):
+    udp.send(BalancerMsgId.JoystickCommand, JoystickCommandPayload(forward=0.2, turn=0.0).pack())
+
+    sim_time_us = 0
+    for _ in range(24):
+        sim_time_us += 2_500
+        udp.send(BalancerMsgId.ImuData, make_imu_sample(sim_time_us).pack())
+        udp.send(BalancerMsgId.PhysicsTick, PhysicsTickPayload(dt_s=0.0025, sim_time_us=sim_time_us).pack())
+
+    deadline = time.time() + 2.0
+    while time.time() < deadline:
+        try:
+            msg_id, payload_bytes = udp.recv(timeout=0.1)
+        except TimeoutError:
+            continue
+
+        if msg_id != int(BalancerMsgId.SystemTelemetry):
+            continue
+
+        payload = SystemTelemetryPayload.unpack(payload_bytes)
+        assert payload.t_sec >= 0.0
+        assert payload.age_ms >= 0.0
+        assert payload.pitch_deg == payload.pitch_deg
+        assert payload.u_sps == payload.u_sps
+        return
+
+    raise AssertionError("Did not receive SystemTelemetry message from sil_app")

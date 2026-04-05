@@ -21,10 +21,15 @@ The current runtime flow is straightforward:
 - Publishes: `ImuData`
 - Subscribes: _None_
 
+### `TimeService`
+
+- Publishes: `PhysicsTick`
+- Subscribes: _None_
+
 ### `ControlService`
 
 - Publishes: `MotorTargets`, `SystemTelemetry`
-- Subscribes: `ImuData`, `JoystickCommand`
+- Subscribes: `PhysicsTick`, `ImuData`, `JoystickCommand`
 
 ### `MotorService`
 
@@ -33,10 +38,25 @@ The current runtime flow is straightforward:
 
 ### `UdpBridge`
 
-- Publishes: `StateRequest`, `MotorSequence`, `KinematicsRequest`, `PowerRequest`, `ThermalRequest`, `AutoDriveCommand`, `EnvironmentData`, `SensorRequest`, `RevisionRequest`, `JoystickCommand`, `ImuData`
-- Subscribes: `Log`, `StateData`, `KinematicsData`, `PowerData`, `ThermalData`, `EnvironmentAck`, `AutoDriveStatus`, `EnvironmentRequest`, `EnvironmentData`, `SensorAck`, `RevisionResponse`, `ImuData`, `MotorTargets`, `SystemTelemetry`
+- Publishes: `PhysicsTick`, `JoystickCommand`, `ImuData`
+- Subscribes: `ImuData`, `MotorTargets`, `SystemTelemetry`
 
 ## Message Payloads
+
+### `MsgId::PhysicsTick`
+
+> Global runtime tick. Published by the time service to advance deterministic simulation and controller execution using an explicit delta time plus accumulated monotonic time.
+
+- Numeric ID: `1`
+- Payload type: `PhysicsTickPayload`
+- Wire size: `16` bytes
+- Published by: `TimeService`, `UdpBridge`
+- Consumed by: `ControlService`
+
+| Field | C++ Type | Python Type | Bytes | Offset |
+|---|---|---|---:|---:|
+| `dt_s` | `double` | `float` | 8 | 0 |
+| `sim_time_us` | `uint64_t` | `int` | 8 | 8 |
 
 ### `MsgId::ImuData`
 
@@ -87,18 +107,28 @@ The current runtime flow is straightforward:
 
 ### `MsgId::SystemTelemetry`
 
-> Compact controller telemetry streamed out over UDP for SIL observation.
+> Detailed controller telemetry streamed out over UDP and used for runtime logging/visibility.
 
 - Numeric ID: `3003`
 - Payload type: `SystemTelemetryPayload`
-- Wire size: `8` bytes
+- Wire size: `48` bytes
 - Published by: `ControlService`
 - Consumed by: `UdpBridge`
 
 | Field | C++ Type | Python Type | Bytes | Offset |
 |---|---|---|---:|---:|
-| `core_cpu_usage` | `float` | `float` | 4 | 0 |
-| `loop_time_us` | `float` | `float` | 4 | 4 |
+| `t_sec` | `float` | `float` | 4 | 0 |
+| `age_ms` | `float` | `float` | 4 | 4 |
+| `pitch_deg` | `float` | `float` | 4 | 8 |
+| `pitch_rate_dps` | `float` | `float` | 4 | 12 |
+| `rate_sp_dps` | `float` | `float` | 4 | 16 |
+| `out_norm` | `float` | `float` | 4 | 20 |
+| `u_sps` | `float` | `float` | 4 | 24 |
+| `integ_pitch` | `float` | `float` | 4 | 28 |
+| `vel_error` | `float` | `float` | 4 | 32 |
+| `vel_p_term` | `float` | `float` | 4 | 36 |
+| `vel_i_term` | `float` | `float` | 4 | 40 |
+| `pitch_sp_deg` | `float` | `float` | 4 | 44 |
 
 ## Regenerating
 

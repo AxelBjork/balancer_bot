@@ -27,15 +27,8 @@ struct PeerAddress {
 
 class DOC_DESC("Stateful bridge that relays IPC messages between the internal MessageBus and external UDP clients.\n\nIt remembers the IP address and port of the last connected test harness and bidirectionally routes all subscribed C++ events out through the UDP socket while safely injecting incoming UDP datagrams onto the internal MessageBus.") UdpBridge {
  public:
-  using Subscribes = MsgList<MsgId::Log, MsgId::StateData, MsgId::KinematicsData, MsgId::PowerData,
-                             MsgId::ThermalData, MsgId::EnvironmentAck, MsgId::AutoDriveStatus,
-                             MsgId::EnvironmentRequest, MsgId::EnvironmentData, MsgId::SensorAck,
-                             MsgId::RevisionResponse, ipc::ImuData, ipc::MotorTargets,
-                             ipc::SystemTelemetry>;
-  using Publishes = MsgList<MsgId::StateRequest, MsgId::MotorSequence, MsgId::KinematicsRequest,
-                            MsgId::PowerRequest, MsgId::ThermalRequest, MsgId::AutoDriveCommand,
-                            MsgId::EnvironmentData, MsgId::SensorRequest, MsgId::RevisionRequest,
-                            ipc::JoystickCommand, ipc::ImuData>;
+  using Subscribes = MsgList<ipc::ImuData, ipc::MotorTargets, ipc::SystemTelemetry>;
+  using Publishes = MsgList<MsgId::PhysicsTick, ipc::JoystickCommand, ipc::ImuData>;
 
   static constexpr uint16_t kDefaultPort = 9000;
 

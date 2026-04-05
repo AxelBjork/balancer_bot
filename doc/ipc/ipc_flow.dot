@@ -29,6 +29,10 @@ digraph IPC {
       fillcolor="#0369A1",
       label=<<B><FONT POINT-SIZE="30">ImuService</FONT></B><BR/><FONT POINT-SIZE="24">ImuService</FONT>>
     ];
+    TimeService [
+      fillcolor="#0369A1",
+      label=<<B><FONT POINT-SIZE="30">TimeService</FONT></B><BR/><FONT POINT-SIZE="24">TimeService</FONT>>
+    ];
     ControlService [
       fillcolor="#0369A1",
       label=<<B><FONT POINT-SIZE="30">ControlService</FONT></B><BR/><FONT POINT-SIZE="24">ControlService</FONT>>

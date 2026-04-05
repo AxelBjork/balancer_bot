@@ -49,7 +49,8 @@ void UdpBridge::start() {
 
 UdpBridge::~UdpBridge() {
   char b = 0;
-  (void)::write(wake_[1], &b, 1);
+  const ssize_t wake_write_result = ::write(wake_[1], &b, 1);
+  (void)wake_write_result;
   if (rx_thread_.joinable()) rx_thread_.join();
   ::close(udp_fd_);
   ::close(wake_[0]);
