@@ -29,9 +29,25 @@ _DEFAULT_COLUMNS = [
     "plant_pitch_rate_dps",
     "plant_position",
     "plant_velocity",
+    "target_wheel_velocity",
+    "actual_wheel_velocity",
+    "velocity_error",
+    "f_cmd",
+    "f_app",
+    "x_ddot",
+    "theta_ddot",
+    "command_saturated",
+    "force_saturated",
 ]
 
 _KV_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=([-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)")
+_MAX_PLOT_POINTS = 2000
+_PLOT_LEFT = 78
+_PLOT_RIGHT = 950
+_PLOT_TOP = 28
+_PLOT_BOTTOM = 248
+_PLOT_WIDTH = _PLOT_RIGHT - _PLOT_LEFT
+_PLOT_HEIGHT = _PLOT_BOTTOM - _PLOT_TOP
 
 
 def _to_float(value: Any) -> float | None:
@@ -90,6 +106,36 @@ def summarize_rows(rows: list[dict[str, Any]], metadata: dict[str, Any] | None =
     summary["max_abs_u_sps"] = max(abs(v) for v in u_values) if u_values else None
     summary["fell"] = bool(summary["max_abs_pitch_deg"] is not None and summary["max_abs_pitch_deg"] > 75.0)
 
+    if time_values and pitch_values:
+        tail_end = time_values[-1]
+        tail_start = tail_end - 2.0
+        tail_rows = [row for row in rows if (_to_float(row.get("sim_time_s")) or 0.0) >= tail_start]
+        tail_pitch = _series(tail_rows, pitch_key)
+        if tail_pitch:
+            summary["tail_rms_pitch_deg"] = math.sqrt(sum(v * v for v in tail_pitch) / len(tail_pitch))
+            summary["tail_mean_abs_pitch_deg"] = sum(abs(v) for v in tail_pitch) / len(tail_pitch)
+        else:
+            summary["tail_rms_pitch_deg"] = None
+            summary["tail_mean_abs_pitch_deg"] = None
+
+        tail_sat = _series(tail_rows, "command_saturated")
+        if tail_sat:
+            summary["tail_rail_fraction"] = sum(1.0 for v in tail_sat if v >= 0.5) / len(tail_sat)
+        else:
+            summary["tail_rail_fraction"] = None
+
+        running_max_abs: list[float] = [0.0] * len(pitch_values)
+        acc = 0.0
+        for idx in range(len(pitch_values) - 1, -1, -1):
+            acc = max(acc, abs(pitch_values[idx]))
+            running_max_abs[idx] = acc
+        settled_at_s = None
+        for idx, max_abs in enumerate(running_max_abs):
+            if max_abs <= 3.0:
+                settled_at_s = time_values[idx]
+                break
+        summary["settled_at_s"] = settled_at_s
+
     if len(time_values) >= 2:
         deltas = [b - a for a, b in zip(time_values, time_values[1:])]
         positive = [dt for dt in deltas if dt > 0.0]
@@ -109,7 +155,7 @@ def summarize_rows(rows: list[dict[str, Any]], metadata: dict[str, Any] | None =
         summary["dt_median_s"] = None
         summary["dt_max_s"] = None
 
-    for key in ("pitch_deg", "pitch_rate_dps", "u_sps", "vel_error", "rate_sp_dps"):
+    for key in ("pitch_deg", "pitch_rate_dps", "u_sps", "vel_error", "rate_sp_dps", "f_cmd", "f_app"):
         vals = _series(rows, key)
         if vals:
             summary[f"{key}_min"] = min(vals)
@@ -132,21 +178,67 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
             writer.writerow(row)
 
 
-def _scale_points(xs: list[float], ys: list[float], width: int, height: int) -> list[tuple[float, float]]:
+def _format_tick(value: float) -> str:
+    if abs(value) >= 100.0:
+        return f"{value:.0f}"
+    if abs(value) >= 10.0:
+        return f"{value:.1f}"
+    return f"{value:.2f}"
+
+
+def _data_range(values: list[float], *, center_zero: bool = False) -> tuple[float, float]:
+    if not values:
+        return (-1.0, 1.0) if center_zero else (0.0, 1.0)
+    if center_zero:
+        max_abs = max(abs(value) for value in values)
+        if max_abs <= 1e-9:
+            max_abs = 1.0
+        max_abs *= 1.05
+        return -max_abs, max_abs
+
+    value_min = min(values)
+    value_max = max(values)
+    if value_max <= value_min:
+        pad = max(abs(value_min) * 0.05, 1.0)
+        return value_min - pad, value_max + pad
+
+    pad = (value_max - value_min) * 0.05
+    return value_min - pad, value_max + pad
+
+
+def _scale_points(
+    xs: list[float],
+    ys: list[float],
+    *,
+    x_min: float,
+    x_max: float,
+    y_min: float,
+    y_max: float,
+) -> list[tuple[float, float]]:
     if not xs or not ys:
         return []
-    x_min, x_max = min(xs), max(xs)
-    y_min, y_max = min(ys), max(ys)
     if x_max <= x_min:
         x_max = x_min + 1.0
     if y_max <= y_min:
         y_max = y_min + 1.0
     points: list[tuple[float, float]] = []
     for x, y in zip(xs, ys):
-        px = 50 + ((x - x_min) / (x_max - x_min)) * (width - 100)
-        py = 20 + (1.0 - ((y - y_min) / (y_max - y_min))) * (height - 60)
+        px = _PLOT_LEFT + ((x - x_min) / (x_max - x_min)) * _PLOT_WIDTH
+        py = _PLOT_TOP + (1.0 - ((y - y_min) / (y_max - y_min))) * _PLOT_HEIGHT
         points.append((px, py))
     return points
+
+
+def _downsample(xs: list[float], ys: list[float], max_points: int = _MAX_PLOT_POINTS) -> tuple[list[float], list[float]]:
+    if len(xs) <= max_points or len(ys) <= max_points:
+        return xs, ys
+    stride = max(1, len(xs) // max_points)
+    xs_ds = xs[::stride]
+    ys_ds = ys[::stride]
+    if xs_ds[-1] != xs[-1] or ys_ds[-1] != ys[-1]:
+        xs_ds.append(xs[-1])
+        ys_ds.append(ys[-1])
+    return xs_ds, ys_ds
 
 
 def _polyline(points: list[tuple[float, float]], color: str) -> str:
@@ -160,28 +252,103 @@ def _write_svg_plot(
     path: Path,
     rows: list[dict[str, Any]],
     title: str,
-    series: list[tuple[str, str]],
+    series: list[tuple[str, str, str]],
+    *,
+    y_label: str,
+    x_label: str = "Time (s)",
+    center_zero: bool = False,
 ) -> None:
     width = 1000
     height = 320
     xs = _series(rows, "sim_time_s")
+    series_values = []
+    for key, _color, _label in series:
+        series_values.extend(_series(rows, key))
+    if xs:
+        x_min = min(xs)
+        x_max = max(xs)
+    else:
+        x_min, x_max = 0.0, 1.0
+    y_min, y_max = _data_range(series_values, center_zero=center_zero)
+
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">',
         '<rect width="100%" height="100%" fill="#ffffff" />',
-        '<line x1="50" y1="20" x2="50" y2="260" stroke="#111827" stroke-width="1"/>',
-        '<line x1="50" y1="260" x2="950" y2="260" stroke="#111827" stroke-width="1"/>',
-        f'<text x="55" y="18" font-family="monospace" font-size="16">{title}</text>',
+        f'<text x="{_PLOT_LEFT}" y="18" font-family="monospace" font-size="16">{title}</text>',
     ]
+
+    x_ticks = 6
+    for idx in range(x_ticks):
+        t = idx / (x_ticks - 1)
+        x_value = x_min + (x_max - x_min) * t
+        px = _PLOT_LEFT + t * _PLOT_WIDTH
+        parts.append(
+            f'<line x1="{px:.2f}" y1="{_PLOT_TOP}" x2="{px:.2f}" y2="{_PLOT_BOTTOM}" '
+            'stroke="#E5E7EB" stroke-width="1"/>'
+        )
+        parts.append(
+            f'<text x="{px:.2f}" y="{_PLOT_BOTTOM + 18}" text-anchor="middle" '
+            f'font-family="monospace" font-size="11">{_format_tick(x_value)}</text>'
+        )
+
+    y_ticks = 5
+    for idx in range(y_ticks):
+        t = idx / (y_ticks - 1)
+        y_value = y_max - (y_max - y_min) * t
+        py = _PLOT_TOP + t * _PLOT_HEIGHT
+        parts.append(
+            f'<line x1="{_PLOT_LEFT}" y1="{py:.2f}" x2="{_PLOT_RIGHT}" y2="{py:.2f}" '
+            'stroke="#E5E7EB" stroke-width="1"/>'
+        )
+        parts.append(
+            f'<text x="{_PLOT_LEFT - 10}" y="{py + 4:.2f}" text-anchor="end" '
+            f'font-family="monospace" font-size="11">{_format_tick(y_value)}</text>'
+        )
+
+    if y_min < 0.0 < y_max:
+        zero_y = _PLOT_TOP + (1.0 - ((0.0 - y_min) / (y_max - y_min))) * _PLOT_HEIGHT
+        parts.append(
+            f'<line x1="{_PLOT_LEFT}" y1="{zero_y:.2f}" x2="{_PLOT_RIGHT}" y2="{zero_y:.2f}" '
+            'stroke="#9CA3AF" stroke-width="1.5" stroke-dasharray="4 3"/>'
+        )
+
+    parts.extend(
+        [
+            f'<rect x="{_PLOT_LEFT}" y="{_PLOT_TOP}" width="{_PLOT_WIDTH}" height="{_PLOT_HEIGHT}" '
+            'fill="none" stroke="#111827" stroke-width="1"/>',
+            f'<text x="{(_PLOT_LEFT + _PLOT_RIGHT) / 2:.2f}" y="{height - 18}" text-anchor="middle" '
+            f'font-family="monospace" font-size="12">{x_label}</text>',
+            (
+                f'<text x="18" y="{(_PLOT_TOP + _PLOT_BOTTOM) / 2:.2f}" text-anchor="middle" '
+                f'font-family="monospace" font-size="12" transform="rotate(-90 18 {(_PLOT_TOP + _PLOT_BOTTOM) / 2:.2f})">'
+                f"{y_label}</text>"
+            ),
+        ]
+    )
+
     legend_y = 285
-    legend_x = 55
-    for idx, (key, color) in enumerate(series):
+    legend_x = _PLOT_LEFT
+    for idx, (key, color, label) in enumerate(series):
         ys = _series(rows, key)
         if len(xs) != len(ys) or not ys:
             continue
-        parts.append(_polyline(_scale_points(xs, ys, width, height), color))
+        xs_plot, ys_plot = _downsample(xs, ys)
+        parts.append(
+            _polyline(
+                _scale_points(
+                    xs_plot,
+                    ys_plot,
+                    x_min=x_min,
+                    x_max=x_max,
+                    y_min=y_min,
+                    y_max=y_max,
+                ),
+                color,
+            )
+        )
         lx = legend_x + idx * 180
         parts.append(f'<line x1="{lx}" y1="{legend_y}" x2="{lx + 20}" y2="{legend_y}" stroke="{color}" stroke-width="2"/>')
-        parts.append(f'<text x="{lx + 26}" y="{legend_y + 5}" font-family="monospace" font-size="12">{key}</text>')
+        parts.append(f'<text x="{lx + 26}" y="{legend_y + 5}" font-family="monospace" font-size="12">{label}</text>')
     parts.append("</svg>")
     path.write_text("\n".join(parts), encoding="utf-8")
 
@@ -282,15 +449,15 @@ class RunRecorder:
         summary = self.finalize()
         write_summary_json(output / "summary.json", summary)
         _write_svg_plot(output / "pitch_plot.svg", self.rows, "Pitch Timeline", [
-            ("pitch_deg", "#2563EB"),
-            ("plant_pitch_deg", "#DC2626"),
-            ("pitch_sp_deg", "#059669"),
-        ])
+            ("pitch_deg", "#2563EB", "Telemetry pitch (deg)"),
+            ("plant_pitch_deg", "#DC2626", "Plant pitch (deg)"),
+            ("pitch_sp_deg", "#059669", "Pitch setpoint (deg)"),
+        ], y_label="Pitch (deg)", center_zero=True)
         _write_svg_plot(output / "command_plot.svg", self.rows, "Command Timeline", [
-            ("u_sps", "#7C3AED"),
-            ("left_sps", "#EA580C"),
-            ("right_sps", "#0891B2"),
-        ])
+            ("u_sps", "#7C3AED", "Pitch command (steps/s)"),
+            ("left_sps", "#EA580C", "Left command (steps/s)"),
+            ("right_sps", "#0891B2", "Right command (steps/s)"),
+        ], y_label="Command (steps/s)")
         return summary
 
 

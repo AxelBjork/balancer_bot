@@ -10,8 +10,6 @@
 static constexpr double kMaxSps = 4000.0;         // clamp for wheel speed command (steps/s)
 static constexpr double kPitchOutToSps = 3200.0;  // PX4 normalized -> steps/s
 
-// Velocity loop decimation
-static constexpr int kVelocityDecimation = 40;       // Run every 40th cycle (400Hz -> 10Hz)
 static constexpr double kMaxPitchSetpointRad = 0.3;  // ~17 degrees max lean
 
 // Non-template core; hides PX4/Matrix in the .cpp
@@ -37,6 +35,9 @@ class RateControllerCore {
 
   // Callback to get velocity feedback (average of left+right in steps/s)
   void setVelocityFeedback(std::function<float()> velocity_cb);
+
+  // Callback to get average wheel position (meters)
+  void setPositionFeedback(std::function<float()> position_cb);
 
  private:
   struct Impl;  // PIMPL hides PX4/Matrix + thread

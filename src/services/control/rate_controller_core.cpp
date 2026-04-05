@@ -14,10 +14,18 @@
 
 using matrix::Vector3f;
 
+namespace {
+
+constexpr float kVelocityLoopTiltPriorityRad = static_cast<float>(3.0 * M_PI / 180.0);
+constexpr float kMaxPositionPitchBiasRad = 0.15f;
+
+}  // namespace
+
 struct RateControllerCore::Impl {
   std::function<void(float, float)> motors_cb;
   std::function<void(const Telemetry&)> tel_cb;
   std::function<float()> velocity_cb;
+  std::function<float()> position_cb;
 
   ImuSample latest_imu{};
   JoyCmd latest_joy{0.0f, 0.0f};
@@ -28,9 +36,10 @@ struct RateControllerCore::Impl {
   RateControl rc{};
   PID velocity_pid{};
 
-  int vel_decimation_counter{0};
-  float dt_velocity_accum{0.0f};
   float pitch_setpoint_rad{0.0f};
+  float filtered_velocity_sps{0.0f};
+  float position_anchor_m{0.0f};
+  bool position_anchor_initialized{false};
 };
 
 RateControllerCore::RateControllerCore() : p_(new Impl) {
@@ -69,21 +78,58 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
 
   const float pitch_rad = static_cast<float>(p_->latest_imu.angle_rad);
   const float gyro_rad_s = static_cast<float>(p_->latest_imu.gyro_rad_s);
-  const float current_velocity_sps = p_->velocity_cb ? p_->velocity_cb() : 0.0f;
+  const float measured_velocity_sps = p_->velocity_cb ? p_->velocity_cb() : 0.0f;
+  const float velocity_alpha = std::clamp(
+      static_cast<float>((2.0 * M_PI * Config::fc_velocity_hz * dt) /
+                         (1.0 + 2.0 * M_PI * Config::fc_velocity_hz * dt)),
+      0.0f,
+      1.0f);
+  p_->filtered_velocity_sps += velocity_alpha * (measured_velocity_sps - p_->filtered_velocity_sps);
+  const float current_velocity_sps = p_->filtered_velocity_sps;
+  const bool have_position_feedback = static_cast<bool>(p_->position_cb);
+  const float current_position_m = have_position_feedback ? p_->position_cb() : 0.0f;
 
   const JoyCmd joy = p_->latest_joy;
-  const float target_vel_sps = joy.forward * static_cast<float>(kMaxSps);
+  const bool user_velocity_active = std::abs(joy.forward) > Config::deadzone;
+  if (have_position_feedback) {
+    if (!p_->position_anchor_initialized) {
+      p_->position_anchor_m = current_position_m;
+      p_->position_anchor_initialized = true;
+    }
+    if (user_velocity_active) {
+      p_->position_anchor_m = current_position_m;
+    }
+  }
+
+  const bool enable_velocity_loop = user_velocity_active;
+  float target_vel_sps = enable_velocity_loop ? joy.forward * static_cast<float>(kMaxSps) : 0.0f;
   p_->velocity_pid.setSetpoint(target_vel_sps);
 
-  p_->dt_velocity_accum += dt;
-  if (++p_->vel_decimation_counter >= kVelocityDecimation) {
-    p_->vel_decimation_counter = 0;
-    p_->pitch_setpoint_rad = p_->velocity_pid.update(current_velocity_sps, p_->dt_velocity_accum);
-    p_->pitch_setpoint_rad = std::clamp(p_->pitch_setpoint_rad,
-                                        -static_cast<float>(kMaxPitchSetpointRad),
-                                        static_cast<float>(kMaxPitchSetpointRad));
-    p_->dt_velocity_accum = 0.0f;
+  const float velocity_loop_blend = std::clamp(
+      1.0f - (std::abs(pitch_rad) / kVelocityLoopTiltPriorityRad),
+      0.0f,
+      1.0f);
+  const bool update_velocity_integral = enable_velocity_loop && velocity_loop_blend > 0.25f;
+  if (!update_velocity_integral) {
+    p_->velocity_pid.resetIntegral();
   }
+
+  const float velocity_pitch_setpoint_rad = enable_velocity_loop
+                                                ? p_->velocity_pid.update(
+                                                      current_velocity_sps, dt, update_velocity_integral)
+                                                : 0.0f;
+  float position_pitch_bias_rad = 0.0f;
+  if (have_position_feedback && !user_velocity_active && ConfigPid::pos_P != 0.0) {
+    const float position_error_m = current_position_m - p_->position_anchor_m;
+    position_pitch_bias_rad = std::clamp(
+        static_cast<float>(ConfigPid::pos_P * position_error_m),
+        -kMaxPositionPitchBiasRad,
+        kMaxPositionPitchBiasRad);
+  }
+  p_->pitch_setpoint_rad = velocity_pitch_setpoint_rad * velocity_loop_blend + position_pitch_bias_rad;
+  p_->pitch_setpoint_rad = std::clamp(p_->pitch_setpoint_rad,
+                                      -static_cast<float>(kMaxPitchSetpointRad),
+                                      static_cast<float>(kMaxPitchSetpointRad));
 
   const float pitch_error_rad = p_->pitch_setpoint_rad - pitch_rad;
   const float rate_sp_rad_s = static_cast<float>(ConfigPid::angle_to_rate_k * pitch_error_rad);
@@ -145,4 +191,8 @@ void RateControllerCore::setMotorOutputs(std::function<void(float, float)> motor
 
 void RateControllerCore::setVelocityFeedback(std::function<float()> velocity_cb) {
   p_->velocity_cb = std::move(velocity_cb);
+}
+
+void RateControllerCore::setPositionFeedback(std::function<float()> position_cb) {
+  p_->position_cb = std::move(position_cb);
 }

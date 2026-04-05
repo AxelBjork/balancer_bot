@@ -90,16 +90,31 @@ if (BUILD_TESTS)
   )
 
   set(TEST_DIR ${CMAKE_SOURCE_DIR}/src/balance_controller/test)
+  add_library(balancer_sim_support STATIC
+    ${TEST_DIR}/simulator/balancer_simulator.cpp
+    ${TEST_DIR}/simulator/simulator_runner.cpp
+  )
+  target_link_libraries(balancer_sim_support PRIVATE balancer_common)
+  target_include_directories(balancer_sim_support PUBLIC
+    ${TEST_DIR}
+    ${TEST_DIR}/simulator
+  )
+  enable_project_warnings(balancer_sim_support)
+
   # 2) motor_controller_test (existing)
   add_executable(balancer_tests
     ${TEST_DIR}/motor_runner_test.cpp
     ${TEST_DIR}/control_loop_test.cpp
+    ${TEST_DIR}/simulator_runner_test.cpp
     ${TEST_DIR}/time_service_test.cpp
     ${TEST_DIR}/latency_test.cpp
     ${CMAKE_SOURCE_DIR}/src/balance_controller/stubs/pigpiod_stub.cpp
   )
 
-  target_link_libraries(balancer_tests PRIVATE balancer_common)
+  target_compile_definitions(balancer_tests PRIVATE
+    BALANCER_REPO_ROOT="${CMAKE_SOURCE_DIR}"
+  )
+  target_link_libraries(balancer_tests PRIVATE balancer_common balancer_sim_support)
   ## add_test(NAME motor_controller_test COMMAND motor_controller_test)
 
   gtest_discover_tests(balancer_tests
@@ -110,10 +125,12 @@ if (BUILD_TESTS)
   # 4) balancer_simulator (standalone sim)
   add_executable(balancer_simulator
     ${CMAKE_SOURCE_DIR}/src/balance_controller/test/simulator_main.cpp
-    ${CMAKE_SOURCE_DIR}/src/balance_controller/test/simulator/balancer_simulator.cpp
     ${CMAKE_SOURCE_DIR}/src/balance_controller/stubs/pigpiod_stub.cpp
   )
-  target_link_libraries(balancer_simulator PRIVATE balancer_common)
+  target_compile_definitions(balancer_simulator PRIVATE
+    BALANCER_REPO_ROOT="${CMAKE_SOURCE_DIR}"
+  )
+  target_link_libraries(balancer_simulator PRIVATE balancer_common balancer_sim_support)
 
   # 5) sil_app (Hardware-in-the-loop simulation/testing)
   add_executable(sil_app

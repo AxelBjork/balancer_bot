@@ -14,6 +14,7 @@ def test_run_recorder_writes_summary_and_flags_fall(tmp_path):
             "pitch_deg": 0.0,
             "u_sps": 0.0,
             "plant_pitch_deg": 0.0,
+            "command_saturated": 0.0,
         }
     )
     recorder.record_step(
@@ -22,12 +23,15 @@ def test_run_recorder_writes_summary_and_flags_fall(tmp_path):
             "pitch_deg": 90.0,
             "u_sps": 100.0,
             "plant_pitch_deg": 90.0,
+            "command_saturated": 1.0,
         }
     )
 
     summary = recorder.write_csv_json_plots(tmp_path)
     assert summary["fell"]
     assert summary["max_abs_pitch_deg"] == 90.0
+    assert summary["tail_rms_pitch_deg"] is not None
+    assert summary["tail_rail_fraction"] is not None
     assert (tmp_path / "timeline.csv").exists()
     assert (tmp_path / "summary.json").exists()
     assert (tmp_path / "pitch_plot.svg").exists()

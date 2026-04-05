@@ -96,6 +96,11 @@ class CascadedController {
 
     // Velocity feedback from motor commanded targets (actual step tracking)
     core_.setVelocityFeedback([this]() -> float { return motors_.getActualSpeedSps(); });
+    core_.setPositionFeedback([this]() -> float {
+      const float average_steps =
+          0.5f * static_cast<float>(motors_.getActualLeftSteps() + motors_.getActualRightSteps());
+      return average_steps * static_cast<float>(Config::meters_per_step);
+    });
 
   }
 

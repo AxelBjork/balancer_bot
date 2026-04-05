@@ -66,7 +66,7 @@ int main() {
     std::signal(SIGTERM, signal_handler);
 
     std::cout << "Starting sil_app (SIL Mode)..." << std::endl;
-    ConfigPid::load("pid.conf");
+    ConfigPid::load(ConfigPid::resolve_path("pid_sim.conf"));
 
     BusContainer container;
 
@@ -86,7 +86,7 @@ int main() {
     std::cout << "SIL App running. Press Ctrl+C to stop." << std::endl;
 
     while (!g_stop) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
 
     std::cout << "Shutting down..." << std::endl;

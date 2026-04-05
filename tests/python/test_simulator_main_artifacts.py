@@ -28,5 +28,8 @@ def test_balancer_simulator_writes_artifacts(tmp_path):
     assert (output_dir / "command_plot.svg").exists()
 
     summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
+    metadata = json.loads((output_dir / "metadata.json").read_text(encoding="utf-8"))
     assert summary["sample_count"] > 0
     assert summary["fell"] == (proc.returncode != 0)
+    assert metadata["physics_profile"] == "simplified"
+    assert metadata["pid_profile"].endswith("pid_sim.conf")

@@ -36,7 +36,7 @@ void ConfigPid::load(const std::string& path) {
       {"rate_P", &rate_P},         {"rate_I", &rate_I},   {"rate_D", &rate_D},
       {"rate_I_lim", &rate_I_lim}, {"rate_FF", &rate_FF}, {"angle_to_rate_k", &angle_to_rate_k},
       {"vel_P", &vel_P},           {"vel_I", &vel_I},     {"vel_D", &vel_D},
-      {"vel_I_lim", &vel_I_lim}};
+      {"vel_I_lim", &vel_I_lim},   {"pos_P", &pos_P}};
 
   std::cout << "[Config] Loading from " << path << "...\n";
   std::string line;
@@ -103,6 +103,10 @@ void ConfigPid::save(const std::string& path) {
     write_param(f, "vel_I", vel_I);
     write_param(f, "vel_D", vel_D);
     write_param(f, "vel_I_lim", vel_I_lim);
+    f << "\n";
+
+    f << "# --- Position Hold (Supervisory Loop) ---\n";
+    write_param(f, "pos_P", pos_P);
 
     std::cout << "[Config] Saved defaults to " << path << "\n";
   } else {

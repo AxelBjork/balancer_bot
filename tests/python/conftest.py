@@ -14,6 +14,7 @@ from udp_client import UdpClient
 _REPO_ROOT = Path(__file__).parents[2]
 _BUILD_DIR = _REPO_ROOT / "build"
 _DEFAULT_BIN = _BUILD_DIR / "sil_app"
+_DEFAULT_SIM_BIN = _BUILD_DIR / "balancer_simulator"
 
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
@@ -31,12 +32,6 @@ def pytest_addoption(parser):
         action="store_true",
         default=False,
         help="Run CMake configure, build, and CTest, then exit without running Python tests.",
-    )
-    parser.addoption(
-        "--sim-artifacts-dir",
-        action="store",
-        default=None,
-        help="Optional directory to preserve simulation artifacts after pytest runs.",
     )
 
 
@@ -80,6 +75,17 @@ def _sil_binary() -> Path:
     return path
 
 
+def _sim_binary() -> Path:
+    env_override = os.environ.get("BALANCER_SIM_BIN")
+    path = Path(env_override) if env_override else _DEFAULT_SIM_BIN
+    if not path.exists():
+        pytest.fail(
+            f"balancer_simulator binary not found at {path}.\n"
+            "Run: pytest --build or cmake -S . -B build && cmake --build build"
+        )
+    return path
+
+
 @pytest.fixture(scope="session")
 def sil_process():
     proc = _start_sil_process()
@@ -106,13 +112,11 @@ def _start_sil_process():
         preexec_fn=os.setsid,
     )
 
-    deadline = time.monotonic() + 2.0
+    deadline = time.monotonic() + 0.01
     while time.monotonic() < deadline:
         if proc.poll() is not None:
             pytest.fail(f"sil_app exited during startup (rc={proc.returncode})")
-        time.sleep(0.02)
-        if time.monotonic() + 0.1 >= deadline:
-            break
+        time.sleep(0.001)
     return proc
 
 
@@ -139,9 +143,14 @@ def fresh_udp():
 
 
 @pytest.fixture(scope="session")
-def sim_artifact_settings(tmp_path_factory, request):
-    preserve = request.config.getoption("--sim-artifacts-dir") or os.environ.get("SIM_ARTIFACTS_DIR")
+def simulator_binary() -> Path:
+    return _sim_binary()
+
+
+@pytest.fixture(scope="session")
+def sim_artifact_settings():
+    output_root = _BUILD_DIR / "sim"
+    output_root.mkdir(parents=True, exist_ok=True)
     return {
-        "temp_root": tmp_path_factory.mktemp("sim_artifacts"),
-        "preserve_root": Path(preserve) if preserve else None,
+        "temp_root": output_root,
     }

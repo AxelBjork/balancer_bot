@@ -24,6 +24,14 @@ class FakeMotorRunner {
     actual_speed_sps_ = v;
   }
 
+  float getAveragePositionSteps() const {
+    return position_steps_;
+  }
+
+  void setAveragePositionSteps(float v) {
+    position_steps_ = v;
+  }
+
   float lastLeft() const { return last_left_; }
   float lastRight() const { return last_right_; }
   int callCount() const { return calls_; }
@@ -32,6 +40,7 @@ class FakeMotorRunner {
   float last_left_{0.0f};
   float last_right_{0.0f};
   float actual_speed_sps_{0.0f};
+  float position_steps_{0.0f};
   int calls_{0};
 };
 
@@ -40,6 +49,7 @@ class RateControllerHarness {
   RateControllerHarness() {
     core_.setMotorOutputs([this](float left, float right) { runner_.setTargets(left, right); });
     core_.setVelocityFeedback([this]() { return runner_.getActualSpeedSps(); });
+    core_.setPositionFeedback([this]() { return runner_.getAveragePositionSteps(); });
     core_.setTelemetrySink([this](const Telemetry& t) { telemetry_.push_back(t); });
   }
 
@@ -108,6 +118,27 @@ TEST(RateControllerCoreTest, VelocityFeedbackAffectsTelemetry) {
   ASSERT_FALSE(h.telemetry().empty());
   EXPECT_NEAR(h.telemetry().back().vel_error, -4000.0, 50.0);
   EXPECT_NE(h.telemetry().back().vel_p_term, 0.0);
+}
+
+TEST(RateControllerCoreTest, PositionHoldBiasesVelocityTargetBackTowardAnchor) {
+  const double old_pos_p = ConfigPid::pos_P;
+  struct RestorePosP {
+    double& slot;
+    double old_value;
+    ~RestorePosP() { slot = old_value; }
+  } restore{ConfigPid::pos_P, old_pos_p};
+  ConfigPid::pos_P = 2.0;
+
+  RateControllerHarness h;
+  h.setJoystick(0.0f, 0.0f);
+  h.run_steps(10, 1.0 / 400.0);
+  h.runner().setAveragePositionSteps(0.1f);
+  h.run_steps(80, 1.0 / 400.0);
+
+  ASSERT_FALSE(h.telemetry().empty());
+  EXPECT_GT(h.telemetry().back().pitch_sp_deg, 0.0);
+  EXPECT_GT(h.runner().lastLeft(), 0.0f);
+  EXPECT_GT(h.runner().lastRight(), 0.0f);
 }
 
 }  // namespace

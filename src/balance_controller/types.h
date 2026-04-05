@@ -1,5 +1,6 @@
 #pragma once
 #include <chrono>
+#include <cstdlib>
 #include <string>
 
 // ---- IMU sample (from ISM330DHCX fusion) ----
@@ -53,6 +54,18 @@ struct ConfigPid {
   inline static double vel_I = -0.000055;  // Moderate integrator
   inline static double vel_D = 0.0;        // derivative gain
   inline static double vel_I_lim = 0.15;   // Allow reasonable windup for correction
+
+  // Position hold (supervisory loop): position error [m] -> pitch setpoint bias [rad]
+  inline static double pos_P = 0.0;
+
+  static std::string resolve_path(const std::string& default_path) {
+    if (const char* env = std::getenv("BALANCER_PID_CONF")) {
+      if (*env != '\0') {
+        return env;
+      }
+    }
+    return default_path;
+  }
 
   static void load(const std::string& path);
   static void save(const std::string& path);
