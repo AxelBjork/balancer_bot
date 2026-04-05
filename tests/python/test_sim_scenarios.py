@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import pytest
 
@@ -10,7 +11,9 @@ from generated_balancer import (
     JoystickCommandPayload,
     MotorTargetsPayload,
     PhysicsTickPayload,
+    SystemTelemetryPayload,
 )
+from tools.run_artifacts import RunRecorder, preserve_artifacts
 
 
 class SimpleBalancerPlant:
@@ -59,10 +62,7 @@ class SimpleBalancerPlant:
         d22 = self.i_com + self.body_mass * self.center_of_mass_height**2
 
         rhs1 = f_app + self.body_mass * self.center_of_mass_height * q_dot * q_dot * sq - 2.0 * self.velocity
-        rhs2 = (
-            self.body_mass * self.gravity * self.center_of_mass_height * sq
-            - 0.05 * self.pitch_rate
-        )
+        rhs2 = self.body_mass * self.gravity * self.center_of_mass_height * sq - 0.05 * self.pitch_rate
 
         det = d11 * d22 - d12 * d21
         x_ddot = (d22 * rhs1 - d12 * rhs2) / det
@@ -86,50 +86,100 @@ class SimpleBalancerPlant:
         )
 
 
-def _drain_motor_targets(udp, plant: SimpleBalancerPlant) -> None:
-    received_any = False
+def _drain_messages(udp, plant: SimpleBalancerPlant) -> SystemTelemetryPayload | None:
+    telemetry = None
     while True:
         try:
-            msg_id, payload_bytes = udp.recv(timeout=0.001 if not received_any else 0.0)
+            msg_id, payload_bytes = udp.recv(timeout=0.001 if telemetry is None else 0.0)
         except (TimeoutError, BlockingIOError):
-            return
+            return telemetry
 
-        if msg_id != int(BalancerMsgId.MotorTargets):
-            continue
+        if msg_id == int(BalancerMsgId.MotorTargets):
+            targets = MotorTargetsPayload.unpack(payload_bytes)
+            plant.set_targets(targets.left_sps, targets.right_sps)
+        elif msg_id == int(BalancerMsgId.SystemTelemetry):
+            telemetry = SystemTelemetryPayload.unpack(payload_bytes)
 
-        targets = MotorTargetsPayload.unpack(payload_bytes)
-        plant.set_targets(targets.left_sps, targets.right_sps)
-        received_any = True
+
+def _artifact_dir(sim_artifact_settings, run_id: str) -> Path:
+    output_dir = Path(sim_artifact_settings["temp_root"]) / run_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir
 
 
 @pytest.mark.parametrize(
-    ("initial_pitch_deg", "com_angle_offset_rad"),
+    ("run_id", "initial_pitch_deg", "com_angle_offset_rad", "expect_upright"),
     [
-        (2.0, 0.0),
-        (4.0, 0.0),
-        (2.0, 0.01),
+        ("neutral_hold", 0.0, 0.0, True),
+        ("small_pitch_bias", 0.05, 0.0, False),
+        ("small_com_offset", 0.0, 0.001, False),
     ],
 )
-def test_tick_driven_simulation_scenarios(udp, initial_pitch_deg: float, com_angle_offset_rad: float):
+def test_tick_driven_simulation_scenarios(
+    fresh_udp,
+    sim_artifact_settings,
+    run_id: str,
+    initial_pitch_deg: float,
+    com_angle_offset_rad: float,
+    expect_upright: bool,
+):
     plant = SimpleBalancerPlant(initial_pitch_deg, com_angle_offset_rad)
-    udp.send(BalancerMsgId.JoystickCommand, JoystickCommandPayload(forward=0.0, turn=0.0).pack())
+    recorder = RunRecorder()
+    recorder.begin_run(
+        {
+            "run_id": run_id,
+            "initial_pitch_deg": initial_pitch_deg,
+            "com_angle_offset_rad": com_angle_offset_rad,
+            "source": "pytest_sim",
+        }
+    )
+
+    fresh_udp.send(BalancerMsgId.JoystickCommand, JoystickCommandPayload(forward=0.0, turn=0.0).pack())
 
     dt_s = 1.0 / 400.0
     sim_time_us = 0
-    max_abs_pitch = abs(plant.pitch)
-    saw_nonzero_command = False
     for _ in range(500):
         sim_time_us += int(dt_s * 1e6)
-        udp.send(BalancerMsgId.ImuData, plant.imu_payload(sim_time_us).pack())
-        udp.send(
-            BalancerMsgId.PhysicsTick,
-            PhysicsTickPayload(dt_s=dt_s, sim_time_us=sim_time_us).pack(),
-        )
-        _drain_motor_targets(udp, plant)
-        saw_nonzero_command = saw_nonzero_command or abs(plant.left_target_sps) > 1e-3 or abs(plant.right_target_sps) > 1e-3
+        fresh_udp.send(BalancerMsgId.ImuData, plant.imu_payload(sim_time_us).pack())
+        fresh_udp.send(BalancerMsgId.PhysicsTick, PhysicsTickPayload(dt_s=dt_s, sim_time_us=sim_time_us).pack())
+        telemetry = _drain_messages(fresh_udp, plant)
         plant.step(dt_s)
-        max_abs_pitch = max(max_abs_pitch, abs(plant.pitch))
 
-    assert math.isfinite(plant.pitch)
-    assert math.isfinite(max_abs_pitch)
-    assert saw_nonzero_command
+        row = {
+            "sim_time_s": sim_time_us / 1e6,
+            "left_sps": plant.left_target_sps,
+            "right_sps": plant.right_target_sps,
+            "plant_pitch_deg": math.degrees(plant.pitch),
+            "plant_pitch_rate_dps": math.degrees(plant.pitch_rate),
+            "plant_position": plant.position,
+            "plant_velocity": plant.velocity,
+        }
+        if telemetry is not None:
+            row.update(
+                {
+                    "pitch_deg": telemetry.pitch_deg,
+                    "pitch_rate_dps": telemetry.pitch_rate_dps,
+                    "pitch_sp_deg": telemetry.pitch_sp_deg,
+                    "rate_sp_dps": telemetry.rate_sp_dps,
+                    "u_sps": telemetry.u_sps,
+                    "vel_error": telemetry.vel_error,
+                    "vel_i_term": telemetry.vel_i_term,
+                    "vel_p_term": telemetry.vel_p_term,
+                    "out_norm": telemetry.out_norm,
+                }
+            )
+        recorder.record_step(row)
+
+    output_dir = _artifact_dir(sim_artifact_settings, run_id)
+    summary = recorder.write_csv_json_plots(output_dir)
+    preserve_artifacts(output_dir, sim_artifact_settings["preserve_root"], run_id)
+
+    assert summary["sample_count"] > 0
+    assert summary["telemetry_continuous"]
+    assert summary["max_abs_pitch_deg"] is not None
+    assert summary["max_abs_pitch_deg"] == summary["max_abs_pitch_deg"]
+    assert (summary["fell"] is False) == expect_upright
+    if expect_upright:
+        assert summary["max_abs_pitch_deg"] <= 75.0
+    else:
+        assert summary["fell"]

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -13,6 +14,9 @@ from udp_client import UdpClient
 _REPO_ROOT = Path(__file__).parents[2]
 _BUILD_DIR = _REPO_ROOT / "build"
 _DEFAULT_BIN = _BUILD_DIR / "sil_app"
+
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 
 def pytest_addoption(parser):
@@ -27,6 +31,12 @@ def pytest_addoption(parser):
         action="store_true",
         default=False,
         help="Run CMake configure, build, and CTest, then exit without running Python tests.",
+    )
+    parser.addoption(
+        "--sim-artifacts-dir",
+        action="store",
+        default=None,
+        help="Optional directory to preserve simulation artifacts after pytest runs.",
     )
 
 
@@ -72,6 +82,23 @@ def _sil_binary() -> Path:
 
 @pytest.fixture(scope="session")
 def sil_process():
+    proc = _start_sil_process()
+    yield proc
+    _stop_sil_process(proc)
+
+
+@pytest.fixture(scope="function")
+def udp(sil_process):
+    if sil_process.poll() is not None:
+        pytest.fail(f"sil_app is not running (rc={sil_process.returncode})")
+
+    with UdpClient() as client:
+        client.register()
+        client.drain()
+        yield client
+
+
+def _start_sil_process():
     proc = subprocess.Popen(
         [str(_sil_binary())],
         stdout=subprocess.DEVNULL,
@@ -86,9 +113,10 @@ def sil_process():
         time.sleep(0.02)
         if time.monotonic() + 0.1 >= deadline:
             break
+    return proc
 
-    yield proc
 
+def _stop_sil_process(proc):
     if proc.poll() is None:
         os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
         try:
@@ -99,11 +127,21 @@ def sil_process():
 
 
 @pytest.fixture(scope="function")
-def udp(sil_process):
-    if sil_process.poll() is not None:
-        pytest.fail(f"sil_app is not running (rc={sil_process.returncode})")
+def fresh_udp():
+    proc = _start_sil_process()
+    try:
+        with UdpClient() as client:
+            client.register()
+            client.drain()
+            yield client
+    finally:
+        _stop_sil_process(proc)
 
-    with UdpClient() as client:
-        client.register()
-        client.drain()
-        yield client
+
+@pytest.fixture(scope="session")
+def sim_artifact_settings(tmp_path_factory, request):
+    preserve = request.config.getoption("--sim-artifacts-dir") or os.environ.get("SIM_ARTIFACTS_DIR")
+    return {
+        "temp_root": tmp_path_factory.mktemp("sim_artifacts"),
+        "preserve_root": Path(preserve) if preserve else None,
+    }

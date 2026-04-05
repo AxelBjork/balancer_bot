@@ -49,3 +49,4 @@ build-pi/*
 PX4-Autopilot/*
 *.pyc
 build-pi-arm/*
+*.png
