@@ -12,6 +12,19 @@ option(BUILD_TESTS "Build unit tests" ON)
 
 find_package(Threads REQUIRED)
 
+# ── IPC Hub ───────────────────────────────────────────────────────────────────
+add_library(ipc_hub STATIC
+    ${CMAKE_SOURCE_DIR}/reflect_pytest/src/message_bus.cpp
+    ${CMAKE_SOURCE_DIR}/reflect_pytest/src/udp_bridge.cpp
+    ${CMAKE_SOURCE_DIR}/reflect_pytest/src/component_logger.cpp
+)
+target_include_directories(ipc_hub PUBLIC 
+    ${CMAKE_SOURCE_DIR}/reflect_pytest/src 
+    ${CMAKE_SOURCE_DIR}/reflect_pytest/messages
+    ${CMAKE_SOURCE_DIR}/messages
+)
+# ──────────────────────────────────────────────────────────────────────────────
+
 # ---------- SDL2 finder (module first, then pkg-config) ----------
 set(HAVE_SDL2 FALSE)
 set(SDL2_INCS "")
@@ -47,6 +60,9 @@ set(BALANCER_SOURCES
     ${SRC_DIR}/ism330_iio_reader.cpp
     ${SRC_DIR}/pitch_lpf.cpp
     ${SRC_DIR}/config_pid_io.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/imu_service.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/control_service.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/motor_service.cpp
 )
 
 # ================================================================
@@ -70,6 +86,7 @@ if (BUILD_TESTS)
   message(STATUS "Building tests")
   add_library(balancer_common STATIC ${BALANCER_SOURCES})
   target_include_directories(balancer_common PUBLIC
+    ${CMAKE_SOURCE_DIR}/src
     ${SRC_DIR}
     ${SRC_DIR}/stubs
     ${SDL2_INCS}
@@ -88,6 +105,7 @@ if (BUILD_TESTS)
     GTest::gmock_main GTest::gtest
     Threads::Threads
     ${SDL2_LIBS}
+    ipc_hub
   )
 
   set(PX4_DIR ${CMAKE_SOURCE_DIR}/px4_stub)
@@ -197,6 +215,7 @@ else()
     Threads::Threads
     ${SDL2_LIBS}
     ${PIGPIOD_LIB}
+    ipc_hub
   )
   add_executable(imu_demo
     ${CMAKE_SOURCE_DIR}/external/src/modules/balance_controller/extras/imu_demo.cpp

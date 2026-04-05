@@ -19,6 +19,12 @@
 #include "stepper.h"
 #include "xbox_controller.h"
 
+#include "message_bus.h"
+#include "balancer_msgs.h"
+#include "services/control_service.h"
+#include "services/motor_service.h"
+#include "services/imu_service.h"
+
 struct PigpioCtx {
   explicit PigpioCtx(const char* host = nullptr, const char* port = nullptr) {
     pi = pigpio_start(const_cast<char*>(host), const_cast<char*>(port));
@@ -34,6 +40,31 @@ struct PigpioCtx {
  private:
   int pi{};
 };
+
+struct AppServices {
+  sil::MotorService ms;
+  sil::ControlService cs;
+  sil::ImuService is;
+  AppServices(ipc::MessageBus& bus, MotorRunner* runner) : ms(bus, runner), cs(bus), is(bus) {}
+};
+
+struct BusContainer {
+  ipc::MessageBus bus;
+  AppServices services;
+  BusContainer(MotorRunner* runner, ipc::MessageBus::DispatchFn disp)
+      : bus(&services, disp), services(bus, runner) {}
+};
+
+void app_dispatcher(void* ctx, MsgId id, const void* payload) {
+  auto* s = static_cast<AppServices*>(ctx);
+  if (id == ipc::ImuData) {
+    s->cs.on_message<ipc::ImuData>(*static_cast<const ipc::ImuSamplePayload*>(payload));
+  } else if (id == ipc::JoystickCommand) {
+    s->cs.on_message<ipc::JoystickCommand>(*static_cast<const ipc::JoystickCommandPayload*>(payload));
+  } else if (id == ipc::MotorTargets) {
+    s->ms.on_message<ipc::MotorTargets>(*static_cast<const ipc::MotorTargetsPayload*>(payload));
+  }
+}
 
 template <class MotorRunnerT>
 class CascadedController {
@@ -84,77 +115,15 @@ class ControlApp {
     // Coordinator at 1 kHz
     MotorRunner motors(left, right, Config::control_hz, 250000.0);
 
-    // Telemetry counter (must outlive ctrl)
-    std::atomic<int> k{0};
+    // Start MessageBus and Services
+    BusContainer app_bus(&motors, app_dispatcher);
+    app_bus.services.cs.start();
+    app_bus.services.ms.start();
+    app_bus.services.is.start();
 
-    // Start cascaded controller (runs its own thread)
-    CascadedController<MotorRunner> ctrl(motors);
-
-    // Optional: telemetry print every N balance ticks for quick visibility
-    // Set to 0 to disable.
-    if constexpr (Config::kPrintEvery != -1) {
-      ctrl.setTelemetrySink([&](const Telemetry& t) {
-        if ((++k % Config::kPrintEvery) == 0) {
-          std::printf(
-              "t=%7.3f  θ=%6.2f°  θ̇=%6.2f°/s  r_sp=%6.2f°/s  out=%6.3f  "
-              "u=%6.0f%s  I=%7.3f  psp=%5.2f  ve=%5.1f  vi=%5.3f  vp=%5.3f\n",
-              t.t_sec, t.pitch_deg, t.pitch_rate_dps, t.rate_sp_dps, t.out_norm, t.u_sps,
-              (std::abs(t.u_sps) >= 0.99 * kMaxSps) ? "*" : "",  // rail hint
-              t.integ_pitch, t.pitch_sp_deg, t.vel_error, t.vel_i_term, t.vel_p_term);
-        }
-      });
-    }
-
-    // IMU reader (IIO; runs its own thread). If not found, we’ll fall back to
-    // zeros.
-    PitchComplementaryFilter filt{};
-    std::unique_ptr<Ism330IioReader> imu;
-    try {
-      Ism330IioReader::IMUConfig icfg;
-
-      icfg.on_sample = [&](double pitch, std::array<double, 3> acc, std::array<double, 3> gyrv,
-                           std::chrono::steady_clock::time_point ts) {
-        filt.push_sample(acc, gyrv, ts);
-
-        ImuSample s = filt.read_latest();
-        ctrl.pushImu(s);
-        static int k = 0;
-        if ((++k % 10) == -1) {
-          static bool hdr = false;
-          if (!hdr) {
-            std::printf(
-                "pitch_f_deg,pitch_r_deg,dtheta_deg,dpitch_f_dps,"
-                "dpitch_r_dps,domega_dps\n");
-            hdr = true;
-          }
-          std::printf("%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n", s.angle_rad * 180.0 / M_PI,
-                      pitch * 180.0 / M_PI, (s.angle_rad - pitch) * 180.0 / M_PI,
-                      s.gyro_rad_s * 180.0 / M_PI, gyrv[1] * 180.0 / M_PI,
-                      (s.gyro_rad_s - gyrv[1]) * 180.0 / M_PI);
-        }
-      };
-      imu = std::make_unique<Ism330IioReader>(std::move(icfg));
-      std::cout << "IIO IMU started at " << imu->devnode() << "\n";
-    } catch (const std::exception& e) {
-      std::cerr << "Warning: IMU not started (" << e.what()
-                << "). Controller will run with zeroed IMU.\n";
-      // Feed zeros at ~1 kHz so the controller has timestamps (very basic
-      // fallback).
-      std::thread([&ctrl] {
-        using clk = std::chrono::steady_clock;
-        auto next = clk::now();
-        while (!g_stop.load(std::memory_order_relaxed)) {
-          next += std::chrono::microseconds(1000);
-          ImuSample s{};
-          s.angle_rad = 0.0;
-          s.gyro_rad_s = 0.0;
-          s.yaw_rate_z = 0.0;
-          s.t = clk::now();
-          ctrl.pushImu(s);
-          std::this_thread::sleep_until(next);
-        }
-      }).detach();
-    }
+    // Note: ImuService internally configures its IioReader, which runs its own thread.
+    // Telemetry is now published to the bus as SystemTelemetry, so we can ignore it here 
+    // or add a dummy subscriber if we want printouts. For now, printouts disabled as requested.
 
     // Main app loop: read gamepad and feed controller setpoints
     // Run for Config::run_seconds of SIMULATION time (not wall-clock time)
@@ -175,8 +144,10 @@ class ControlApp {
         ly = -pad->leftY();
         ry = pad->rightX();
       }
-      JoyCmd j{.forward = ly, .turn = ry};
-      ctrl.setJoystick(j);
+      ipc::JoystickCommandPayload j;
+      j.forward = ly;
+      j.turn = ry;
+      app_bus.bus.publish<ipc::JoystickCommand>(j);
 
       std::this_thread::sleep_for(tick);
     }

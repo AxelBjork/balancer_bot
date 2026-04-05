@@ -1,0 +1,33 @@
+#include "control_service.h"
+
+namespace sil {
+
+ControlService::ControlService(ipc::MessageBus& bus)
+    : bus_(bus)
+{
+    core_.setMotorOutputs([this](float left, float right) {
+        last_left_sps_ = left;
+        last_right_sps_ = right;
+        ipc::MotorTargetsPayload p{};
+        p.left_sps = left;
+        p.right_sps = right;
+        bus_.publish<ipc::MotorTargets>(p);
+    });
+    
+    // Open loop velocity feedback approximation
+    core_.setVelocityFeedback([this]() { 
+        return (last_left_sps_ + last_right_sps_) / 2.0f;
+    });
+    
+    // Telemetry publishing
+    core_.setTelemetrySink([this](const Telemetry& t) {
+        ipc::SystemTelemetryPayload p{};
+        p.core_cpu_usage = static_cast<float>(t.u_sps); // Example mapping
+        p.loop_time_us = static_cast<float>(t.t_sec * 1e6);
+        bus_.publish<ipc::SystemTelemetry>(p);
+    });
+    
+    core_.start();
+}
+
+} // namespace sil
