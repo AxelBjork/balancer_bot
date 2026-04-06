@@ -76,13 +76,15 @@ digraph IPC {
   }
 
   TestCase -> TX [label="send_msg", color="#F1F5F9", penwidth=5];
-  TX -> UdpBridge [label="Inbound Traffic:\nImuData, JoystickCommand\nMotorTargets", color="#F1F5F9", penwidth=5, fontsize=25];
+  TX -> UdpBridge [label="Inbound Traffic:\nImuData, JoystickCommand\nPhysicsTick", color="#F1F5F9", penwidth=5, fontsize=25];
 
   // Internal Service Logic
+  ControlService -> MotorService [label="MotorTargets", style=dashed];
   ControlService -> UdpBridge [label="MotorTargets, SystemTelemetry", style=dashed];
+  ImuService -> ControlService [label="ImuData", style=dashed];
   ImuService -> UdpBridge [label="ImuData", style=dashed];
-  UdpBridge -> ControlService [label="ImuData, JoystickCommand", style=dashed];
-  UdpBridge -> MotorService [label="MotorTargets", style=dashed];
+  TimeService -> ControlService [label="PhysicsTick", style=dashed];
+  UdpBridge -> ControlService [label="ImuData, JoystickCommand\nPhysicsTick", style=dashed];
 
   RX -> UdpBridge [label="Outbound Traffic:\nImuData, MotorTargets\nSystemTelemetry", color="#F1F5F9", penwidth=5, dir=back, fontsize=25, arrowtail=normal];
   TestCase -> RX [label="recv_msg", color="#F1F5F9", penwidth=5, dir=back, arrowtail=normal];

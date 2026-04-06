@@ -9,6 +9,11 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Options: build the quick test by default; app is opt-in and *hard* requires libs.
 option(BUILD_TESTS "Build unit tests" ON)
+option(
+  BUILD_REFLECTION_ARTIFACTS
+  "Build reflection-generated docs and Python bindings as part of the default host build"
+  ${BUILD_TESTS}
+)
 
 find_package(Threads REQUIRED)
 include(cmake/balancer_common.cmake)
@@ -33,8 +38,12 @@ endfunction()
 
 add_ipc_hub_target()
 
-# ── C++26 Reflection (isolated to gcc-trunk) ──────────────────────────────────
-include(cmake/reflection.cmake)
+# ── C++26 Reflection (host-side only) ─────────────────────────────────────────
+if (BUILD_REFLECTION_ARTIFACTS AND NOT CMAKE_CROSSCOMPILING)
+  include(cmake/reflection.cmake)
+elseif (BUILD_REFLECTION_ARTIFACTS AND CMAKE_CROSSCOMPILING)
+  message(STATUS "Skipping reflection artifacts for cross-compiling build")
+endif()
 
 # ---------- SDL2 finder (module first, then pkg-config) ----------
 set(HAVE_SDL2 FALSE)

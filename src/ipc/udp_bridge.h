@@ -7,11 +7,9 @@
 #include <atomic>
 #include <thread>
 
-#include "autonomous_msgs.h"
-#include "publisher.h"
 #include "core_msgs.h"
-#include "simulation_msgs.h"
 #include "balancer_msgs.h"
+#include "publisher.h"
 
 namespace ipc {
 

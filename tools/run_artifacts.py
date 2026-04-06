@@ -25,6 +25,9 @@ _DEFAULT_COLUMNS = [
     "vel_i_term",
     "vel_p_term",
     "out_norm",
+    "effective_pitch_sp_deg",
+    "pitch_trim_deg",
+    "trim_active",
     "plant_pitch_deg",
     "plant_pitch_rate_dps",
     "plant_position",
@@ -106,6 +109,13 @@ def summarize_rows(rows: list[dict[str, Any]], metadata: dict[str, Any] | None =
     summary["max_abs_u_sps"] = max(abs(v) for v in u_values) if u_values else None
     summary["fell"] = bool(summary["max_abs_pitch_deg"] is not None and summary["max_abs_pitch_deg"] > 75.0)
 
+    plant_position_values = _series(rows, "plant_position")
+    plant_velocity_values = _series(rows, "plant_velocity")
+    summary["final_position_m"] = plant_position_values[-1] if plant_position_values else None
+    summary["max_abs_position_m"] = (
+        max(abs(v) for v in plant_position_values) if plant_position_values else None
+    )
+
     if time_values and pitch_values:
         tail_end = time_values[-1]
         tail_start = tail_end - 2.0
@@ -118,11 +128,27 @@ def summarize_rows(rows: list[dict[str, Any]], metadata: dict[str, Any] | None =
             summary["tail_rms_pitch_deg"] = None
             summary["tail_mean_abs_pitch_deg"] = None
 
-        tail_sat = _series(tail_rows, "command_saturated")
-        if tail_sat:
-            summary["tail_rail_fraction"] = sum(1.0 for v in tail_sat if v >= 0.5) / len(tail_sat)
+        tail_velocity = _series(tail_rows, "plant_velocity")
+        if tail_velocity:
+            summary["tail_mean_abs_velocity_mps"] = sum(abs(v) for v in tail_velocity) / len(tail_velocity)
         else:
-            summary["tail_rail_fraction"] = None
+            summary["tail_mean_abs_velocity_mps"] = None
+
+        tail_command_sat = _series(tail_rows, "command_saturated")
+        if tail_command_sat:
+            summary["tail_command_rail_fraction"] = (
+                sum(1.0 for v in tail_command_sat if v >= 0.5) / len(tail_command_sat)
+            )
+        else:
+            summary["tail_command_rail_fraction"] = None
+
+        tail_force_sat = _series(tail_rows, "force_saturated")
+        if tail_force_sat:
+            summary["tail_rail_fraction"] = (
+                sum(1.0 for v in tail_force_sat if v >= 0.5) / len(tail_force_sat)
+            )
+        else:
+            summary["tail_rail_fraction"] = summary["tail_command_rail_fraction"]
 
         running_max_abs: list[float] = [0.0] * len(pitch_values)
         acc = 0.0

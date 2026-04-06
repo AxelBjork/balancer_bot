@@ -4,13 +4,13 @@
 
 ## Overview
 
-This document describes the current balancer SIL/IPC surface: the UDP bridge, the three service wrappers, and the fixed-size payload structs exchanged across the message bus.
+This document describes the current balancer IPC surface: the concrete runtime services, the UDP bridge, and the fixed-size payload structs exchanged across the message bus.
 
-The current runtime flow is straightforward:
+There are two valid tick/input paths in the current build:
 
-1. Python tests inject `JoystickCommand` and `ImuData` through `UdpBridge`.
-2. `ControlService` consumes those inputs and publishes `MotorTargets` plus `SystemTelemetry`.
-3. `MotorService` consumes `MotorTargets`, and `UdpBridge` relays outbound traffic back to Python.
+1. Production runtime: `TimeService` publishes `PhysicsTick`, `ImuService` publishes hardware `ImuData`, and `ControlService` publishes `MotorTargets` plus `SystemTelemetry`.
+2. SIL / pytest runtime: `UdpBridge` injects `PhysicsTick`, `ImuData`, and `JoystickCommand` from Python into the bus.
+3. `MotorService` consumes `MotorTargets`, while `UdpBridge` relays outbound telemetry and motor targets back to the external client.
 
 ![IPC Flow Diagram](ipc_flow.svg)
 
@@ -111,7 +111,7 @@ The current runtime flow is straightforward:
 
 - Numeric ID: `3003`
 - Payload type: `SystemTelemetryPayload`
-- Wire size: `48` bytes
+- Wire size: `60` bytes
 - Published by: `ControlService`
 - Consumed by: `UdpBridge`
 
@@ -129,6 +129,9 @@ The current runtime flow is straightforward:
 | `vel_p_term` | `float` | `float` | 4 | 36 |
 | `vel_i_term` | `float` | `float` | 4 | 40 |
 | `pitch_sp_deg` | `float` | `float` | 4 | 44 |
+| `effective_pitch_sp_deg` | `float` | `float` | 4 | 48 |
+| `pitch_trim_deg` | `float` | `float` | 4 | 52 |
+| `trim_active` | `float` | `float` | 4 | 56 |
 
 ## Regenerating
 

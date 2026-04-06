@@ -12,35 +12,15 @@
 #include <tuple>
 #include <type_traits>
 
+#include "balancer_msgs.h"
 #include "msg_base.h"
 #include "udp_bridge.h"
-#include "balancer_msgs.h"
+#include "services/imu_service.h"
+#include "services/control_service.h"
+#include "services/motor_service.h"
+#include "services/time_service.h"
 
 using namespace std::string_view_literals;
-
-namespace balancer_doc {
-
-struct DOC_DESC("Publishes fused IMU samples onto the internal message bus. In SIL mode the hardware reader is disabled and samples are injected over UDP instead.") ImuService {
-  using Publishes = ipc::MsgList<ipc::ImuData>;
-  using Subscribes = ipc::MsgList<>;
-};
-
-struct DOC_DESC("Consumes IMU and joystick inputs, runs the cascaded balancing controller, and publishes motor targets plus lightweight telemetry.") ControlService {
-  using Publishes = ipc::MsgList<ipc::MotorTargets, ipc::SystemTelemetry>;
-  using Subscribes = ipc::MsgList<MsgId::PhysicsTick, ipc::ImuData, ipc::JoystickCommand>;
-};
-
-struct DOC_DESC("Consumes wheel-speed targets and forwards them to the motor runner when hardware is attached.") MotorService {
-  using Publishes = ipc::MsgList<>;
-  using Subscribes = ipc::MsgList<ipc::MotorTargets>;
-};
-
-struct DOC_DESC("Publishes the global runtime tick used to drive deterministic controller execution.") TimeService {
-  using Publishes = ipc::MsgList<MsgId::PhysicsTick>;
-  using Subscribes = ipc::MsgList<>;
-};
-
-}  // namespace balancer_doc
 
 namespace {
 
@@ -142,10 +122,10 @@ consteval bool component_publishes() {
   return contains_msg<Id>(typename Component::Publishes{});
 }
 
-using Components = std::tuple<balancer_doc::ImuService,
-                              balancer_doc::TimeService,
-                              balancer_doc::ControlService,
-                              balancer_doc::MotorService,
+using Components = std::tuple<sil::ImuService,
+                              sil::TimeService,
+                              sil::ControlService,
+                              sil::MotorService,
                               ipc::UdpBridge>;
 using BalancerMessages = ipc::MsgList<MsgId::PhysicsTick, ipc::ImuData, ipc::JoystickCommand, ipc::MotorTargets, ipc::SystemTelemetry>;
 
@@ -438,30 +418,29 @@ void collect_internal_edges(EdgeMap& edges, std::string_view mname) {
 
 template <typename ComponentsT, MsgId Id>
 void collect_msg_edges(EdgeMap& edges, std::set<std::string>& inbound_msg_names, std::set<std::string>& outbound_msg_names) {
-  constexpr bool cxx_sub = []<std::size_t... Is>(std::index_sequence<Is...>) {
+  constexpr bool has_cxx_sub = []<std::size_t... Is>(std::index_sequence<Is...>) {
     return ((component_subscribes<std::tuple_element_t<Is, ComponentsT>, Id>() &&
              !std::is_same_v<std::tuple_element_t<Is, ComponentsT>, ipc::UdpBridge>) || ...);
   }(std::make_index_sequence<std::tuple_size_v<ComponentsT>>{});
-  constexpr bool cxx_pub = []<std::size_t... Is>(std::index_sequence<Is...>) {
+  constexpr bool has_cxx_pub = []<std::size_t... Is>(std::index_sequence<Is...>) {
     return ((component_publishes<std::tuple_element_t<Is, ComponentsT>, Id>() &&
              !std::is_same_v<std::tuple_element_t<Is, ComponentsT>, ipc::UdpBridge>) || ...);
   }(std::make_index_sequence<std::tuple_size_v<ComponentsT>>{});
-  constexpr bool py_sub = component_subscribes<ipc::UdpBridge, Id>();
-  constexpr bool py_pub = component_publishes<ipc::UdpBridge, Id>();
+  constexpr bool udp_subscribes = component_subscribes<ipc::UdpBridge, Id>();
+  constexpr bool udp_publishes = component_publishes<ipc::UdpBridge, Id>();
   constexpr std::string_view mname = MessageTraits<Id>::name;
 
-  if (py_pub && cxx_sub && !cxx_pub && !py_sub) {
+  if constexpr (udp_publishes && has_cxx_sub) {
     inbound_msg_names.insert(std::string(mname));
     collect_inbound_edges<ComponentsT, Id>(edges, mname);
-  } else if (cxx_pub && py_sub && !py_pub && !cxx_sub) {
+  }
+
+  if constexpr (has_cxx_pub && udp_subscribes) {
     outbound_msg_names.insert(std::string(mname));
     collect_outbound_edges<ComponentsT, Id>(edges, mname);
-  } else if ((py_pub || py_sub) && (cxx_pub || cxx_sub)) {
-    inbound_msg_names.insert(std::string(mname));
-    collect_inbound_edges<ComponentsT, Id>(edges, mname);
-    outbound_msg_names.insert(std::string(mname));
-    collect_outbound_edges<ComponentsT, Id>(edges, mname);
-  } else if (!py_pub && !py_sub && cxx_pub && cxx_sub) {
+  }
+
+  if constexpr (has_cxx_pub && has_cxx_sub) {
     collect_internal_edges<ComponentsT, Id>(edges, mname);
   }
 }
@@ -551,6 +530,7 @@ void emit_graphviz_flow_dot(std::ostream& os) {
   EdgeMap edge_map;
   std::set<std::string> inbound_msg_names;
   std::set<std::string> outbound_msg_names;
+  collect_msg_edges<Components, MsgId::PhysicsTick>(edge_map, inbound_msg_names, outbound_msg_names);
   collect_msg_edges<Components, ipc::ImuData>(edge_map, inbound_msg_names, outbound_msg_names);
   collect_msg_edges<Components, ipc::JoystickCommand>(edge_map, inbound_msg_names, outbound_msg_names);
   collect_msg_edges<Components, ipc::MotorTargets>(edge_map, inbound_msg_names, outbound_msg_names);
@@ -591,11 +571,11 @@ int main(int argc, char** argv) {
   std::cout << "> Auto-generated by `generate_balancer_docs` using GCC trunk reflection.\n\n";
 
   std::cout << "## Overview\n\n";
-  std::cout << "This document describes the current balancer SIL/IPC surface: the UDP bridge, the three service wrappers, and the fixed-size payload structs exchanged across the message bus.\n\n";
-  std::cout << "The current runtime flow is straightforward:\n\n";
-  std::cout << "1. Python tests inject `JoystickCommand` and `ImuData` through `UdpBridge`.\n";
-  std::cout << "2. `ControlService` consumes those inputs and publishes `MotorTargets` plus `SystemTelemetry`.\n";
-  std::cout << "3. `MotorService` consumes `MotorTargets`, and `UdpBridge` relays outbound traffic back to Python.\n\n";
+  std::cout << "This document describes the current balancer IPC surface: the concrete runtime services, the UDP bridge, and the fixed-size payload structs exchanged across the message bus.\n\n";
+  std::cout << "There are two valid tick/input paths in the current build:\n\n";
+  std::cout << "1. Production runtime: `TimeService` publishes `PhysicsTick`, `ImuService` publishes hardware `ImuData`, and `ControlService` publishes `MotorTargets` plus `SystemTelemetry`.\n";
+  std::cout << "2. SIL / pytest runtime: `UdpBridge` injects `PhysicsTick`, `ImuData`, and `JoystickCommand` from Python into the bus.\n";
+  std::cout << "3. `MotorService` consumes `MotorTargets`, while `UdpBridge` relays outbound telemetry and motor targets back to the external client.\n\n";
 
   std::cout << "![IPC Flow Diagram](ipc_flow.svg)\n\n";
 
