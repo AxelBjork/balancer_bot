@@ -91,7 +91,7 @@ class MotorTargetsPayload:
 
 @dataclass
 class SystemTelemetryPayload:
-    WIRE_SIZE = 48
+    WIRE_SIZE = 60
     t_sec: float
     age_ms: float
     pitch_deg: float
@@ -104,9 +104,12 @@ class SystemTelemetryPayload:
     vel_p_term: float
     vel_i_term: float
     pitch_sp_deg: float
+    effective_pitch_sp_deg: float
+    pitch_trim_deg: float
+    trim_active: float
 
     def pack(self) -> bytes:
-        return struct.pack("<ffffffffffff", self.t_sec, self.age_ms, self.pitch_deg, self.pitch_rate_dps, self.rate_sp_dps, self.out_norm, self.u_sps, self.integ_pitch, self.vel_error, self.vel_p_term, self.vel_i_term, self.pitch_sp_deg)
+        return struct.pack("<fffffffffffffff", self.t_sec, self.age_ms, self.pitch_deg, self.pitch_rate_dps, self.rate_sp_dps, self.out_norm, self.u_sps, self.integ_pitch, self.vel_error, self.vel_p_term, self.vel_i_term, self.pitch_sp_deg, self.effective_pitch_sp_deg, self.pitch_trim_deg, self.trim_active)
 
     @classmethod
     def unpack(cls, data: bytes) -> 'SystemTelemetryPayload':
@@ -135,7 +138,13 @@ class SystemTelemetryPayload:
         offset += 4
         pitch_sp_deg, = struct.unpack_from("<f", data, offset)
         offset += 4
-        return cls(t_sec=t_sec, age_ms=age_ms, pitch_deg=pitch_deg, pitch_rate_dps=pitch_rate_dps, rate_sp_dps=rate_sp_dps, out_norm=out_norm, u_sps=u_sps, integ_pitch=integ_pitch, vel_error=vel_error, vel_p_term=vel_p_term, vel_i_term=vel_i_term, pitch_sp_deg=pitch_sp_deg)
+        effective_pitch_sp_deg, = struct.unpack_from("<f", data, offset)
+        offset += 4
+        pitch_trim_deg, = struct.unpack_from("<f", data, offset)
+        offset += 4
+        trim_active, = struct.unpack_from("<f", data, offset)
+        offset += 4
+        return cls(t_sec=t_sec, age_ms=age_ms, pitch_deg=pitch_deg, pitch_rate_dps=pitch_rate_dps, rate_sp_dps=rate_sp_dps, out_norm=out_norm, u_sps=u_sps, integ_pitch=integ_pitch, vel_error=vel_error, vel_p_term=vel_p_term, vel_i_term=vel_i_term, pitch_sp_deg=pitch_sp_deg, effective_pitch_sp_deg=effective_pitch_sp_deg, pitch_trim_deg=pitch_trim_deg, trim_active=trim_active)
 
 MESSAGE_BY_ID = {
     BalancerMsgId.PhysicsTick: PhysicsTickPayload,

@@ -63,4 +63,28 @@ TEST(SimulatorRunnerTest, TelemetryTracksPlantPitch) {
   }
 }
 
+TEST(SimulatorRunnerTest, PositiveComOffsetBuildsNegativeLeanTrim) {
+  auto scenario = simulator_named_scenario("com_offset_pos", PhysicsProfile::Realistic);
+  ASSERT_TRUE(scenario.has_value());
+  scenario->duration_s = 5.0;
+
+  const auto result = run_simulator_scenario(*scenario, sim_pid_path());
+  ASSERT_FALSE(result.rows.empty());
+
+  EXPECT_FALSE(result.fell);
+  EXPECT_LT(result.rows.back().pitch_trim_deg, 0.0);
+}
+
+TEST(SimulatorRunnerTest, NegativeComOffsetBuildsPositiveLeanTrim) {
+  auto scenario = simulator_named_scenario("com_offset_neg", PhysicsProfile::Realistic);
+  ASSERT_TRUE(scenario.has_value());
+  scenario->duration_s = 5.0;
+
+  const auto result = run_simulator_scenario(*scenario, sim_pid_path());
+  ASSERT_FALSE(result.rows.empty());
+
+  EXPECT_FALSE(result.fell);
+  EXPECT_GT(result.rows.back().pitch_trim_deg, 0.0);
+}
+
 }  // namespace

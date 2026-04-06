@@ -4,6 +4,7 @@
 #include <cmath>
 #include <vector>
 
+#include "config.h"
 #include "services/control/rate_controller_core.h"
 
 namespace {
@@ -49,7 +50,7 @@ class RateControllerHarness {
   RateControllerHarness() {
     core_.setMotorOutputs([this](float left, float right) { runner_.setTargets(left, right); });
     core_.setVelocityFeedback([this]() { return runner_.getActualSpeedSps(); });
-    core_.setPositionFeedback([this]() { return runner_.getAveragePositionSteps(); });
+    core_.setPositionFeedback([this]() { return runner_.getAveragePositionSteps() * Config::meters_per_step; });
     core_.setTelemetrySink([this](const Telemetry& t) { telemetry_.push_back(t); });
   }
 
@@ -107,7 +108,7 @@ TEST(RateControllerCoreTest, SteeringSplitsWheelCommands) {
   EXPECT_NE(h.runner().lastLeft(), h.runner().lastRight());
 }
 
-TEST(RateControllerCoreTest, VelocityFeedbackAffectsTelemetry) {
+TEST(RateControllerCoreTest, VelocityFeedbackIsIgnoredWithoutCommand) {
   RateControllerHarness h;
   h.setJoystick(0.0f, 0.0f);
   h.run_steps(40, 1.0 / 400.0);
@@ -116,29 +117,196 @@ TEST(RateControllerCoreTest, VelocityFeedbackAffectsTelemetry) {
   h.run_steps(80, 1.0 / 400.0);
 
   ASSERT_FALSE(h.telemetry().empty());
-  EXPECT_NEAR(h.telemetry().back().vel_error, -4000.0, 50.0);
+  EXPECT_NEAR(h.telemetry().back().vel_error, 0.0, 1e-3);
+  EXPECT_NEAR(h.telemetry().back().vel_p_term, 0.0, 1e-3);
+  EXPECT_NEAR(h.telemetry().back().pitch_sp_deg, 0.0, 1e-3);
+}
+
+TEST(RateControllerCoreTest, VelocityFeedbackAffectsTelemetryWhenCommanded) {
+  RateControllerHarness h;
+  h.setJoystick(0.2f, 0.0f);
+  h.run_steps(40, 1.0 / 400.0);
+
+  h.runner().setActualSpeedSps(4000.0f);
+  h.run_steps(80, 1.0 / 400.0);
+
+  ASSERT_FALSE(h.telemetry().empty());
+  EXPECT_LT(h.telemetry().back().vel_error, -3000.0);
   EXPECT_NE(h.telemetry().back().vel_p_term, 0.0);
 }
 
-TEST(RateControllerCoreTest, PositionHoldBiasesVelocityTargetBackTowardAnchor) {
+TEST(RateControllerCoreTest, PositionHoldAddsVelocityTargetBackTowardAnchor) {
   const double old_pos_p = ConfigPid::pos_P;
   struct RestorePosP {
     double& slot;
     double old_value;
     ~RestorePosP() { slot = old_value; }
   } restore{ConfigPid::pos_P, old_pos_p};
-  ConfigPid::pos_P = 2.0;
+  ConfigPid::pos_P = 1000.0;
 
   RateControllerHarness h;
   h.setJoystick(0.0f, 0.0f);
   h.run_steps(10, 1.0 / 400.0);
-  h.runner().setAveragePositionSteps(0.1f);
+  h.runner().setAveragePositionSteps(1000.0f);
   h.run_steps(80, 1.0 / 400.0);
 
   ASSERT_FALSE(h.telemetry().empty());
-  EXPECT_GT(h.telemetry().back().pitch_sp_deg, 0.0);
-  EXPECT_GT(h.runner().lastLeft(), 0.0f);
-  EXPECT_GT(h.runner().lastRight(), 0.0f);
+  EXPECT_LT(h.telemetry().back().vel_error, 0.0);
+  EXPECT_GT(h.telemetry().back().vel_p_term, 0.0);
+  EXPECT_NE(h.runner().lastLeft(), 0.0f);
+  EXPECT_NE(h.runner().lastRight(), 0.0f);
+}
+
+TEST(RateControllerCoreTest, AngleTrimAccumulatesAgainstPersistentPitchError) {
+  const double old_angle_i = ConfigPid::angle_I;
+  struct RestoreAngleI {
+    double& slot;
+    double old_value;
+    ~RestoreAngleI() { slot = old_value; }
+  } restore{ConfigPid::angle_I, old_angle_i};
+  ConfigPid::angle_I = 0.1;
+
+  RateControllerHarness h;
+  h.setJoystick(0.0f, 0.0f);
+  h.run_steps(200, 1.0 / 400.0, 0.02, 0.0);
+
+  ASSERT_FALSE(h.telemetry().empty());
+  EXPECT_LT(h.telemetry().back().pitch_sp_deg, 0.0);
+}
+
+TEST(RateControllerCoreTest, LeanTrimAccumulatesCorrectiveBiasForPositiveVelocityDrift) {
+  const double old_angle_i = ConfigPid::angle_I;
+  const double old_lean_trim_i = ConfigPid::lean_trim_I;
+  const double old_lean_trim_max_deg = ConfigPid::lean_trim_max_deg;
+  const double old_lean_trim_decay_s = ConfigPid::lean_trim_decay_s;
+  struct RestoreLeanTrimConfig {
+    ~RestoreLeanTrimConfig() {
+      ConfigPid::angle_I = old_angle_i;
+      ConfigPid::lean_trim_I = old_lean_trim_i;
+      ConfigPid::lean_trim_max_deg = old_lean_trim_max_deg;
+      ConfigPid::lean_trim_decay_s = old_lean_trim_decay_s;
+    }
+    double old_angle_i;
+    double old_lean_trim_i;
+    double old_lean_trim_max_deg;
+    double old_lean_trim_decay_s;
+  } restore{old_angle_i, old_lean_trim_i, old_lean_trim_max_deg, old_lean_trim_decay_s};
+  ConfigPid::angle_I = 0.0;
+  ConfigPid::lean_trim_I = 0.12;
+  ConfigPid::lean_trim_max_deg = 4.0;
+  ConfigPid::lean_trim_decay_s = 3.0;
+
+  RateControllerHarness h;
+  h.setJoystick(0.0f, 0.0f);
+  h.runner().setActualSpeedSps(800.0f);
+  h.run_steps(400, 1.0 / 400.0, 0.0, 0.0);
+
+  ASSERT_FALSE(h.telemetry().empty());
+  EXPECT_LT(h.telemetry().back().pitch_trim_deg, 0.0);
+  EXPECT_GT(h.telemetry().back().trim_active, 0.5);
+}
+
+TEST(RateControllerCoreTest, LeanTrimAccumulatesOppositeBiasForNegativeVelocityDrift) {
+  const double old_angle_i = ConfigPid::angle_I;
+  const double old_lean_trim_i = ConfigPid::lean_trim_I;
+  const double old_lean_trim_max_deg = ConfigPid::lean_trim_max_deg;
+  const double old_lean_trim_decay_s = ConfigPid::lean_trim_decay_s;
+  struct RestoreLeanTrimConfig {
+    ~RestoreLeanTrimConfig() {
+      ConfigPid::angle_I = old_angle_i;
+      ConfigPid::lean_trim_I = old_lean_trim_i;
+      ConfigPid::lean_trim_max_deg = old_lean_trim_max_deg;
+      ConfigPid::lean_trim_decay_s = old_lean_trim_decay_s;
+    }
+    double old_angle_i;
+    double old_lean_trim_i;
+    double old_lean_trim_max_deg;
+    double old_lean_trim_decay_s;
+  } restore{old_angle_i, old_lean_trim_i, old_lean_trim_max_deg, old_lean_trim_decay_s};
+  ConfigPid::angle_I = 0.0;
+  ConfigPid::lean_trim_I = 0.12;
+  ConfigPid::lean_trim_max_deg = 4.0;
+  ConfigPid::lean_trim_decay_s = 3.0;
+
+  RateControllerHarness h;
+  h.setJoystick(0.0f, 0.0f);
+  h.runner().setActualSpeedSps(-800.0f);
+  h.run_steps(400, 1.0 / 400.0, 0.0, 0.0);
+
+  ASSERT_FALSE(h.telemetry().empty());
+  EXPECT_GT(h.telemetry().back().pitch_trim_deg, 0.0);
+  EXPECT_GT(h.telemetry().back().trim_active, 0.5);
+}
+
+TEST(RateControllerCoreTest, LeanTrimDecaysWhenOperatorCommandIsPresent) {
+  const double old_angle_i = ConfigPid::angle_I;
+  const double old_lean_trim_i = ConfigPid::lean_trim_I;
+  const double old_lean_trim_max_deg = ConfigPid::lean_trim_max_deg;
+  const double old_lean_trim_decay_s = ConfigPid::lean_trim_decay_s;
+  struct RestoreLeanTrimConfig {
+    ~RestoreLeanTrimConfig() {
+      ConfigPid::angle_I = old_angle_i;
+      ConfigPid::lean_trim_I = old_lean_trim_i;
+      ConfigPid::lean_trim_max_deg = old_lean_trim_max_deg;
+      ConfigPid::lean_trim_decay_s = old_lean_trim_decay_s;
+    }
+    double old_angle_i;
+    double old_lean_trim_i;
+    double old_lean_trim_max_deg;
+    double old_lean_trim_decay_s;
+  } restore{old_angle_i, old_lean_trim_i, old_lean_trim_max_deg, old_lean_trim_decay_s};
+  ConfigPid::angle_I = 0.0;
+  ConfigPid::lean_trim_I = 0.12;
+  ConfigPid::lean_trim_max_deg = 4.0;
+  ConfigPid::lean_trim_decay_s = 0.5;
+
+  RateControllerHarness h;
+  h.setJoystick(0.0f, 0.0f);
+  h.runner().setActualSpeedSps(800.0f);
+  h.run_steps(400, 1.0 / 400.0, 0.0, 0.0);
+  const double accumulated_trim_deg = std::abs(h.telemetry().back().pitch_trim_deg);
+
+  h.setJoystick(0.2f, 0.0f);
+  h.run_steps(400, 1.0 / 400.0, 0.0, 0.0);
+
+  ASSERT_FALSE(h.telemetry().empty());
+  EXPECT_LT(std::abs(h.telemetry().back().pitch_trim_deg), accumulated_trim_deg);
+  EXPECT_LT(h.telemetry().back().trim_active, 0.5);
+}
+
+TEST(RateControllerCoreTest, LeanTrimHardResetsOnLargeTilt) {
+  const double old_angle_i = ConfigPid::angle_I;
+  const double old_lean_trim_i = ConfigPid::lean_trim_I;
+  const double old_lean_trim_max_deg = ConfigPid::lean_trim_max_deg;
+  const double old_lean_trim_decay_s = ConfigPid::lean_trim_decay_s;
+  struct RestoreLeanTrimConfig {
+    ~RestoreLeanTrimConfig() {
+      ConfigPid::angle_I = old_angle_i;
+      ConfigPid::lean_trim_I = old_lean_trim_i;
+      ConfigPid::lean_trim_max_deg = old_lean_trim_max_deg;
+      ConfigPid::lean_trim_decay_s = old_lean_trim_decay_s;
+    }
+    double old_angle_i;
+    double old_lean_trim_i;
+    double old_lean_trim_max_deg;
+    double old_lean_trim_decay_s;
+  } restore{old_angle_i, old_lean_trim_i, old_lean_trim_max_deg, old_lean_trim_decay_s};
+  ConfigPid::angle_I = 0.0;
+  ConfigPid::lean_trim_I = 0.12;
+  ConfigPid::lean_trim_max_deg = 4.0;
+  ConfigPid::lean_trim_decay_s = 3.0;
+
+  RateControllerHarness h;
+  h.setJoystick(0.0f, 0.0f);
+  h.runner().setActualSpeedSps(800.0f);
+  h.run_steps(400, 1.0 / 400.0, 0.0, 0.0);
+  ASSERT_GT(std::abs(h.telemetry().back().pitch_trim_deg), 1e-3);
+
+  h.run_steps(8, 1.0 / 400.0, 25.0 * M_PI / 180.0, 0.0);
+
+  ASSERT_FALSE(h.telemetry().empty());
+  EXPECT_NEAR(h.telemetry().back().pitch_trim_deg, 0.0, 1e-6);
+  EXPECT_LT(h.telemetry().back().trim_active, 0.5);
 }
 
 }  // namespace

@@ -130,6 +130,9 @@ SimulatorRunResult run_simulator_scenario(const SimulatorScenario& scenario,
       row.vel_i_term = latest_telemetry.vel_i_term;
       row.vel_p_term = latest_telemetry.vel_p_term;
       row.out_norm = latest_telemetry.out_norm;
+      row.effective_pitch_sp_deg = latest_telemetry.effective_pitch_sp_deg;
+      row.pitch_trim_deg = latest_telemetry.pitch_trim_deg;
+      row.trim_active = latest_telemetry.trim_active;
     }
     result.rows.push_back(row);
 

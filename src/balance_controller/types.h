@@ -33,6 +33,9 @@ struct Telemetry {
   double vel_p_term;
   double vel_i_term;
   double pitch_sp_deg;
+  double effective_pitch_sp_deg;
+  double pitch_trim_deg;
+  double trim_active;
 };
 
 // ---- PID Configuration ----
@@ -48,6 +51,12 @@ struct ConfigPid {
 
   // Minimal outer mapping: angle(rad) -> rate_sp(rad/s)
   inline static double angle_to_rate_k = 12.0;
+  // Slow trim: persistent angle error [rad] -> pitch setpoint bias integrator [rad / s]
+  inline static double angle_I = 0.0;
+  // Very slow trim: persistent balance effort -> lean bias setpoint for COM offset rejection.
+  inline static double lean_trim_I = 0.0;
+  inline static double lean_trim_max_deg = 4.0;
+  inline static double lean_trim_decay_s = 3.0;
 
   // Velocity PID (outermost loop): velocity error -> pitch angle setpoint
   inline static double vel_P = -0.000055;  // Reduced damping to prevent saturation
@@ -55,7 +64,7 @@ struct ConfigPid {
   inline static double vel_D = 0.0;        // derivative gain
   inline static double vel_I_lim = 0.15;   // Allow reasonable windup for correction
 
-  // Position hold (supervisory loop): position error [m] -> pitch setpoint bias [rad]
+  // Position hold (supervisory loop): position error [m] -> velocity setpoint [steps/s]
   inline static double pos_P = 0.0;
 
   static std::string resolve_path(const std::string& default_path) {

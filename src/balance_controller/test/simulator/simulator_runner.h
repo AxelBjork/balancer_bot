@@ -38,6 +38,9 @@ struct SimulatorTimelineRow {
   double vel_i_term = 0.0;
   double vel_p_term = 0.0;
   double out_norm = 0.0;
+  double effective_pitch_sp_deg = 0.0;
+  double pitch_trim_deg = 0.0;
+  double trim_active = 0.0;
   double plant_pitch_deg = 0.0;
   double plant_pitch_rate_dps = 0.0;
   double plant_position = 0.0;

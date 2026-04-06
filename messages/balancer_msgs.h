@@ -44,6 +44,9 @@ struct DOC_DESC("Detailed controller telemetry streamed out over UDP and used fo
     float vel_p_term;
     float vel_i_term;
     float pitch_sp_deg;
+    float effective_pitch_sp_deg;
+    float pitch_trim_deg;
+    float trim_active;
 };
 
 } // namespace ipc

@@ -34,6 +34,9 @@ ControlService::ControlService(ipc::MessageBus& bus)
         p.vel_p_term = static_cast<float>(t.vel_p_term);
         p.vel_i_term = static_cast<float>(t.vel_i_term);
         p.pitch_sp_deg = static_cast<float>(t.pitch_sp_deg);
+        p.effective_pitch_sp_deg = static_cast<float>(t.effective_pitch_sp_deg);
+        p.pitch_trim_deg = static_cast<float>(t.pitch_trim_deg);
+        p.trim_active = static_cast<float>(t.trim_active);
         bus_.publish<ipc::SystemTelemetry>(p);
     });
 }

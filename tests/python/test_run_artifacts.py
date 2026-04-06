@@ -14,6 +14,8 @@ def test_run_recorder_writes_summary_and_flags_fall(tmp_path):
             "pitch_deg": 0.0,
             "u_sps": 0.0,
             "plant_pitch_deg": 0.0,
+            "plant_position": 0.0,
+            "plant_velocity": 0.0,
             "command_saturated": 0.0,
         }
     )
@@ -23,6 +25,8 @@ def test_run_recorder_writes_summary_and_flags_fall(tmp_path):
             "pitch_deg": 90.0,
             "u_sps": 100.0,
             "plant_pitch_deg": 90.0,
+            "plant_position": 1.25,
+            "plant_velocity": 0.5,
             "command_saturated": 1.0,
         }
     )
@@ -32,6 +36,10 @@ def test_run_recorder_writes_summary_and_flags_fall(tmp_path):
     assert summary["max_abs_pitch_deg"] == 90.0
     assert summary["tail_rms_pitch_deg"] is not None
     assert summary["tail_rail_fraction"] is not None
+    assert summary["tail_command_rail_fraction"] is not None
+    assert summary["final_position_m"] == 1.25
+    assert summary["max_abs_position_m"] == 1.25
+    assert summary["tail_mean_abs_velocity_mps"] == 0.25
     assert (tmp_path / "timeline.csv").exists()
     assert (tmp_path / "summary.json").exists()
     assert (tmp_path / "pitch_plot.svg").exists()

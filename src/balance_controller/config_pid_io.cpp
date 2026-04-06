@@ -35,6 +35,8 @@ void ConfigPid::load(const std::string& path) {
   std::unordered_map<std::string, double*> param_map = {
       {"rate_P", &rate_P},         {"rate_I", &rate_I},   {"rate_D", &rate_D},
       {"rate_I_lim", &rate_I_lim}, {"rate_FF", &rate_FF}, {"angle_to_rate_k", &angle_to_rate_k},
+      {"angle_I", &angle_I},       {"lean_trim_I", &lean_trim_I},
+      {"lean_trim_max_deg", &lean_trim_max_deg}, {"lean_trim_decay_s", &lean_trim_decay_s},
       {"vel_P", &vel_P},           {"vel_I", &vel_I},     {"vel_D", &vel_D},
       {"vel_I_lim", &vel_I_lim},   {"pos_P", &pos_P}};
 
@@ -96,6 +98,10 @@ void ConfigPid::save(const std::string& path) {
 
     f << "# --- Angle Controller (Middle Loop) ---\n";
     write_param(f, "angle_to_rate_k", angle_to_rate_k);
+    write_param(f, "angle_I", angle_I);
+    write_param(f, "lean_trim_I", lean_trim_I);
+    write_param(f, "lean_trim_max_deg", lean_trim_max_deg);
+    write_param(f, "lean_trim_decay_s", lean_trim_decay_s);
     f << "\n";
 
     f << "# --- Velocity Controller (Outer Loop) ---\n";

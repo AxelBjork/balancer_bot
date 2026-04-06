@@ -17,7 +17,13 @@ using matrix::Vector3f;
 namespace {
 
 constexpr float kVelocityLoopTiltPriorityRad = static_cast<float>(3.0 * M_PI / 180.0);
-constexpr float kMaxPositionPitchBiasRad = 0.15f;
+constexpr float kPositionHoldEnablePitchRad = static_cast<float>(3.0 * M_PI / 180.0);
+constexpr float kMaxPositionTargetSps = 800.0f;
+constexpr float kMaxPositionTrimPitchBiasRad = 0.15f;
+constexpr float kLeanTrimEnablePitchRad = static_cast<float>(10.0 * M_PI / 180.0);
+constexpr float kLeanTrimResetPitchRad = static_cast<float>(20.0 * M_PI / 180.0);
+constexpr float kLeanTrimVelocityDeadbandSps = 25.0f;
+constexpr float kLeanTrimVelocityFcHz = 0.5f;
 
 }  // namespace
 
@@ -38,7 +44,11 @@ struct RateControllerCore::Impl {
 
   float pitch_setpoint_rad{0.0f};
   float filtered_velocity_sps{0.0f};
+  float filtered_trim_velocity_sps{0.0f};
   float position_anchor_m{0.0f};
+  float angle_trim_pitch_bias_rad{0.0f};
+  float lean_trim_rad{0.0f};
+  bool lean_trim_active{false};
   bool position_anchor_initialized{false};
 };
 
@@ -86,8 +96,17 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
       1.0f);
   p_->filtered_velocity_sps += velocity_alpha * (measured_velocity_sps - p_->filtered_velocity_sps);
   const float current_velocity_sps = p_->filtered_velocity_sps;
+  const float trim_velocity_alpha = std::clamp(
+      static_cast<float>((2.0 * M_PI * kLeanTrimVelocityFcHz * dt) /
+                         (1.0 + 2.0 * M_PI * kLeanTrimVelocityFcHz * dt)),
+      0.0f,
+      1.0f);
+  p_->filtered_trim_velocity_sps +=
+      trim_velocity_alpha * (measured_velocity_sps - p_->filtered_trim_velocity_sps);
   const bool have_position_feedback = static_cast<bool>(p_->position_cb);
   const float current_position_m = have_position_feedback ? p_->position_cb() : 0.0f;
+  const float lean_trim_max_rad = static_cast<float>(
+      std::clamp(ConfigPid::lean_trim_max_deg * M_PI / 180.0, 0.0, kMaxPitchSetpointRad));
 
   const JoyCmd joy = p_->latest_joy;
   const bool user_velocity_active = std::abs(joy.forward) > Config::deadzone;
@@ -98,11 +117,27 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
     }
     if (user_velocity_active) {
       p_->position_anchor_m = current_position_m;
+      p_->angle_trim_pitch_bias_rad = 0.0f;
     }
   }
 
-  const bool enable_velocity_loop = user_velocity_active;
-  float target_vel_sps = enable_velocity_loop ? joy.forward * static_cast<float>(kMaxSps) : 0.0f;
+  float position_target_vel_sps = 0.0f;
+  if (have_position_feedback && !user_velocity_active && ConfigPid::pos_P != 0.0 &&
+      std::abs(pitch_rad) < kPositionHoldEnablePitchRad) {
+    const float position_error_m = p_->position_anchor_m - current_position_m;
+    position_target_vel_sps = std::clamp(
+        static_cast<float>(ConfigPid::pos_P * position_error_m),
+        -kMaxPositionTargetSps,
+        kMaxPositionTargetSps);
+  }
+
+  // Let balance recovery own the zero-command case. The velocity loop only
+  // participates for operator translation or explicit position-hold correction.
+  const bool enable_velocity_loop =
+      user_velocity_active || std::abs(position_target_vel_sps) > 1e-3f;
+  float target_vel_sps =
+      user_velocity_active ? joy.forward * static_cast<float>(kMaxSps) : 0.0f;
+  target_vel_sps += position_target_vel_sps;
   p_->velocity_pid.setSetpoint(target_vel_sps);
 
   const float velocity_loop_blend = std::clamp(
@@ -118,15 +153,16 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
                                                 ? p_->velocity_pid.update(
                                                       current_velocity_sps, dt, update_velocity_integral)
                                                 : 0.0f;
-  float position_pitch_bias_rad = 0.0f;
-  if (have_position_feedback && !user_velocity_active && ConfigPid::pos_P != 0.0) {
-    const float position_error_m = current_position_m - p_->position_anchor_m;
-    position_pitch_bias_rad = std::clamp(
-        static_cast<float>(ConfigPid::pos_P * position_error_m),
-        -kMaxPositionPitchBiasRad,
-        kMaxPositionPitchBiasRad);
+  if (!user_velocity_active && ConfigPid::angle_I != 0.0 &&
+      std::abs(pitch_rad) < kPositionHoldEnablePitchRad) {
+    p_->angle_trim_pitch_bias_rad = std::clamp(
+        p_->angle_trim_pitch_bias_rad - static_cast<float>(ConfigPid::angle_I * pitch_rad * dt),
+        -kMaxPositionTrimPitchBiasRad,
+        kMaxPositionTrimPitchBiasRad);
   }
-  p_->pitch_setpoint_rad = velocity_pitch_setpoint_rad * velocity_loop_blend + position_pitch_bias_rad;
+
+  p_->pitch_setpoint_rad =
+      velocity_pitch_setpoint_rad * velocity_loop_blend + p_->angle_trim_pitch_bias_rad + p_->lean_trim_rad;
   p_->pitch_setpoint_rad = std::clamp(p_->pitch_setpoint_rad,
                                       -static_cast<float>(kMaxPitchSetpointRad),
                                       static_cast<float>(kMaxPitchSetpointRad));
@@ -141,6 +177,35 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
 
   float u_sps = u(1) * static_cast<float>(kPitchOutToSps);
   u_sps = std::clamp(u_sps, -static_cast<float>(kMaxSps), static_cast<float>(kMaxSps));
+  const bool command_saturated = std::abs(u_sps) >= (0.99f * static_cast<float>(kMaxSps));
+
+  if (std::abs(pitch_rad) > kLeanTrimResetPitchRad) {
+    p_->lean_trim_rad = 0.0f;
+    p_->lean_trim_active = false;
+  } else {
+    const bool lean_trim_window = !user_velocity_active && std::abs(pitch_rad) < kLeanTrimEnablePitchRad;
+    if (ConfigPid::lean_trim_I != 0.0 && lean_trim_window && !command_saturated) {
+      const float velocity_for_trim = std::abs(p_->filtered_trim_velocity_sps) > kLeanTrimVelocityDeadbandSps
+                                          ? p_->filtered_trim_velocity_sps
+                                          : 0.0f;
+      const float normalized_effort =
+          std::clamp(-velocity_for_trim / static_cast<float>(kMaxSps), -1.0f, 1.0f);
+      p_->lean_trim_rad = std::clamp(
+          p_->lean_trim_rad + static_cast<float>(ConfigPid::lean_trim_I * normalized_effort * dt),
+          -lean_trim_max_rad,
+          lean_trim_max_rad);
+      p_->lean_trim_active = true;
+    } else {
+      p_->lean_trim_active = false;
+      if (ConfigPid::lean_trim_decay_s > 0.0) {
+        const float decay = std::clamp(
+            static_cast<float>(dt / ConfigPid::lean_trim_decay_s),
+            0.0f,
+            1.0f);
+        p_->lean_trim_rad *= (1.0f - decay);
+      }
+    }
+  }
 
   const float turn_sps = joy.turn * static_cast<float>(kMaxSps) * 0.5f;
   const float left_sps = u_sps + turn_sps;
@@ -163,10 +228,13 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
     t.out_norm = u(1);
     t.u_sps = u_sps;
     t.integ_pitch = st.pitchspeed_integ;
-    t.vel_error = target_vel_sps - current_velocity_sps;
+    t.vel_error = enable_velocity_loop ? (target_vel_sps - current_velocity_sps) : 0.0f;
     t.vel_i_term = p_->velocity_pid.getIntegral();
-    t.vel_p_term = t.vel_error * ConfigPid::vel_P;
+    t.vel_p_term = enable_velocity_loop ? (t.vel_error * ConfigPid::vel_P) : 0.0f;
     t.pitch_sp_deg = p_->pitch_setpoint_rad * 180.0 / M_PI;
+    t.effective_pitch_sp_deg = p_->pitch_setpoint_rad * 180.0 / M_PI;
+    t.pitch_trim_deg = p_->lean_trim_rad * 180.0 / M_PI;
+    t.trim_active = p_->lean_trim_active ? 1.0 : 0.0;
 
     p_->tel_cb(std::move(t));
   }

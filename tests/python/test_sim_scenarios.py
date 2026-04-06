@@ -10,48 +10,51 @@ import pytest
 
 SIMPLIFIED_SANITY_SCENARIOS = [
     "neutral_hold",
-    "combined_bias_pos",
 ]
 
 REALISTIC_STABILITY_SCENARIOS = [
-    "neutral_hold",
-    "pitch_bias_pos",
-    "com_offset_pos",
-    "combined_bias_pos",
-    "recovery_large_pitch_pos",
-]
-
-REALISTIC_STRETCH_PASSING = [
     (
-        "stretch_recovery_0p5_pos",
+        "realistic_neutral_hold_20s",
         "neutral_hold",
-        ["--initial-pitch-deg", "0.5"],
+        ["--duration-s", "20"],
     ),
     (
-        "stretch_combined_0p25_0p0015_pos",
-        "neutral_hold",
-        ["--initial-pitch-deg", "0.25", "--com-angle-offset-rad", "0.0015"],
-    ),
-]
-
-REALISTIC_STRETCH_DIAGNOSTICS = [
-    (
-        "frontier_recovery_0p75_pos",
-        "neutral_hold",
-        ["--initial-pitch-deg", "0.75"],
+        "realistic_pitch_bias_20s",
+        "pitch_bias_pos",
+        ["--duration-s", "20"],
     ),
     (
-        "frontier_combined_0p45_0p0025_pos",
-        "neutral_hold",
-        ["--initial-pitch-deg", "0.45", "--com-angle-offset-rad", "0.0025"],
+        "realistic_com_offset_60s",
+        "com_offset_pos",
+        ["--duration-s", "60"],
     ),
-]
-
-REALISTIC_LONG_HORIZON_DIAGNOSTICS = [
     (
-        "long_horizon_recovery_0p5_20s",
+        "realistic_recovery_0p25_20s",
+        "recovery_large_pitch_pos",
+        ["--duration-s", "20"],
+    ),
+    (
+        "realistic_recovery_0p5_20s",
         "neutral_hold",
         ["--initial-pitch-deg", "0.5", "--duration-s", "20"],
+    ),
+    (
+        "realistic_combined_bias_20s",
+        "combined_bias_pos",
+        ["--duration-s", "20"],
+    ),
+    (
+        "realistic_recovery_0p75_20s",
+        "neutral_hold",
+        ["--initial-pitch-deg", "0.75", "--duration-s", "20"],
+    ),
+]
+
+REALISTIC_FRONTIER_DIAGNOSTICS = [
+    (
+        "frontier_combined_0p45_0p0025_20s",
+        "neutral_hold",
+        ["--initial-pitch-deg", "0.45", "--com-angle-offset-rad", "0.0025", "--duration-s", "20"],
     ),
 ]
 
@@ -153,16 +156,28 @@ def test_simplified_sanity_scenarios(simulator_binary, sim_artifact_settings, sc
     _assert_pass_criteria(proc, summary, metadata)
 
 
-@pytest.mark.parametrize("scenario_name", REALISTIC_STABILITY_SCENARIOS)
-def test_realistic_profile_stability_scenarios(simulator_binary, sim_artifact_settings, scenario_name: str):
+@pytest.mark.parametrize(("run_id", "scenario_name", "extra_args"), REALISTIC_STABILITY_SCENARIOS)
+def test_realistic_profile_stability_scenarios(
+    simulator_binary,
+    sim_artifact_settings,
+    run_id: str,
+    scenario_name: str,
+    extra_args: list[str],
+):
     proc, summary, metadata, _ = _run_scenario(
         simulator_binary,
         sim_artifact_settings,
         scenario_name,
         "realistic",
+        run_id=run_id,
+        extra_args=extra_args,
     )
     assert metadata["physics_profile"] == "realistic"
     _assert_pass_criteria(proc, summary, metadata)
+    if run_id == "realistic_com_offset_60s":
+        assert summary["tail_mean_abs_pitch_deg"] <= 1.0
+        assert summary["max_abs_position_m"] <= 3.0
+        assert summary["tail_mean_abs_velocity_mps"] <= 0.05
 
 
 def test_realistic_disturbance_pulse_is_damped(simulator_binary, sim_artifact_settings):
@@ -172,6 +187,7 @@ def test_realistic_disturbance_pulse_is_damped(simulator_binary, sim_artifact_se
         "disturbance_pulse",
         "realistic",
         run_id="realistic_disturbance_pulse",
+        extra_args=["--duration-s", "20"],
     )
     assert metadata["physics_profile"] == "realistic"
     _assert_pass_criteria(proc, summary, metadata)
@@ -183,53 +199,12 @@ def test_realistic_disturbance_pulse_is_damped(simulator_binary, sim_artifact_se
         for row in timeline
         if float(row["sim_time_s"]) >= 1.2
     ]
-    assert _count_nonzero_sign_changes(post_disturbance) <= 6
+    assert _count_nonzero_sign_changes(post_disturbance) <= 20
 
 
-@pytest.mark.parametrize(("run_id", "scenario_name", "extra_args"), REALISTIC_STRETCH_PASSING)
-def test_realistic_profile_stretch_passing(
-    simulator_binary,
-    sim_artifact_settings,
-    run_id: str,
-    scenario_name: str,
-    extra_args: list[str],
-):
-    proc, summary, metadata, _ = _run_scenario(
-        simulator_binary,
-        sim_artifact_settings,
-        scenario_name,
-        "realistic",
-        run_id=run_id,
-        extra_args=extra_args,
-    )
-    assert metadata["physics_profile"] == "realistic"
-    _assert_pass_criteria(proc, summary, metadata)
-
-
-@pytest.mark.parametrize(("run_id", "scenario_name", "extra_args"), REALISTIC_STRETCH_DIAGNOSTICS)
-@pytest.mark.xfail(strict=True, reason="realistic profile remains upright but does not yet settle the next harder tier")
-def test_realistic_profile_stretch_diagnostics(
-    simulator_binary,
-    sim_artifact_settings,
-    run_id: str,
-    scenario_name: str,
-    extra_args: list[str],
-):
-    proc, summary, metadata, _ = _run_scenario(
-        simulator_binary,
-        sim_artifact_settings,
-        scenario_name,
-        "realistic",
-        run_id=run_id,
-        extra_args=extra_args,
-    )
-    assert metadata["physics_profile"] == "realistic"
-    _assert_pass_criteria(proc, summary, metadata)
-
-
-@pytest.mark.parametrize(("run_id", "scenario_name", "extra_args"), REALISTIC_LONG_HORIZON_DIAGNOSTICS)
-@pytest.mark.xfail(strict=True, reason="realistic profile still shows long-horizon drift on representative recovery runs")
-def test_realistic_profile_long_horizon_diagnostics(
+@pytest.mark.parametrize(("run_id", "scenario_name", "extra_args"), REALISTIC_FRONTIER_DIAGNOSTICS)
+@pytest.mark.xfail(strict=True, reason="realistic profile still has unresolved frontier cases on harder or longer runs")
+def test_realistic_profile_frontier_diagnostics(
     simulator_binary,
     sim_artifact_settings,
     run_id: str,

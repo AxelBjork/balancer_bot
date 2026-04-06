@@ -62,7 +62,8 @@ void print_usage() {
 void write_timeline_csv(const std::filesystem::path& path, const SimulatorRunResult& result) {
   std::ofstream out(path);
   out << "sim_time_s,pitch_deg,pitch_rate_dps,pitch_sp_deg,rate_sp_dps,u_sps,left_sps,right_sps,"
-         "vel_error,vel_i_term,vel_p_term,out_norm,plant_pitch_deg,plant_pitch_rate_dps,"
+         "vel_error,vel_i_term,vel_p_term,out_norm,effective_pitch_sp_deg,pitch_trim_deg,trim_active,"
+         "plant_pitch_deg,plant_pitch_rate_dps,"
          "plant_position,plant_velocity,target_wheel_velocity,actual_wheel_velocity,"
          "velocity_error,f_cmd,f_app,x_ddot,theta_ddot,command_saturated,force_saturated\n";
   for (const auto& row : result.rows) {
@@ -78,6 +79,9 @@ void write_timeline_csv(const std::filesystem::path& path, const SimulatorRunRes
         << row.vel_i_term << ','
         << row.vel_p_term << ','
         << row.out_norm << ','
+        << row.effective_pitch_sp_deg << ','
+        << row.pitch_trim_deg << ','
+        << row.trim_active << ','
         << row.plant_pitch_deg << ','
         << row.plant_pitch_rate_dps << ','
         << row.plant_position << ','
