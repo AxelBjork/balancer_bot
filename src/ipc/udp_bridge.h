@@ -13,6 +13,24 @@
 
 namespace ipc {
 
+inline constexpr char kUdpBridgeDoc[] =
+    "Stateful transport bridge that connects the internal `MessageBus` to external UDP-based SIL "
+    "clients.\n\n"
+    "On ingress, the bridge binds a UDP socket on port `9000`, receives datagrams from the latest "
+    "test harness peer, extracts the leading `uint16_t` message identifier, and republishes the "
+    "remaining payload bytes through `publish_if_authorized`. That keeps external injection limited "
+    "to the message types the bridge explicitly advertises in `Publishes`, and the downstream bus "
+    "path retains ownership of payload-size checks before handlers see any data.\n\n"
+    "On egress, the bridge remembers the most recent sender address and uses it as the return path "
+    "for outbound telemetry and motor command traffic. Each authorized outbound message is encoded "
+    "as the reflected message ID followed immediately by the trivially-copyable payload bytes:\n\n"
+    "$$ \\text{datagram} = \\texttt{uint16\\_t MsgId} \\; || \\; \\texttt{Payload bytes} $$\n\n"
+    "This makes the UDP contract symmetric with the Python bindings generated from the same message "
+    "definitions. Operationally, `UdpBridge` is what turns the balancer into a SIL endpoint: it "
+    "lets pytest inject `PhysicsTick`, `JoystickCommand`, and `ImuData`, while streaming "
+    "`ImuData`, `MotorTargets`, and `SystemTelemetry` back out for observation and closed-loop "
+    "test orchestration.";
+
 struct PeerAddress {
   uint32_t ip;
   uint16_t port;
@@ -23,10 +41,12 @@ struct PeerAddress {
   explicit operator bool() const { return ip != 0 || port != 0; }
 };
 
-class DOC_DESC("Stateful bridge that relays IPC messages between the internal MessageBus and external UDP clients.\n\nIt remembers the IP address and port of the last connected test harness and bidirectionally routes all subscribed C++ events out through the UDP socket while safely injecting incoming UDP datagrams onto the internal MessageBus.") UdpBridge {
+class DOC_DESC(kUdpBridgeDoc) UdpBridge {
  public:
-  using Subscribes = MsgList<ipc::ImuData, ipc::MotorTargets, ipc::SystemTelemetry>;
-  using Publishes = MsgList<MsgId::PhysicsTick, ipc::JoystickCommand, ipc::ImuData>;
+  static constexpr const char* kDocDescription = kUdpBridgeDoc;
+
+  using Subscribes = MsgList<MsgId::ImuData, MsgId::MotorTargets, MsgId::SystemTelemetry>;
+  using Publishes = MsgList<MsgId::PhysicsTick, MsgId::JoystickCommand, MsgId::ImuData>;
 
   static constexpr uint16_t kDefaultPort = 9000;
 

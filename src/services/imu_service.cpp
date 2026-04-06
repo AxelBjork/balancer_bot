@@ -17,7 +17,7 @@ ImuService::ImuService(ipc::MessageBus& bus, bool enable_hardware_reader)
             payload.acc = acc;
             payload.gyr = gyr;
             payload.timestamp_us = std::chrono::duration_cast<std::chrono::microseconds>(ts.time_since_epoch()).count();
-            bus_.publish<ipc::ImuData>(payload);
+            bus_.publish<MsgId::ImuData>(payload);
         }
     });
 }

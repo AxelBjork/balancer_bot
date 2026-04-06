@@ -201,6 +201,13 @@ class DualWave {
 
 class MotorRunner {
  public:
+  struct FeedbackSample {
+    float left_applied_sps{0.0f};
+    float right_applied_sps{0.0f};
+    int64_t left_actual_steps{0};
+    int64_t right_actual_steps{0};
+  };
+
   // kFrameUs/kMinPulseUs come from DualWave's constexprs
   MotorRunner(Stepper& left, Stepper& right, double control_hz = 1000.0,
               double max_slew_sps_per_s = 250000.0)
@@ -259,13 +266,27 @@ class MotorRunner {
     return (L + R) / 2.0;
   }
 
-  // Stateful velocity feedback based on actual steps
-  // Call this periodically to get the average speed.
-  // For open-loop steppers, "Actual" speed is best approximated by the slew-limited command.
-  // Differentiating integer steps adds quantization noise (e.g. 400 SPS steps at 400Hz).
+  FeedbackSample getFeedbackSample() const {
+    std::lock_guard<std::mutex> lk(mu_);
+
+    const float left_positive_dir = L_.forwardFromSps(1.0) ? 1.0f : -1.0f;
+    const float right_positive_dir = R_.forwardFromSps(1.0) ? 1.0f : -1.0f;
+    const float left_dir = last_applied_fwdL_ ? 1.0f : -1.0f;
+    const float right_dir = last_applied_fwdR_ ? 1.0f : -1.0f;
+
+    FeedbackSample sample;
+    sample.left_applied_sps =
+        (last_applied_hzL_ == 0u) ? 0.0f : static_cast<float>(last_applied_hzL_) * left_dir * left_positive_dir;
+    sample.right_applied_sps =
+        (last_applied_hzR_ == 0u) ? 0.0f : static_cast<float>(last_applied_hzR_) * right_dir * right_positive_dir;
+    sample.left_actual_steps = actual_steps_left_.load(std::memory_order_relaxed);
+    sample.right_actual_steps = actual_steps_right_.load(std::memory_order_relaxed);
+    return sample;
+  }
+
   float getActualSpeedSps() {
-    std::lock_guard<std::mutex> lk(mu_);  // Lock consistent with applyOnce
-    return (float)(last_cmd_L_ + last_cmd_R_) / 2.0f;
+    const auto sample = getFeedbackSample();
+    return 0.5f * (sample.left_applied_sps + sample.right_applied_sps);
   }
 
  private:
@@ -390,7 +411,7 @@ class MotorRunner {
   Stepper& L_;
   Stepper& R_;
   DualWave wave_;
-  std::mutex mu_;
+  mutable std::mutex mu_;
 
   std::atomic<double> tgt_left_{0.0}, tgt_right_{0.0};
   double last_cmd_L_{0.0}, last_cmd_R_{0.0};
@@ -407,9 +428,4 @@ class MotorRunner {
   double accum_L_{0.0}, accum_R_{0.0};
   double accum_actual_L_{0.0}, accum_actual_R_{0.0};
 
-  // State for getActualSpeedSps
-  std::mutex vel_mu_;
-  std::chrono::steady_clock::time_point last_vel_time_;
-  int64_t last_vel_left_{0}, last_vel_right_{0};
-  float last_vel_val_{0.0f};
 };

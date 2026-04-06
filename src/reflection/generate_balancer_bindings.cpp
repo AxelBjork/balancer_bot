@@ -1,169 +1,291 @@
 // generate_balancer_bindings.cpp — C++26 reflection generator for balancer_bot payloads.
-//
-// This is compiled only by gcc-trunk with -freflection. It emits a Python
-// module with @dataclass types matching the wire layout of our IPC payloads.
 
-#include <array>
-#include <cstdint>
 #include <iostream>
-#include <meta>
 #include <set>
 #include <string>
-#include <string_view>
 #include <type_traits>
+#include <utility>
 
-#include "msg_base.h"
-#include "balancer_msgs.h"
+#include "balancer_message_registry.h"
 
-using namespace std::string_view_literals;
+using namespace balancer_reflection;
 
-template <typename T>
-consteval std::size_t get_fields_size() {
-  auto ctx = std::meta::access_context::current();
-  return std::meta::nonstatic_data_members_of(^^T, ctx).size();
+template <typename E>
+void generate_enum() {
+  std::cout << "class " << std::meta::identifier_of(^^E) << "(IntEnum):\n";
+  constexpr auto desc = get_desc<^^E>();
+  if (desc.text[0] != '\0') {
+    std::cout << "    \"\"\"" << desc.text << "\"\"\"\n";
+  }
+
+  constexpr std::size_t N = get_enum_size<E>();
+  [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+    (..., [] {
+      constexpr auto e = EnumArrHolder<E, N>::arr[Is];
+      std::cout << "    " << std::meta::identifier_of(e) << " = " << static_cast<uint32_t>([:e:])
+                << "\n";
+    }());
+  }(std::make_index_sequence<N>{});
+
+  std::cout << "\n";
 }
 
-template <typename T, std::size_t N>
-consteval std::array<std::meta::info, N> get_fields_array() {
-  auto ctx = std::meta::access_context::current();
-  auto vec = std::meta::nonstatic_data_members_of(^^T, ctx);
-  std::array<std::meta::info, N> arr{};
-  for (std::size_t i = 0; i < N; ++i) {
-    arr[i] = vec[i];
-  }
-  return arr;
-}
-
-template <typename T, std::size_t N>
-struct FieldHolder {
-  static constexpr auto arr = get_fields_array<T, N>();
-};
-
-template <std::meta::info Type>
-consteval std::string_view fmt_char() {
-  using T = typename[:Type:];
-  if constexpr (std::is_same_v<T, bool>) return "?"sv;
-  if constexpr (std::is_integral_v<T>) {
-    if constexpr (sizeof(T) == 1) return std::is_signed_v<T> ? "b"sv : "B"sv;
-    if constexpr (sizeof(T) == 2) return std::is_signed_v<T> ? "h"sv : "H"sv;
-    if constexpr (sizeof(T) == 4) return std::is_signed_v<T> ? "i"sv : "I"sv;
-    if constexpr (sizeof(T) == 8) return std::is_signed_v<T> ? "q"sv : "Q"sv;
-  }
-  if constexpr (std::is_floating_point_v<T>) {
-    if constexpr (sizeof(T) == 4) return "f"sv;
-    if constexpr (sizeof(T) == 8) return "d"sv;
-  }
-  if constexpr (std::is_enum_v<T>) {
-    if constexpr (sizeof(T) == 1) return "B"sv;
-    if constexpr (sizeof(T) == 2) return "H"sv;
-  }
-  return "?"sv;
-}
-
-template <typename>
-struct is_std_array : std::false_type {};
-
-template <typename T, std::size_t N>
-struct is_std_array<std::array<T, N>> : std::true_type {};
-
-template <std::meta::info Type>
-consteval std::string_view py_hint() {
-  using T = typename[:Type:];
-  if constexpr (std::is_same_v<T, bool>) return "bool"sv;
-  if constexpr (std::is_integral_v<T>) return "int"sv;
-  if constexpr (std::is_floating_point_v<T>) return "float"sv;
-  return "Any"sv;
+void generate_balancer_msg_enum() {
+  std::cout << "class MsgId(IntEnum):\n";
+  std::cout << "    \"\"\"Balancer UDP message identifiers.\"\"\"\n";
+  for_each_udp_message([&]<::MsgId Id>() {
+    std::cout << "    " << MessageTraits<Id>::name << " = " << static_cast<uint16_t>(Id) << "\n";
+  });
+  std::cout << "\n";
+  std::cout << "BalancerMsgId = MsgId\n\n";
 }
 
 template <typename T>
-void emit_struct(const char* py_name) {
+void generate_struct(std::set<std::string>& visited) {
+  std::string class_name = get_python_type_name<T>();
+  if (visited.count(class_name)) {
+    return;
+  }
+  visited.insert(class_name);
+
   constexpr std::size_t N = get_fields_size<T>();
-
-  std::cout << "@dataclass\nclass " << py_name << ":\n";
-  std::cout << "    WIRE_SIZE = " << sizeof(T) << "\n";
-
-  std::string pack_fmt = "<";
-  std::string pack_args;
-  std::string unpack_body = "        offset = 0\n";
-  std::string field_names;
 
   if constexpr (N > 0) {
     [&]<std::size_t... Is>(std::index_sequence<Is...>) {
       (..., [&] {
-        constexpr auto field = FieldHolder<T, N>::arr[Is];
+        constexpr auto field = StructArrHolder<T, N>::arr[Is];
         constexpr auto type = std::meta::type_of(field);
         using FieldT = typename[:type:];
+        using BaseT = std::remove_all_extents_t<FieldT>;
 
-        std::string name{std::meta::identifier_of(field)};
-
-        if constexpr (is_std_array<FieldT>::value) {
-          using ElemT = typename FieldT::value_type;
-          constexpr std::size_t Len = std::tuple_size_v<FieldT>;
-          std::cout << "    " << name << ": list[float]\n";
-
-          const auto fc = fmt_char<^^ElemT>();
-          pack_fmt += std::to_string(Len) + std::string(fc);
-
-          for (std::size_t k = 0; k < Len; ++k) {
-            if (!pack_args.empty()) pack_args += ", ";
-            pack_args += "self." + name + "[" + std::to_string(k) + "]";
+        if constexpr (is_array_like_v<FieldT>) {
+          using ElemT = typename array_traits<FieldT>::element_type;
+          if constexpr (std::is_class_v<ElemT> && !is_array_like_v<ElemT>) {
+            generate_struct<ElemT>(visited);
           }
-
-          unpack_body += "        " + name + " = list(struct.unpack_from(\"<" +
-                         std::to_string(Len) + std::string(fc) + "\", data, offset))\n";
-          unpack_body += "        offset += " + std::to_string(sizeof(FieldT)) + "\n";
-        } else {
-          std::cout << "    " << name << ": " << py_hint<type>() << "\n";
-
-          const auto fc = fmt_char<type>();
-          pack_fmt += std::string(fc);
-          if (!pack_args.empty()) pack_args += ", ";
-          pack_args += "self." + name;
-
-          unpack_body += "        " + name + ", = struct.unpack_from(\"<" + std::string(fc) +
-                         "\", data, offset)\n";
-          unpack_body += "        offset += " + std::to_string(sizeof(FieldT)) + "\n";
+        } else if constexpr (std::is_class_v<BaseT>) {
+          generate_struct<BaseT>(visited);
         }
-
-        if (!field_names.empty()) field_names += ", ";
-        field_names += name + "=" + name;
       }());
     }(std::make_index_sequence<N>{});
   }
 
-  std::cout << "\n    def pack(self) -> bytes:\n";
-  std::cout << "        return struct.pack(\"" << pack_fmt << "\", " << pack_args << ")\n";
+  std::cout << "@dataclass\nclass " << class_name << ":\n";
+  constexpr auto desc = get_desc<^^T>();
+  if (desc.text[0] != '\0') {
+    std::cout << "    \"\"\"" << desc.text << "\"\"\"\n";
+  }
+  std::cout << "    WIRE_SIZE = " << sizeof(T) << "\n";
 
-  std::cout << "\n    @classmethod\n";
-  std::cout << "    def unpack(cls, data: bytes) -> '" << py_name << "':\n";
-  std::cout << unpack_body;
-  std::cout << "        return cls(" << field_names << ")\n\n";
+  std::string pack_fmt = "<";
+  std::string pack_args;
+  std::string unpack_args;
+  std::string pack_instructions = "        data = bytearray()\n";
+  std::string unpack_instructions = "        offset = 0\n";
+  std::size_t current_offset = 0;
+
+  auto flush_format = [&]() {
+    if (pack_fmt == "<") {
+      return;
+    }
+
+    pack_instructions +=
+        "        data.extend(struct.pack(\"" + pack_fmt + "\", " + pack_args + "))\n";
+
+    const bool is_single_value = (unpack_args.find(',') == std::string::npos);
+    if (is_single_value) {
+      unpack_instructions += "        " + unpack_args + " = struct.unpack_from(\"" + pack_fmt +
+                             "\", data, offset)[0]\n";
+    } else {
+      unpack_instructions += "        " + unpack_args + " = struct.unpack_from(\"" + pack_fmt +
+                             "\", data, offset)\n";
+    }
+    unpack_instructions += "        offset += struct.calcsize(\"" + pack_fmt + "\")\n";
+
+    pack_fmt = "<";
+    pack_args.clear();
+    unpack_args.clear();
+  };
+
+  if constexpr (N > 0) {
+    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+      (..., [&] {
+        constexpr auto field = StructArrHolder<T, N>::arr[Is];
+        constexpr auto type = std::meta::type_of(field);
+        using FieldT = typename[:type:];
+
+        std::string field_name{std::meta::identifier_of(field)};
+        std::cout << "    " << field_name << ": " << get_python_annotation<FieldT>() << "\n";
+
+        constexpr auto field_offset = std::meta::offset_of(field).bytes;
+        if (field_offset > current_offset) {
+          const std::size_t pad = field_offset - current_offset;
+          pack_fmt += std::to_string(pad) + "x";
+          current_offset += pad;
+        }
+
+        if constexpr (is_array_like_v<FieldT>) {
+          using ElemT = typename array_traits<FieldT>::element_type;
+          constexpr std::size_t elem_count = array_traits<FieldT>::size;
+
+          if constexpr (is_byte_like_v<ElemT>) {
+            pack_fmt += std::to_string(elem_count) + "s";
+            if (!pack_args.empty()) {
+              pack_args += ", ";
+            }
+            pack_args += "self." + field_name;
+
+            if (!unpack_args.empty()) {
+              unpack_args += ", ";
+            }
+            unpack_args += field_name;
+            current_offset += elem_count;
+          } else if constexpr (std::is_class_v<ElemT>) {
+            flush_format();
+            const std::string sub_type = get_python_type_name<ElemT>();
+            pack_instructions += "        for item in self." + field_name + ":\n";
+            pack_instructions += "            if not hasattr(item, 'pack_wire'):\n";
+            pack_instructions += "                if isinstance(item, tuple):\n";
+            pack_instructions += "                    item = " + sub_type + "(*item)\n";
+            pack_instructions += "                elif isinstance(item, dict):\n";
+            pack_instructions += "                    item = " + sub_type + "(**item)\n";
+            pack_instructions += "                else:\n";
+            pack_instructions += "                    item = " + sub_type + "(item)\n";
+            pack_instructions += "            data.extend(item.pack_wire())\n";
+
+            unpack_instructions += "        " + field_name + " = []\n";
+            unpack_instructions += "        for _ in range(" + std::to_string(elem_count) + "):\n";
+            unpack_instructions += "            sub_size = " + sub_type + ".WIRE_SIZE\n";
+            unpack_instructions += "            item = " + sub_type +
+                                   ".unpack_wire(data[offset:offset+sub_size])\n";
+            unpack_instructions += "            " + field_name + ".append(item)\n";
+            unpack_instructions += "            offset += sub_size\n";
+            current_offset += elem_count * sizeof(ElemT);
+          } else {
+            flush_format();
+            const std::string fmt =
+                "<" + std::to_string(elem_count) + std::string(get_struct_format_char<^^ElemT>());
+            pack_instructions += "        data.extend(struct.pack(\"" + fmt + "\", *self." +
+                                 field_name + "))\n";
+            unpack_instructions += "        " + field_name + " = list(struct.unpack_from(\"" + fmt +
+                                   "\", data, offset))\n";
+            unpack_instructions += "        offset += struct.calcsize(\"" + fmt + "\")\n";
+            current_offset += elem_count * sizeof(ElemT);
+          }
+        } else if constexpr (std::is_class_v<FieldT>) {
+          flush_format();
+          const std::string sub_type = get_python_type_name<FieldT>();
+          pack_instructions += "        item = self." + field_name + "\n";
+          pack_instructions += "        if not hasattr(item, 'pack_wire'):\n";
+          pack_instructions += "            if isinstance(item, tuple):\n";
+          pack_instructions += "                item = " + sub_type + "(*item)\n";
+          pack_instructions += "            elif isinstance(item, dict):\n";
+          pack_instructions += "                item = " + sub_type + "(**item)\n";
+          pack_instructions += "            else:\n";
+          pack_instructions += "                item = " + sub_type + "(item)\n";
+          pack_instructions += "        data.extend(item.pack_wire())\n";
+
+          unpack_instructions += "        sub_size = " + sub_type + ".WIRE_SIZE\n";
+          unpack_instructions += "        " + field_name + " = " + sub_type +
+                                 ".unpack_wire(data[offset:offset+sub_size])\n";
+          unpack_instructions += "        offset += sub_size\n";
+          current_offset += sizeof(FieldT);
+        } else {
+          pack_fmt += get_struct_format_char<type>();
+          if (!pack_args.empty()) {
+            pack_args += ", ";
+          }
+          pack_args += "self." + field_name;
+
+          if (!unpack_args.empty()) {
+            unpack_args += ", ";
+          }
+          unpack_args += field_name;
+          current_offset += sizeof(FieldT);
+        }
+      }());
+    }(std::make_index_sequence<N>{});
+
+    if (sizeof(T) > current_offset) {
+      const std::size_t pad = sizeof(T) - current_offset;
+      pack_fmt += std::to_string(pad) + "x";
+      current_offset += pad;
+    }
+
+    flush_format();
+  } else {
+    std::cout << "    pass\n";
+  }
+
+  std::cout << "\n";
+  std::cout << "    def pack_wire(self) -> bytes:\n";
+  if constexpr (N > 0) {
+    std::cout << pack_instructions;
+    std::cout << "        return bytes(data)\n\n";
+  } else {
+    std::cout << "        return b\"\"\n\n";
+  }
+
+  std::cout << "    def pack(self) -> bytes:\n";
+  std::cout << "        return self.pack_wire()\n\n";
+
+  std::cout << "    @classmethod\n";
+  std::cout << "    def unpack_wire(cls, data: bytes) -> \"" << class_name << "\":\n";
+  if constexpr (N > 0) {
+    std::cout << unpack_instructions;
+    std::cout << "        return cls(";
+
+    bool first = true;
+    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+      (..., [&] {
+        constexpr auto field = StructArrHolder<T, N>::arr[Is];
+        std::string field_name{std::meta::identifier_of(field)};
+        if (!first) {
+          std::cout << ", ";
+        }
+        std::cout << field_name << "=" << field_name;
+        first = false;
+      }());
+    }(std::make_index_sequence<N>{});
+
+    std::cout << ")\n\n";
+  } else {
+    std::cout << "        return cls()\n\n";
+  }
+
+  std::cout << "    @classmethod\n";
+  std::cout << "    def unpack(cls, data: bytes) -> \"" << class_name << "\":\n";
+  std::cout << "        return cls.unpack_wire(data)\n\n";
 }
 
 int main() {
-  std::cout << "\"\"\"Auto-generated balancer_bot IPC bindings (C++26 reflection).\"\"\"\n\n";
+  std::cout << "\"\"\"Auto-generated IPC bindings using C++26 static reflection.\"\"\"\n\n";
   std::cout << "import struct\n";
   std::cout << "from dataclasses import dataclass\n";
-  std::cout << "from enum import IntEnum\n\n";
+  std::cout << "from enum import IntEnum\n";
+  std::cout << "from typing import Any\n\n";
 
-  std::cout << "class BalancerMsgId(IntEnum):\n";
-  std::cout << "    PhysicsTick = " << static_cast<uint16_t>(MsgId::PhysicsTick) << "\n";
-  std::cout << "    ImuData = " << static_cast<uint16_t>(ipc::ImuData) << "\n";
-  std::cout << "    JoystickCommand = " << static_cast<uint16_t>(ipc::JoystickCommand) << "\n";
-  std::cout << "    MotorTargets = " << static_cast<uint16_t>(ipc::MotorTargets) << "\n";
-  std::cout << "    SystemTelemetry = " << static_cast<uint16_t>(ipc::SystemTelemetry) << "\n\n";
+  generate_balancer_msg_enum();
 
-  emit_struct<PhysicsTickPayload>("PhysicsTickPayload");
-  emit_struct<ipc::ImuSamplePayload>("ImuSamplePayload");
-  emit_struct<ipc::JoystickCommandPayload>("JoystickCommandPayload");
-  emit_struct<ipc::MotorTargetsPayload>("MotorTargetsPayload");
-  emit_struct<ipc::SystemTelemetryPayload>("SystemTelemetryPayload");
+  std::set<std::string> visited;
+  for_each_udp_message([&]<::MsgId Id>() {
+    generate_struct<typename MessageTraits<Id>::Payload>(visited);
+  });
 
   std::cout << "MESSAGE_BY_ID = {\n";
-  std::cout << "    BalancerMsgId.PhysicsTick: PhysicsTickPayload,\n";
-  std::cout << "    BalancerMsgId.ImuData: ImuSamplePayload,\n";
-  std::cout << "    BalancerMsgId.JoystickCommand: JoystickCommandPayload,\n";
-  std::cout << "    BalancerMsgId.MotorTargets: MotorTargetsPayload,\n";
-  std::cout << "    BalancerMsgId.SystemTelemetry: SystemTelemetryPayload,\n";
-  std::cout << "}\n";
+  for_each_udp_message([&]<::MsgId Id>() {
+    std::cout << "    MsgId." << MessageTraits<Id>::name << ": "
+              << get_python_type_name<typename MessageTraits<Id>::Payload>() << ",\n";
+  });
+  std::cout << "}\n\n";
+
+  std::cout << "PAYLOAD_SIZE_BY_ID = {\n";
+  for_each_udp_message([&]<::MsgId Id>() {
+    std::cout << "    MsgId." << MessageTraits<Id>::name << ": "
+              << sizeof(typename MessageTraits<Id>::Payload) << ",\n";
+  });
+  std::cout << "}\n\n";
+
+  std::cout << "PROTOCOL_HASH = \"" << compute_protocol_hash() << "\"\n";
+  return 0;
 }

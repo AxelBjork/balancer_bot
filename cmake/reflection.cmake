@@ -18,6 +18,8 @@ endif()
 # add_executable, because CMake does not support mixing compilers in one project.
 
 set(REFLECTION_SRC_DIR ${CMAKE_SOURCE_DIR}/src/reflection)
+set(REFLECTION_COMMON_HDR ${REFLECTION_SRC_DIR}/reflection_common.h)
+set(REFLECTION_REGISTRY_HDR ${REFLECTION_SRC_DIR}/balancer_message_registry.h)
 
 set(GEN_SRC ${REFLECTION_SRC_DIR}/generate_balancer_bindings.cpp)
 set(GEN_BIN ${CMAKE_BINARY_DIR}/generate_balancer_bindings)
@@ -34,14 +36,19 @@ add_custom_command(
     COMMAND ${REFLECT_CXX}
         -std=c++26 -freflection
         -I${CMAKE_SOURCE_DIR}/messages
+        -I${CMAKE_SOURCE_DIR}/src
+        -I${CMAKE_SOURCE_DIR}/src/ipc
         -L/usr/local/gcc-trunk/lib64
         -Wl,-rpath,/usr/local/gcc-trunk/lib64
         -o ${GEN_BIN}
         ${GEN_SRC}
     DEPENDS ${GEN_SRC}
+            ${REFLECTION_COMMON_HDR}
+            ${REFLECTION_REGISTRY_HDR}
             ${CMAKE_SOURCE_DIR}/messages/msg_base.h
             ${CMAKE_SOURCE_DIR}/messages/core_msgs.h
             ${CMAKE_SOURCE_DIR}/messages/balancer_msgs.h
+            ${CMAKE_SOURCE_DIR}/src/ipc/udp_bridge.h
     COMMENT "Compiling balancer bindings generator with C++26 reflection..."
     VERBATIM
 )
@@ -71,6 +78,8 @@ add_custom_command(
         -o ${DOC_BIN}
         ${DOC_SRC}
     DEPENDS ${DOC_SRC}
+            ${REFLECTION_COMMON_HDR}
+            ${REFLECTION_REGISTRY_HDR}
             ${CMAKE_SOURCE_DIR}/messages/msg_base.h
             ${CMAKE_SOURCE_DIR}/messages/core_msgs.h
             ${CMAKE_SOURCE_DIR}/messages/balancer_msgs.h

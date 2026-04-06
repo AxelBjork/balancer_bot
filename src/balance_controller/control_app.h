@@ -61,17 +61,19 @@ struct BusContainer {
 void app_dispatcher(void* ctx, MsgId id, const void* payload) {
   auto* s = static_cast<AppServices*>(ctx);
   static int telemetry_count = 0;
-  if (id == ipc::ImuData) {
-    s->cs.on_message<ipc::ImuData>(*static_cast<const ipc::ImuSamplePayload*>(payload));
+  if (id == MsgId::ImuData) {
+    s->cs.on_message<MsgId::ImuData>(*static_cast<const ipc::ImuSamplePayload*>(payload));
   } else if (id == MsgId::PhysicsTick) {
     s->cs.on_message<MsgId::PhysicsTick>(*static_cast<const PhysicsTickPayload*>(payload));
-  } else if (id == ipc::JoystickCommand) {
-    s->cs.on_message<ipc::JoystickCommand>(*static_cast<const ipc::JoystickCommandPayload*>(payload));
-  } else if (id == ipc::MotorTargets) {
+  } else if (id == MsgId::JoystickCommand) {
+    s->cs.on_message<MsgId::JoystickCommand>(*static_cast<const ipc::JoystickCommandPayload*>(payload));
+  } else if (id == MsgId::MotorFeedback) {
+    s->cs.on_message<MsgId::MotorFeedback>(*static_cast<const ipc::MotorFeedbackPayload*>(payload));
+  } else if (id == MsgId::MotorTargets) {
     const auto& p = *static_cast<const ipc::MotorTargetsPayload*>(payload);
-    s->ms.on_message<ipc::MotorTargets>(p);
-    s->udp.on_message<ipc::MotorTargets>(p); // relay to Python
-  } else if (id == ipc::SystemTelemetry) {
+    s->ms.on_message<MsgId::MotorTargets>(p);
+    s->udp.on_message<MsgId::MotorTargets>(p); // relay to Python
+  } else if (id == MsgId::SystemTelemetry) {
     const auto& p = *static_cast<const ipc::SystemTelemetryPayload*>(payload);
     if constexpr (Config::kPrintEvery != -1) {
       if ((++telemetry_count % Config::kPrintEvery) == 0) {
@@ -83,7 +85,7 @@ void app_dispatcher(void* ctx, MsgId id, const void* payload) {
             p.integ_pitch, p.pitch_sp_deg, p.vel_error, p.vel_i_term, p.vel_p_term);
       }
     }
-    s->udp.on_message<ipc::SystemTelemetry>(p); // relay to Python
+    s->udp.on_message<MsgId::SystemTelemetry>(p); // relay to Python
   }
 }
 
@@ -182,7 +184,7 @@ class ControlApp {
       ipc::JoystickCommandPayload j;
       j.forward = ly;
       j.turn = ry;
-      app_bus.bus.publish<ipc::JoystickCommand>(j);
+      app_bus.bus.publish<MsgId::JoystickCommand>(j);
 
       std::this_thread::sleep_for(tick);
     }

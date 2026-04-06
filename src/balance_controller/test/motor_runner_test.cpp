@@ -120,3 +120,19 @@ TEST_F(MotorRunnerTest, VelocityEstimation) {
   v = runner.getActualSpeedSps();
   EXPECT_NEAR(v, 0.0f, 50.0f) << "Average velocity should be 0 for pure spin";
 }
+
+TEST_F(MotorRunnerTest, FeedbackSnapshotReflectsAppliedStateNotRawTarget) {
+  Stepper left(1, Stepper::Pins{5, 6, 13});
+  Stepper right(1, Stepper::Pins{7, 8, 14});
+  MotorRunner runner(left, right, 400.0, 50000.0);
+
+  RunFor(runner, 4000.0, 4000.0, std::chrono::milliseconds(50));
+
+  const auto feedback = runner.getFeedbackSample();
+  EXPECT_LT(feedback.left_applied_sps, 4000.0f);
+  EXPECT_LT(feedback.right_applied_sps, 4000.0f);
+  EXPECT_GT(feedback.left_applied_sps, 0.0f);
+  EXPECT_GT(feedback.right_applied_sps, 0.0f);
+  EXPECT_GT(feedback.left_actual_steps, 0);
+  EXPECT_GT(feedback.right_actual_steps, 0);
+}

@@ -18,6 +18,7 @@ class XboxController {
   float rightX() const;
   float leftY() const;
   float rightY() const;
+  bool isAvailable() const;
 
  private:
   struct Impl;

@@ -11,12 +11,21 @@ ControlService::ControlService(ipc::MessageBus& bus)
         ipc::MotorTargetsPayload p{};
         p.left_sps = left;
         p.right_sps = right;
-        bus_.publish<ipc::MotorTargets>(p);
+        bus_.publish<MsgId::MotorTargets>(p);
     });
     
-    // Open loop velocity feedback approximation
-    core_.setVelocityFeedback([this]() { 
-        return (last_left_sps_ + last_right_sps_) / 2.0f;
+    core_.setVelocityFeedback([this]() {
+        if (have_motor_feedback_) {
+            return last_applied_avg_sps_;
+        }
+        return 0.5f * (last_left_sps_ + last_right_sps_);
+    });
+
+    core_.setPositionFeedback([this]() {
+        if (have_motor_feedback_) {
+            return last_position_m_;
+        }
+        return 0.0f;
     });
     
     // Telemetry publishing
@@ -37,7 +46,7 @@ ControlService::ControlService(ipc::MessageBus& bus)
         p.effective_pitch_sp_deg = static_cast<float>(t.effective_pitch_sp_deg);
         p.pitch_trim_deg = static_cast<float>(t.pitch_trim_deg);
         p.trim_active = static_cast<float>(t.trim_active);
-        bus_.publish<ipc::SystemTelemetry>(p);
+        bus_.publish<MsgId::SystemTelemetry>(p);
     });
 }
 

@@ -10,6 +10,7 @@
 
 struct XboxController::Impl {
   SDL_Joystick* joystick{nullptr};
+  bool available{false};
   int axis_leftX{0};
   int axis_leftY{1};
   int axis_rightX{3};
@@ -42,6 +43,7 @@ XboxController::XboxController() : impl_(std::make_unique<Impl>()) {
   if (!impl_->joystick) {
     throw std::runtime_error("Failed to open joystick 0");
   }
+  impl_->available = true;
 }
 
 XboxController::~XboxController() {
@@ -62,6 +64,9 @@ XboxController& XboxController::operator=(XboxController&& other) noexcept {
 }
 
 void XboxController::update() {
+  if (!impl_ || !impl_->available) {
+    return;
+  }
   SDL_JoystickUpdate();
 }
 
@@ -75,21 +80,37 @@ void XboxController::setAxisMap(int leftY_axis, int rightY_axis) {
 }
 
 float XboxController::leftX() const {
+  if (!impl_ || !impl_->available) {
+    return 0.0f;
+  }
   Sint16 raw = SDL_JoystickGetAxis(impl_->joystick, impl_->axis_leftX);
   return impl_->apply_deadzone(Impl::normalize(raw));
 }
 
 float XboxController::rightX() const {
+  if (!impl_ || !impl_->available) {
+    return 0.0f;
+  }
   Sint16 raw = SDL_JoystickGetAxis(impl_->joystick, impl_->axis_rightX);
   return impl_->apply_deadzone(Impl::normalize(raw));
 }
 
 float XboxController::leftY() const {
+  if (!impl_ || !impl_->available) {
+    return 0.0f;
+  }
   Sint16 raw = SDL_JoystickGetAxis(impl_->joystick, impl_->axis_leftY);
   return impl_->apply_deadzone(Impl::normalize(raw));
 }
 
 float XboxController::rightY() const {
+  if (!impl_ || !impl_->available) {
+    return 0.0f;
+  }
   Sint16 raw = SDL_JoystickGetAxis(impl_->joystick, impl_->axis_rightY);
   return impl_->apply_deadzone(Impl::normalize(raw));
+}
+
+bool XboxController::isAvailable() const {
+  return impl_ && impl_->available;
 }

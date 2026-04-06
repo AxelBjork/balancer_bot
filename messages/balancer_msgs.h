@@ -9,10 +9,11 @@
 namespace ipc {
 
 // Extend the original enum by casting
-constexpr MsgId ImuData = static_cast<MsgId>(3000);
-constexpr MsgId JoystickCommand = static_cast<MsgId>(3001);
-constexpr MsgId MotorTargets = static_cast<MsgId>(3002);
-constexpr MsgId SystemTelemetry = static_cast<MsgId>(3003);
+constexpr MsgId ImuData = MsgId::ImuData;
+constexpr MsgId JoystickCommand = MsgId::JoystickCommand;
+constexpr MsgId MotorTargets = MsgId::MotorTargets;
+constexpr MsgId SystemTelemetry = MsgId::SystemTelemetry;
+constexpr MsgId MotorFeedback = MsgId::MotorFeedback;
 
 struct DOC_DESC("Fused IMU sample published by the IMU service and accepted by the SIL harness.") ImuSamplePayload {
     double pitch_rad;
@@ -49,29 +50,42 @@ struct DOC_DESC("Detailed controller telemetry streamed out over UDP and used fo
     float trim_active;
 };
 
+struct DOC_DESC("Internal motor feedback sample published by the motor service. It reflects the currently applied wheel rates after slew limiting plus the integrated actual step counts used for closed-loop hardware feedback.") MotorFeedbackPayload {
+    float left_applied_sps;
+    float right_applied_sps;
+    int64_t left_actual_steps;
+    int64_t right_actual_steps;
+};
+
 } // namespace ipc
 
 // MessageTraits is in the global namespace in msg_base.h
 template <>
-struct MessageTraits<ipc::ImuData> {
+struct MessageTraits<MsgId::ImuData> {
     using Payload = ipc::ImuSamplePayload;
     static constexpr std::string_view name = "ImuData";
 };
 
 template <>
-struct MessageTraits<ipc::JoystickCommand> {
+struct MessageTraits<MsgId::JoystickCommand> {
     using Payload = ipc::JoystickCommandPayload;
     static constexpr std::string_view name = "JoystickCommand";
 };
 
 template <>
-struct MessageTraits<ipc::MotorTargets> {
+struct MessageTraits<MsgId::MotorTargets> {
     using Payload = ipc::MotorTargetsPayload;
     static constexpr std::string_view name = "MotorTargets";
 };
 
 template <>
-struct MessageTraits<ipc::SystemTelemetry> {
+struct MessageTraits<MsgId::SystemTelemetry> {
     using Payload = ipc::SystemTelemetryPayload;
     static constexpr std::string_view name = "SystemTelemetry";
+};
+
+template <>
+struct MessageTraits<MsgId::MotorFeedback> {
+    using Payload = ipc::MotorFeedbackPayload;
+    static constexpr std::string_view name = "MotorFeedback";
 };

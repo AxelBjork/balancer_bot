@@ -34,20 +34,22 @@ void sil_dispatcher(void* ctx, MsgId id, const void* payload) {
     auto* s = static_cast<AppServices*>(ctx);
     if (!s) return;
 
-    if (id == ipc::ImuData) {
-        s->cs.on_message<ipc::ImuData>(*static_cast<const ipc::ImuSamplePayload*>(payload));
-        s->udp.on_message<ipc::ImuData>(*static_cast<const ipc::ImuSamplePayload*>(payload));
+    if (id == MsgId::ImuData) {
+        s->cs.on_message<MsgId::ImuData>(*static_cast<const ipc::ImuSamplePayload*>(payload));
+        s->udp.on_message<MsgId::ImuData>(*static_cast<const ipc::ImuSamplePayload*>(payload));
     } else if (id == MsgId::PhysicsTick) {
         s->cs.on_message<MsgId::PhysicsTick>(*static_cast<const PhysicsTickPayload*>(payload));
-    } else if (id == ipc::JoystickCommand) {
-        s->cs.on_message<ipc::JoystickCommand>(*static_cast<const ipc::JoystickCommandPayload*>(payload));
-    } else if (id == ipc::MotorTargets) {
+    } else if (id == MsgId::JoystickCommand) {
+        s->cs.on_message<MsgId::JoystickCommand>(*static_cast<const ipc::JoystickCommandPayload*>(payload));
+    } else if (id == MsgId::MotorFeedback) {
+        s->cs.on_message<MsgId::MotorFeedback>(*static_cast<const ipc::MotorFeedbackPayload*>(payload));
+    } else if (id == MsgId::MotorTargets) {
         const auto& p = *static_cast<const ipc::MotorTargetsPayload*>(payload);
-        s->ms.on_message<ipc::MotorTargets>(p);
-        s->udp.on_message<ipc::MotorTargets>(p);
-    } else if (id == ipc::SystemTelemetry) {
+        s->ms.on_message<MsgId::MotorTargets>(p);
+        s->udp.on_message<MsgId::MotorTargets>(p);
+    } else if (id == MsgId::SystemTelemetry) {
         const auto& p = *static_cast<const ipc::SystemTelemetryPayload*>(payload);
-        s->udp.on_message<ipc::SystemTelemetry>(p);
+        s->udp.on_message<MsgId::SystemTelemetry>(p);
     }
 }
 
@@ -58,8 +60,8 @@ struct BusContainer {
     BusContainer() : bus(&services, sil_dispatcher), services(bus) {}
 };
 
-std::atomic<bool> g_stop{false};
-void signal_handler(int) { g_stop = true; }
+std::atomic<bool> sil_g_stop{false};
+void signal_handler(int) { sil_g_stop = true; }
 
 int main() {
     std::signal(SIGINT, signal_handler);
@@ -85,7 +87,7 @@ int main() {
 
     std::cout << "SIL App running. Press Ctrl+C to stop." << std::endl;
 
-    while (!g_stop) {
+    while (!sil_g_stop) {
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
 
