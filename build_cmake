@@ -10,11 +10,11 @@ if [ "$TEST" = "ON" ]; then
     -DCMAKE_BUILD_TYPE=Release
   )
 else 
-  BUILD_DIR=build-pi-arm
+  BUILD_DIR=build-pi
   CMAKE_ARGS=(
-    -DCMAKE_TOOLCHAIN_FILE=toolchain-rpi4.cmake
     -DBUILD_TESTS=OFF
     -DCMAKE_BUILD_TYPE=Release
+    -DCMAKE_TOOLCHAIN_FILE="$(realpath cmake/toolchain-rpi4.cmake)"
   )
 fi
 
