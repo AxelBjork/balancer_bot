@@ -3,7 +3,7 @@
 #include <cstring>
 #include <type_traits>
 
-#include "msg_base.h"
+#include "messages/msg_base.h"
 
 namespace ipc {
 

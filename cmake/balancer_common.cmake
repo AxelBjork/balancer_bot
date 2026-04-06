@@ -4,14 +4,15 @@ function(add_ipc_hub_target)
     ${CMAKE_SOURCE_DIR}/src/ipc/udp_bridge.cpp
   )
   target_include_directories(ipc_hub PUBLIC
+    ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/ipc
-    ${CMAKE_SOURCE_DIR}/messages
+    ${CMAKE_SOURCE_DIR}/src/messages
   )
   enable_project_warnings(ipc_hub)
 endfunction()
 
 function(add_px4_ratecontrol_target)
-  set(PX4_DIR ${CMAKE_SOURCE_DIR}/px4_stub)
+  set(PX4_DIR ${CMAKE_SOURCE_DIR}/src/px4_stub)
 
   add_library(px4_ratecontrol STATIC
     ${PX4_DIR}/src/lib/rate_control/rate_control.cpp
@@ -80,8 +81,8 @@ function(add_balancer_common_target)
       ${CMAKE_SOURCE_DIR}/PX4-Autopilot/src/lib/matrix
       ${CMAKE_SOURCE_DIR}/PX4-Autopilot/src/lib
       ${CMAKE_SOURCE_DIR}/PX4-Autopilot/platforms/common/include
-      ${CMAKE_SOURCE_DIR}/px4_stub/src/modules
-      ${CMAKE_SOURCE_DIR}/px4_stub
+      ${CMAKE_SOURCE_DIR}/src/px4_stub/src/modules
+      ${CMAKE_SOURCE_DIR}/src/px4_stub
     )
     target_compile_definitions(balancer_common PUBLIC PIGPIOD_STUB_IMPL)
     target_link_libraries(balancer_common PUBLIC GTest::gmock_main GTest::gtest)

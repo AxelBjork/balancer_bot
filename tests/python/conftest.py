@@ -15,6 +15,7 @@ _REPO_ROOT = Path(__file__).parents[2]
 _BUILD_DIR = _REPO_ROOT / "build"
 _DEFAULT_BIN = _BUILD_DIR / "sil_app"
 _DEFAULT_SIM_BIN = _BUILD_DIR / "balancer_simulator"
+_DEFAULT_SIM_PORT = 9001
 
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
@@ -86,6 +87,10 @@ def _sim_binary() -> Path:
     return path
 
 
+def _sim_port() -> int:
+    return int(os.environ.get("BALANCER_SIM_PORT", str(_DEFAULT_SIM_PORT)))
+
+
 @pytest.fixture(scope="session")
 def sil_process():
     proc = _start_sil_process()
@@ -145,6 +150,36 @@ def fresh_udp():
 @pytest.fixture(scope="session")
 def simulator_binary() -> Path:
     return _sim_binary()
+
+
+@pytest.fixture(scope="function")
+def simulator_process():
+    proc = subprocess.Popen(
+        [str(_sim_binary()), "--port", str(_sim_port())],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        preexec_fn=os.setsid,
+    )
+
+    deadline = time.monotonic() + 0.05
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            pytest.fail(f"balancer_simulator exited during startup (rc={proc.returncode})")
+        time.sleep(0.001)
+
+    yield proc
+    _stop_sil_process(proc)
+
+
+@pytest.fixture(scope="function")
+def simulator_udp(simulator_process):
+    if simulator_process.poll() is not None:
+        pytest.fail(f"balancer_simulator is not running (rc={simulator_process.returncode})")
+
+    with UdpClient(bridge_port=_sim_port()) as client:
+        client.register()
+        client.drain()
+        yield client
 
 
 @pytest.fixture(scope="session")

@@ -5,7 +5,7 @@
 #include <csignal>
 
 #include "message_bus.h"
-#include "balancer_msgs.h"
+#include "messages/balancer_msgs.h"
 #include "udp_bridge.h"
 #include "types.h"
 #include "services/control_service.h"

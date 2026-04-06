@@ -1,351 +1,535 @@
-#include <cstdlib>
-#include <filesystem>
-#include <fstream>
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#include <array>
+#include <chrono>
+#include <cmath>
+#include <csignal>
+#include <cstdint>
+#include <cstring>
+#include <deque>
 #include <iostream>
 #include <optional>
-#include <sstream>
 #include <stdexcept>
 #include <string>
-#include <string_view>
+#include <thread>
 #include <vector>
 
-#include "simulator/simulator_runner.h"
+#include "messages/balancer_msgs.h"
+#include "config.h"
+#include "simulator/balancer_simulator.h"
 #include "types.h"
+#include "services/control/rate_controller_core.h"
 
 namespace {
 
-std::string shell_quote(const std::filesystem::path& path) {
-  std::string s = path.string();
-  std::string out = "'";
-  for (char ch : s) {
-    if (ch == '\'') {
-      out += "'\\''";
-    } else {
-      out.push_back(ch);
-    }
-  }
-  out.push_back('\'');
-  return out;
+constexpr double kPi = 3.14159265358979323846;
+constexpr double kTickDtS = 1.0 / 400.0;
+constexpr double kFallPitchDeg = 75.0;
+constexpr std::size_t kMaxDatagram = 4096;
+constexpr std::size_t kTailWindowSamples = static_cast<std::size_t>(2.0 / kTickDtS);
+constexpr int kTelemetryStride = 20;
+
+constexpr uint8_t kPhysicsSimplified = 0;
+constexpr uint8_t kPhysicsRealistic = 1;
+
+constexpr uint8_t kAckAccepted = 0;
+constexpr uint8_t kAckBusy = 1;
+constexpr uint8_t kAckInvalid = 2;
+
+constexpr uint8_t kDoneCompleted = 0;
+constexpr uint8_t kDoneStoppedByClient = 1;
+constexpr uint8_t kDoneFell = 2;
+constexpr uint8_t kDoneInternalError = 3;
+
+std::atomic<bool> g_stop{false};
+
+void signal_handler(int) {
+  g_stop = true;
 }
 
-std::filesystem::path output_dir_from_env() {
-  if (const char* env = std::getenv("BALANCER_RUN_DIR")) {
-    return env;
+std::string trim_c_string(const std::array<char, 128>& bytes) {
+  std::size_t len = 0;
+  while (len < bytes.size() && bytes[len] != '\0') {
+    ++len;
   }
-  return std::filesystem::path("build") / "sim" / "latest";
+  return std::string(bytes.data(), len);
 }
 
-PhysicsProfile parse_physics_profile(std::string_view value) {
-  if (value == "simplified") {
+PhysicsProfile parse_profile(uint8_t raw) {
+  if (raw == kPhysicsSimplified) {
     return PhysicsProfile::Simplified;
   }
-  if (value == "realistic") {
+  if (raw == kPhysicsRealistic) {
     return PhysicsProfile::Realistic;
   }
-  throw std::runtime_error("Unknown physics profile: " + std::string(value));
+  throw std::runtime_error("invalid physics profile");
 }
 
-void print_usage() {
-  std::cout
-      << "Usage: balancer_simulator [--scenario <name> | --scenario-set <required|capability|all>]\n"
-      << "                          [--physics-profile <simplified|realistic>]\n"
-      << "                          [--driver-kp <value>] [--max-force <value>]\n"
-      << "                          [--cart-damping <value>] [--pitch-damping <value>]\n"
-      << "                          [--motor-tau <value>]\n"
-      << "                          [--initial-pitch-deg <value>] [--com-angle-offset-rad <value>]\n"
-      << "                          [--duration-s <value>]\n"
-      << "                          [--disturbance-start-s <value>] [--disturbance-duration-s <value>]\n"
-      << "                          [--disturbance-forward <value>] [--disturbance-turn <value>]\n"
-      << "                          [--pid-config <path>] [--output-dir <dir>]\n";
-}
+struct PeerAddress {
+  sockaddr_in addr{};
+  bool valid = false;
+};
 
-void write_timeline_csv(const std::filesystem::path& path, const SimulatorRunResult& result) {
-  std::ofstream out(path);
-  out << "sim_time_s,pitch_deg,pitch_rate_dps,pitch_sp_deg,rate_sp_dps,u_sps,left_sps,right_sps,"
-         "vel_error,vel_i_term,vel_p_term,out_norm,effective_pitch_sp_deg,pitch_trim_deg,trim_active,"
-         "plant_pitch_deg,plant_pitch_rate_dps,"
-         "plant_position,plant_velocity,target_wheel_velocity,actual_wheel_velocity,"
-         "velocity_error,f_cmd,f_app,x_ddot,theta_ddot,command_saturated,force_saturated\n";
-  for (const auto& row : result.rows) {
-    out << row.sim_time_s << ','
-        << row.pitch_deg << ','
-        << row.pitch_rate_dps << ','
-        << row.pitch_sp_deg << ','
-        << row.rate_sp_dps << ','
-        << row.u_sps << ','
-        << row.left_sps << ','
-        << row.right_sps << ','
-        << row.vel_error << ','
-        << row.vel_i_term << ','
-        << row.vel_p_term << ','
-        << row.out_norm << ','
-        << row.effective_pitch_sp_deg << ','
-        << row.pitch_trim_deg << ','
-        << row.trim_active << ','
-        << row.plant_pitch_deg << ','
-        << row.plant_pitch_rate_dps << ','
-        << row.plant_position << ','
-        << row.plant_velocity << ','
-        << row.target_wheel_velocity << ','
-        << row.actual_wheel_velocity << ','
-        << row.velocity_error << ','
-        << row.f_cmd << ','
-        << row.f_app << ','
-        << row.x_ddot << ','
-        << row.theta_ddot << ','
-        << row.command_saturated << ','
-        << row.force_saturated << '\n';
+struct TailSample {
+  double pitch_deg = 0.0;
+  double velocity_mps = 0.0;
+  double force_saturated = 0.0;
+};
+
+struct ServiceDisturbance {
+  double start_s = 0.0;
+  double duration_s = 0.0;
+  float forward = 0.0f;
+  float turn = 0.0f;
+};
+
+struct RunSummary {
+  uint32_t sample_count = 0;
+  double final_pitch_deg = 0.0;
+  double max_abs_pitch_deg = 0.0;
+  double tail_rms_pitch_deg = 0.0;
+  double tail_rail_fraction = 0.0;
+  double tail_mean_abs_pitch_deg = 0.0;
+  double max_abs_position_m = 0.0;
+  double tail_mean_abs_velocity_mps = 0.0;
+};
+
+class UdpEndpoint {
+ public:
+  explicit UdpEndpoint(uint16_t port) {
+    port_ = port;
+    fd_ = ::socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd_ < 0) {
+      throw std::runtime_error("socket() failed");
+    }
+
+    int opt = 1;
+    ::setsockopt(fd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_port = htons(port);
+    if (::bind(fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+      ::close(fd_);
+      throw std::runtime_error("bind() failed");
+    }
+
+    const int flags = ::fcntl(fd_, F_GETFL, 0);
+    ::fcntl(fd_, F_SETFL, flags | O_NONBLOCK);
   }
-}
 
-void write_metadata_json(const std::filesystem::path& path, const SimulatorRunResult& result) {
-  std::ofstream out(path);
-  out << "{\n";
-  out << "  \"run_id\": \"" << result.scenario.name << "\",\n";
-  out << "  \"source\": \"simulator_main\",\n";
-  out << "  \"scenario_name\": \"" << result.scenario.name << "\",\n";
-  out << "  \"initial_pitch_deg\": " << result.scenario.initial_pitch_deg << ",\n";
-  out << "  \"com_angle_offset_rad\": " << result.scenario.com_angle_offset_rad << ",\n";
-  out << "  \"duration_s\": " << result.scenario.duration_s << ",\n";
-  out << "  \"dt_s\": " << (1.0 / 400.0) << ",\n";
-  out << "  \"physics_profile\": \"" << BalancerSimulator::profile_name(result.scenario.physics_profile)
-      << "\",\n";
-  out << "  \"pid_profile\": \"" << result.pid_config_path << "\",\n";
-  out << "  \"max_command_sps\": " << kMaxSps << ",\n";
-  out << "  \"physics\": {\n";
-  out << "    \"driver_kp\": " << result.physics.driver_kp << ",\n";
-  out << "    \"max_force_n\": " << result.physics.max_force_n << ",\n";
-  out << "    \"cart_damping\": " << result.physics.cart_damping << ",\n";
-  out << "    \"pitch_damping\": " << result.physics.pitch_damping << ",\n";
-  out << "    \"motor_tau_s\": " << result.physics.motor_tau_s << "\n";
-  out << "  }";
-  if (result.scenario.disturbance.has_value()) {
-    const auto& d = *result.scenario.disturbance;
-    out << ",\n  \"disturbance\": {\n";
-    out << "    \"start_s\": " << d.start_s << ",\n";
-    out << "    \"duration_s\": " << d.duration_s << ",\n";
-    out << "    \"forward\": " << d.forward << ",\n";
-    out << "    \"turn\": " << d.turn << "\n";
-    out << "  }\n";
-  } else {
-    out << "\n";
+  uint16_t port() const { return port_; }
+
+  ~UdpEndpoint() {
+    if (fd_ >= 0) {
+      ::close(fd_);
+    }
   }
-  out << "}\n";
-}
 
-int generate_artifacts(const std::filesystem::path& output_dir) {
-  const auto script = std::filesystem::path(BALANCER_REPO_ROOT) / "tools" / "run_artifacts.py";
-  const auto timeline = output_dir / "timeline.csv";
-  const auto metadata = output_dir / "metadata.json";
+  std::optional<std::pair<MsgId, std::vector<uint8_t>>> recv(PeerAddress& peer) {
+    std::array<uint8_t, kMaxDatagram> buf{};
+    sockaddr_in sender{};
+    socklen_t slen = sizeof(sender);
+    const ssize_t n =
+        ::recvfrom(fd_, buf.data(), buf.size(), 0, reinterpret_cast<sockaddr*>(&sender), &slen);
+    if (n < 0) {
+      return std::nullopt;
+    }
 
-  std::ostringstream cmd;
-  cmd << "python3 " << shell_quote(script)
-      << " --csv " << shell_quote(timeline)
-      << " --metadata " << shell_quote(metadata)
-      << " --output-dir " << shell_quote(output_dir);
-  return std::system(cmd.str().c_str());
-}
+    peer.addr = sender;
+    peer.valid = true;
 
-void write_scenario_set_summary(const std::filesystem::path& path,
-                                const std::vector<SimulatorRunResult>& results) {
-  std::ofstream out(path);
-  out << "{\n  \"scenarios\": [\n";
-  for (size_t i = 0; i < results.size(); ++i) {
-    const auto& result = results[i];
-    out << "    {\n";
-    out << "      \"name\": \"" << result.scenario.name << "\",\n";
-    out << "      \"physics_profile\": \"" << BalancerSimulator::profile_name(result.scenario.physics_profile)
-        << "\",\n";
-    out << "      \"pid_profile\": \"" << result.pid_config_path << "\",\n";
-    out << "      \"fell\": " << (result.fell ? "true" : "false") << ",\n";
-    out << "      \"final_pitch_deg\": " << result.final_pitch_deg << ",\n";
-    out << "      \"max_abs_pitch_deg\": " << result.max_abs_pitch_deg << "\n";
-    out << "    }";
-    out << (i + 1 < results.size() ? ",\n" : "\n");
+    if (n < static_cast<ssize_t>(sizeof(uint16_t))) {
+      return std::nullopt;
+    }
+
+    uint16_t raw = 0;
+    std::memcpy(&raw, buf.data(), sizeof(raw));
+    std::vector<uint8_t> payload(buf.begin() + sizeof(uint16_t), buf.begin() + n);
+    return std::make_pair(static_cast<MsgId>(raw), std::move(payload));
   }
-  out << "  ]\n}\n";
-}
+
+  template <typename Payload>
+  void send(const PeerAddress& peer, MsgId id, const Payload& payload) {
+    if (!peer.valid) {
+      return;
+    }
+
+    static_assert(std::is_trivially_copyable_v<Payload>);
+    struct iovec iov[2];
+    uint16_t raw_id = static_cast<uint16_t>(id);
+    iov[0].iov_base = &raw_id;
+    iov[0].iov_len = sizeof(raw_id);
+    iov[1].iov_base = const_cast<Payload*>(&payload);
+    iov[1].iov_len = sizeof(Payload);
+
+    struct msghdr msg {};
+    msg.msg_name = const_cast<sockaddr*>(reinterpret_cast<const sockaddr*>(&peer.addr));
+    msg.msg_namelen = sizeof(peer.addr);
+    msg.msg_iov = iov;
+    msg.msg_iovlen = 2;
+    ::sendmsg(fd_, &msg, 0);
+  }
+
+ private:
+  int fd_{-1};
+  uint16_t port_{0};
+};
+
+class SimulatorService {
+ public:
+  explicit SimulatorService(uint16_t port, std::string default_pid_config)
+      : endpoint_(port), default_pid_config_(std::move(default_pid_config)) {}
+
+  void run() {
+    std::cout << "Starting balancer_simulator service on UDP port "
+              << endpoint_.port() << std::endl;
+    while (!g_stop.load()) {
+      pump_messages();
+      if (run_.has_value()) {
+        step_active_run();
+      } else {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
+    }
+  }
+
+ private:
+  struct ActiveRun {
+    uint32_t run_id = 0;
+    std::string pid_config_path;
+    std::optional<ServiceDisturbance> disturbance;
+    BalancerSimulator sim;
+    RateControllerCore core;
+    Telemetry latest_telemetry{};
+    bool have_telemetry = false;
+    float left_sps = 0.0f;
+    float right_sps = 0.0f;
+    uint64_t sim_time_us = 0;
+    int steps_total = 0;
+    int steps_done = 0;
+    double max_abs_pitch_deg = 0.0;
+    double max_abs_position_m = 0.0;
+    std::deque<TailSample> tail_samples;
+
+    explicit ActiveRun(uint32_t id,
+                       std::string pid_path,
+                       std::optional<ServiceDisturbance> disturbance_in,
+                       BalancerSimulator&& sim_in)
+        : run_id(id),
+          pid_config_path(std::move(pid_path)),
+          disturbance(std::move(disturbance_in)),
+          sim(std::move(sim_in)) {}
+  };
+
+  void pump_messages() {
+    while (true) {
+      auto msg = endpoint_.recv(active_peer_);
+      if (!msg.has_value()) {
+        return;
+      }
+
+      const auto [id, payload] = *msg;
+      if (id == static_cast<MsgId>(0)) {
+        continue;
+      }
+
+      try {
+        if (id == MsgId::SimStartRun) {
+          handle_start(payload);
+        } else if (id == MsgId::SimStopRun) {
+          handle_stop(payload);
+        }
+      } catch (const std::exception&) {
+        if (id == MsgId::SimStartRun && payload.size() >= sizeof(ipc::SimStartRunPayload)) {
+          ipc::SimStartRunPayload request{};
+          std::memcpy(&request, payload.data(), sizeof(request));
+          send_ack(request.run_id, false, kAckInvalid);
+        }
+      }
+    }
+  }
+
+  void handle_start(const std::vector<uint8_t>& payload) {
+    if (payload.size() != sizeof(ipc::SimStartRunPayload)) {
+      throw std::runtime_error("bad start payload");
+    }
+
+    ipc::SimStartRunPayload request{};
+    std::memcpy(&request, payload.data(), sizeof(request));
+    if (run_.has_value()) {
+      send_ack(request.run_id, false, kAckBusy);
+      return;
+    }
+
+    const PhysicsProfile profile = parse_profile(request.physics_profile);
+    const std::string requested_pid = trim_c_string(request.pid_config_path);
+    const std::string pid_path = requested_pid.empty() ? default_pid_config_ : requested_pid;
+    ConfigPid::load(pid_path);
+
+    BalancerSimulator::Config sim_cfg;
+    sim_cfg.physics_profile = profile;
+    sim_cfg.initial_pitch_deg = request.initial_pitch_deg;
+    sim_cfg.com_angle_offset_rad = request.com_angle_offset_rad;
+    BalancerSimulator sim(sim_cfg);
+
+    std::optional<ServiceDisturbance> disturbance;
+    if (request.enable_disturbance) {
+      disturbance = ServiceDisturbance{
+          .start_s = request.disturbance_start_s,
+          .duration_s = request.disturbance_duration_s,
+          .forward = request.disturbance_forward,
+          .turn = request.disturbance_turn,
+      };
+    }
+
+    run_.emplace(request.run_id, pid_path, disturbance, std::move(sim));
+    run_->steps_total = std::max(1, static_cast<int>(std::llround(request.duration_s / kTickDtS)));
+    run_->max_abs_pitch_deg = std::abs(run_->sim.get_pitch()) * 180.0 / kPi;
+
+    run_->core.setMotorOutputs([this](float left, float right) {
+      if (!run_.has_value()) {
+        return;
+      }
+      run_->left_sps = left;
+      run_->right_sps = right;
+      run_->sim.set_motor_targets(left, right);
+    });
+    run_->core.setVelocityFeedback([this]() {
+      return run_.has_value() ? run_->sim.get_actual_speed_sps() : 0.0f;
+    });
+    run_->core.setPositionFeedback([this]() {
+      return run_.has_value() ? static_cast<float>(run_->sim.get_position()) : 0.0f;
+    });
+    run_->core.setTelemetrySink([this](const Telemetry& t) {
+      if (!run_.has_value()) {
+        return;
+      }
+      run_->latest_telemetry = t;
+      run_->have_telemetry = true;
+    });
+
+    send_ack(request.run_id, true, kAckAccepted);
+  }
+
+  void handle_stop(const std::vector<uint8_t>& payload) {
+    if (payload.size() != sizeof(ipc::SimStopRunPayload)) {
+      return;
+    }
+
+    ipc::SimStopRunPayload request{};
+    std::memcpy(&request, payload.data(), sizeof(request));
+    if (run_.has_value() && run_->run_id == request.run_id) {
+      finish_active_run(kDoneStoppedByClient);
+    }
+  }
+
+  JoyCmd joystick_for_time(const ActiveRun& run, double sim_time_s) const {
+    if (!run.disturbance.has_value()) {
+      return JoyCmd{0.0f, 0.0f};
+    }
+
+    const auto& d = *run.disturbance;
+    if (sim_time_s >= d.start_s && sim_time_s < (d.start_s + d.duration_s)) {
+      return JoyCmd{d.forward, d.turn};
+    }
+    return JoyCmd{0.0f, 0.0f};
+  }
+
+  void step_active_run() {
+    ActiveRun& run = *run_;
+    const double current_sim_time_s = static_cast<double>(run.sim_time_us) / 1e6;
+    run.core.setJoystick(joystick_for_time(run, current_sim_time_s));
+
+    run.sim.step(kTickDtS);
+    run.sim_time_us += static_cast<uint64_t>(kTickDtS * 1e6);
+    ++run.steps_done;
+
+    const auto imu = run.sim.make_imu_payload(run.sim_time_us);
+    ImuSample sample{};
+    sample.angle_rad = imu.pitch_rad;
+    sample.gyro_rad_s = imu.gyr[1];
+    sample.yaw_rate_z = imu.gyr[2];
+    sample.t = std::chrono::steady_clock::time_point(std::chrono::microseconds(imu.timestamp_us));
+    run.core.pushImu(sample);
+    run.core.step(kTickDtS, sample.t);
+
+    if ((run.steps_done % kTelemetryStride) == 0 || run.steps_done == run.steps_total) {
+      publish_telemetry(run, sample);
+    }
+
+    const double plant_pitch_deg = run.sim.get_pitch() * 180.0 / kPi;
+    run.max_abs_pitch_deg = std::max(run.max_abs_pitch_deg, std::abs(plant_pitch_deg));
+    run.max_abs_position_m = std::max(run.max_abs_position_m, std::abs(run.sim.get_position()));
+
+    if (run.max_abs_pitch_deg > kFallPitchDeg) {
+      finish_active_run(kDoneFell);
+      return;
+    }
+
+    if (run.steps_done >= run.steps_total) {
+      finish_active_run(kDoneCompleted);
+    }
+  }
+
+  void publish_telemetry(ActiveRun& run, const ImuSample& sample) {
+    ipc::SystemTelemetryPayload payload{};
+    const auto& diag = run.sim.diagnostics();
+    const auto& state = run.sim.state();
+
+    payload.run_id = run.run_id;
+    payload.sim_time_s = static_cast<float>(static_cast<double>(run.sim_time_us) / 1e6);
+    payload.t_sec = run.have_telemetry ? static_cast<float>(run.latest_telemetry.t_sec) : payload.sim_time_s;
+    payload.age_ms = run.have_telemetry
+                         ? static_cast<float>(run.latest_telemetry.age_ms)
+                         : static_cast<float>(
+                               std::chrono::duration<double, std::milli>(
+                                   std::chrono::steady_clock::time_point(std::chrono::microseconds(run.sim_time_us)) -
+                                   sample.t)
+                                   .count());
+    payload.pitch_deg = run.have_telemetry ? static_cast<float>(run.latest_telemetry.pitch_deg)
+                                           : static_cast<float>(state.pitch * 180.0 / kPi);
+    payload.pitch_rate_dps =
+        run.have_telemetry ? static_cast<float>(run.latest_telemetry.pitch_rate_dps)
+                           : static_cast<float>(state.pitch_rate * 180.0 / kPi);
+    payload.rate_sp_dps = run.have_telemetry ? static_cast<float>(run.latest_telemetry.rate_sp_dps) : 0.0f;
+    payload.out_norm = run.have_telemetry ? static_cast<float>(run.latest_telemetry.out_norm) : 0.0f;
+    payload.u_sps = run.have_telemetry ? static_cast<float>(run.latest_telemetry.u_sps) : 0.0f;
+    payload.integ_pitch = run.have_telemetry ? static_cast<float>(run.latest_telemetry.integ_pitch) : 0.0f;
+    payload.vel_error = run.have_telemetry ? static_cast<float>(run.latest_telemetry.vel_error) : 0.0f;
+    payload.vel_p_term = run.have_telemetry ? static_cast<float>(run.latest_telemetry.vel_p_term) : 0.0f;
+    payload.vel_i_term = run.have_telemetry ? static_cast<float>(run.latest_telemetry.vel_i_term) : 0.0f;
+    payload.pitch_sp_deg = run.have_telemetry ? static_cast<float>(run.latest_telemetry.pitch_sp_deg) : 0.0f;
+    payload.effective_pitch_sp_deg =
+        run.have_telemetry ? static_cast<float>(run.latest_telemetry.effective_pitch_sp_deg) : 0.0f;
+    payload.pitch_trim_deg =
+        run.have_telemetry ? static_cast<float>(run.latest_telemetry.pitch_trim_deg) : 0.0f;
+    payload.trim_active = run.have_telemetry ? static_cast<float>(run.latest_telemetry.trim_active) : 0.0f;
+    payload.plant_pitch_deg = static_cast<float>(state.pitch * 180.0 / kPi);
+    payload.plant_pitch_rate_dps = static_cast<float>(state.pitch_rate * 180.0 / kPi);
+    payload.plant_position_m = static_cast<float>(state.position);
+    payload.plant_velocity_mps = static_cast<float>(state.velocity);
+    payload.target_wheel_velocity = static_cast<float>(diag.target_wheel_velocity);
+    payload.actual_wheel_velocity = static_cast<float>(diag.actual_wheel_velocity);
+    payload.plant_velocity_error = static_cast<float>(diag.velocity_error);
+    payload.f_cmd = static_cast<float>(diag.f_cmd);
+    payload.f_app = static_cast<float>(diag.f_app);
+    payload.x_ddot = static_cast<float>(diag.x_ddot);
+    payload.theta_ddot = static_cast<float>(diag.theta_ddot);
+    payload.command_saturated = diag.command_saturated ? 1.0f : 0.0f;
+    payload.force_saturated = diag.command_saturated ? 1.0f : 0.0f;
+    endpoint_.send(active_peer_, MsgId::SystemTelemetry, payload);
+
+    run.tail_samples.push_back(TailSample{
+        .pitch_deg = payload.plant_pitch_deg,
+        .velocity_mps = payload.plant_velocity_mps,
+        .force_saturated = payload.force_saturated,
+    });
+    while (run.tail_samples.size() > kTailWindowSamples) {
+      run.tail_samples.pop_front();
+    }
+  }
+
+  RunSummary summarize(const ActiveRun& run) const {
+    RunSummary out{};
+    out.sample_count = static_cast<uint32_t>(run.steps_done);
+    out.final_pitch_deg = run.sim.get_pitch() * 180.0 / kPi;
+    out.max_abs_pitch_deg = run.max_abs_pitch_deg;
+    out.max_abs_position_m = run.max_abs_position_m;
+
+    if (run.tail_samples.empty()) {
+      return out;
+    }
+
+    double pitch_sq_sum = 0.0;
+    double abs_pitch_sum = 0.0;
+    double abs_velocity_sum = 0.0;
+    double rail_sum = 0.0;
+    for (const auto& sample : run.tail_samples) {
+      pitch_sq_sum += sample.pitch_deg * sample.pitch_deg;
+      abs_pitch_sum += std::abs(sample.pitch_deg);
+      abs_velocity_sum += std::abs(sample.velocity_mps);
+      rail_sum += sample.force_saturated >= 0.5 ? 1.0 : 0.0;
+    }
+
+    const double count = static_cast<double>(run.tail_samples.size());
+    out.tail_rms_pitch_deg = std::sqrt(pitch_sq_sum / count);
+    out.tail_mean_abs_pitch_deg = abs_pitch_sum / count;
+    out.tail_mean_abs_velocity_mps = abs_velocity_sum / count;
+    out.tail_rail_fraction = rail_sum / count;
+    return out;
+  }
+
+  void finish_active_run(uint8_t reason_code) {
+    if (!run_.has_value()) {
+      return;
+    }
+
+    const RunSummary summary = summarize(*run_);
+    ipc::SimRunDonePayload done{};
+    done.run_id = run_->run_id;
+    done.reason_code = reason_code;
+    done.sample_count = summary.sample_count;
+    done.elapsed_s = static_cast<float>(static_cast<double>(run_->sim_time_us) / 1e6);
+    done.final_pitch_deg = static_cast<float>(summary.final_pitch_deg);
+    done.max_abs_pitch_deg = static_cast<float>(summary.max_abs_pitch_deg);
+    done.tail_rms_pitch_deg = static_cast<float>(summary.tail_rms_pitch_deg);
+    done.tail_rail_fraction = static_cast<float>(summary.tail_rail_fraction);
+    done.tail_mean_abs_pitch_deg = static_cast<float>(summary.tail_mean_abs_pitch_deg);
+    done.max_abs_position_m = static_cast<float>(summary.max_abs_position_m);
+    done.tail_mean_abs_velocity_mps = static_cast<float>(summary.tail_mean_abs_velocity_mps);
+    endpoint_.send(active_peer_, MsgId::SimRunDone, done);
+    run_.reset();
+  }
+
+  void send_ack(uint32_t run_id, bool accepted, uint8_t status_code) {
+    ipc::SimStartAckPayload ack{};
+    ack.run_id = run_id;
+    ack.accepted = accepted ? 1 : 0;
+    ack.status_code = status_code;
+    endpoint_.send(active_peer_, MsgId::SimStartAck, ack);
+  }
+
+  UdpEndpoint endpoint_;
+  PeerAddress active_peer_{};
+  std::string default_pid_config_;
+  std::optional<ActiveRun> run_;
+};
 
 }  // namespace
 
 int main(int argc, char** argv) {
-  try {
-    std::optional<std::string> scenario_name;
-    std::optional<std::string> scenario_set;
-    std::optional<std::string> pid_config_arg;
-    auto physics_profile = PhysicsProfile::Simplified;
-    std::filesystem::path output_dir = output_dir_from_env();
-    std::optional<double> driver_kp_override;
-    std::optional<double> max_force_override;
-    std::optional<double> cart_damping_override;
-    std::optional<double> pitch_damping_override;
-    std::optional<double> motor_tau_override;
-    std::optional<double> initial_pitch_override;
-    std::optional<double> com_angle_offset_override;
-    std::optional<double> duration_override;
-    std::optional<double> disturbance_start_override;
-    std::optional<double> disturbance_duration_override;
-    std::optional<float> disturbance_forward_override;
-    std::optional<float> disturbance_turn_override;
+  std::signal(SIGINT, signal_handler);
+  std::signal(SIGTERM, signal_handler);
 
-    for (int i = 1; i < argc; ++i) {
-      std::string_view arg = argv[i];
-      auto next_value = [&](std::string_view flag) -> std::string {
-        if (i + 1 >= argc) {
-          throw std::runtime_error("Missing value for " + std::string(flag));
-        }
-        return argv[++i];
-      };
+  uint16_t port = 9001;
+  std::string pid_config_path = ConfigPid::resolve_path("pid_sim.conf");
 
-      if (arg == "--scenario") {
-        scenario_name = next_value(arg);
-      } else if (arg == "--scenario-set") {
-        scenario_set = next_value(arg);
-      } else if (arg == "--physics-profile") {
-        physics_profile = parse_physics_profile(next_value(arg));
-      } else if (arg == "--driver-kp") {
-        driver_kp_override = std::stod(next_value(arg));
-      } else if (arg == "--max-force") {
-        max_force_override = std::stod(next_value(arg));
-      } else if (arg == "--cart-damping") {
-        cart_damping_override = std::stod(next_value(arg));
-      } else if (arg == "--pitch-damping") {
-        pitch_damping_override = std::stod(next_value(arg));
-      } else if (arg == "--motor-tau") {
-        motor_tau_override = std::stod(next_value(arg));
-      } else if (arg == "--initial-pitch-deg") {
-        initial_pitch_override = std::stod(next_value(arg));
-      } else if (arg == "--com-angle-offset-rad") {
-        com_angle_offset_override = std::stod(next_value(arg));
-      } else if (arg == "--duration-s") {
-        duration_override = std::stod(next_value(arg));
-      } else if (arg == "--disturbance-start-s") {
-        disturbance_start_override = std::stod(next_value(arg));
-      } else if (arg == "--disturbance-duration-s") {
-        disturbance_duration_override = std::stod(next_value(arg));
-      } else if (arg == "--disturbance-forward") {
-        disturbance_forward_override = std::stof(next_value(arg));
-      } else if (arg == "--disturbance-turn") {
-        disturbance_turn_override = std::stof(next_value(arg));
-      } else if (arg == "--pid-config") {
-        pid_config_arg = next_value(arg);
-      } else if (arg == "--output-dir") {
-        output_dir = next_value(arg);
-      } else if (arg == "--help") {
-        print_usage();
-        return 0;
-      } else {
-        throw std::runtime_error("Unknown argument: " + std::string(arg));
-      }
-    }
-
-    if (scenario_name.has_value() && scenario_set.has_value()) {
-      throw std::runtime_error("Use either --scenario or --scenario-set, not both");
-    }
-
-    const std::string pid_config_path =
-        pid_config_arg.value_or(ConfigPid::resolve_path("pid_sim.conf"));
-    std::optional<SimulatorPhysics> physics_override;
-    if (driver_kp_override || max_force_override || cart_damping_override || pitch_damping_override ||
-        motor_tau_override) {
-      auto physics = BalancerSimulator::physics_for_profile(physics_profile);
-      if (driver_kp_override) physics.driver_kp = *driver_kp_override;
-      if (max_force_override) physics.max_force_n = *max_force_override;
-      if (cart_damping_override) physics.cart_damping = *cart_damping_override;
-      if (pitch_damping_override) physics.pitch_damping = *pitch_damping_override;
-      if (motor_tau_override) physics.motor_tau_s = *motor_tau_override;
-      physics_override = physics;
-    }
-    std::filesystem::create_directories(output_dir);
-
-    if (scenario_set.has_value()) {
-      std::vector<SimulatorRunResult> results;
-      for (const auto& scenario : simulator_scenario_set(*scenario_set, physics_profile)) {
-        auto scenario_with_override = scenario;
-        scenario_with_override.physics_override = physics_override;
-        if (initial_pitch_override) scenario_with_override.initial_pitch_deg = *initial_pitch_override;
-        if (com_angle_offset_override) scenario_with_override.com_angle_offset_rad = *com_angle_offset_override;
-        if (duration_override) scenario_with_override.duration_s = *duration_override;
-        if (disturbance_start_override || disturbance_duration_override || disturbance_forward_override ||
-            disturbance_turn_override) {
-          auto disturbance = scenario_with_override.disturbance.value_or(SimulatorDisturbance{});
-          if (disturbance_start_override) disturbance.start_s = *disturbance_start_override;
-          if (disturbance_duration_override) disturbance.duration_s = *disturbance_duration_override;
-          if (disturbance_forward_override) disturbance.forward = *disturbance_forward_override;
-          if (disturbance_turn_override) disturbance.turn = *disturbance_turn_override;
-          scenario_with_override.disturbance = disturbance;
-        }
-        const auto scenario_dir = output_dir / scenario.name;
-        std::filesystem::create_directories(scenario_dir);
-        const auto result = run_simulator_scenario(scenario_with_override, pid_config_path);
-        write_timeline_csv(scenario_dir / "timeline.csv", result);
-        write_metadata_json(scenario_dir / "metadata.json", result);
-        const int artifact_rc = generate_artifacts(scenario_dir);
-        if (artifact_rc != 0) {
-          std::cerr << "Artifact generation failed for " << scenario.name << " rc=" << artifact_rc << "\n";
-          return 2;
-        }
-        results.push_back(result);
-      }
-
-      write_scenario_set_summary(output_dir / "scenario_set_summary.json", results);
-
-      bool any_fell = false;
-      for (const auto& result : results) {
-        any_fell = any_fell || result.fell;
-        std::cout << result.scenario.name << ": max_abs_pitch_deg=" << result.max_abs_pitch_deg
-                  << " final_pitch_deg=" << result.final_pitch_deg
-                  << " fell=" << (result.fell ? "true" : "false") << "\n";
-      }
-      return any_fell ? 1 : 0;
-    }
-
-    const auto scenario = scenario_name.has_value()
-                              ? simulator_named_scenario(*scenario_name, physics_profile)
-                              : simulator_named_scenario("pitch_bias_pos", physics_profile);
-    if (!scenario.has_value()) {
-      throw std::runtime_error("Unknown simulator scenario");
-    }
-
-    auto scenario_with_override = *scenario;
-    scenario_with_override.physics_override = physics_override;
-    if (initial_pitch_override) scenario_with_override.initial_pitch_deg = *initial_pitch_override;
-    if (com_angle_offset_override) scenario_with_override.com_angle_offset_rad = *com_angle_offset_override;
-    if (duration_override) scenario_with_override.duration_s = *duration_override;
-    if (disturbance_start_override || disturbance_duration_override || disturbance_forward_override ||
-        disturbance_turn_override) {
-      auto disturbance = scenario_with_override.disturbance.value_or(SimulatorDisturbance{});
-      if (disturbance_start_override) disturbance.start_s = *disturbance_start_override;
-      if (disturbance_duration_override) disturbance.duration_s = *disturbance_duration_override;
-      if (disturbance_forward_override) disturbance.forward = *disturbance_forward_override;
-      if (disturbance_turn_override) disturbance.turn = *disturbance_turn_override;
-      scenario_with_override.disturbance = disturbance;
-    }
-    const auto result = run_simulator_scenario(scenario_with_override, pid_config_path);
-    write_timeline_csv(output_dir / "timeline.csv", result);
-    write_metadata_json(output_dir / "metadata.json", result);
-    const int artifact_rc = generate_artifacts(output_dir);
-    if (artifact_rc != 0) {
-      std::cerr << "Artifact generation failed with rc=" << artifact_rc << "\n";
-      return 2;
-    }
-
-    std::cout << "Scenario: " << result.scenario.name << "\n";
-    std::cout << "Physics Profile: " << BalancerSimulator::profile_name(result.scenario.physics_profile) << "\n";
-    std::cout << "PID Profile: " << result.pid_config_path << "\n";
-    std::cout << "Final Pitch: " << result.final_pitch_deg << " deg\n";
-    std::cout << "Max Abs Pitch: " << result.max_abs_pitch_deg << " deg\n";
-
-    if (result.fell) {
-      std::cerr << "TEST FAILED: Robot fell (angle > 75 deg)\n";
+  for (int i = 1; i < argc; ++i) {
+    const std::string arg = argv[i];
+    if (arg == "--port" && (i + 1) < argc) {
+      port = static_cast<uint16_t>(std::stoul(argv[++i]));
+    } else if (arg == "--pid-config" && (i + 1) < argc) {
+      pid_config_path = argv[++i];
+    } else if (arg == "--help") {
+      std::cout << "Usage: balancer_simulator [--port <udp-port>] [--pid-config <path>]\n";
+      return 0;
+    } else {
+      std::cerr << "Unknown argument: " << arg << std::endl;
       return 1;
     }
+  }
 
-    std::cout << "TEST PASSED: Robot stayed upright.\n";
+  try {
+    SimulatorService service(port, pid_config_path);
+    service.run();
     return 0;
-  } catch (const std::exception& e) {
-    std::cerr << e.what() << "\n";
-    print_usage();
-    return 2;
+  } catch (const std::exception& exc) {
+    std::cerr << "Simulator service failed: " << exc.what() << std::endl;
+    return 1;
   }
 }

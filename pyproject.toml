@@ -1,6 +1,7 @@
 [tool.pytest.ini_options]
 testpaths = ["tests/python"]
 addopts = "-p no:cov -p no:xdist --maxfail=2"
+cache_dir = "build/.pytest_cache"
 
 [tool.flake8]
 max-line-length = 100

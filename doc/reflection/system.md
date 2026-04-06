@@ -10,7 +10,7 @@ The reflection system exists to preserve one source of truth:
 
 - `MsgId`
 - `MessageTraits`
-- reflected payload structs in `messages/`
+- reflected payload structs in `src/messages/`
 - reflected service metadata in the service headers
 
 From that information, the build generates:

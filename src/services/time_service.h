@@ -1,6 +1,6 @@
 #pragma once
 
-#include "balancer_msgs.h"
+#include "messages/balancer_msgs.h"
 #include "publisher.h"
 
 #include <atomic>

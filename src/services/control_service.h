@@ -3,7 +3,7 @@
 #include "config.h"
 #include "services/control/rate_controller_core.h"
 #include "publisher.h"
-#include "balancer_msgs.h"
+#include "messages/balancer_msgs.h"
 
 namespace sil {
 

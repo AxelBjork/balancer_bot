@@ -8,17 +8,6 @@
 
 namespace ipc {
 
-// Extend the original enum by casting
-constexpr MsgId ImuData = MsgId::ImuData;
-constexpr MsgId JoystickCommand = MsgId::JoystickCommand;
-constexpr MsgId MotorTargets = MsgId::MotorTargets;
-constexpr MsgId SystemTelemetry = MsgId::SystemTelemetry;
-constexpr MsgId MotorFeedback = MsgId::MotorFeedback;
-constexpr MsgId SimStartRun = MsgId::SimStartRun;
-constexpr MsgId SimStartAck = MsgId::SimStartAck;
-constexpr MsgId SimStopRun = MsgId::SimStopRun;
-constexpr MsgId SimRunDone = MsgId::SimRunDone;
-
 struct DOC_DESC("Fused IMU sample published by the IMU service and accepted by the SIL harness.") ImuSamplePayload {
     double pitch_rad;
     std::array<double, 3> acc;

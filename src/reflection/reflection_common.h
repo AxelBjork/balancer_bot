@@ -11,9 +11,9 @@
 #include <tuple>
 #include <type_traits>
 
-#include "balancer_msgs.h"
-#include "core_msgs.h"
-#include "msg_base.h"
+#include "messages/balancer_msgs.h"
+#include "messages/core_msgs.h"
+#include "messages/msg_base.h"
 
 namespace balancer_reflection {
 

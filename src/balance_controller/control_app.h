@@ -18,7 +18,7 @@
 #include "xbox_controller.h"
 
 #include "message_bus.h"
-#include "balancer_msgs.h"
+#include "messages/balancer_msgs.h"
 #include "services/control_service.h"
 #include "services/motor_service.h"
 #include "services/imu_service.h"

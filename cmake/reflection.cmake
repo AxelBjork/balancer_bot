@@ -35,7 +35,7 @@ add_custom_command(
     OUTPUT ${GEN_BIN}
     COMMAND ${REFLECT_CXX}
         -std=c++26 -freflection
-        -I${CMAKE_SOURCE_DIR}/messages
+        -I${CMAKE_SOURCE_DIR}/src/messages
         -I${CMAKE_SOURCE_DIR}/src
         -I${CMAKE_SOURCE_DIR}/src/ipc
         -L/usr/local/gcc-trunk/lib64
@@ -45,9 +45,9 @@ add_custom_command(
     DEPENDS ${GEN_SRC}
             ${REFLECTION_COMMON_HDR}
             ${REFLECTION_REGISTRY_HDR}
-            ${CMAKE_SOURCE_DIR}/messages/msg_base.h
-            ${CMAKE_SOURCE_DIR}/messages/core_msgs.h
-            ${CMAKE_SOURCE_DIR}/messages/balancer_msgs.h
+            ${CMAKE_SOURCE_DIR}/src/messages/msg_base.h
+            ${CMAKE_SOURCE_DIR}/src/messages/core_msgs.h
+            ${CMAKE_SOURCE_DIR}/src/messages/balancer_msgs.h
             ${CMAKE_SOURCE_DIR}/src/ipc/udp_bridge.h
     COMMENT "Compiling balancer bindings generator with C++26 reflection..."
     VERBATIM
@@ -69,7 +69,7 @@ add_custom_command(
     OUTPUT ${DOC_BIN}
     COMMAND ${REFLECT_CXX}
         -std=c++26 -freflection -DREFLECT_DOCS
-        -I${CMAKE_SOURCE_DIR}/messages
+        -I${CMAKE_SOURCE_DIR}/src/messages
         -I${CMAKE_SOURCE_DIR}/src
         -I${CMAKE_SOURCE_DIR}/src/balance_controller
         -I${CMAKE_SOURCE_DIR}/src/ipc
@@ -80,9 +80,9 @@ add_custom_command(
     DEPENDS ${DOC_SRC}
             ${REFLECTION_COMMON_HDR}
             ${REFLECTION_REGISTRY_HDR}
-            ${CMAKE_SOURCE_DIR}/messages/msg_base.h
-            ${CMAKE_SOURCE_DIR}/messages/core_msgs.h
-            ${CMAKE_SOURCE_DIR}/messages/balancer_msgs.h
+            ${CMAKE_SOURCE_DIR}/src/messages/msg_base.h
+            ${CMAKE_SOURCE_DIR}/src/messages/core_msgs.h
+            ${CMAKE_SOURCE_DIR}/src/messages/balancer_msgs.h
             ${CMAKE_SOURCE_DIR}/src/ipc/udp_bridge.h
             ${CMAKE_SOURCE_DIR}/src/services/imu_service.h
             ${CMAKE_SOURCE_DIR}/src/services/control_service.h

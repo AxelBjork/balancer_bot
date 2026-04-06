@@ -611,7 +611,7 @@ int main(int argc, char** argv) {
 
 ## Overview
 
-This document is generated from the balancer runtime message registry and the reflected payload types in `messages/`.
+This document is generated from the balancer runtime message registry and the reflected payload types in `src/messages/`.
 It describes the reflected runtime message bus used by the balancer services, including the UDP-facing
 messages consumed by the SIL harness and the internal-only messages exchanged between services.
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tools.run_artifacts import RunRecorder, summarize_reference_file
+from tests.python.support.run_artifacts import RunRecorder, summarize_reference_file
 
 
 def test_run_recorder_writes_summary_and_flags_fall(tmp_path):
@@ -47,7 +47,7 @@ def test_run_recorder_writes_summary_and_flags_fall(tmp_path):
 
 
 def test_reference_parser_handles_clean_csv():
-    summary = summarize_reference_file(Path("data") / "imu_data.csv")
+    summary = summarize_reference_file(Path("tests/data") / "imu_data.csv")
     assert summary["sample_count"] > 100
     assert summary["time_field"] == "time"
     assert summary["dt_max"] is not None
@@ -55,6 +55,6 @@ def test_reference_parser_handles_clean_csv():
 
 def test_reference_parser_handles_mixed_logs():
     for name in ("imu_held.csv", "balance_raw.csv", "balance.csv"):
-        summary = summarize_reference_file(Path("data") / name)
+        summary = summarize_reference_file(Path("tests/data") / name)
         assert summary["sample_count"] > 100
         assert "time_field" in summary

@@ -3,7 +3,7 @@
 #include <optional>
 #include <string_view>
 
-#include "balancer_msgs.h"
+#include "messages/balancer_msgs.h"
 
 enum class PhysicsProfile {
   Realistic,

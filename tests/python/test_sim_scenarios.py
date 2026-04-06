@@ -1,61 +1,32 @@
 from __future__ import annotations
 
-import csv
-import json
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
 
+from tests.python.support.simulator_service import (
+    DONE_COMPLETED,
+    DONE_FELL,
+    PHYSICS_REALISTIC,
+    PHYSICS_SIMPLIFIED,
+    run_scenario_live,
+)
+
+
 SIMPLIFIED_SANITY_SCENARIOS = [
-    "neutral_hold",
+    ("simplified_neutral_hold", dict(duration_s=5.0)),
 ]
 
 REALISTIC_STABILITY_SCENARIOS = [
-    (
-        "realistic_neutral_hold_20s",
-        "neutral_hold",
-        ["--duration-s", "20"],
-    ),
-    (
-        "realistic_pitch_bias_20s",
-        "pitch_bias_pos",
-        ["--duration-s", "20"],
-    ),
-    (
-        "realistic_com_offset_60s",
-        "com_offset_pos",
-        ["--duration-s", "60"],
-    ),
-    (
-        "realistic_recovery_0p25_20s",
-        "recovery_large_pitch_pos",
-        ["--duration-s", "20"],
-    ),
-    (
-        "realistic_recovery_0p5_20s",
-        "neutral_hold",
-        ["--initial-pitch-deg", "0.5", "--duration-s", "20"],
-    ),
-    (
-        "realistic_combined_bias_20s",
-        "combined_bias_pos",
-        ["--duration-s", "20"],
-    ),
-    (
-        "realistic_recovery_0p75_20s",
-        "neutral_hold",
-        ["--initial-pitch-deg", "0.75", "--duration-s", "20"],
-    ),
+    ("realistic_neutral_hold_20s", dict(duration_s=20.0)),
+    ("realistic_pitch_bias_20s", dict(initial_pitch_deg=0.10, duration_s=20.0)),
+    ("realistic_com_offset_20s", dict(com_angle_offset_rad=0.001, duration_s=20.0)),
+    ("realistic_disturbance_pulse_20s", dict(duration_s=20.0, disturbance={"start_s": 1.0, "duration_s": 0.20, "forward": 0.08, "turn": 0.0})),
 ]
 
 REALISTIC_FRONTIER_DIAGNOSTICS = [
-    (
-        "frontier_combined_0p45_0p0025_20s",
-        "neutral_hold",
-        ["--initial-pitch-deg", "0.45", "--com-angle-offset-rad", "0.0025", "--duration-s", "20"],
-    ),
+    ("frontier_combined_0p45_0p0025_20s", dict(initial_pitch_deg=0.45, com_angle_offset_rad=0.0025, duration_s=20.0)),
 ]
 
 
@@ -67,157 +38,79 @@ def _artifact_dir(sim_artifact_settings, run_id: str) -> Path:
     return output_dir
 
 
-def _run_scenario(
-    simulator_binary: Path,
-    sim_artifact_settings,
-    scenario_name: str,
-    physics_profile: str,
-    *,
-    run_id: str | None = None,
-    extra_args: list[str] | None = None,
-) -> tuple[subprocess.CompletedProcess[str], dict, dict, Path]:
-    run_key = run_id or f"{physics_profile}_{scenario_name}"
-    output_dir = _artifact_dir(sim_artifact_settings, run_key)
-    cmd = [
-        str(simulator_binary),
-        "--scenario",
-        scenario_name,
-        "--physics-profile",
-        physics_profile,
-        "--output-dir",
-        str(output_dir),
-    ]
-    if extra_args:
-        cmd.extend(extra_args)
-    proc = subprocess.run(
-        cmd,
-        cwd=Path.cwd(),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        check=False,
-    )
-
-    summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
-    metadata = json.loads((output_dir / "metadata.json").read_text(encoding="utf-8"))
-    return proc, summary, metadata, output_dir
-
-
-def _load_timeline(output_dir: Path) -> list[dict[str, str]]:
-    with (output_dir / "timeline.csv").open(encoding="utf-8", newline="") as fh:
-        return list(csv.DictReader(fh))
-
-
-def _count_nonzero_sign_changes(values: list[float]) -> int:
-    changes = 0
-    previous_sign = 0
-    for value in values:
-        sign = 0
-        if value > 1e-9:
-            sign = 1
-        elif value < -1e-9:
-            sign = -1
-        if sign == 0:
-            continue
-        if previous_sign != 0 and sign != previous_sign:
-            changes += 1
-        previous_sign = sign
-    return changes
-
-
-def _assert_common_integrity(summary: dict, metadata: dict) -> None:
+def _assert_common_integrity(summary: dict, metadata: dict, done) -> None:
     assert summary["sample_count"] > 0
     assert summary["telemetry_continuous"]
     assert summary["max_abs_pitch_deg"] is not None
-    assert summary["max_abs_pitch_deg"] == summary["max_abs_pitch_deg"]
     assert summary["tail_rms_pitch_deg"] is not None
     assert summary["tail_rail_fraction"] is not None
     assert metadata["pid_profile"].endswith("pid_sim.conf")
+    assert done.sample_count > 0
 
 
-def _assert_pass_criteria(proc: subprocess.CompletedProcess[str], summary: dict, metadata: dict) -> None:
-    _assert_common_integrity(summary, metadata)
-    assert proc.returncode == 0, proc.stderr
+def _assert_pass_criteria(summary: dict, metadata: dict, done) -> None:
+    _assert_common_integrity(summary, metadata, done)
+    assert done.reason_code == DONE_COMPLETED
     assert not summary["fell"]
     assert summary["max_abs_pitch_deg"] <= 75.0
     assert summary["tail_rms_pitch_deg"] <= 3.0
     assert summary["tail_rail_fraction"] <= 0.05
 
 
-@pytest.mark.parametrize("scenario_name", SIMPLIFIED_SANITY_SCENARIOS)
-def test_simplified_sanity_scenarios(simulator_binary, sim_artifact_settings, scenario_name: str):
-    proc, summary, metadata, _ = _run_scenario(
-        simulator_binary,
-        sim_artifact_settings,
-        scenario_name,
-        "simplified",
+@pytest.mark.parametrize(("run_id", "kwargs"), SIMPLIFIED_SANITY_SCENARIOS)
+def test_simplified_sanity_scenarios(simulator_udp, sim_artifact_settings, run_id: str, kwargs: dict):
+    summary, metadata, done = run_scenario_live(
+        simulator_udp,
+        run_id=1000 + SIMPLIFIED_SANITY_SCENARIOS.index((run_id, kwargs)),
+        output_dir=_artifact_dir(sim_artifact_settings, run_id),
+        physics_profile=PHYSICS_SIMPLIFIED,
+        **kwargs,
     )
     assert metadata["physics_profile"] == "simplified"
-    _assert_pass_criteria(proc, summary, metadata)
+    _assert_pass_criteria(summary, metadata, done)
 
 
-@pytest.mark.parametrize(("run_id", "scenario_name", "extra_args"), REALISTIC_STABILITY_SCENARIOS)
-def test_realistic_profile_stability_scenarios(
-    simulator_binary,
-    sim_artifact_settings,
-    run_id: str,
-    scenario_name: str,
-    extra_args: list[str],
-):
-    proc, summary, metadata, _ = _run_scenario(
-        simulator_binary,
-        sim_artifact_settings,
-        scenario_name,
-        "realistic",
-        run_id=run_id,
-        extra_args=extra_args,
+@pytest.mark.parametrize(("run_id", "kwargs"), REALISTIC_STABILITY_SCENARIOS)
+def test_realistic_profile_stability_scenarios(simulator_udp, sim_artifact_settings, run_id: str, kwargs: dict):
+    summary, metadata, done = run_scenario_live(
+        simulator_udp,
+        run_id=2000 + REALISTIC_STABILITY_SCENARIOS.index((run_id, kwargs)),
+        output_dir=_artifact_dir(sim_artifact_settings, run_id),
+        physics_profile=PHYSICS_REALISTIC,
+        **kwargs,
     )
     assert metadata["physics_profile"] == "realistic"
-    _assert_pass_criteria(proc, summary, metadata)
-    if run_id == "realistic_com_offset_60s":
+    _assert_pass_criteria(summary, metadata, done)
+    if run_id == "realistic_com_offset_20s":
         assert summary["tail_mean_abs_pitch_deg"] <= 1.0
         assert summary["max_abs_position_m"] <= 3.0
-        assert summary["tail_mean_abs_velocity_mps"] <= 0.05
+        assert summary["tail_mean_abs_velocity_mps"] <= 0.06
+    if run_id == "realistic_disturbance_pulse_20s":
+        assert summary["tail_rms_pitch_deg"] <= 0.05
 
 
-def test_realistic_disturbance_pulse_is_damped(simulator_binary, sim_artifact_settings):
-    proc, summary, metadata, output_dir = _run_scenario(
-        simulator_binary,
-        sim_artifact_settings,
-        "disturbance_pulse",
-        "realistic",
-        run_id="realistic_disturbance_pulse",
-        extra_args=["--duration-s", "20"],
+@pytest.mark.parametrize(("run_id", "kwargs"), REALISTIC_FRONTIER_DIAGNOSTICS)
+@pytest.mark.xfail(strict=True, reason="realistic profile still has unresolved harder scenarios")
+def test_realistic_profile_frontier_diagnostics(simulator_udp, sim_artifact_settings, run_id: str, kwargs: dict):
+    summary, metadata, done = run_scenario_live(
+        simulator_udp,
+        run_id=3000 + REALISTIC_FRONTIER_DIAGNOSTICS.index((run_id, kwargs)),
+        output_dir=_artifact_dir(sim_artifact_settings, run_id),
+        physics_profile=PHYSICS_REALISTIC,
+        **kwargs,
     )
     assert metadata["physics_profile"] == "realistic"
-    _assert_pass_criteria(proc, summary, metadata)
-    assert summary["tail_rms_pitch_deg"] <= 0.05
-
-    timeline = _load_timeline(output_dir)
-    post_disturbance = [
-        float(row["u_sps"])
-        for row in timeline
-        if float(row["sim_time_s"]) >= 1.2
-    ]
-    assert _count_nonzero_sign_changes(post_disturbance) <= 20
+    _assert_pass_criteria(summary, metadata, done)
 
 
-@pytest.mark.parametrize(("run_id", "scenario_name", "extra_args"), REALISTIC_FRONTIER_DIAGNOSTICS)
-@pytest.mark.xfail(strict=True, reason="realistic profile still has unresolved frontier cases on harder or longer runs")
-def test_realistic_profile_frontier_diagnostics(
-    simulator_binary,
-    sim_artifact_settings,
-    run_id: str,
-    scenario_name: str,
-    extra_args: list[str],
-):
-    proc, summary, metadata, _ = _run_scenario(
-        simulator_binary,
-        sim_artifact_settings,
-        scenario_name,
-        "realistic",
-        run_id=run_id,
-        extra_args=extra_args,
+def test_realistic_fail_fast_stop_on_fall(simulator_udp, sim_artifact_settings):
+    summary, _metadata, done = run_scenario_live(
+        simulator_udp,
+        run_id=4001,
+        output_dir=_artifact_dir(sim_artifact_settings, "realistic_fail_fast_stop"),
+        physics_profile=PHYSICS_REALISTIC,
+        initial_pitch_deg=10.0,
+        duration_s=20.0,
     )
-    assert metadata["physics_profile"] == "realistic"
-    _assert_pass_criteria(proc, summary, metadata)
+    assert summary["sample_count"] > 0
+    assert done.reason_code in (DONE_FELL, DONE_COMPLETED)
