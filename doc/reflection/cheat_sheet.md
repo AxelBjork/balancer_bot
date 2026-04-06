@@ -1,21 +1,80 @@
-# C++26 Reflection Cheat Sheet & Summary
+# Reflection Quick Reference
 
-[Home](../../README.md) | [Architecture](../arch/design.md) | [System Design](./system.md) | [IPC Protocol](../ipc/protocol.md) | [Testing](../testing/sil_guide.md)
+[Docs Portal](../index.md) | [Reflection System](system.md) | [IPC Protocol](../ipc/protocol.md)
 
-This document serves as a high-level summary and quick reference for the new static reflection features introduced in C++26 (P2996), specifically tailored to modern GCC snapshot environments. It also includes an architectural overview of how `reflect_pytest` utilizes these features.
+This is the short project-oriented reflection reference for `balancer_bot`.
 
-## Approved Papers Reference
+## What Reflection Is Used For
 
-The following foundational papers are included in C++26 related to reflection. Full HTML documents are located in this directory (`/doc`).
+The project uses GCC trunk reflection to generate:
 
-| Paper ID | Title | Summary |
-|----------|-------|---------|
-| **[P2996R13](P2996.html)** | Reflection for C++26 | The core reflection proposal. Introduces `std::meta::info`, the `^^` operator, splicers (`[: :]`), and the fundamental `<meta>` header. |
-| **[P3096R12](P3096.html)** | Function Parameter Reflection | Allows introspecting function parameters via reflection APIs. |
-| **[P3293R3](P3293.html)**  | Splicing a base class subobject | Allows generating base class derivations programmatically. |
-| **[P3394R4](P3394.html)**  | Annotations for reflection | Introduces a mechanism for user-defined attributes (annotations) that can be queried at compile-time. |
-| **[P3491R3](P3491.html)**  | `define_static_` | Capability for defining static variables from reflection. |
-| **[P3560R2](P3560.html)**  | Error handling in reflection | Clarifies error handling behaviors when using reflection metafunctions. |
+- Python UDP bindings: `tests/python/generated_balancer.py`
+- generated IPC docs: `doc/ipc/protocol.md`
+- the IPC flow diagram: `doc/ipc/ipc_flow.{dot,svg,png}`
+
+## Where to Look
+
+- registry and helpers:
+  - `src/reflection/balancer_message_registry.h`
+  - `src/reflection/reflection_common.h`
+- generators:
+  - `src/reflection/generate_balancer_bindings.cpp`
+  - `src/reflection/generate_balancer_docs.cpp`
+- build wiring:
+  - `cmake/reflection.cmake`
+
+## Build Targets
+
+```bash
+cmake --build build --target balancer_bindings
+cmake --build build --target balancer_docs
+```
+
+On host builds, `balancer_reflection` depends on both.
+
+## What to Annotate
+
+Use `DOC_DESC(...)` on:
+
+- payload structs
+- services
+- other reflected types that should appear with human-readable descriptions in generated docs
+
+Use `MessageTraits<MsgId::...>` to bind each message ID to its payload type and stable name.
+
+Use `ipc::MsgList<...>` in services to declare:
+
+- `Publishes`
+- `Subscribes`
+
+## Important Project Rule
+
+Bindings and docs are not generated from the same message subset:
+
+- Python bindings follow the UDP contract
+- generated IPC docs describe the runtime message graph, including internal-only messages when relevant
+
+That split is intentional. For example, `MotorFeedback` belongs in the protocol docs but not in the Python UDP binding surface.
+
+## Practical Notes
+
+- reflection uses GCC trunk at `/usr/local/gcc-trunk/bin/g++`
+- cross-builds skip reflection targets
+- normal runtime code still builds as C++20
+- `REFLECT_DOCS` gates the annotation path so editors like `clangd` stay usable
+
+## Language Reference
+
+The detailed C++26 papers are archived under:
+
+- `doc/archive/reflection/P2996.html`
+- `doc/archive/reflection/P3096.html`
+- `doc/archive/reflection/P3293.html`
+- `doc/archive/reflection/P3394.html`
+- `doc/archive/reflection/P3491.html`
+- `doc/archive/reflection/P3560.html`
+
+Use those when you need language-level detail. Use the rest of this handbook when you need project-level detail.
 
 ---
 

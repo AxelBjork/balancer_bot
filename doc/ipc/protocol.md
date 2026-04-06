@@ -11,8 +11,8 @@ This document is generated from the balancer runtime message registry and the re
 It describes the reflected runtime message bus used by the balancer services, including the UDP-facing
 messages consumed by the SIL harness and the internal-only messages exchanged between services.
 
-- Documented balancer message count: `6`
-- Protocol hash: `70d7276f466217f9`
+- Documented balancer message count: `10`
+- Protocol hash: `8da9ae6dae806396`
 - UDP ingress/egress gateway: `UdpBridge`
 
 ## System Architecture
@@ -101,8 +101,8 @@ The architecture is divided into three logical areas:
 >
 > This makes the UDP contract symmetric with the Python bindings generated from the same message definitions. Ope
 
-- Publishes: `PhysicsTick`, `JoystickCommand`, `ImuData`
-- Subscribes: `ImuData`, `MotorTargets`, `SystemTelemetry`
+- Publishes: `PhysicsTick`, `JoystickCommand`, `ImuData`, `SimStartRun`, `SimStopRun`
+- Subscribes: `ImuData`, `MotorTargets`, `SystemTelemetry`, `SimStartAck`, `SimRunDone`
 
 ---
 
@@ -174,27 +174,42 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 - Numeric ID: `3003`
 - Payload type: `SystemTelemetryPayload`
 - Python type: `SystemTelemetryPayload`
-- Wire size: `60` bytes
+- Wire size: `120` bytes
 - Published by: `ControlService`
 - Consumed by: `UdpBridge`
 
 | Field | C++ Type | Python Type | Bytes | Offset | Description |
 |---|---|---|---:|---:|---|
-| `t_sec` | `float` | `float` | 4 | 0 |  |
-| `age_ms` | `float` | `float` | 4 | 4 |  |
-| `pitch_deg` | `float` | `float` | 4 | 8 |  |
-| `pitch_rate_dps` | `float` | `float` | 4 | 12 |  |
-| `rate_sp_dps` | `float` | `float` | 4 | 16 |  |
-| `out_norm` | `float` | `float` | 4 | 20 |  |
-| `u_sps` | `float` | `float` | 4 | 24 |  |
-| `integ_pitch` | `float` | `float` | 4 | 28 |  |
-| `vel_error` | `float` | `float` | 4 | 32 |  |
-| `vel_p_term` | `float` | `float` | 4 | 36 |  |
-| `vel_i_term` | `float` | `float` | 4 | 40 |  |
-| `pitch_sp_deg` | `float` | `float` | 4 | 44 |  |
-| `effective_pitch_sp_deg` | `float` | `float` | 4 | 48 |  |
-| `pitch_trim_deg` | `float` | `float` | 4 | 52 |  |
-| `trim_active` | `float` | `float` | 4 | 56 |  |
+| `run_id` | `uint32_t` | `int` | 4 | 0 |  |
+| `t_sec` | `float` | `float` | 4 | 4 |  |
+| `sim_time_s` | `float` | `float` | 4 | 8 |  |
+| `age_ms` | `float` | `float` | 4 | 12 |  |
+| `pitch_deg` | `float` | `float` | 4 | 16 |  |
+| `pitch_rate_dps` | `float` | `float` | 4 | 20 |  |
+| `rate_sp_dps` | `float` | `float` | 4 | 24 |  |
+| `out_norm` | `float` | `float` | 4 | 28 |  |
+| `u_sps` | `float` | `float` | 4 | 32 |  |
+| `integ_pitch` | `float` | `float` | 4 | 36 |  |
+| `vel_error` | `float` | `float` | 4 | 40 |  |
+| `vel_p_term` | `float` | `float` | 4 | 44 |  |
+| `vel_i_term` | `float` | `float` | 4 | 48 |  |
+| `pitch_sp_deg` | `float` | `float` | 4 | 52 |  |
+| `effective_pitch_sp_deg` | `float` | `float` | 4 | 56 |  |
+| `pitch_trim_deg` | `float` | `float` | 4 | 60 |  |
+| `trim_active` | `float` | `float` | 4 | 64 |  |
+| `plant_pitch_deg` | `float` | `float` | 4 | 68 |  |
+| `plant_pitch_rate_dps` | `float` | `float` | 4 | 72 |  |
+| `plant_position_m` | `float` | `float` | 4 | 76 |  |
+| `plant_velocity_mps` | `float` | `float` | 4 | 80 |  |
+| `target_wheel_velocity` | `float` | `float` | 4 | 84 |  |
+| `actual_wheel_velocity` | `float` | `float` | 4 | 88 |  |
+| `plant_velocity_error` | `float` | `float` | 4 | 92 |  |
+| `f_cmd` | `float` | `float` | 4 | 96 |  |
+| `f_app` | `float` | `float` | 4 | 100 |  |
+| `x_ddot` | `float` | `float` | 4 | 104 |  |
+| `theta_ddot` | `float` | `float` | 4 | 108 |  |
+| `command_saturated` | `float` | `float` | 4 | 112 |  |
+| `force_saturated` | `float` | `float` | 4 | 116 |  |
 
 ### `MsgId::MotorFeedback`
 
@@ -211,6 +226,84 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 | `right_applied_sps` | `float` | `float` | 4 | 4 |  |
 | `left_actual_steps` | `int64_t` | `int` | 8 | 8 |  |
 | `right_actual_steps` | `int64_t` | `int` | 8 | 16 |  |
+
+### `MsgId::SimStartRun`
+
+- Numeric ID: `3005`
+- Payload type: `SimStartRunPayload`
+- Python type: `SimStartRunPayload`
+- Wire size: `184` bytes
+- Published by: `UdpBridge`
+- Consumed by: _None_
+
+| Field | C++ Type | Python Type | Bytes | Offset | Description |
+|---|---|---|---:|---:|---|
+| `run_id` | `uint32_t` | `int` | 4 | 0 |  |
+| `physics_profile` | `uint8_t` | `int` | 1 | 4 |  |
+| `enable_disturbance` | `uint8_t` | `int` | 1 | 5 |  |
+| `reserved` | `uint16_t` | `int` | 2 | 6 |  |
+| `duration_s` | `double` | `float` | 8 | 8 |  |
+| `initial_pitch_deg` | `double` | `float` | 8 | 16 |  |
+| `com_angle_offset_rad` | `double` | `float` | 8 | 24 |  |
+| `disturbance_start_s` | `double` | `float` | 8 | 32 |  |
+| `disturbance_duration_s` | `double` | `float` | 8 | 40 |  |
+| `disturbance_forward` | `float` | `float` | 4 | 48 |  |
+| `disturbance_turn` | `float` | `float` | 4 | 52 |  |
+| `pid_config_path` | `std::array<char, 128>` | `bytes` | 128 | 56 |  |
+
+### `MsgId::SimStartAck`
+
+- Numeric ID: `3006`
+- Payload type: `SimStartAckPayload`
+- Python type: `SimStartAckPayload`
+- Wire size: `8` bytes
+- Published by: _None_
+- Consumed by: `UdpBridge`
+
+| Field | C++ Type | Python Type | Bytes | Offset | Description |
+|---|---|---|---:|---:|---|
+| `run_id` | `uint32_t` | `int` | 4 | 0 |  |
+| `accepted` | `uint8_t` | `int` | 1 | 4 |  |
+| `status_code` | `uint8_t` | `int` | 1 | 5 |  |
+| `reserved` | `uint16_t` | `int` | 2 | 6 |  |
+
+### `MsgId::SimStopRun`
+
+- Numeric ID: `3007`
+- Payload type: `SimStopRunPayload`
+- Python type: `SimStopRunPayload`
+- Wire size: `4` bytes
+- Published by: `UdpBridge`
+- Consumed by: _None_
+
+| Field | C++ Type | Python Type | Bytes | Offset | Description |
+|---|---|---|---:|---:|---|
+| `run_id` | `uint32_t` | `int` | 4 | 0 |  |
+
+### `MsgId::SimRunDone`
+
+- Numeric ID: `3008`
+- Payload type: `SimRunDonePayload`
+- Python type: `SimRunDonePayload`
+- Wire size: `44` bytes
+- Published by: _None_
+- Consumed by: `UdpBridge`
+
+| Field | C++ Type | Python Type | Bytes | Offset | Description |
+|---|---|---|---:|---:|---|
+| `run_id` | `uint32_t` | `int` | 4 | 0 |  |
+| `reason_code` | `uint8_t` | `int` | 1 | 4 |  |
+| `reserved0` | `uint8_t` | `int` | 1 | 5 |  |
+| `reserved1` | `uint16_t` | `int` | 2 | 6 |  |
+| `sample_count` | `uint32_t` | `int` | 4 | 8 |  |
+| `elapsed_s` | `float` | `float` | 4 | 12 |  |
+| `final_pitch_deg` | `float` | `float` | 4 | 16 |  |
+| `max_abs_pitch_deg` | `float` | `float` | 4 | 20 |  |
+| `tail_rms_pitch_deg` | `float` | `float` | 4 | 24 |  |
+| `tail_rail_fraction` | `float` | `float` | 4 | 28 |  |
+| `tail_mean_abs_pitch_deg` | `float` | `float` | 4 | 32 |  |
+| `max_abs_position_m` | `float` | `float` | 4 | 36 |  |
+| `tail_mean_abs_velocity_mps` | `float` | `float` | 4 | 40 |  |
 
 ---
 

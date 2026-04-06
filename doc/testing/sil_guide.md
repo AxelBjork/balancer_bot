@@ -1,21 +1,75 @@
-# SIL Testing Guide
+# SIL Guide
 
-This repo’s Python harness acts as the network peer for `sil_app`. Tests talk to the C++ process over UDP using the generated bindings in [tests/python/generated_balancer.py](/workspaces/balancer_bot/tests/python/generated_balancer.py) and the local helper in [tests/python/udp_client.py](/workspaces/balancer_bot/tests/python/udp_client.py).
+`sil_app` is the service-level software-in-the-loop runtime. It is useful when you want to exercise the UDP-facing message bus path without involving the full direct simulator CLI.
 
-## Overview
+## What `sil_app` Includes
 
-- `tests/python/conftest.py` owns the `pytest --build` workflow and manages the `sil_app` process lifetime.
-- `tests/python/udp_client.py` is the low-level UDP helper for the `[uint16_t msgId][payload]` wire format.
-- `tests/python/test_udp_bridge.py` is the transport smoke test.
-- `tests/python/test_sil_loop.py` is the control-loop smoke test.
+- `ControlService`
+- `MotorService`
+- `ImuService` with hardware reading disabled
+- `UdpBridge`
 
-## Test Loop
+It does **not** start `TimeService`. Python is expected to inject `PhysicsTick` explicitly.
 
-1. `pytest --build` configures and builds the C++ targets, then runs `ctest`.
-2. The session fixture launches `build/sil_app`.
-3. Each Python test registers with `UdpBridge`, injects messages, and asserts on outbound traffic.
+## UDP Contract
 
-## Related Docs
+Python can inject:
 
-- [IPC Protocol](../ipc/protocol.md)
-- [Reflection System](../reflection/system.md)
+- `PhysicsTick`
+- `ImuData`
+- `JoystickCommand`
+
+Python can observe:
+
+- `ImuData`
+- `MotorTargets`
+- `SystemTelemetry`
+
+The payload schema and message IDs come from the generated bindings in `tests/python/generated_balancer.py`.
+
+## Manual Flow
+
+### Build
+
+```bash
+cmake -S . -B build -DBUILD_TESTS=ON
+cmake --build build
+```
+
+### Run `sil_app`
+
+```bash
+./build/sil_app
+```
+
+### Run the Python SIL Tests
+
+```bash
+pytest -q tests/python/test_udp_bridge.py
+pytest -q tests/python/test_sil_loop.py
+```
+
+Or run the full combined workflow:
+
+```bash
+pytest --build
+```
+
+## Key Files
+
+- `tests/python/conftest.py`
+  process management and `pytest --build`
+- `tests/python/udp_client.py`
+  UDP helper for the `[uint16_t MsgId][payload]` wire format
+- `tests/python/test_udp_bridge.py`
+  transport smoke coverage
+- `tests/python/test_sil_loop.py`
+  tick-driven controller smoke coverage
+
+## Important Boundaries
+
+- `sil_app` is a smoke/integration path, not the main stability benchmark
+- the primary balance/stability gate is the direct simulator and its scenario ladder
+- when no hardware motor feedback exists, `ControlService` falls back to commanded-speed proxy feedback
+
+For the broader testing model, read [Testing Strategy](strategy.md). For payloads and wire layout, read [IPC Protocol](../ipc/protocol.md).

@@ -14,6 +14,10 @@ constexpr MsgId JoystickCommand = MsgId::JoystickCommand;
 constexpr MsgId MotorTargets = MsgId::MotorTargets;
 constexpr MsgId SystemTelemetry = MsgId::SystemTelemetry;
 constexpr MsgId MotorFeedback = MsgId::MotorFeedback;
+constexpr MsgId SimStartRun = MsgId::SimStartRun;
+constexpr MsgId SimStartAck = MsgId::SimStartAck;
+constexpr MsgId SimStopRun = MsgId::SimStopRun;
+constexpr MsgId SimRunDone = MsgId::SimRunDone;
 
 struct DOC_DESC("Fused IMU sample published by the IMU service and accepted by the SIL harness.") ImuSamplePayload {
     double pitch_rad;
@@ -33,7 +37,9 @@ struct DOC_DESC("Wheel speed targets emitted by the controller in steps per seco
 };
 
 struct DOC_DESC("Detailed controller telemetry streamed out over UDP and used for runtime logging/visibility.") SystemTelemetryPayload {
+    uint32_t run_id;
     float t_sec;
+    float sim_time_s;
     float age_ms;
     float pitch_deg;
     float pitch_rate_dps;
@@ -48,6 +54,19 @@ struct DOC_DESC("Detailed controller telemetry streamed out over UDP and used fo
     float effective_pitch_sp_deg;
     float pitch_trim_deg;
     float trim_active;
+    float plant_pitch_deg;
+    float plant_pitch_rate_dps;
+    float plant_position_m;
+    float plant_velocity_mps;
+    float target_wheel_velocity;
+    float actual_wheel_velocity;
+    float plant_velocity_error;
+    float f_cmd;
+    float f_app;
+    float x_ddot;
+    float theta_ddot;
+    float command_saturated;
+    float force_saturated;
 };
 
 struct DOC_DESC("Internal motor feedback sample published by the motor service. It reflects the currently applied wheel rates after slew limiting plus the integrated actual step counts used for closed-loop hardware feedback.") MotorFeedbackPayload {
@@ -55,6 +74,48 @@ struct DOC_DESC("Internal motor feedback sample published by the motor service. 
     float right_applied_sps;
     int64_t left_actual_steps;
     int64_t right_actual_steps;
+};
+
+struct DOC_DESC("Request from Python to start a single simulator run. Only one run may be active at a time.") SimStartRunPayload {
+    uint32_t run_id;
+    uint8_t physics_profile;
+    uint8_t enable_disturbance;
+    uint16_t reserved;
+    double duration_s;
+    double initial_pitch_deg;
+    double com_angle_offset_rad;
+    double disturbance_start_s;
+    double disturbance_duration_s;
+    float disturbance_forward;
+    float disturbance_turn;
+    std::array<char, 128> pid_config_path;
+};
+
+struct DOC_DESC("Immediate simulator reply indicating whether a start request was accepted.") SimStartAckPayload {
+    uint32_t run_id;
+    uint8_t accepted;
+    uint8_t status_code;
+    uint16_t reserved;
+};
+
+struct DOC_DESC("Request from Python to stop the currently running simulator scenario.") SimStopRunPayload {
+    uint32_t run_id;
+};
+
+struct DOC_DESC("Terminal simulator status emitted once per accepted run.") SimRunDonePayload {
+    uint32_t run_id;
+    uint8_t reason_code;
+    uint8_t reserved0;
+    uint16_t reserved1;
+    uint32_t sample_count;
+    float elapsed_s;
+    float final_pitch_deg;
+    float max_abs_pitch_deg;
+    float tail_rms_pitch_deg;
+    float tail_rail_fraction;
+    float tail_mean_abs_pitch_deg;
+    float max_abs_position_m;
+    float tail_mean_abs_velocity_mps;
 };
 
 } // namespace ipc
@@ -88,4 +149,28 @@ template <>
 struct MessageTraits<MsgId::MotorFeedback> {
     using Payload = ipc::MotorFeedbackPayload;
     static constexpr std::string_view name = "MotorFeedback";
+};
+
+template <>
+struct MessageTraits<MsgId::SimStartRun> {
+    using Payload = ipc::SimStartRunPayload;
+    static constexpr std::string_view name = "SimStartRun";
+};
+
+template <>
+struct MessageTraits<MsgId::SimStartAck> {
+    using Payload = ipc::SimStartAckPayload;
+    static constexpr std::string_view name = "SimStartAck";
+};
+
+template <>
+struct MessageTraits<MsgId::SimStopRun> {
+    using Payload = ipc::SimStopRunPayload;
+    static constexpr std::string_view name = "SimStopRun";
+};
+
+template <>
+struct MessageTraits<MsgId::SimRunDone> {
+    using Payload = ipc::SimRunDonePayload;
+    static constexpr std::string_view name = "SimRunDone";
 };

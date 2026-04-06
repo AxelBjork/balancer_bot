@@ -9,7 +9,7 @@
 
 The complete system architecture, wire format, and message flow are detailed below.
 
-![IPC Flow Diagram](ipc_flow.svg)
+![IPC Flow Diagram](../ipc/ipc_flow.svg)
 
 ### How to Read the Diagram
 

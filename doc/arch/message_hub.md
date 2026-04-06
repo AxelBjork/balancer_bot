@@ -1,65 +1,81 @@
-# Message Hub Architecture
+# MessageBus and UDP Bridge
 
-The SIL (Software-in-the-Loop) Message Hub is the central nervous system of the simulation. It provides a discovery-less, typed, and lock-free (during runtime) IPC mechanism that connects C++ services to each other and to the Python-based test harness.
+This project uses a deliberately small message-bus abstraction. It is not a general broker or background queue. It is a typed synchronous dispatch mechanism that lets the runtime entrypoint wire the services together explicitly.
 
-## High-Level Flow
+## Bus Model
 
-The following diagram illustrates the lifecycle of a message as it travels from a C++ publisher to the Python test harness.
+`MessageBus` stores:
 
-```mermaid
-sequenceDiagram
-    participant C as C++ Service
-    participant B as MessageBus
-    participant U as UdpBridge
-    participant K as Linux Kernel
-    participant P as Pytest / Python
+- a context pointer
+- one dispatcher function
 
-    C->>B: bus.publish<Id>(payload)
-    Note over B: const void* lock-free dispatch
-    B->>U: h(&payload)
-    Note over U: sendmsg with iovec
-    U->>K: ::sendmsg(fd, &msg, 0)
-    Note over K: Socket Copy (User -> Kernel)
-    K-->>K: Loopback / Network
-    K->>P: socket.recv(buf)
-    Note over K: Socket Copy (Kernel -> User)
-    Note over P: Python Object Mapping
-```
+Publishing a message is just:
 
-## Data Copies Checklist
+1. `TypedPublisher<Component>::publish<Id>(payload)`
+2. `MessageBus::dispatch(Id, &payload)`
+3. the application dispatcher routes the payload to the relevant services
 
-Efficiency is prioritized for internal C++ communication. However, crossing the boundary to Python via UDP involves necessary copies by the OS network stack. User-space copies have been completely eliminated on the send path.
+That means delivery is synchronous and happens in the publishing thread. The bus itself does not create threads or store queued messages.
 
-### Path: C++ Publisher → Python Test Harness
+## Authorization Model
 
-| Step | Location | Data Copy Type | Description |
-| :--- | :--- | :--- | :--- |
-| **1** | `MessageBus` | **Zero Copy** | Uses `const void*` type erasure. Neither PODs nor smart pointers evaluate any dynamic memory allocation or copying. Only the 8-byte pointer is passed to subscribers. |
-| **2** | `UdpBridge` | **Zero Copy** | Uses `sendmsg` and `struct iovec` to transmit the 2-byte header (`MsgId`) and the typed payload in a single syscall without merging them into an intermediate buffer. |
-| **3** | `::sendmsg` | **Interface Boundary** | The Linux kernel copies the `iovec` segments from user-space into a kernel-space Socket Buffer (SKB). |
-| **4** | `::recvfrom` | **Interface Boundary** | (Python side) The kernel copies the SKB back into the Python process's user-space memory. |
-| **5** | `Python` | **Object Parsing** | The `bytes` object is parsed into Python attributes or mapped via `ctypes.Structure.from_buffer_copy()`. |
+Each component declares:
 
-### Path: Python → C++ Subscriber
+- `Publishes = MsgList<...>`
+- `Subscribes = MsgList<...>`
 
-| Step | Location | Data Copy Type | Description |
-| :--- | :--- | :--- | :--- |
-| **1** | Pytest | **Serialization** | Python serializes the message into a byte-stream. |
-| **2** | `::sendto` | **Interface Boundary** | Kernel copy from Python user-space to kernel. |
-| **3** | `::recvfrom` | **Interface Boundary** | (UdpBridge) Kernel copy from kernel to C++ user-space `rx_buffer`. |
-| **4** | `try_publish_raw` | **Deserialization** | `std::memcpy` from the raw buffer into a stack-allocated typed `Payload` object. |
-| **5** | `MessageBus` | **Zero Copy** | `const void*` pointer passed to all subscribers. |
+`TypedPublisher` enforces `Publishes` at compile time for normal publishing, and `publish_if_authorized()` uses the same publish list to gate raw UDP ingress.
 
-## Optimization Highlights
+This is what lets `UdpBridge` accept only the message IDs it is supposed to inject:
 
-1. **Lock-Free Dispatch**: Once the system moves past the `Construct -> Start` lifecycle phase, the `MessageBus` handler map is immutable. Lookups are performed without mutexes.
-2. **Zero-Allocation Type Erasure**: `MessageBus` erases types down to `const void*`. Subscribing lambdas cast back to the explicit `const Payload&`. This completely avoids `std::any` allocations and RTTI overhead.
-3. **Zero-Copy UDP Transmission**: `UdpBridge` completely avoids `std::memcpy`. It vectors the `MsgId` header literal and the payload's memory address directly into the kernel's network stack via `sendmsg`.
-4. **Lock-Free Atomic Tracking**: UDP connection tracking is lock-free, storing up to 64-bit endpoints inside `std::atomic<uint64_t>` to eliminate atomic data races natively without mutexes.
+- `PhysicsTick`
+- `JoystickCommand`
+- `ImuData`
 
-For an detailed dive into exactly what the compiler does under `-O3 -flto`, see the [Send Path Assembly Analysis](send_path_lto_analysis.md).
+## UDP Bridge Contract
 
-## Network Transport
-- **Protocol**: UDP
-- **Rationale**: Low latency and no head-of-line blocking. Perfect for 100Hz real-time simulation where a late packet is of less value than the latest packet.
-- **Port**: Defaults to `9000`.
+`UdpBridge` is the network edge for the SIL harness.
+
+### UDP Ingress
+
+The bridge receives datagrams on port `9000`, reads the leading `uint16_t` message ID, and republishes the payload only if the ID is present in `UdpBridge::Publishes`.
+
+### UDP Egress
+
+The bridge forwards these outbound bus messages:
+
+- `ImuData`
+- `MotorTargets`
+- `SystemTelemetry`
+
+`MotorFeedback` remains internal-only and is not exposed to Python.
+
+## Data Copy Story
+
+### Internal C++ Path
+
+Internal publishing passes a pointer to an already-typed payload. No extra copy is introduced by `MessageBus` itself.
+
+### C++ to UDP
+
+`UdpBridge` uses `sendmsg` with two `iovec` entries:
+
+- the `uint16_t` message ID
+- the trivially-copyable payload bytes
+
+There is no extra user-space concatenation buffer on the send path.
+
+### UDP to C++
+
+On ingress, the bridge receives raw bytes, checks the message ID against its allowed publish list, copies the payload into a stack-allocated typed struct with `std::memcpy`, and republishes it on the internal bus.
+
+## Why This Fits the Project
+
+The runtime has a small fixed set of services, explicit dispatcher logic, and a narrow UDP boundary. That makes the lightweight bus a good fit:
+
+- no discovery layer to debug
+- no background queue ownership ambiguity
+- easy to reason about in tests
+- easy to reflect for generated docs and Python bindings
+
+For the full runtime view, read [Runtime Architecture](runtime.md). For the generated topology and payload reference, read [IPC Protocol Reference](../ipc/protocol.md). For the send-path deep dive, read [Send Path Assembly Analysis](send_path_asm_analysis.md).

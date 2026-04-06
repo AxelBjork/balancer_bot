@@ -30,6 +30,10 @@ enum class DOC_DESC("Top-level message type selector. The uint16_t wire value is
   MotorTargets = 3002,
   SystemTelemetry = 3003,
   MotorFeedback = 3004,
+  SimStartRun = 3005,
+  SimStartAck = 3006,
+  SimStopRun = 3007,
+  SimRunDone = 3008,
 };
 
 template <MsgId Id>

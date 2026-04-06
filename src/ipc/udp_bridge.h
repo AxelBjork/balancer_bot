@@ -27,9 +27,9 @@ inline constexpr char kUdpBridgeDoc[] =
     "$$ \\text{datagram} = \\texttt{uint16\\_t MsgId} \\; || \\; \\texttt{Payload bytes} $$\n\n"
     "This makes the UDP contract symmetric with the Python bindings generated from the same message "
     "definitions. Operationally, `UdpBridge` is what turns the balancer into a SIL endpoint: it "
-    "lets pytest inject `PhysicsTick`, `JoystickCommand`, and `ImuData`, while streaming "
-    "`ImuData`, `MotorTargets`, and `SystemTelemetry` back out for observation and closed-loop "
-    "test orchestration.";
+    "lets pytest inject `PhysicsTick`, `JoystickCommand`, `ImuData`, and simulator-control "
+    "messages, while streaming `ImuData`, `MotorTargets`, `SystemTelemetry`, and simulator-status "
+    "messages back out for observation and closed-loop test orchestration.";
 
 struct PeerAddress {
   uint32_t ip;
@@ -45,8 +45,10 @@ class DOC_DESC(kUdpBridgeDoc) UdpBridge {
  public:
   static constexpr const char* kDocDescription = kUdpBridgeDoc;
 
-  using Subscribes = MsgList<MsgId::ImuData, MsgId::MotorTargets, MsgId::SystemTelemetry>;
-  using Publishes = MsgList<MsgId::PhysicsTick, MsgId::JoystickCommand, MsgId::ImuData>;
+  using Subscribes = MsgList<MsgId::ImuData, MsgId::MotorTargets, MsgId::SystemTelemetry,
+                             MsgId::SimStartAck, MsgId::SimRunDone>;
+  using Publishes = MsgList<MsgId::PhysicsTick, MsgId::JoystickCommand, MsgId::ImuData,
+                            MsgId::SimStartRun, MsgId::SimStopRun>;
 
   static constexpr uint16_t kDefaultPort = 9000;
 

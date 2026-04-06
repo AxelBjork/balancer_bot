@@ -31,7 +31,9 @@ ControlService::ControlService(ipc::MessageBus& bus)
     // Telemetry publishing
     core_.setTelemetrySink([this](const Telemetry& t) {
         ipc::SystemTelemetryPayload p{};
+        p.run_id = 0;
         p.t_sec = static_cast<float>(t.t_sec);
+        p.sim_time_s = static_cast<float>(t.t_sec);
         p.age_ms = static_cast<float>(t.age_ms);
         p.pitch_deg = static_cast<float>(t.pitch_deg);
         p.pitch_rate_dps = static_cast<float>(t.pitch_rate_dps);
@@ -46,6 +48,19 @@ ControlService::ControlService(ipc::MessageBus& bus)
         p.effective_pitch_sp_deg = static_cast<float>(t.effective_pitch_sp_deg);
         p.pitch_trim_deg = static_cast<float>(t.pitch_trim_deg);
         p.trim_active = static_cast<float>(t.trim_active);
+        p.plant_pitch_deg = static_cast<float>(t.pitch_deg);
+        p.plant_pitch_rate_dps = static_cast<float>(t.pitch_rate_dps);
+        p.plant_position_m = last_position_m_;
+        p.plant_velocity_mps = last_applied_avg_sps_ * static_cast<float>(Config::meters_per_step);
+        p.target_wheel_velocity = 0.0f;
+        p.actual_wheel_velocity = last_applied_avg_sps_;
+        p.plant_velocity_error = 0.0f;
+        p.f_cmd = 0.0f;
+        p.f_app = 0.0f;
+        p.x_ddot = 0.0f;
+        p.theta_ddot = 0.0f;
+        p.command_saturated = (std::abs(t.u_sps) >= (0.99f * static_cast<float>(kMaxSps))) ? 1.0f : 0.0f;
+        p.force_saturated = 0.0f;
         bus_.publish<MsgId::SystemTelemetry>(p);
     });
 }
