@@ -115,6 +115,20 @@ def summarize_rows(rows: list[dict[str, Any]], metadata: dict[str, Any] | None =
     summary["max_abs_position_m"] = (
         max(abs(v) for v in plant_position_values) if plant_position_values else None
     )
+    target_wheel_velocity_values = _series(rows, "target_wheel_velocity")
+    actual_wheel_velocity_values = _series(rows, "actual_wheel_velocity")
+    summary["max_abs_target_wheel_velocity"] = (
+        max(abs(v) for v in target_wheel_velocity_values) if target_wheel_velocity_values else None
+    )
+    summary["max_abs_actual_wheel_velocity"] = (
+        max(abs(v) for v in actual_wheel_velocity_values) if actual_wheel_velocity_values else None
+    )
+    f_app_values = _series(rows, "f_app")
+    summary["max_abs_f_app"] = max(abs(v) for v in f_app_values) if f_app_values else None
+    theta_ddot_values = _series(rows, "theta_ddot")
+    summary["max_abs_theta_ddot"] = (
+        max(abs(v) for v in theta_ddot_values) if theta_ddot_values else None
+    )
 
     if time_values and pitch_values:
         tail_end = time_values[-1]
@@ -484,6 +498,16 @@ class RunRecorder:
             ("left_sps", "#EA580C", "Left command (steps/s)"),
             ("right_sps", "#0891B2", "Right command (steps/s)"),
         ], y_label="Command (steps/s)")
+        _write_svg_plot(output / "wheel_plot.svg", self.rows, "Wheel Velocity Timeline", [
+            ("target_wheel_velocity", "#2563EB", "Target wheel velocity (m/s)"),
+            ("actual_wheel_velocity", "#DC2626", "Actual wheel velocity (m/s)"),
+            ("plant_velocity", "#059669", "Plant velocity (m/s)"),
+        ], y_label="Velocity (m/s)", center_zero=True)
+        _write_svg_plot(output / "force_plot.svg", self.rows, "Plant Force Timeline", [
+            ("f_cmd", "#7C3AED", "Commanded force (N)"),
+            ("f_app", "#EA580C", "Applied force (N)"),
+            ("theta_ddot", "#0891B2", "Theta accel (rad/s^2)"),
+        ], y_label="Force / Accel", center_zero=True)
         return summary
 
 

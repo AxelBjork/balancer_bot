@@ -42,22 +42,39 @@ def make_start_payload(
     duration_s: float,
     initial_pitch_deg: float = 0.0,
     com_angle_offset_rad: float = 0.0,
-    disturbance: dict | None = None,
+    disturbances: list[dict] | None = None,
     pid_config_path: str = "",
 ) -> SimStartRunPayload:
-    disturbance = disturbance or {}
+    disturbances = list(disturbances or [])
+    if len(disturbances) > 10:
+        raise ValueError("SimStartRunPayload supports at most 10 disturbance segments")
+
+    wire_disturbances = [
+        {
+            "start_s": 0.0,
+            "duration_s": 0.0,
+            "forward": 0.0,
+            "turn": 0.0,
+        }
+        for _ in range(10)
+    ]
+    for idx, disturbance in enumerate(disturbances):
+        wire_disturbances[idx] = {
+            "start_s": float(disturbance.get("start_s", 0.0)),
+            "duration_s": float(disturbance.get("duration_s", 0.0)),
+            "forward": float(disturbance.get("forward", 0.0)),
+            "turn": float(disturbance.get("turn", 0.0)),
+        }
+
     return SimStartRunPayload(
         run_id=run_id,
         physics_profile=physics_profile,
-        enable_disturbance=1 if disturbance else 0,
-        reserved=0,
+        reserved0=0,
+        reserved1=0,
         duration_s=duration_s,
         initial_pitch_deg=initial_pitch_deg,
         com_angle_offset_rad=com_angle_offset_rad,
-        disturbance_start_s=float(disturbance.get("start_s", 0.0)),
-        disturbance_duration_s=float(disturbance.get("duration_s", 0.0)),
-        disturbance_forward=float(disturbance.get("forward", 0.0)),
-        disturbance_turn=float(disturbance.get("turn", 0.0)),
+        disturbances=wire_disturbances,
         pid_config_path=_fixed_bytes(pid_config_path, 128),
     )
 
@@ -101,7 +118,7 @@ def run_scenario_live(
     duration_s: float,
     initial_pitch_deg: float = 0.0,
     com_angle_offset_rad: float = 0.0,
-    disturbance: dict | None = None,
+    disturbances: list[dict] | None = None,
     pid_config_path: str = "",
     fail_fast_pitch_deg: float = 75.0,
     done_timeout: float = 8.0,
@@ -118,8 +135,8 @@ def run_scenario_live(
         "initial_pitch_deg": initial_pitch_deg,
         "com_angle_offset_rad": com_angle_offset_rad,
     }
-    if disturbance:
-        metadata["disturbance"] = disturbance
+    if disturbances:
+        metadata["disturbances"] = disturbances
     recorder.begin_run(metadata)
 
     udp.drain()
@@ -129,7 +146,7 @@ def run_scenario_live(
         duration_s=duration_s,
         initial_pitch_deg=initial_pitch_deg,
         com_angle_offset_rad=com_angle_offset_rad,
-        disturbance=disturbance,
+        disturbances=disturbances,
         pid_config_path=pid_config_path,
     )
     udp.send(BalancerMsgId.SimStartRun, start.pack())

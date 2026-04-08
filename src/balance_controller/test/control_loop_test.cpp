@@ -232,12 +232,12 @@ TEST(RateControllerCoreTest, SteeringSplitsWheelCommands) {
   EXPECT_NE(h.runner().lastLeft(), h.runner().lastRight());
 }
 
-TEST(RateControllerCoreTest, VelocityFeedbackIsIgnoredWithoutCommand) {
+TEST(RateControllerCoreTest, SmallResidualVelocityIsIgnoredWithoutCommand) {
   RateControllerHarness h;
   h.setJoystick(0.0f, 0.0f);
   h.run_steps(40, 1.0 / 400.0);
 
-  h.runner().setActualSpeedSps(4000.0f);
+  h.runner().setActualSpeedSps(50.0f);
   h.run_steps(80, 1.0 / 400.0);
 
   ASSERT_FALSE(h.telemetry().empty());
@@ -246,16 +246,33 @@ TEST(RateControllerCoreTest, VelocityFeedbackIsIgnoredWithoutCommand) {
   EXPECT_NEAR(h.telemetry().back().pitch_sp_deg, 0.0, 1e-3);
 }
 
-TEST(RateControllerCoreTest, VelocityFeedbackAffectsTelemetryWhenCommanded) {
+TEST(RateControllerCoreTest, LargeResidualVelocityIsBrakedWithoutCommand) {
   RateControllerHarness h;
-  h.setJoystick(0.2f, 0.0f);
+  h.setJoystick(0.0f, 0.0f);
   h.run_steps(40, 1.0 / 400.0);
 
   h.runner().setActualSpeedSps(4000.0f);
   h.run_steps(80, 1.0 / 400.0);
 
   ASSERT_FALSE(h.telemetry().empty());
-  EXPECT_LT(h.telemetry().back().vel_error, -3000.0);
+  EXPECT_LT(h.telemetry().back().vel_error, 0.0);
+  EXPECT_GT(h.telemetry().back().vel_p_term, 0.0);
+  EXPECT_GT(std::abs(h.telemetry().back().pitch_sp_deg), 1e-3);
+}
+
+TEST(RateControllerCoreTest, VelocityFeedbackAffectsTelemetryWhenCommanded) {
+  RateControllerHarness h;
+  h.setJoystick(0.2f, 0.0f);
+  h.run_steps(40, 1.0 / 400.0);
+
+  constexpr float kMeasuredVelocitySps = 1234.0f;
+  h.runner().setActualSpeedSps(kMeasuredVelocitySps);
+  h.run_steps(80, 1.0 / 400.0);
+
+  ASSERT_FALSE(h.telemetry().empty());
+  const float target_velocity_sps = 0.2f * static_cast<float>(kMaxSps);
+  const float used_velocity_sps = target_velocity_sps - static_cast<float>(h.telemetry().back().vel_error);
+  EXPECT_NEAR(used_velocity_sps, kMeasuredVelocitySps, 20.0f);
   EXPECT_NE(h.telemetry().back().vel_p_term, 0.0);
 }
 

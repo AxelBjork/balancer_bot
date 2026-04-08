@@ -12,7 +12,7 @@ It describes the reflected runtime message bus used by the balancer services, in
 messages consumed by the SIL harness and the internal-only messages exchanged between services.
 
 - Documented balancer message count: `10`
-- Protocol hash: `8da9ae6dae806396`
+- Protocol hash: `3a9cc0bac4a2e089`
 - UDP ingress/egress gateway: `UdpBridge`
 
 ## System Architecture
@@ -232,7 +232,7 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 - Numeric ID: `3005`
 - Payload type: `SimStartRunPayload`
 - Python type: `SimStartRunPayload`
-- Wire size: `184` bytes
+- Wire size: `400` bytes
 - Published by: `UdpBridge`
 - Consumed by: _None_
 
@@ -240,16 +240,13 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 |---|---|---|---:|---:|---|
 | `run_id` | `uint32_t` | `int` | 4 | 0 |  |
 | `physics_profile` | `uint8_t` | `int` | 1 | 4 |  |
-| `enable_disturbance` | `uint8_t` | `int` | 1 | 5 |  |
-| `reserved` | `uint16_t` | `int` | 2 | 6 |  |
+| `reserved0` | `uint8_t` | `int` | 1 | 5 |  |
+| `reserved1` | `uint16_t` | `int` | 2 | 6 |  |
 | `duration_s` | `double` | `float` | 8 | 8 |  |
 | `initial_pitch_deg` | `double` | `float` | 8 | 16 |  |
 | `com_angle_offset_rad` | `double` | `float` | 8 | 24 |  |
-| `disturbance_start_s` | `double` | `float` | 8 | 32 |  |
-| `disturbance_duration_s` | `double` | `float` | 8 | 40 |  |
-| `disturbance_forward` | `float` | `float` | 4 | 48 |  |
-| `disturbance_turn` | `float` | `float` | 4 | 52 |  |
-| `pid_config_path` | `std::array<char, 128>` | `bytes` | 128 | 56 |  |
+| `disturbances` | `std::array<SimDisturbancePayload, 10>` | `list[SimDisturbancePayload]` | 240 | 32 |  |
+| `pid_config_path` | `std::array<char, 128>` | `bytes` | 128 | 272 |  |
 
 ### `MsgId::SimStartAck`
 

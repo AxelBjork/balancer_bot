@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -91,6 +92,12 @@ def _sim_port() -> int:
     return int(os.environ.get("BALANCER_SIM_PORT", str(_DEFAULT_SIM_PORT)))
 
 
+def _allocate_udp_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
 @pytest.fixture(scope="session")
 def sil_process():
     proc = _start_sil_process()
@@ -153,9 +160,17 @@ def simulator_binary() -> Path:
 
 
 @pytest.fixture(scope="function")
-def simulator_process():
+def simulator_port():
+    env_override = os.environ.get("BALANCER_SIM_PORT")
+    if env_override is not None:
+        return int(env_override)
+    return _allocate_udp_port()
+
+
+@pytest.fixture(scope="function")
+def simulator_process(simulator_port):
     proc = subprocess.Popen(
-        [str(_sim_binary()), "--port", str(_sim_port())],
+        [str(_sim_binary()), "--port", str(simulator_port)],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         preexec_fn=os.setsid,
@@ -172,11 +187,11 @@ def simulator_process():
 
 
 @pytest.fixture(scope="function")
-def simulator_udp(simulator_process):
+def simulator_udp(simulator_process, simulator_port):
     if simulator_process.poll() is not None:
         pytest.fail(f"balancer_simulator is not running (rc={simulator_process.returncode})")
 
-    with UdpClient(bridge_port=_sim_port()) as client:
+    with UdpClient(bridge_port=simulator_port) as client:
         client.register()
         client.drain()
         yield client

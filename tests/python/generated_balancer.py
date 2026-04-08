@@ -184,24 +184,58 @@ class SystemTelemetryPayload:
         return cls.unpack_wire(data)
 
 @dataclass
+class SimDisturbancePayload:
+    WIRE_SIZE = 24
+    start_s: float
+    duration_s: float
+    forward: float
+    turn: float
+
+    def pack_wire(self) -> bytes:
+        data = bytearray()
+        data.extend(struct.pack("<ddff", self.start_s, self.duration_s, self.forward, self.turn))
+        return bytes(data)
+
+    def pack(self) -> bytes:
+        return self.pack_wire()
+
+    @classmethod
+    def unpack_wire(cls, data: bytes) -> "SimDisturbancePayload":
+        offset = 0
+        start_s, duration_s, forward, turn = struct.unpack_from("<ddff", data, offset)
+        offset += struct.calcsize("<ddff")
+        return cls(start_s=start_s, duration_s=duration_s, forward=forward, turn=turn)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> "SimDisturbancePayload":
+        return cls.unpack_wire(data)
+
+@dataclass
 class SimStartRunPayload:
-    WIRE_SIZE = 184
+    WIRE_SIZE = 400
     run_id: int
     physics_profile: int
-    enable_disturbance: int
-    reserved: int
+    reserved0: int
+    reserved1: int
     duration_s: float
     initial_pitch_deg: float
     com_angle_offset_rad: float
-    disturbance_start_s: float
-    disturbance_duration_s: float
-    disturbance_forward: float
-    disturbance_turn: float
+    disturbances: list[SimDisturbancePayload]
     pid_config_path: bytes
 
     def pack_wire(self) -> bytes:
         data = bytearray()
-        data.extend(struct.pack("<IBBHdddddff128s", self.run_id, self.physics_profile, self.enable_disturbance, self.reserved, self.duration_s, self.initial_pitch_deg, self.com_angle_offset_rad, self.disturbance_start_s, self.disturbance_duration_s, self.disturbance_forward, self.disturbance_turn, self.pid_config_path))
+        data.extend(struct.pack("<IBBHddd", self.run_id, self.physics_profile, self.reserved0, self.reserved1, self.duration_s, self.initial_pitch_deg, self.com_angle_offset_rad))
+        for item in self.disturbances:
+            if not hasattr(item, 'pack_wire'):
+                if isinstance(item, tuple):
+                    item = SimDisturbancePayload(*item)
+                elif isinstance(item, dict):
+                    item = SimDisturbancePayload(**item)
+                else:
+                    item = SimDisturbancePayload(item)
+            data.extend(item.pack_wire())
+        data.extend(struct.pack("<128s", self.pid_config_path))
         return bytes(data)
 
     def pack(self) -> bytes:
@@ -210,9 +244,17 @@ class SimStartRunPayload:
     @classmethod
     def unpack_wire(cls, data: bytes) -> "SimStartRunPayload":
         offset = 0
-        run_id, physics_profile, enable_disturbance, reserved, duration_s, initial_pitch_deg, com_angle_offset_rad, disturbance_start_s, disturbance_duration_s, disturbance_forward, disturbance_turn, pid_config_path = struct.unpack_from("<IBBHdddddff128s", data, offset)
-        offset += struct.calcsize("<IBBHdddddff128s")
-        return cls(run_id=run_id, physics_profile=physics_profile, enable_disturbance=enable_disturbance, reserved=reserved, duration_s=duration_s, initial_pitch_deg=initial_pitch_deg, com_angle_offset_rad=com_angle_offset_rad, disturbance_start_s=disturbance_start_s, disturbance_duration_s=disturbance_duration_s, disturbance_forward=disturbance_forward, disturbance_turn=disturbance_turn, pid_config_path=pid_config_path)
+        run_id, physics_profile, reserved0, reserved1, duration_s, initial_pitch_deg, com_angle_offset_rad = struct.unpack_from("<IBBHddd", data, offset)
+        offset += struct.calcsize("<IBBHddd")
+        disturbances = []
+        for _ in range(10):
+            sub_size = SimDisturbancePayload.WIRE_SIZE
+            item = SimDisturbancePayload.unpack_wire(data[offset:offset+sub_size])
+            disturbances.append(item)
+            offset += sub_size
+        pid_config_path = struct.unpack_from("<128s", data, offset)[0]
+        offset += struct.calcsize("<128s")
+        return cls(run_id=run_id, physics_profile=physics_profile, reserved0=reserved0, reserved1=reserved1, duration_s=duration_s, initial_pitch_deg=initial_pitch_deg, com_angle_offset_rad=com_angle_offset_rad, disturbances=disturbances, pid_config_path=pid_config_path)
 
     @classmethod
     def unpack(cls, data: bytes) -> "SimStartRunPayload":
@@ -323,10 +365,10 @@ PAYLOAD_SIZE_BY_ID = {
     MsgId.JoystickCommand: 8,
     MsgId.MotorTargets: 8,
     MsgId.SystemTelemetry: 120,
-    MsgId.SimStartRun: 184,
+    MsgId.SimStartRun: 400,
     MsgId.SimStartAck: 8,
     MsgId.SimStopRun: 4,
     MsgId.SimRunDone: 44,
 }
 
-PROTOCOL_HASH = "8da9ae6dae806396"
+PROTOCOL_HASH = "3a9cc0bac4a2e089"

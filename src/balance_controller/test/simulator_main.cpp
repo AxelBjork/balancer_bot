@@ -16,6 +16,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <algorithm>
 
 #include "messages/balancer_msgs.h"
 #include "config.h"
@@ -202,7 +203,7 @@ class SimulatorService {
   struct ActiveRun {
     uint32_t run_id = 0;
     std::string pid_config_path;
-    std::optional<ServiceDisturbance> disturbance;
+    std::array<ServiceDisturbance, ipc::kMaxSimDisturbances> disturbances{};
     BalancerSimulator sim;
     RateControllerCore core;
     Telemetry latest_telemetry{};
@@ -218,11 +219,11 @@ class SimulatorService {
 
     explicit ActiveRun(uint32_t id,
                        std::string pid_path,
-                       std::optional<ServiceDisturbance> disturbance_in,
+                       std::array<ServiceDisturbance, ipc::kMaxSimDisturbances> disturbances_in,
                        BalancerSimulator&& sim_in)
         : run_id(id),
           pid_config_path(std::move(pid_path)),
-          disturbance(std::move(disturbance_in)),
+          disturbances(std::move(disturbances_in)),
           sim(std::move(sim_in)) {}
   };
 
@@ -277,17 +278,18 @@ class SimulatorService {
     sim_cfg.com_angle_offset_rad = request.com_angle_offset_rad;
     BalancerSimulator sim(sim_cfg);
 
-    std::optional<ServiceDisturbance> disturbance;
-    if (request.enable_disturbance) {
-      disturbance = ServiceDisturbance{
-          .start_s = request.disturbance_start_s,
-          .duration_s = request.disturbance_duration_s,
-          .forward = request.disturbance_forward,
-          .turn = request.disturbance_turn,
+    std::array<ServiceDisturbance, ipc::kMaxSimDisturbances> disturbances{};
+    for (std::size_t i = 0; i < disturbances.size(); ++i) {
+      const auto& wire = request.disturbances[i];
+      disturbances[i] = ServiceDisturbance{
+          .start_s = wire.start_s,
+          .duration_s = wire.duration_s,
+          .forward = wire.forward,
+          .turn = wire.turn,
       };
     }
 
-    run_.emplace(request.run_id, pid_path, disturbance, std::move(sim));
+    run_.emplace(request.run_id, pid_path, disturbances, std::move(sim));
     run_->steps_total = std::max(1, static_cast<int>(std::llround(request.duration_s / kTickDtS)));
     run_->max_abs_pitch_deg = std::abs(run_->sim.get_pitch()) * 180.0 / kPi;
 
@@ -329,15 +331,19 @@ class SimulatorService {
   }
 
   JoyCmd joystick_for_time(const ActiveRun& run, double sim_time_s) const {
-    if (!run.disturbance.has_value()) {
-      return JoyCmd{0.0f, 0.0f};
+    float forward = 0.0f;
+    float turn = 0.0f;
+    for (const auto& disturbance : run.disturbances) {
+      if (disturbance.duration_s <= 0.0) {
+        continue;
+      }
+      if (sim_time_s >= disturbance.start_s &&
+          sim_time_s < (disturbance.start_s + disturbance.duration_s)) {
+        forward += disturbance.forward;
+        turn += disturbance.turn;
+      }
     }
-
-    const auto& d = *run.disturbance;
-    if (sim_time_s >= d.start_s && sim_time_s < (d.start_s + d.duration_s)) {
-      return JoyCmd{d.forward, d.turn};
-    }
-    return JoyCmd{0.0f, 0.0f};
+    return JoyCmd{std::clamp(forward, -1.0f, 1.0f), std::clamp(turn, -1.0f, 1.0f)};
   }
 
   void step_active_run() {

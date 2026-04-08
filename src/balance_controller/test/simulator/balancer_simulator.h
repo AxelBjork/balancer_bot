@@ -71,6 +71,7 @@ class BalancerSimulator {
   float left_target_sps_{0.0f};
   float right_target_sps_{0.0f};
   double actual_wheel_velocity_{0.0};
+  double applied_drive_force_{0.0};
   Diagnostics diagnostics_{};
 
   static constexpr double gravity = 9.81;

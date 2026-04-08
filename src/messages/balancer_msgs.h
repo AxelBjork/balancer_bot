@@ -8,6 +8,8 @@
 
 namespace ipc {
 
+constexpr std::size_t kMaxSimDisturbances = 10;
+
 struct DOC_DESC("Fused IMU sample published by the IMU service and accepted by the SIL harness.") ImuSamplePayload {
     double pitch_rad;
     std::array<double, 3> acc;
@@ -65,18 +67,22 @@ struct DOC_DESC("Internal motor feedback sample published by the motor service. 
     int64_t right_actual_steps;
 };
 
+struct DOC_DESC("One scheduled simulator disturbance segment. A segment is active when duration_s is greater than zero.") SimDisturbancePayload {
+    double start_s;
+    double duration_s;
+    float forward;
+    float turn;
+};
+
 struct DOC_DESC("Request from Python to start a single simulator run. Only one run may be active at a time.") SimStartRunPayload {
     uint32_t run_id;
     uint8_t physics_profile;
-    uint8_t enable_disturbance;
-    uint16_t reserved;
+    uint8_t reserved0;
+    uint16_t reserved1;
     double duration_s;
     double initial_pitch_deg;
     double com_angle_offset_rad;
-    double disturbance_start_s;
-    double disturbance_duration_s;
-    float disturbance_forward;
-    float disturbance_turn;
+    std::array<ipc::SimDisturbancePayload, kMaxSimDisturbances> disturbances;
     std::array<char, 128> pid_config_path;
 };
 

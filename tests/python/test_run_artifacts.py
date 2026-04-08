@@ -40,10 +40,16 @@ def test_run_recorder_writes_summary_and_flags_fall(tmp_path):
     assert summary["final_position_m"] == 1.25
     assert summary["max_abs_position_m"] == 1.25
     assert summary["tail_mean_abs_velocity_mps"] == 0.25
+    assert summary["max_abs_target_wheel_velocity"] is None
+    assert summary["max_abs_actual_wheel_velocity"] is None
+    assert summary["max_abs_f_app"] is None
+    assert summary["max_abs_theta_ddot"] is None
     assert (tmp_path / "timeline.csv").exists()
     assert (tmp_path / "summary.json").exists()
     assert (tmp_path / "pitch_plot.svg").exists()
     assert (tmp_path / "command_plot.svg").exists()
+    assert (tmp_path / "wheel_plot.svg").exists()
+    assert (tmp_path / "force_plot.svg").exists()
 
 
 def test_reference_parser_handles_clean_csv():

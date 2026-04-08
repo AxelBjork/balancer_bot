@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include "services/control/rate_controller_core.h"
+
 namespace {
 
 constexpr double kPi = 3.14159265358979323846;
@@ -22,18 +24,18 @@ SimulatorPhysics BalancerSimulator::physics_for_profile(PhysicsProfile profile) 
       return SimulatorPhysics{
           .driver_kp = 90.0,
           .max_force_n = 4.0,
-          .cart_damping = 12.0,
+          .cart_damping = 0.4,
           .pitch_damping = 1.5,
-          .motor_tau_s = 0.05,
+          .motor_tau_s = 0.10,
       };
     case PhysicsProfile::Realistic:
     default:
       return SimulatorPhysics{
           .driver_kp = 192.5,
-          .max_force_n = 8.0,
-          .cart_damping = 9.5,
+          .max_force_n = 200.0,
+          .cart_damping = 1.0,
           .pitch_damping = 1.1375,
-          .motor_tau_s = 0.0375,
+          .motor_tau_s = 0.15,
       };
   }
 }
@@ -62,6 +64,10 @@ void BalancerSimulator::step(double dt_s) {
   const double avg_steps_per_sec = 0.5 * (left_target_sps_ + right_target_sps_);
   const double target_wheel_velocity =
       steps_per_sec_to_wheel_velocity(avg_steps_per_sec, steps_per_rev, wheel_radius);
+  const double normalized_command =
+      std::clamp(-avg_steps_per_sec / kPitchOutToSps, -1.0, 1.0);
+  const double desired_force =
+      std::clamp(normalized_command * physics_.driver_kp, -physics_.max_force_n, physics_.max_force_n);
 
   if (physics_.motor_tau_s > 0.0) {
     const double alpha = std::clamp(dt_s / (physics_.motor_tau_s + dt_s), 0.0, 1.0);
@@ -72,8 +78,14 @@ void BalancerSimulator::step(double dt_s) {
 
   const double current_wheel_v = state_.velocity;
   const double v_err = actual_wheel_velocity_ - current_wheel_v;
-  const double F_cmd = physics_.driver_kp * v_err;
-  const double F_app = std::clamp(F_cmd, -physics_.max_force_n, physics_.max_force_n);
+  const double force_alpha = (physics_.motor_tau_s > 0.0)
+                                 ? std::clamp(dt_s / (physics_.motor_tau_s + dt_s), 0.0, 1.0)
+                                 : 1.0;
+  applied_drive_force_ += force_alpha * (desired_force - applied_drive_force_);
+  const double F_cmd = desired_force;
+  const double F_app =
+      std::clamp(applied_drive_force_ - physics_.cart_damping * state_.velocity,
+                 -physics_.max_force_n, physics_.max_force_n);
 
   const double Q = state_.pitch + cfg_.com_angle_offset_rad;
   const double Q_dot = state_.pitch_rate;
@@ -115,7 +127,9 @@ void BalancerSimulator::step(double dt_s) {
   diagnostics_.f_app = F_app;
   diagnostics_.x_ddot = x_ddot;
   diagnostics_.theta_ddot = theta_ddot;
-  diagnostics_.command_saturated = std::abs(F_app) >= physics_.max_force_n * 0.999;
+  diagnostics_.command_saturated =
+      (std::abs(F_cmd) >= physics_.max_force_n * 0.999) ||
+      (std::abs(F_app) >= physics_.max_force_n * 0.999);
 }
 
 ipc::ImuSamplePayload BalancerSimulator::make_imu_payload(uint64_t sim_time_us) const {

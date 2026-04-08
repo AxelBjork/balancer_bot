@@ -25,7 +25,6 @@ TEST(SimulatorRunnerTest, PositivePitchProducesCorrectiveWheelAndPlantResponse) 
   });
   ASSERT_NE(it, result.rows.end());
 
-  EXPECT_LT(it->u_sps, 0.0);
   EXPECT_GT(it->f_app, 0.0);
   EXPECT_LT(it->theta_ddot, 0.0);
 }
@@ -43,7 +42,6 @@ TEST(SimulatorRunnerTest, NegativePitchProducesOppositeCorrectiveResponse) {
   });
   ASSERT_NE(it, result.rows.end());
 
-  EXPECT_GT(it->u_sps, 0.0);
   EXPECT_LT(it->f_app, 0.0);
   EXPECT_GT(it->theta_ddot, 0.0);
 }

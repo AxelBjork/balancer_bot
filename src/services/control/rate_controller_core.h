@@ -1,5 +1,4 @@
 #pragma once
-#include <cstdio>
 #include <chrono>
 #include <functional>
 
@@ -7,8 +6,9 @@
 
 // ====== Control Loop Constants ======
 // Motor / speed ceiling (primary scaling knob)
-static constexpr double kMaxSps = 4000.0;         // clamp for wheel speed command (steps/s)
-static constexpr double kPitchOutToSps = 3200.0;  // PX4 normalized -> steps/s
+static constexpr double kMaxSps = 16000.0;            // clamp for wheel speed command (steps/s)
+static constexpr double kPitchOutToSpsRatio = 0.8;    // PX4 normalized -> steps/s scaling relative to kMaxSps
+static constexpr double kPitchOutToSps = kMaxSps * kPitchOutToSpsRatio;
 
 static constexpr double kMaxPitchSetpointRad = 0.3;  // ~17 degrees max lean
 
