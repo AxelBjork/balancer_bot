@@ -4,7 +4,6 @@
 #include <atomic>
 #include <csignal>
 
-#include "message_bus.h"
 #include "messages/balancer_msgs.h"
 #include "udp_bridge.h"
 #include "types.h"

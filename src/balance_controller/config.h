@@ -42,7 +42,7 @@ struct Config {
   static constexpr double max_tilt_rad = 5.0 * (M_PI / 180.0);
 
   static constexpr int command_hz = 100;
-  static constexpr int kPrintEvery = 25;
+  static constexpr int kPrintEvery = 100;
   static constexpr float deadzone = 0.05f;
   static constexpr bool invert_left = false;
   static constexpr bool invert_right = true;
