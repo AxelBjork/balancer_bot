@@ -81,10 +81,13 @@ struct TailSample {
 };
 
 struct ServiceDisturbance {
+  uint8_t kind = ipc::kSimDisturbanceStep;
   double start_s = 0.0;
   double duration_s = 0.0;
   float forward = 0.0f;
   float turn = 0.0f;
+  float forward_end = 0.0f;
+  float turn_end = 0.0f;
 };
 
 struct RunSummary {
@@ -276,16 +279,23 @@ class SimulatorService {
     sim_cfg.physics_profile = profile;
     sim_cfg.initial_pitch_deg = request.initial_pitch_deg;
     sim_cfg.com_angle_offset_rad = request.com_angle_offset_rad;
+    sim_cfg.wheel_slip_factor = request.wheel_slip_factor;
+    sim_cfg.velocity_feedback_scale = request.velocity_feedback_scale;
+    sim_cfg.velocity_feedback_tau_s = request.velocity_feedback_tau_s;
+    sim_cfg.imu_pitch_lag_s = request.imu_pitch_lag_s;
     BalancerSimulator sim(sim_cfg);
 
     std::array<ServiceDisturbance, ipc::kMaxSimDisturbances> disturbances{};
     for (std::size_t i = 0; i < disturbances.size(); ++i) {
       const auto& wire = request.disturbances[i];
       disturbances[i] = ServiceDisturbance{
+          .kind = wire.kind,
           .start_s = wire.start_s,
           .duration_s = wire.duration_s,
           .forward = wire.forward,
           .turn = wire.turn,
+          .forward_end = wire.forward_end,
+          .turn_end = wire.turn_end,
       };
     }
 
@@ -334,13 +344,37 @@ class SimulatorService {
     float forward = 0.0f;
     float turn = 0.0f;
     for (const auto& disturbance : run.disturbances) {
-      if (disturbance.duration_s <= 0.0) {
+      if (sim_time_s < disturbance.start_s) {
         continue;
       }
-      if (sim_time_s >= disturbance.start_s &&
-          sim_time_s < (disturbance.start_s + disturbance.duration_s)) {
-        forward += disturbance.forward;
-        turn += disturbance.turn;
+      switch (disturbance.kind) {
+        case ipc::kSimDisturbanceStep:
+          if (disturbance.duration_s > 0.0 &&
+              sim_time_s < (disturbance.start_s + disturbance.duration_s)) {
+            forward += disturbance.forward;
+            turn += disturbance.turn;
+          }
+          break;
+        case ipc::kSimDisturbanceRamp:
+          if (disturbance.duration_s > 0.0 &&
+              sim_time_s < (disturbance.start_s + disturbance.duration_s)) {
+            const double progress =
+                std::clamp((sim_time_s - disturbance.start_s) / disturbance.duration_s, 0.0, 1.0);
+            forward += static_cast<float>(
+                disturbance.forward + (disturbance.forward_end - disturbance.forward) * progress);
+            turn += static_cast<float>(
+                disturbance.turn + (disturbance.turn_end - disturbance.turn) * progress);
+          }
+          break;
+        case ipc::kSimDisturbanceHoldBias:
+          if (disturbance.duration_s <= 0.0 ||
+              sim_time_s < (disturbance.start_s + disturbance.duration_s)) {
+            forward += disturbance.forward;
+            turn += disturbance.turn;
+          }
+          break;
+        default:
+          break;
       }
     }
     return JoyCmd{std::clamp(forward, -1.0f, 1.0f), std::clamp(turn, -1.0f, 1.0f)};
@@ -365,7 +399,8 @@ class SimulatorService {
     run.core.step(kTickDtS, sample.t);
 
     if ((run.steps_done % kTelemetryStride) == 0 || run.steps_done == run.steps_total) {
-      publish_telemetry(run, sample);
+      publish_telemetry(run, sample, imu);
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
     const double plant_pitch_deg = run.sim.get_pitch() * 180.0 / kPi;
@@ -382,7 +417,12 @@ class SimulatorService {
     }
   }
 
-  void publish_telemetry(ActiveRun& run, const ImuSample& sample) {
+  static float accel_pitch_deg(const std::array<double, 3>& acc) {
+    return static_cast<float>(
+        std::atan2(-acc[0], std::sqrt(acc[1] * acc[1] + acc[2] * acc[2])) * (180.0 / kPi));
+  }
+
+  void publish_telemetry(ActiveRun& run, const ImuSample& sample, const ipc::ImuSamplePayload& imu) {
     ipc::SystemTelemetryPayload payload{};
     const auto& diag = run.sim.diagnostics();
     const auto& state = run.sim.state();
@@ -402,6 +442,9 @@ class SimulatorService {
     payload.pitch_rate_dps =
         run.have_telemetry ? static_cast<float>(run.latest_telemetry.pitch_rate_dps)
                            : static_cast<float>(state.pitch_rate * 180.0 / kPi);
+    payload.raw_acc_pitch_deg = accel_pitch_deg(imu.acc);
+    payload.fused_pitch_deg = payload.pitch_deg;
+    payload.gyro_pitch_rate_dps = static_cast<float>(imu.gyr[1] * 180.0 / kPi);
     payload.rate_sp_dps = run.have_telemetry ? static_cast<float>(run.latest_telemetry.rate_sp_dps) : 0.0f;
     payload.out_norm = run.have_telemetry ? static_cast<float>(run.latest_telemetry.out_norm) : 0.0f;
     payload.u_sps = run.have_telemetry ? static_cast<float>(run.latest_telemetry.u_sps) : 0.0f;
@@ -409,12 +452,27 @@ class SimulatorService {
     payload.vel_error = run.have_telemetry ? static_cast<float>(run.latest_telemetry.vel_error) : 0.0f;
     payload.vel_p_term = run.have_telemetry ? static_cast<float>(run.latest_telemetry.vel_p_term) : 0.0f;
     payload.vel_i_term = run.have_telemetry ? static_cast<float>(run.latest_telemetry.vel_i_term) : 0.0f;
+    payload.target_vel_sps =
+        run.have_telemetry ? static_cast<float>(run.latest_telemetry.target_vel_sps) : 0.0f;
+    payload.measured_vel_sps =
+        run.have_telemetry ? static_cast<float>(run.latest_telemetry.measured_vel_sps) : 0.0f;
+    payload.filtered_vel_sps =
+        run.have_telemetry ? static_cast<float>(run.latest_telemetry.filtered_vel_sps) : 0.0f;
+    payload.position_target_vel_sps =
+        run.have_telemetry ? static_cast<float>(run.latest_telemetry.position_target_vel_sps) : 0.0f;
+    payload.velocity_loop_blend =
+        run.have_telemetry ? static_cast<float>(run.latest_telemetry.velocity_loop_blend) : 0.0f;
+    payload.velocity_hold_active =
+        run.have_telemetry ? static_cast<float>(run.latest_telemetry.velocity_hold_active) : 0.0f;
     payload.pitch_sp_deg = run.have_telemetry ? static_cast<float>(run.latest_telemetry.pitch_sp_deg) : 0.0f;
     payload.effective_pitch_sp_deg =
         run.have_telemetry ? static_cast<float>(run.latest_telemetry.effective_pitch_sp_deg) : 0.0f;
     payload.pitch_trim_deg =
         run.have_telemetry ? static_cast<float>(run.latest_telemetry.pitch_trim_deg) : 0.0f;
     payload.trim_active = run.have_telemetry ? static_cast<float>(run.latest_telemetry.trim_active) : 0.0f;
+    payload.command_saturated =
+        run.have_telemetry ? static_cast<float>(run.latest_telemetry.command_saturated)
+                           : (diag.command_saturated ? 1.0f : 0.0f);
     payload.plant_pitch_deg = static_cast<float>(state.pitch * 180.0 / kPi);
     payload.plant_pitch_rate_dps = static_cast<float>(state.pitch_rate * 180.0 / kPi);
     payload.plant_position_m = static_cast<float>(state.position);
@@ -426,7 +484,6 @@ class SimulatorService {
     payload.f_app = static_cast<float>(diag.f_app);
     payload.x_ddot = static_cast<float>(diag.x_ddot);
     payload.theta_ddot = static_cast<float>(diag.theta_ddot);
-    payload.command_saturated = diag.command_saturated ? 1.0f : 0.0f;
     payload.force_saturated = diag.command_saturated ? 1.0f : 0.0f;
     endpoint_.send(active_peer_, MsgId::SystemTelemetry, payload);
 

@@ -37,6 +37,9 @@ ControlService::ControlService(ipc::MessageBus& bus)
         p.age_ms = static_cast<float>(t.age_ms);
         p.pitch_deg = static_cast<float>(t.pitch_deg);
         p.pitch_rate_dps = static_cast<float>(t.pitch_rate_dps);
+        p.raw_acc_pitch_deg = last_raw_acc_pitch_deg_;
+        p.fused_pitch_deg = last_fused_pitch_deg_;
+        p.gyro_pitch_rate_dps = last_gyro_pitch_rate_dps_;
         p.rate_sp_dps = static_cast<float>(t.rate_sp_dps);
         p.out_norm = static_cast<float>(t.out_norm);
         p.u_sps = static_cast<float>(t.u_sps);
@@ -44,10 +47,17 @@ ControlService::ControlService(ipc::MessageBus& bus)
         p.vel_error = static_cast<float>(t.vel_error);
         p.vel_p_term = static_cast<float>(t.vel_p_term);
         p.vel_i_term = static_cast<float>(t.vel_i_term);
+        p.target_vel_sps = static_cast<float>(t.target_vel_sps);
+        p.measured_vel_sps = static_cast<float>(t.measured_vel_sps);
+        p.filtered_vel_sps = static_cast<float>(t.filtered_vel_sps);
+        p.position_target_vel_sps = static_cast<float>(t.position_target_vel_sps);
+        p.velocity_loop_blend = static_cast<float>(t.velocity_loop_blend);
+        p.velocity_hold_active = static_cast<float>(t.velocity_hold_active);
         p.pitch_sp_deg = static_cast<float>(t.pitch_sp_deg);
         p.effective_pitch_sp_deg = static_cast<float>(t.effective_pitch_sp_deg);
         p.pitch_trim_deg = static_cast<float>(t.pitch_trim_deg);
         p.trim_active = static_cast<float>(t.trim_active);
+        p.command_saturated = static_cast<float>(t.command_saturated);
         p.plant_pitch_deg = static_cast<float>(t.pitch_deg);
         p.plant_pitch_rate_dps = static_cast<float>(t.pitch_rate_dps);
         p.plant_position_m = last_position_m_;
@@ -59,7 +69,6 @@ ControlService::ControlService(ipc::MessageBus& bus)
         p.f_app = 0.0f;
         p.x_ddot = 0.0f;
         p.theta_ddot = 0.0f;
-        p.command_saturated = (std::abs(t.u_sps) >= (0.99f * static_cast<float>(kMaxSps))) ? 1.0f : 0.0f;
         p.force_saturated = 0.0f;
         bus_.publish<MsgId::SystemTelemetry>(p);
     });

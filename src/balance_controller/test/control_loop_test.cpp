@@ -12,6 +12,14 @@
 
 namespace {
 
+std::array<double, 3> accel_for_pitch(double angle_rad) {
+  return {
+      -9.81 * std::sin(angle_rad),
+      0.0,
+      9.81 * std::cos(angle_rad),
+  };
+}
+
 class FakeMotorRunner {
  public:
   void setTargets(float left_sps, float right_sps) {
@@ -115,6 +123,7 @@ class ControlServiceHarness {
   void step_with_imu(double dt_s, uint64_t sim_time_us, double angle_rad = 0.0, double gyro_rad_s = 0.0) {
     ipc::ImuSamplePayload imu{};
     imu.pitch_rad = angle_rad;
+    imu.acc = accel_for_pitch(angle_rad);
     imu.gyr = {0.0, gyro_rad_s, 0.0};
     imu.timestamp_us = sim_time_us;
     control_.on_message<MsgId::ImuData>(imu);
@@ -164,6 +173,7 @@ class ServiceBusHarness {
   void sendStep(double dt_s, uint64_t sim_time_us, double angle_rad = 0.0, double gyro_rad_s = 0.0) {
     ipc::ImuSamplePayload imu{};
     imu.pitch_rad = angle_rad;
+    imu.acc = accel_for_pitch(angle_rad);
     imu.gyr = {0.0, gyro_rad_s, 0.0};
     imu.timestamp_us = sim_time_us;
     bus_.publish<MsgId::ImuData>(imu);
@@ -223,6 +233,11 @@ TEST(RateControllerCoreTest, ZeroInputsStayNearZero) {
   EXPECT_NEAR(h.runner().lastRight(), 0.0f, 1e-3);
 }
 
+TEST(RateControllerCoreTest, HardwareScalingConstantsMatchValidatedHardwareSetup) {
+  EXPECT_DOUBLE_EQ(kMaxSps, 16000.0);
+  EXPECT_DOUBLE_EQ(kPitchOutToSps, 3200.0);
+}
+
 TEST(RateControllerCoreTest, SteeringSplitsWheelCommands) {
   RateControllerHarness h;
   h.setJoystick(0.0f, 0.6f);
@@ -258,6 +273,29 @@ TEST(RateControllerCoreTest, LargeResidualVelocityIsBrakedWithoutCommand) {
   EXPECT_LT(h.telemetry().back().vel_error, 0.0);
   EXPECT_GT(h.telemetry().back().vel_p_term, 0.0);
   EXPECT_GT(std::abs(h.telemetry().back().pitch_sp_deg), 1e-3);
+}
+
+TEST(RateControllerCoreTest, VelocityHoldUsesHysteresisAroundResidualVelocityThreshold) {
+  RateControllerHarness h;
+  h.setJoystick(0.0f, 0.0f);
+  h.run_steps(40, 1.0 / 400.0);
+
+  h.runner().setActualSpeedSps(240.0f);
+  h.run_steps(20, 1.0 / 400.0);
+  ASSERT_FALSE(h.telemetry().empty());
+  EXPECT_LT(h.telemetry().back().velocity_hold_active, 0.5);
+
+  h.runner().setActualSpeedSps(260.0f);
+  h.run_steps(20, 1.0 / 400.0);
+  EXPECT_GT(h.telemetry().back().velocity_hold_active, 0.5);
+
+  h.runner().setActualSpeedSps(150.0f);
+  h.run_steps(20, 1.0 / 400.0);
+  EXPECT_GT(h.telemetry().back().velocity_hold_active, 0.5);
+
+  h.runner().setActualSpeedSps(80.0f);
+  h.run_steps(20, 1.0 / 400.0);
+  EXPECT_LT(h.telemetry().back().velocity_hold_active, 0.5);
 }
 
 TEST(RateControllerCoreTest, VelocityFeedbackAffectsTelemetryWhenCommanded) {
@@ -509,6 +547,21 @@ TEST(ControlServiceTest, UsesMotorFeedbackPositionForPositionHold) {
   const float expected_velocity_sps =
       -static_cast<float>(displacement_steps) * static_cast<float>(Config::meters_per_step) * 1000.0f;
   EXPECT_NEAR(h.telemetry().back().vel_error, expected_velocity_sps, 5.0f);
+}
+
+TEST(ControlServiceTest, TelemetryCarriesImuDiagnostics) {
+  ControlServiceHarness h;
+  h.sendJoystick(0.0f, 0.0f);
+
+  const double angle_rad = 5.0 * M_PI / 180.0;
+  const double gyro_rad_s = 0.2;
+  h.step_with_imu(1.0 / 400.0, 2500, angle_rad, gyro_rad_s);
+
+  ASSERT_FALSE(h.telemetry().empty());
+  const auto& t = h.telemetry().back();
+  EXPECT_NEAR(t.raw_acc_pitch_deg, 5.0f, 0.1f);
+  EXPECT_NEAR(t.fused_pitch_deg, 5.0f, 0.1f);
+  EXPECT_NEAR(t.gyro_pitch_rate_dps, static_cast<float>(gyro_rad_s * 180.0 / M_PI), 0.1f);
 }
 
 TEST(ServiceBusIntegrationTest, TickPublishesMotorTargetsAndImmediateMotorFeedback) {

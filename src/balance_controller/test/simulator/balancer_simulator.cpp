@@ -53,6 +53,8 @@ std::string_view BalancerSimulator::profile_name(PhysicsProfile profile) {
 BalancerSimulator::BalancerSimulator(const Config& cfg) : cfg_(cfg) {
   physics_ = cfg_.physics_override.value_or(physics_for_profile(cfg_.physics_profile));
   state_.pitch = cfg_.initial_pitch_deg * kPi / 180.0;
+  imu_pitch_ = state_.pitch;
+  imu_pitch_rate_ = state_.pitch_rate;
 }
 
 void BalancerSimulator::set_motor_targets(float left_sps, float right_sps) {
@@ -76,16 +78,13 @@ void BalancerSimulator::step(double dt_s) {
     actual_wheel_velocity_ = target_wheel_velocity;
   }
 
-  const double current_wheel_v = state_.velocity;
-  const double v_err = actual_wheel_velocity_ - current_wheel_v;
   const double force_alpha = (physics_.motor_tau_s > 0.0)
                                  ? std::clamp(dt_s / (physics_.motor_tau_s + dt_s), 0.0, 1.0)
                                  : 1.0;
   applied_drive_force_ += force_alpha * (desired_force - applied_drive_force_);
   const double F_cmd = desired_force;
-  const double F_app =
-      std::clamp(applied_drive_force_ - physics_.cart_damping * state_.velocity,
-                 -physics_.max_force_n, physics_.max_force_n);
+  const double F_app = std::clamp(applied_drive_force_ * static_cast<double>(cfg_.wheel_slip_factor),
+                                  -physics_.max_force_n, physics_.max_force_n);
 
   const double Q = state_.pitch + cfg_.com_angle_offset_rad;
   const double Q_dot = state_.pitch_rate;
@@ -120,9 +119,29 @@ void BalancerSimulator::step(double dt_s) {
     state_.velocity = 0.0;
   }
 
+  const double measured_velocity_target_sps =
+      static_cast<double>(cfg_.velocity_feedback_scale) *
+      (state_.velocity / (2.0 * kPi * wheel_radius) * steps_per_rev);
+  if (cfg_.velocity_feedback_tau_s > 0.0) {
+    const double alpha =
+        std::clamp(dt_s / (cfg_.velocity_feedback_tau_s + dt_s), 0.0, 1.0);
+    measured_velocity_sps_ += alpha * (measured_velocity_target_sps - measured_velocity_sps_);
+  } else {
+    measured_velocity_sps_ = measured_velocity_target_sps;
+  }
+
+  if (cfg_.imu_pitch_lag_s > 0.0) {
+    const double alpha = std::clamp(dt_s / (cfg_.imu_pitch_lag_s + dt_s), 0.0, 1.0);
+    imu_pitch_ += alpha * (state_.pitch - imu_pitch_);
+    imu_pitch_rate_ += alpha * (state_.pitch_rate - imu_pitch_rate_);
+  } else {
+    imu_pitch_ = state_.pitch;
+    imu_pitch_rate_ = state_.pitch_rate;
+  }
+
   diagnostics_.target_wheel_velocity = target_wheel_velocity;
   diagnostics_.actual_wheel_velocity = actual_wheel_velocity_;
-  diagnostics_.velocity_error = v_err;
+  diagnostics_.velocity_error = target_wheel_velocity - state_.velocity;
   diagnostics_.f_cmd = F_cmd;
   diagnostics_.f_app = F_app;
   diagnostics_.x_ddot = x_ddot;
@@ -135,11 +154,11 @@ void BalancerSimulator::step(double dt_s) {
 ipc::ImuSamplePayload BalancerSimulator::make_imu_payload(uint64_t sim_time_us) const {
   ipc::ImuSamplePayload payload{};
 
-  const double Q = state_.pitch + cfg_.com_angle_offset_rad;
+  const double Q = imu_pitch_ + cfg_.com_angle_offset_rad;
   const double ax_mps2 = diagnostics_.x_ddot * std::cos(Q) + gravity * std::sin(Q);
   const double az_mps2 = -diagnostics_.x_ddot * std::sin(Q) + gravity * std::cos(Q);
 
-  payload.pitch_rad = state_.pitch;
+  payload.pitch_rad = imu_pitch_;
   payload.acc = {
       -ax_mps2,
       0.0,
@@ -147,7 +166,7 @@ ipc::ImuSamplePayload BalancerSimulator::make_imu_payload(uint64_t sim_time_us) 
   };
   payload.gyr = {
       0.0,
-      state_.pitch_rate,
+      imu_pitch_rate_,
       0.0,
   };
   payload.timestamp_us = sim_time_us;
@@ -158,6 +177,5 @@ ipc::ImuSamplePayload BalancerSimulator::make_imu_payload(uint64_t sim_time_us) 
 }
 
 float BalancerSimulator::get_actual_speed_sps() const {
-  const double cart_rev_per_sec = state_.velocity / (2.0 * kPi * wheel_radius);
-  return static_cast<float>(cart_rev_per_sec * steps_per_rev);
+  return static_cast<float>(measured_velocity_sps_);
 }

@@ -27,12 +27,32 @@ DONE_STOPPED_BY_CLIENT = 1
 DONE_FELL = 2
 DONE_INTERNAL_ERROR = 3
 
+DISTURBANCE_STEP = 0
+DISTURBANCE_RAMP = 1
+DISTURBANCE_HOLD_BIAS = 2
+
 
 def _fixed_bytes(value: str, size: int) -> bytes:
     raw = value.encode("utf-8")
     if len(raw) >= size:
         raw = raw[: size - 1]
     return raw + (b"\x00" * (size - len(raw)))
+
+
+def _disturbance_kind(value: str | int | None) -> int:
+    if value is None:
+        return DISTURBANCE_STEP
+    if isinstance(value, int):
+        return value
+    mapping = {
+        "step": DISTURBANCE_STEP,
+        "ramp": DISTURBANCE_RAMP,
+        "hold_bias": DISTURBANCE_HOLD_BIAS,
+    }
+    try:
+        return mapping[value]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported disturbance kind: {value}") from exc
 
 
 def make_start_payload(
@@ -42,6 +62,10 @@ def make_start_payload(
     duration_s: float,
     initial_pitch_deg: float = 0.0,
     com_angle_offset_rad: float = 0.0,
+    wheel_slip_factor: float = 1.0,
+    velocity_feedback_scale: float = 1.0,
+    velocity_feedback_tau_s: float = 0.0,
+    imu_pitch_lag_s: float = 0.0,
     disturbances: list[dict] | None = None,
     pid_config_path: str = "",
 ) -> SimStartRunPayload:
@@ -51,19 +75,31 @@ def make_start_payload(
 
     wire_disturbances = [
         {
+            "kind": DISTURBANCE_STEP,
+            "reserved0": 0,
+            "reserved1": 0,
             "start_s": 0.0,
             "duration_s": 0.0,
             "forward": 0.0,
             "turn": 0.0,
+            "forward_end": 0.0,
+            "turn_end": 0.0,
         }
         for _ in range(10)
     ]
     for idx, disturbance in enumerate(disturbances):
+        forward = float(disturbance.get("forward", 0.0))
+        turn = float(disturbance.get("turn", 0.0))
         wire_disturbances[idx] = {
+            "kind": _disturbance_kind(disturbance.get("kind")),
+            "reserved0": 0,
+            "reserved1": 0,
             "start_s": float(disturbance.get("start_s", 0.0)),
             "duration_s": float(disturbance.get("duration_s", 0.0)),
-            "forward": float(disturbance.get("forward", 0.0)),
-            "turn": float(disturbance.get("turn", 0.0)),
+            "forward": forward,
+            "turn": turn,
+            "forward_end": float(disturbance.get("forward_end", forward)),
+            "turn_end": float(disturbance.get("turn_end", turn)),
         }
 
     return SimStartRunPayload(
@@ -74,6 +110,10 @@ def make_start_payload(
         duration_s=duration_s,
         initial_pitch_deg=initial_pitch_deg,
         com_angle_offset_rad=com_angle_offset_rad,
+        wheel_slip_factor=wheel_slip_factor,
+        velocity_feedback_scale=velocity_feedback_scale,
+        velocity_feedback_tau_s=velocity_feedback_tau_s,
+        imu_pitch_lag_s=imu_pitch_lag_s,
         disturbances=wire_disturbances,
         pid_config_path=_fixed_bytes(pid_config_path, 128),
     )
@@ -118,10 +158,14 @@ def run_scenario_live(
     duration_s: float,
     initial_pitch_deg: float = 0.0,
     com_angle_offset_rad: float = 0.0,
+    wheel_slip_factor: float = 1.0,
+    velocity_feedback_scale: float = 1.0,
+    velocity_feedback_tau_s: float = 0.0,
+    imu_pitch_lag_s: float = 0.0,
     disturbances: list[dict] | None = None,
     pid_config_path: str = "",
     fail_fast_pitch_deg: float = 75.0,
-    done_timeout: float = 8.0,
+    done_timeout: float = 15.0,
 ) -> tuple[dict, dict, SimRunDonePayload]:
     output_dir.mkdir(parents=True, exist_ok=True)
     recorder = RunRecorder()
@@ -134,6 +178,10 @@ def run_scenario_live(
         "duration_s": duration_s,
         "initial_pitch_deg": initial_pitch_deg,
         "com_angle_offset_rad": com_angle_offset_rad,
+        "wheel_slip_factor": wheel_slip_factor,
+        "velocity_feedback_scale": velocity_feedback_scale,
+        "velocity_feedback_tau_s": velocity_feedback_tau_s,
+        "imu_pitch_lag_s": imu_pitch_lag_s,
     }
     if disturbances:
         metadata["disturbances"] = disturbances
@@ -146,6 +194,10 @@ def run_scenario_live(
         duration_s=duration_s,
         initial_pitch_deg=initial_pitch_deg,
         com_angle_offset_rad=com_angle_offset_rad,
+        wheel_slip_factor=wheel_slip_factor,
+        velocity_feedback_scale=velocity_feedback_scale,
+        velocity_feedback_tau_s=velocity_feedback_tau_s,
+        imu_pitch_lag_s=imu_pitch_lag_s,
         disturbances=disturbances,
         pid_config_path=pid_config_path,
     )
@@ -169,6 +221,9 @@ def run_scenario_live(
                 "sim_time_s": telemetry.sim_time_s,
                 "pitch_deg": telemetry.pitch_deg,
                 "pitch_rate_dps": telemetry.pitch_rate_dps,
+                "raw_acc_pitch_deg": telemetry.raw_acc_pitch_deg,
+                "fused_pitch_deg": telemetry.fused_pitch_deg,
+                "gyro_pitch_rate_dps": telemetry.gyro_pitch_rate_dps,
                 "pitch_sp_deg": telemetry.pitch_sp_deg,
                 "rate_sp_dps": telemetry.rate_sp_dps,
                 "u_sps": telemetry.u_sps,
@@ -177,6 +232,12 @@ def run_scenario_live(
                 "vel_error": telemetry.vel_error,
                 "vel_i_term": telemetry.vel_i_term,
                 "vel_p_term": telemetry.vel_p_term,
+                "target_vel_sps": telemetry.target_vel_sps,
+                "measured_vel_sps": telemetry.measured_vel_sps,
+                "filtered_vel_sps": telemetry.filtered_vel_sps,
+                "position_target_vel_sps": telemetry.position_target_vel_sps,
+                "velocity_loop_blend": telemetry.velocity_loop_blend,
+                "velocity_hold_active": telemetry.velocity_hold_active,
                 "out_norm": telemetry.out_norm,
                 "effective_pitch_sp_deg": telemetry.effective_pitch_sp_deg,
                 "pitch_trim_deg": telemetry.pitch_trim_deg,

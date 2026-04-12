@@ -17,7 +17,8 @@ namespace {
 
 constexpr float kVelocityLoopTiltPriorityRad = static_cast<float>(3.0 * M_PI / 180.0);
 constexpr float kVelocityHoldEnablePitchRad = static_cast<float>(10.0 * M_PI / 180.0);
-constexpr float kVelocityHoldDeadbandSps = 200.0f;
+constexpr float kVelocityHoldEnterSps = 250.0f;
+constexpr float kVelocityHoldExitSps = 100.0f;
 constexpr float kPositionHoldEnablePitchRad = static_cast<float>(3.0 * M_PI / 180.0);
 constexpr float kMaxPositionTargetSps = 800.0f;
 constexpr float kMaxPositionTrimPitchBiasRad = 0.15f;
@@ -51,6 +52,7 @@ struct RateControllerCore::Impl {
   float angle_trim_pitch_bias_rad{0.0f};
   float lean_trim_rad{0.0f};
   bool lean_trim_active{false};
+  bool velocity_hold_active{false};
   bool position_anchor_initialized{false};
 };
 
@@ -131,10 +133,15 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
 
   // Let large-tilt recovery own the zero-command case, but once we are back
   // near upright we still need to brake residual translation.
-  const bool zero_command_velocity_hold =
-      !user_velocity_active && std::abs(position_target_vel_sps) <= 1e-3f &&
-      std::abs(pitch_rad) < kVelocityHoldEnablePitchRad &&
-      std::abs(current_velocity_sps) > kVelocityHoldDeadbandSps;
+  if (!user_velocity_active && std::abs(position_target_vel_sps) <= 1e-3f &&
+      std::abs(pitch_rad) < kVelocityHoldEnablePitchRad) {
+    const float enter_threshold =
+        p_->velocity_hold_active ? kVelocityHoldExitSps : kVelocityHoldEnterSps;
+    p_->velocity_hold_active = std::abs(current_velocity_sps) > enter_threshold;
+  } else {
+    p_->velocity_hold_active = false;
+  }
+  const bool zero_command_velocity_hold = p_->velocity_hold_active;
   const bool enable_velocity_loop =
       user_velocity_active || std::abs(position_target_vel_sps) > 1e-3f ||
       zero_command_velocity_hold;
@@ -229,10 +236,17 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
     t.vel_error = enable_velocity_loop ? (target_vel_sps - current_velocity_sps) : 0.0f;
     t.vel_i_term = p_->velocity_pid.getIntegral();
     t.vel_p_term = enable_velocity_loop ? (t.vel_error * ConfigPid::vel_P) : 0.0f;
+    t.target_vel_sps = target_vel_sps;
+    t.measured_vel_sps = measured_velocity_sps;
+    t.filtered_vel_sps = current_velocity_sps;
+    t.position_target_vel_sps = position_target_vel_sps;
+    t.velocity_loop_blend = velocity_loop_blend;
+    t.velocity_hold_active = zero_command_velocity_hold ? 1.0 : 0.0;
     t.pitch_sp_deg = p_->pitch_setpoint_rad * 180.0 / M_PI;
     t.effective_pitch_sp_deg = p_->pitch_setpoint_rad * 180.0 / M_PI;
     t.pitch_trim_deg = p_->lean_trim_rad * 180.0 / M_PI;
     t.trim_active = p_->lean_trim_active ? 1.0 : 0.0;
+    t.command_saturated = command_saturated ? 1.0 : 0.0;
 
     p_->tel_cb(std::move(t));
   }

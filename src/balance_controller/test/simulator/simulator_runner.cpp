@@ -16,16 +16,54 @@ constexpr double kPi = 3.14159265358979323846;
 constexpr double kFallPitchDeg = 75.0;
 constexpr double kTickDtS = 1.0 / 400.0;
 
-JoyCmd scenario_joystick_for_time(const SimulatorScenario& scenario, double sim_time_s) {
-  if (!scenario.disturbance.has_value()) {
+JoyCmd disturbance_command(const SimulatorDisturbance& disturbance, double sim_time_s) {
+  if (sim_time_s < disturbance.start_s) {
     return JoyCmd{0.0f, 0.0f};
   }
 
-  const auto& d = *scenario.disturbance;
-  if (sim_time_s >= d.start_s && sim_time_s < (d.start_s + d.duration_s)) {
-    return JoyCmd{d.forward, d.turn};
+  switch (disturbance.kind) {
+    case SimulatorDisturbanceKind::Step: {
+      if (disturbance.duration_s > 0.0 &&
+          sim_time_s < (disturbance.start_s + disturbance.duration_s)) {
+        return JoyCmd{disturbance.forward, disturbance.turn};
+      }
+      break;
+    }
+    case SimulatorDisturbanceKind::Ramp: {
+      if (disturbance.duration_s > 0.0 &&
+          sim_time_s < (disturbance.start_s + disturbance.duration_s)) {
+        const double progress =
+            std::clamp((sim_time_s - disturbance.start_s) / disturbance.duration_s, 0.0, 1.0);
+        const float forward = static_cast<float>(
+            disturbance.forward + (disturbance.forward_end - disturbance.forward) * progress);
+        const float turn =
+            static_cast<float>(disturbance.turn + (disturbance.turn_end - disturbance.turn) * progress);
+        return JoyCmd{forward, turn};
+      }
+      break;
+    }
+    case SimulatorDisturbanceKind::HoldBias: {
+      const bool active = disturbance.duration_s <= 0.0 ||
+                          sim_time_s < (disturbance.start_s + disturbance.duration_s);
+      if (active) {
+        return JoyCmd{disturbance.forward, disturbance.turn};
+      }
+      break;
+    }
   }
+
   return JoyCmd{0.0f, 0.0f};
+}
+
+JoyCmd scenario_joystick_for_time(const SimulatorScenario& scenario, double sim_time_s) {
+  float forward = 0.0f;
+  float turn = 0.0f;
+  for (const auto& disturbance : scenario.disturbances) {
+    const JoyCmd cmd = disturbance_command(disturbance, sim_time_s);
+    forward += cmd.forward;
+    turn += cmd.turn;
+  }
+  return JoyCmd{std::clamp(forward, -1.0f, 1.0f), std::clamp(turn, -1.0f, 1.0f)};
 }
 
 SimulatorScenario make_scenario(std::string name,
@@ -51,6 +89,10 @@ SimulatorRunResult run_simulator_scenario(const SimulatorScenario& scenario,
   sim_cfg.initial_pitch_deg = scenario.initial_pitch_deg;
   sim_cfg.physics_profile = scenario.physics_profile;
   sim_cfg.physics_override = scenario.physics_override;
+  sim_cfg.wheel_slip_factor = scenario.wheel_slip_factor;
+  sim_cfg.velocity_feedback_scale = scenario.velocity_feedback_scale;
+  sim_cfg.velocity_feedback_tau_s = scenario.velocity_feedback_tau_s;
+  sim_cfg.imu_pitch_lag_s = scenario.imu_pitch_lag_s;
 
   BalancerSimulator sim(sim_cfg);
   RateControllerCore core;
@@ -129,10 +171,17 @@ SimulatorRunResult run_simulator_scenario(const SimulatorScenario& scenario,
       row.vel_error = latest_telemetry.vel_error;
       row.vel_i_term = latest_telemetry.vel_i_term;
       row.vel_p_term = latest_telemetry.vel_p_term;
+      row.target_vel_sps = latest_telemetry.target_vel_sps;
+      row.measured_vel_sps = latest_telemetry.measured_vel_sps;
+      row.filtered_vel_sps = latest_telemetry.filtered_vel_sps;
+      row.position_target_vel_sps = latest_telemetry.position_target_vel_sps;
+      row.velocity_loop_blend = latest_telemetry.velocity_loop_blend;
+      row.velocity_hold_active = latest_telemetry.velocity_hold_active;
       row.out_norm = latest_telemetry.out_norm;
       row.effective_pitch_sp_deg = latest_telemetry.effective_pitch_sp_deg;
       row.pitch_trim_deg = latest_telemetry.pitch_trim_deg;
       row.trim_active = latest_telemetry.trim_active;
+      row.command_saturated = latest_telemetry.command_saturated;
     }
     result.rows.push_back(row);
 
@@ -175,12 +224,78 @@ std::optional<SimulatorScenario> simulator_named_scenario(std::string_view name,
   }
   if (name == "disturbance_pulse") {
     auto scenario = make_scenario("disturbance_pulse", 0.0, 0.0, physics_profile);
-    scenario.disturbance = SimulatorDisturbance{
+    scenario.disturbances.push_back(SimulatorDisturbance{
         .start_s = 1.0,
         .duration_s = 0.20,
         .forward = 0.08f,
         .turn = 0.0f,
+    });
+    return scenario;
+  }
+  if (name == "slow_push_recover") {
+    auto scenario = make_scenario("slow_push_recover", 0.0, 0.0, physics_profile);
+    scenario.duration_s = 20.0;
+    scenario.disturbances = {
+        SimulatorDisturbance{
+            .kind = SimulatorDisturbanceKind::Ramp,
+            .start_s = 1.0,
+            .duration_s = 4.0,
+            .forward = 0.0f,
+            .turn = 0.0f,
+            .forward_end = 0.12f,
+            .turn_end = 0.0f,
+        },
+        SimulatorDisturbance{
+            .kind = SimulatorDisturbanceKind::Ramp,
+            .start_s = 5.0,
+            .duration_s = 4.0,
+            .forward = 0.12f,
+            .turn = 0.0f,
+            .forward_end = 0.0f,
+            .turn_end = 0.0f,
+        },
     };
+    return scenario;
+  }
+  if (name == "slow_push_runaway") {
+    auto scenario = make_scenario("slow_push_runaway", 0.0, 0.0, physics_profile);
+    scenario.duration_s = 40.0;
+    scenario.velocity_feedback_scale = 0.85f;
+    scenario.velocity_feedback_tau_s = 0.10;
+    scenario.imu_pitch_lag_s = 0.01;
+    scenario.disturbances = {
+        SimulatorDisturbance{
+            .kind = SimulatorDisturbanceKind::Ramp,
+            .start_s = 1.0,
+            .duration_s = 8.0,
+            .forward = 0.0f,
+            .turn = 0.0f,
+            .forward_end = 0.18f,
+            .turn_end = 0.0f,
+        },
+        SimulatorDisturbance{
+            .kind = SimulatorDisturbanceKind::HoldBias,
+            .start_s = 9.0,
+            .duration_s = 0.0,
+            .forward = 0.18f,
+            .turn = 0.0f,
+        },
+    };
+    return scenario;
+  }
+  if (name == "hold_bias_long_horizon") {
+    auto scenario = make_scenario("hold_bias_long_horizon", 0.0, 0.0, physics_profile);
+    scenario.duration_s = 40.0;
+    scenario.velocity_feedback_scale = 0.85f;
+    scenario.velocity_feedback_tau_s = 0.10;
+    scenario.imu_pitch_lag_s = 0.01;
+    scenario.disturbances.push_back(SimulatorDisturbance{
+        .kind = SimulatorDisturbanceKind::HoldBias,
+        .start_s = 1.0,
+        .duration_s = 0.0,
+        .forward = 0.08f,
+        .turn = 0.0f,
+    });
     return scenario;
   }
   return std::nullopt;
@@ -201,6 +316,11 @@ std::vector<SimulatorScenario> simulator_scenario_set(std::string_view set_name,
       "recovery_large_pitch_pos",
       "recovery_large_pitch_neg",
       "disturbance_pulse",
+  };
+  static constexpr std::array<std::string_view, 3> kSlowPush = {
+      "slow_push_recover",
+      "slow_push_runaway",
+      "hold_bias_long_horizon",
   };
 
   std::vector<SimulatorScenario> scenarios;
@@ -225,6 +345,11 @@ std::vector<SimulatorScenario> simulator_scenario_set(std::string_view set_name,
   if (set_name == "all") {
     add_names(kRequired);
     add_names(kCapability);
+    add_names(kSlowPush);
+    return scenarios;
+  }
+  if (set_name == "slow_push") {
+    add_names(kSlowPush);
     return scenarios;
   }
 

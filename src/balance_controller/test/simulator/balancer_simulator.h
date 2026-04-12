@@ -23,6 +23,10 @@ struct SimulatorConfig {
   double initial_pitch_deg = 2.0;
   PhysicsProfile physics_profile = PhysicsProfile::Realistic;
   std::optional<SimulatorPhysics> physics_override;
+  float wheel_slip_factor = 1.0f;
+  float velocity_feedback_scale = 1.0f;
+  double velocity_feedback_tau_s = 0.0;
+  double imu_pitch_lag_s = 0.0;
 };
 
 class BalancerSimulator {
@@ -72,6 +76,9 @@ class BalancerSimulator {
   float right_target_sps_{0.0f};
   double actual_wheel_velocity_{0.0};
   double applied_drive_force_{0.0};
+  double measured_velocity_sps_{0.0};
+  double imu_pitch_{0.0};
+  double imu_pitch_rate_{0.0};
   Diagnostics diagnostics_{};
 
   static constexpr double gravity = 9.81;

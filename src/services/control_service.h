@@ -4,6 +4,7 @@
 #include "services/control/rate_controller_core.h"
 #include "publisher.h"
 #include "messages/balancer_msgs.h"
+#include <cmath>
 
 namespace sil {
 
@@ -60,6 +61,9 @@ private:
     float last_applied_avg_sps_ = 0.0f;
     float last_position_m_ = 0.0f;
     bool have_motor_feedback_ = false;
+    float last_raw_acc_pitch_deg_ = 0.0f;
+    float last_fused_pitch_deg_ = 0.0f;
+    float last_gyro_pitch_rate_dps_ = 0.0f;
 };
 
 template <>
@@ -75,6 +79,13 @@ inline void ControlService::on_message<MsgId::ImuData>(const ipc::ImuSamplePaylo
     s.gyro_rad_s = p.gyr[1]; 
     s.yaw_rate_z = p.gyr[2]; 
     s.t = std::chrono::steady_clock::time_point(std::chrono::microseconds(p.timestamp_us));
+    const double ax = p.acc[0];
+    const double ay = p.acc[1];
+    const double az = p.acc[2];
+    last_raw_acc_pitch_deg_ = static_cast<float>(
+        std::atan2(-ax, std::sqrt(ay * ay + az * az)) * (180.0 / M_PI));
+    last_fused_pitch_deg_ = static_cast<float>(p.pitch_rad * (180.0 / M_PI));
+    last_gyro_pitch_rate_dps_ = static_cast<float>(p.gyr[1] * (180.0 / M_PI));
     core_.pushImu(s);
 }
 

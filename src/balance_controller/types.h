@@ -32,10 +32,17 @@ struct Telemetry {
   double vel_error;
   double vel_p_term;
   double vel_i_term;
+  double target_vel_sps;
+  double measured_vel_sps;
+  double filtered_vel_sps;
+  double position_target_vel_sps;
+  double velocity_loop_blend;
+  double velocity_hold_active;
   double pitch_sp_deg;
   double effective_pitch_sp_deg;
   double pitch_trim_deg;
   double trim_active;
+  double command_saturated;
 };
 
 // ---- PID Configuration ----

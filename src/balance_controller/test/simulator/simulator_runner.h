@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -8,11 +9,20 @@
 #include "services/control/rate_controller_core.h"
 #include "simulator/balancer_simulator.h"
 
+enum class SimulatorDisturbanceKind : uint8_t {
+  Step = 0,
+  Ramp = 1,
+  HoldBias = 2,
+};
+
 struct SimulatorDisturbance {
+  SimulatorDisturbanceKind kind = SimulatorDisturbanceKind::Step;
   double start_s = 0.0;
   double duration_s = 0.0;
   float forward = 0.0f;
   float turn = 0.0f;
+  float forward_end = 0.0f;
+  float turn_end = 0.0f;
 };
 
 struct SimulatorScenario {
@@ -22,7 +32,11 @@ struct SimulatorScenario {
   double duration_s = 5.0;
   PhysicsProfile physics_profile = PhysicsProfile::Simplified;
   std::optional<SimulatorPhysics> physics_override;
-  std::optional<SimulatorDisturbance> disturbance;
+  std::vector<SimulatorDisturbance> disturbances;
+  float wheel_slip_factor = 1.0f;
+  float velocity_feedback_scale = 1.0f;
+  double velocity_feedback_tau_s = 0.0;
+  double imu_pitch_lag_s = 0.0;
 };
 
 struct SimulatorTimelineRow {
@@ -37,6 +51,12 @@ struct SimulatorTimelineRow {
   double vel_error = 0.0;
   double vel_i_term = 0.0;
   double vel_p_term = 0.0;
+  double target_vel_sps = 0.0;
+  double measured_vel_sps = 0.0;
+  double filtered_vel_sps = 0.0;
+  double position_target_vel_sps = 0.0;
+  double velocity_loop_blend = 0.0;
+  double velocity_hold_active = 0.0;
   double out_norm = 0.0;
   double effective_pitch_sp_deg = 0.0;
   double pitch_trim_deg = 0.0;

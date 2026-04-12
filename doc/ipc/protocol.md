@@ -12,7 +12,7 @@ It describes the reflected runtime message bus used by the balancer services, in
 messages consumed by the SIL harness and the internal-only messages exchanged between services.
 
 - Documented balancer message count: `10`
-- Protocol hash: `3a9cc0bac4a2e089`
+- Protocol hash: `db1beff0bd9bc5d3`
 - UDP ingress/egress gateway: `UdpBridge`
 
 ## System Architecture
@@ -170,7 +170,7 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 - Numeric ID: `3003`
 - Payload type: `SystemTelemetryPayload`
 - Python type: `SystemTelemetryPayload`
-- Wire size: `120` bytes
+- Wire size: `156` bytes
 - Published by: `ControlService`
 - Consumed by: `UdpBridge`
 
@@ -182,30 +182,39 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 | `age_ms` | `float` | `float` | 4 | 12 |  |
 | `pitch_deg` | `float` | `float` | 4 | 16 |  |
 | `pitch_rate_dps` | `float` | `float` | 4 | 20 |  |
-| `rate_sp_dps` | `float` | `float` | 4 | 24 |  |
-| `out_norm` | `float` | `float` | 4 | 28 |  |
-| `u_sps` | `float` | `float` | 4 | 32 |  |
-| `integ_pitch` | `float` | `float` | 4 | 36 |  |
-| `vel_error` | `float` | `float` | 4 | 40 |  |
-| `vel_p_term` | `float` | `float` | 4 | 44 |  |
-| `vel_i_term` | `float` | `float` | 4 | 48 |  |
-| `pitch_sp_deg` | `float` | `float` | 4 | 52 |  |
-| `effective_pitch_sp_deg` | `float` | `float` | 4 | 56 |  |
-| `pitch_trim_deg` | `float` | `float` | 4 | 60 |  |
-| `trim_active` | `float` | `float` | 4 | 64 |  |
-| `plant_pitch_deg` | `float` | `float` | 4 | 68 |  |
-| `plant_pitch_rate_dps` | `float` | `float` | 4 | 72 |  |
-| `plant_position_m` | `float` | `float` | 4 | 76 |  |
-| `plant_velocity_mps` | `float` | `float` | 4 | 80 |  |
-| `target_wheel_velocity` | `float` | `float` | 4 | 84 |  |
-| `actual_wheel_velocity` | `float` | `float` | 4 | 88 |  |
-| `plant_velocity_error` | `float` | `float` | 4 | 92 |  |
-| `f_cmd` | `float` | `float` | 4 | 96 |  |
-| `f_app` | `float` | `float` | 4 | 100 |  |
-| `x_ddot` | `float` | `float` | 4 | 104 |  |
-| `theta_ddot` | `float` | `float` | 4 | 108 |  |
-| `command_saturated` | `float` | `float` | 4 | 112 |  |
-| `force_saturated` | `float` | `float` | 4 | 116 |  |
+| `raw_acc_pitch_deg` | `float` | `float` | 4 | 24 |  |
+| `fused_pitch_deg` | `float` | `float` | 4 | 28 |  |
+| `gyro_pitch_rate_dps` | `float` | `float` | 4 | 32 |  |
+| `rate_sp_dps` | `float` | `float` | 4 | 36 |  |
+| `out_norm` | `float` | `float` | 4 | 40 |  |
+| `u_sps` | `float` | `float` | 4 | 44 |  |
+| `integ_pitch` | `float` | `float` | 4 | 48 |  |
+| `vel_error` | `float` | `float` | 4 | 52 |  |
+| `vel_p_term` | `float` | `float` | 4 | 56 |  |
+| `vel_i_term` | `float` | `float` | 4 | 60 |  |
+| `target_vel_sps` | `float` | `float` | 4 | 64 |  |
+| `measured_vel_sps` | `float` | `float` | 4 | 68 |  |
+| `filtered_vel_sps` | `float` | `float` | 4 | 72 |  |
+| `position_target_vel_sps` | `float` | `float` | 4 | 76 |  |
+| `velocity_loop_blend` | `float` | `float` | 4 | 80 |  |
+| `velocity_hold_active` | `float` | `float` | 4 | 84 |  |
+| `pitch_sp_deg` | `float` | `float` | 4 | 88 |  |
+| `effective_pitch_sp_deg` | `float` | `float` | 4 | 92 |  |
+| `pitch_trim_deg` | `float` | `float` | 4 | 96 |  |
+| `trim_active` | `float` | `float` | 4 | 100 |  |
+| `command_saturated` | `float` | `float` | 4 | 104 |  |
+| `plant_pitch_deg` | `float` | `float` | 4 | 108 |  |
+| `plant_pitch_rate_dps` | `float` | `float` | 4 | 112 |  |
+| `plant_position_m` | `float` | `float` | 4 | 116 |  |
+| `plant_velocity_mps` | `float` | `float` | 4 | 120 |  |
+| `target_wheel_velocity` | `float` | `float` | 4 | 124 |  |
+| `actual_wheel_velocity` | `float` | `float` | 4 | 128 |  |
+| `plant_velocity_error` | `float` | `float` | 4 | 132 |  |
+| `f_cmd` | `float` | `float` | 4 | 136 |  |
+| `f_app` | `float` | `float` | 4 | 140 |  |
+| `x_ddot` | `float` | `float` | 4 | 144 |  |
+| `theta_ddot` | `float` | `float` | 4 | 148 |  |
+| `force_saturated` | `float` | `float` | 4 | 152 |  |
 
 ### `MsgId::MotorFeedback`
 
@@ -228,7 +237,7 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 - Numeric ID: `3005`
 - Payload type: `SimStartRunPayload`
 - Python type: `SimStartRunPayload`
-- Wire size: `400` bytes
+- Wire size: `584` bytes
 - Published by: `UdpBridge`
 - Consumed by: _None_
 
@@ -241,8 +250,12 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 | `duration_s` | `double` | `float` | 8 | 8 |  |
 | `initial_pitch_deg` | `double` | `float` | 8 | 16 |  |
 | `com_angle_offset_rad` | `double` | `float` | 8 | 24 |  |
-| `disturbances` | `std::array<SimDisturbancePayload, 10>` | `list[SimDisturbancePayload]` | 240 | 32 |  |
-| `pid_config_path` | `std::array<char, 128>` | `bytes` | 128 | 272 |  |
+| `wheel_slip_factor` | `float` | `float` | 4 | 32 |  |
+| `velocity_feedback_scale` | `float` | `float` | 4 | 36 |  |
+| `velocity_feedback_tau_s` | `double` | `float` | 8 | 40 |  |
+| `imu_pitch_lag_s` | `double` | `float` | 8 | 48 |  |
+| `disturbances` | `std::array<SimDisturbancePayload, 10>` | `list[SimDisturbancePayload]` | 400 | 56 |  |
+| `pid_config_path` | `std::array<char, 128>` | `bytes` | 128 | 456 |  |
 
 ### `MsgId::SimStartAck`
 

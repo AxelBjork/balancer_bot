@@ -34,6 +34,9 @@ struct DOC_DESC("Detailed controller telemetry streamed out over UDP and used fo
     float age_ms;
     float pitch_deg;
     float pitch_rate_dps;
+    float raw_acc_pitch_deg;
+    float fused_pitch_deg;
+    float gyro_pitch_rate_dps;
     float rate_sp_dps;
     float out_norm;
     float u_sps;
@@ -41,10 +44,17 @@ struct DOC_DESC("Detailed controller telemetry streamed out over UDP and used fo
     float vel_error;
     float vel_p_term;
     float vel_i_term;
+    float target_vel_sps;
+    float measured_vel_sps;
+    float filtered_vel_sps;
+    float position_target_vel_sps;
+    float velocity_loop_blend;
+    float velocity_hold_active;
     float pitch_sp_deg;
     float effective_pitch_sp_deg;
     float pitch_trim_deg;
     float trim_active;
+    float command_saturated;
     float plant_pitch_deg;
     float plant_pitch_rate_dps;
     float plant_position_m;
@@ -56,7 +66,6 @@ struct DOC_DESC("Detailed controller telemetry streamed out over UDP and used fo
     float f_app;
     float x_ddot;
     float theta_ddot;
-    float command_saturated;
     float force_saturated;
 };
 
@@ -67,11 +76,20 @@ struct DOC_DESC("Internal motor feedback sample published by the motor service. 
     int64_t right_actual_steps;
 };
 
-struct DOC_DESC("One scheduled simulator disturbance segment. A segment is active when duration_s is greater than zero.") SimDisturbancePayload {
+constexpr uint8_t kSimDisturbanceStep = 0;
+constexpr uint8_t kSimDisturbanceRamp = 1;
+constexpr uint8_t kSimDisturbanceHoldBias = 2;
+
+struct DOC_DESC("One scheduled simulator disturbance segment. Step disturbances apply a constant command for the active window. Ramp disturbances interpolate from the start command to the end command across the window. Hold-bias disturbances apply a constant command from start_s until duration_s expires, or to the end of the run when duration_s is non-positive.") SimDisturbancePayload {
+    uint8_t kind;
+    uint8_t reserved0;
+    uint16_t reserved1;
     double start_s;
     double duration_s;
     float forward;
     float turn;
+    float forward_end;
+    float turn_end;
 };
 
 struct DOC_DESC("Request from Python to start a single simulator run. Only one run may be active at a time.") SimStartRunPayload {
@@ -82,6 +100,10 @@ struct DOC_DESC("Request from Python to start a single simulator run. Only one r
     double duration_s;
     double initial_pitch_deg;
     double com_angle_offset_rad;
+    float wheel_slip_factor;
+    float velocity_feedback_scale;
+    double velocity_feedback_tau_s;
+    double imu_pitch_lag_s;
     std::array<ipc::SimDisturbancePayload, kMaxSimDisturbances> disturbances;
     std::array<char, 128> pid_config_path;
 };

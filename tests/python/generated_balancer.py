@@ -132,13 +132,16 @@ class MotorTargetsPayload:
 
 @dataclass
 class SystemTelemetryPayload:
-    WIRE_SIZE = 120
+    WIRE_SIZE = 156
     run_id: int
     t_sec: float
     sim_time_s: float
     age_ms: float
     pitch_deg: float
     pitch_rate_dps: float
+    raw_acc_pitch_deg: float
+    fused_pitch_deg: float
+    gyro_pitch_rate_dps: float
     rate_sp_dps: float
     out_norm: float
     u_sps: float
@@ -146,10 +149,17 @@ class SystemTelemetryPayload:
     vel_error: float
     vel_p_term: float
     vel_i_term: float
+    target_vel_sps: float
+    measured_vel_sps: float
+    filtered_vel_sps: float
+    position_target_vel_sps: float
+    velocity_loop_blend: float
+    velocity_hold_active: float
     pitch_sp_deg: float
     effective_pitch_sp_deg: float
     pitch_trim_deg: float
     trim_active: float
+    command_saturated: float
     plant_pitch_deg: float
     plant_pitch_rate_dps: float
     plant_position_m: float
@@ -161,12 +171,11 @@ class SystemTelemetryPayload:
     f_app: float
     x_ddot: float
     theta_ddot: float
-    command_saturated: float
     force_saturated: float
 
     def pack_wire(self) -> bytes:
         data = bytearray()
-        data.extend(struct.pack("<Ifffffffffffffffffffffffffffff", self.run_id, self.t_sec, self.sim_time_s, self.age_ms, self.pitch_deg, self.pitch_rate_dps, self.rate_sp_dps, self.out_norm, self.u_sps, self.integ_pitch, self.vel_error, self.vel_p_term, self.vel_i_term, self.pitch_sp_deg, self.effective_pitch_sp_deg, self.pitch_trim_deg, self.trim_active, self.plant_pitch_deg, self.plant_pitch_rate_dps, self.plant_position_m, self.plant_velocity_mps, self.target_wheel_velocity, self.actual_wheel_velocity, self.plant_velocity_error, self.f_cmd, self.f_app, self.x_ddot, self.theta_ddot, self.command_saturated, self.force_saturated))
+        data.extend(struct.pack("<Iffffffffffffffffffffffffffffffffffffff", self.run_id, self.t_sec, self.sim_time_s, self.age_ms, self.pitch_deg, self.pitch_rate_dps, self.raw_acc_pitch_deg, self.fused_pitch_deg, self.gyro_pitch_rate_dps, self.rate_sp_dps, self.out_norm, self.u_sps, self.integ_pitch, self.vel_error, self.vel_p_term, self.vel_i_term, self.target_vel_sps, self.measured_vel_sps, self.filtered_vel_sps, self.position_target_vel_sps, self.velocity_loop_blend, self.velocity_hold_active, self.pitch_sp_deg, self.effective_pitch_sp_deg, self.pitch_trim_deg, self.trim_active, self.command_saturated, self.plant_pitch_deg, self.plant_pitch_rate_dps, self.plant_position_m, self.plant_velocity_mps, self.target_wheel_velocity, self.actual_wheel_velocity, self.plant_velocity_error, self.f_cmd, self.f_app, self.x_ddot, self.theta_ddot, self.force_saturated))
         return bytes(data)
 
     def pack(self) -> bytes:
@@ -175,9 +184,9 @@ class SystemTelemetryPayload:
     @classmethod
     def unpack_wire(cls, data: bytes) -> "SystemTelemetryPayload":
         offset = 0
-        run_id, t_sec, sim_time_s, age_ms, pitch_deg, pitch_rate_dps, rate_sp_dps, out_norm, u_sps, integ_pitch, vel_error, vel_p_term, vel_i_term, pitch_sp_deg, effective_pitch_sp_deg, pitch_trim_deg, trim_active, plant_pitch_deg, plant_pitch_rate_dps, plant_position_m, plant_velocity_mps, target_wheel_velocity, actual_wheel_velocity, plant_velocity_error, f_cmd, f_app, x_ddot, theta_ddot, command_saturated, force_saturated = struct.unpack_from("<Ifffffffffffffffffffffffffffff", data, offset)
-        offset += struct.calcsize("<Ifffffffffffffffffffffffffffff")
-        return cls(run_id=run_id, t_sec=t_sec, sim_time_s=sim_time_s, age_ms=age_ms, pitch_deg=pitch_deg, pitch_rate_dps=pitch_rate_dps, rate_sp_dps=rate_sp_dps, out_norm=out_norm, u_sps=u_sps, integ_pitch=integ_pitch, vel_error=vel_error, vel_p_term=vel_p_term, vel_i_term=vel_i_term, pitch_sp_deg=pitch_sp_deg, effective_pitch_sp_deg=effective_pitch_sp_deg, pitch_trim_deg=pitch_trim_deg, trim_active=trim_active, plant_pitch_deg=plant_pitch_deg, plant_pitch_rate_dps=plant_pitch_rate_dps, plant_position_m=plant_position_m, plant_velocity_mps=plant_velocity_mps, target_wheel_velocity=target_wheel_velocity, actual_wheel_velocity=actual_wheel_velocity, plant_velocity_error=plant_velocity_error, f_cmd=f_cmd, f_app=f_app, x_ddot=x_ddot, theta_ddot=theta_ddot, command_saturated=command_saturated, force_saturated=force_saturated)
+        run_id, t_sec, sim_time_s, age_ms, pitch_deg, pitch_rate_dps, raw_acc_pitch_deg, fused_pitch_deg, gyro_pitch_rate_dps, rate_sp_dps, out_norm, u_sps, integ_pitch, vel_error, vel_p_term, vel_i_term, target_vel_sps, measured_vel_sps, filtered_vel_sps, position_target_vel_sps, velocity_loop_blend, velocity_hold_active, pitch_sp_deg, effective_pitch_sp_deg, pitch_trim_deg, trim_active, command_saturated, plant_pitch_deg, plant_pitch_rate_dps, plant_position_m, plant_velocity_mps, target_wheel_velocity, actual_wheel_velocity, plant_velocity_error, f_cmd, f_app, x_ddot, theta_ddot, force_saturated = struct.unpack_from("<Iffffffffffffffffffffffffffffffffffffff", data, offset)
+        offset += struct.calcsize("<Iffffffffffffffffffffffffffffffffffffff")
+        return cls(run_id=run_id, t_sec=t_sec, sim_time_s=sim_time_s, age_ms=age_ms, pitch_deg=pitch_deg, pitch_rate_dps=pitch_rate_dps, raw_acc_pitch_deg=raw_acc_pitch_deg, fused_pitch_deg=fused_pitch_deg, gyro_pitch_rate_dps=gyro_pitch_rate_dps, rate_sp_dps=rate_sp_dps, out_norm=out_norm, u_sps=u_sps, integ_pitch=integ_pitch, vel_error=vel_error, vel_p_term=vel_p_term, vel_i_term=vel_i_term, target_vel_sps=target_vel_sps, measured_vel_sps=measured_vel_sps, filtered_vel_sps=filtered_vel_sps, position_target_vel_sps=position_target_vel_sps, velocity_loop_blend=velocity_loop_blend, velocity_hold_active=velocity_hold_active, pitch_sp_deg=pitch_sp_deg, effective_pitch_sp_deg=effective_pitch_sp_deg, pitch_trim_deg=pitch_trim_deg, trim_active=trim_active, command_saturated=command_saturated, plant_pitch_deg=plant_pitch_deg, plant_pitch_rate_dps=plant_pitch_rate_dps, plant_position_m=plant_position_m, plant_velocity_mps=plant_velocity_mps, target_wheel_velocity=target_wheel_velocity, actual_wheel_velocity=actual_wheel_velocity, plant_velocity_error=plant_velocity_error, f_cmd=f_cmd, f_app=f_app, x_ddot=x_ddot, theta_ddot=theta_ddot, force_saturated=force_saturated)
 
     @classmethod
     def unpack(cls, data: bytes) -> "SystemTelemetryPayload":
@@ -185,15 +194,20 @@ class SystemTelemetryPayload:
 
 @dataclass
 class SimDisturbancePayload:
-    WIRE_SIZE = 24
+    WIRE_SIZE = 40
+    kind: int
+    reserved0: int
+    reserved1: int
     start_s: float
     duration_s: float
     forward: float
     turn: float
+    forward_end: float
+    turn_end: float
 
     def pack_wire(self) -> bytes:
         data = bytearray()
-        data.extend(struct.pack("<ddff", self.start_s, self.duration_s, self.forward, self.turn))
+        data.extend(struct.pack("<BBH4xddffff", self.kind, self.reserved0, self.reserved1, self.start_s, self.duration_s, self.forward, self.turn, self.forward_end, self.turn_end))
         return bytes(data)
 
     def pack(self) -> bytes:
@@ -202,9 +216,9 @@ class SimDisturbancePayload:
     @classmethod
     def unpack_wire(cls, data: bytes) -> "SimDisturbancePayload":
         offset = 0
-        start_s, duration_s, forward, turn = struct.unpack_from("<ddff", data, offset)
-        offset += struct.calcsize("<ddff")
-        return cls(start_s=start_s, duration_s=duration_s, forward=forward, turn=turn)
+        kind, reserved0, reserved1, start_s, duration_s, forward, turn, forward_end, turn_end = struct.unpack_from("<BBH4xddffff", data, offset)
+        offset += struct.calcsize("<BBH4xddffff")
+        return cls(kind=kind, reserved0=reserved0, reserved1=reserved1, start_s=start_s, duration_s=duration_s, forward=forward, turn=turn, forward_end=forward_end, turn_end=turn_end)
 
     @classmethod
     def unpack(cls, data: bytes) -> "SimDisturbancePayload":
@@ -212,7 +226,7 @@ class SimDisturbancePayload:
 
 @dataclass
 class SimStartRunPayload:
-    WIRE_SIZE = 400
+    WIRE_SIZE = 584
     run_id: int
     physics_profile: int
     reserved0: int
@@ -220,12 +234,16 @@ class SimStartRunPayload:
     duration_s: float
     initial_pitch_deg: float
     com_angle_offset_rad: float
+    wheel_slip_factor: float
+    velocity_feedback_scale: float
+    velocity_feedback_tau_s: float
+    imu_pitch_lag_s: float
     disturbances: list[SimDisturbancePayload]
     pid_config_path: bytes
 
     def pack_wire(self) -> bytes:
         data = bytearray()
-        data.extend(struct.pack("<IBBHddd", self.run_id, self.physics_profile, self.reserved0, self.reserved1, self.duration_s, self.initial_pitch_deg, self.com_angle_offset_rad))
+        data.extend(struct.pack("<IBBHdddffdd", self.run_id, self.physics_profile, self.reserved0, self.reserved1, self.duration_s, self.initial_pitch_deg, self.com_angle_offset_rad, self.wheel_slip_factor, self.velocity_feedback_scale, self.velocity_feedback_tau_s, self.imu_pitch_lag_s))
         for item in self.disturbances:
             if not hasattr(item, 'pack_wire'):
                 if isinstance(item, tuple):
@@ -244,8 +262,8 @@ class SimStartRunPayload:
     @classmethod
     def unpack_wire(cls, data: bytes) -> "SimStartRunPayload":
         offset = 0
-        run_id, physics_profile, reserved0, reserved1, duration_s, initial_pitch_deg, com_angle_offset_rad = struct.unpack_from("<IBBHddd", data, offset)
-        offset += struct.calcsize("<IBBHddd")
+        run_id, physics_profile, reserved0, reserved1, duration_s, initial_pitch_deg, com_angle_offset_rad, wheel_slip_factor, velocity_feedback_scale, velocity_feedback_tau_s, imu_pitch_lag_s = struct.unpack_from("<IBBHdddffdd", data, offset)
+        offset += struct.calcsize("<IBBHdddffdd")
         disturbances = []
         for _ in range(10):
             sub_size = SimDisturbancePayload.WIRE_SIZE
@@ -254,7 +272,7 @@ class SimStartRunPayload:
             offset += sub_size
         pid_config_path = struct.unpack_from("<128s", data, offset)[0]
         offset += struct.calcsize("<128s")
-        return cls(run_id=run_id, physics_profile=physics_profile, reserved0=reserved0, reserved1=reserved1, duration_s=duration_s, initial_pitch_deg=initial_pitch_deg, com_angle_offset_rad=com_angle_offset_rad, disturbances=disturbances, pid_config_path=pid_config_path)
+        return cls(run_id=run_id, physics_profile=physics_profile, reserved0=reserved0, reserved1=reserved1, duration_s=duration_s, initial_pitch_deg=initial_pitch_deg, com_angle_offset_rad=com_angle_offset_rad, wheel_slip_factor=wheel_slip_factor, velocity_feedback_scale=velocity_feedback_scale, velocity_feedback_tau_s=velocity_feedback_tau_s, imu_pitch_lag_s=imu_pitch_lag_s, disturbances=disturbances, pid_config_path=pid_config_path)
 
     @classmethod
     def unpack(cls, data: bytes) -> "SimStartRunPayload":
@@ -364,11 +382,11 @@ PAYLOAD_SIZE_BY_ID = {
     MsgId.ImuData: 64,
     MsgId.JoystickCommand: 8,
     MsgId.MotorTargets: 8,
-    MsgId.SystemTelemetry: 120,
-    MsgId.SimStartRun: 400,
+    MsgId.SystemTelemetry: 156,
+    MsgId.SimStartRun: 584,
     MsgId.SimStartAck: 8,
     MsgId.SimStopRun: 4,
     MsgId.SimRunDone: 44,
 }
 
-PROTOCOL_HASH = "3a9cc0bac4a2e089"
+PROTOCOL_HASH = "db1beff0bd9bc5d3"

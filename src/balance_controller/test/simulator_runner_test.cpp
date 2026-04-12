@@ -85,4 +85,62 @@ TEST(SimulatorRunnerTest, NegativeComOffsetBuildsPositiveLeanTrim) {
   EXPECT_GT(result.rows.back().pitch_trim_deg, 0.0);
 }
 
+TEST(SimulatorRunnerTest, RampDisturbanceBuildsCommandMagnitudeOverTime) {
+  SimulatorScenario scenario;
+  scenario.name = "ramp_disturbance";
+  scenario.duration_s = 1.0;
+  scenario.physics_profile = PhysicsProfile::Simplified;
+  scenario.disturbances.push_back(SimulatorDisturbance{
+      .kind = SimulatorDisturbanceKind::Ramp,
+      .start_s = 0.1,
+      .duration_s = 0.5,
+      .forward = 0.0f,
+      .turn = 0.0f,
+      .forward_end = 0.2f,
+      .turn_end = 0.0f,
+  });
+
+  const auto result = run_simulator_scenario(scenario, sim_pid_path());
+  ASSERT_FALSE(result.rows.empty());
+
+  double early_target = 0.0;
+  double late_target = 0.0;
+  int early_count = 0;
+  int late_count = 0;
+  for (const auto& row : result.rows) {
+    if (row.sim_time_s >= 0.15 && row.sim_time_s < 0.25) {
+      early_target += row.target_vel_sps;
+      ++early_count;
+    }
+    if (row.sim_time_s >= 0.45 && row.sim_time_s < 0.55) {
+      late_target += row.target_vel_sps;
+      ++late_count;
+    }
+  }
+
+  ASSERT_GT(early_count, 0);
+  ASSERT_GT(late_count, 0);
+  EXPECT_GT(late_target / late_count, early_target / early_count);
+}
+
+TEST(SimulatorRunnerTest, HoldBiasDisturbancePersistsUntilRunEnds) {
+  SimulatorScenario scenario;
+  scenario.name = "hold_bias";
+  scenario.duration_s = 1.0;
+  scenario.physics_profile = PhysicsProfile::Simplified;
+  scenario.disturbances.push_back(SimulatorDisturbance{
+      .kind = SimulatorDisturbanceKind::HoldBias,
+      .start_s = 0.2,
+      .duration_s = 0.0,
+      .forward = 0.15f,
+      .turn = 0.0f,
+  });
+
+  const auto result = run_simulator_scenario(scenario, sim_pid_path());
+  ASSERT_FALSE(result.rows.empty());
+
+  const auto tail = result.rows.back();
+  EXPECT_GT(tail.target_vel_sps, 0.0);
+}
+
 }  // namespace
