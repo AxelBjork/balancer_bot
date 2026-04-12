@@ -14,6 +14,7 @@ option(
   "Build reflection-generated docs and Python bindings as part of the default host build"
   ${BUILD_TESTS}
 )
+option(BUILD_AFL_TARGETS "Build AFL++ fuzz harnesses" OFF)
 
 find_package(Threads REQUIRED)
 include(cmake/balancer_common.cmake)
@@ -123,7 +124,11 @@ if (BUILD_TESTS)
   target_compile_definitions(balancer_tests PRIVATE
     BALANCER_REPO_ROOT="${CMAKE_SOURCE_DIR}"
   )
-  target_link_libraries(balancer_tests PRIVATE balancer_common balancer_sim_support)
+  target_link_libraries(balancer_tests PRIVATE
+    balancer_common
+    balancer_sim_support
+    GTest::gmock_main
+  )
   ## add_test(NAME motor_controller_test COMMAND motor_controller_test)
 
   gtest_discover_tests(balancer_tests
@@ -153,6 +158,35 @@ if (BUILD_TESTS)
   )
   target_link_libraries(sil_app PRIVATE balancer_common)
   target_include_directories(sil_app PRIVATE ${CMAKE_SOURCE_DIR}/src)
+
+  if (BUILD_AFL_TARGETS)
+    add_executable(balancer_fuzz_udp_sequence EXCLUDE_FROM_ALL
+      ${CMAKE_SOURCE_DIR}/tests/fuzz/udp_sequence_fuzz.cpp
+    )
+    target_compile_definitions(balancer_fuzz_udp_sequence PRIVATE
+      BALANCER_REPO_ROOT="${CMAKE_SOURCE_DIR}"
+    )
+    target_link_libraries(balancer_fuzz_udp_sequence PRIVATE balancer_common)
+    enable_project_warnings(balancer_fuzz_udp_sequence)
+
+    add_executable(balancer_fuzz_simulator_scenario EXCLUDE_FROM_ALL
+      ${CMAKE_SOURCE_DIR}/tests/fuzz/simulator_scenario_fuzz.cpp
+    )
+    target_compile_definitions(balancer_fuzz_simulator_scenario PRIVATE
+      BALANCER_REPO_ROOT="${CMAKE_SOURCE_DIR}"
+    )
+    target_link_libraries(balancer_fuzz_simulator_scenario PRIVATE
+      balancer_common
+      balancer_sim_support
+    )
+    enable_project_warnings(balancer_fuzz_simulator_scenario)
+
+    add_custom_target(balancer_fuzz_targets
+      DEPENDS
+        balancer_fuzz_udp_sequence
+        balancer_fuzz_simulator_scenario
+    )
+  endif()
 # ================================================================
 #                       App (opt-in, hard checks)
 # ================================================================

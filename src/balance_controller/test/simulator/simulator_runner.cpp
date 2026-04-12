@@ -91,10 +91,7 @@ SimulatorScenario make_scenario(std::string name,
 
 }  // namespace
 
-SimulatorRunResult run_simulator_scenario(const SimulatorScenario& scenario,
-                                          const std::string& pid_config_path) {
-  ConfigPid::load(pid_config_path);
-
+SimulatorRunResult run_simulator_scenario_with_loaded_pid(const SimulatorScenario& scenario) {
   BalancerSimulator::Config sim_cfg;
   sim_cfg.com_angle_offset_rad = scenario.com_angle_offset_rad;
   sim_cfg.initial_pitch_deg = scenario.initial_pitch_deg;
@@ -129,7 +126,6 @@ SimulatorRunResult run_simulator_scenario(const SimulatorScenario& scenario,
   SimulatorRunResult result;
   result.scenario = scenario;
   result.physics = sim.physics();
-  result.pid_config_path = pid_config_path;
   result.rows.reserve(static_cast<size_t>(scenario.duration_s * Config::control_hz));
 
   const int steps = std::max(1, static_cast<int>(std::llround(scenario.duration_s / kTickDtS)));
@@ -209,6 +205,14 @@ SimulatorRunResult run_simulator_scenario(const SimulatorScenario& scenario,
 
   result.final_pitch_deg = sim.get_pitch() * 180.0 / kPi;
   result.fell = result.max_abs_pitch_deg > kFallPitchDeg;
+  return result;
+}
+
+SimulatorRunResult run_simulator_scenario(const SimulatorScenario& scenario,
+                                          const std::string& pid_config_path) {
+  ConfigPid::load(pid_config_path);
+  SimulatorRunResult result = run_simulator_scenario_with_loaded_pid(scenario);
+  result.pid_config_path = pid_config_path;
   return result;
 }
 

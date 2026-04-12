@@ -41,10 +41,23 @@ That command:
 2. runs `ctest`
 3. runs the Python SIL and simulator tests
 
+For AFL++ harness validation, use:
+
+```bash
+pytest --fuzz --build-only
+```
+
+That keeps the normal `build/` flow unchanged, then configures a separate `build-afl/`
+tree, builds the registered AFL++ harnesses, generates a deterministic seed corpus under
+`build-afl/fuzz-corpus/`, and runs `afl-showmap` over those generated seeds.
+
 Key files:
 
 - `tests/python/conftest.py`
   owns the `pytest --build` workflow and process fixtures
+- `tests/fuzz/registry.py`
+  registers the AFL++ targets, corpora, and `@@` command lines used by both pytest and
+  `tools/run_afl.py`
 - `tests/python/test_udp_bridge.py`
   verifies the UDP bridge transport path
 - `tests/python/test_sil_loop.py`
@@ -103,5 +116,6 @@ They are not treated as golden replay traces for the simulator.
 - C++ tests prove the local math, contracts, and service glue.
 - `sil_app` tests prove the UDP-facing message-bus runtime is alive and coherent.
 - direct simulator tests prove the current controller and plant model stay upright across a representative scenario ladder.
+- AFL++ harness validation proves the fuzz targets still build, execute, and produce coverage on their seed corpora without changing the normal pytest gate.
 
 For the deeper simulator and control notes, read [Control and Simulator Notes](../notes/control_and_simulator.md). For the SIL-specific transport path, read [SIL Guide](sil_guide.md).

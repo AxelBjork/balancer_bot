@@ -85,7 +85,6 @@ function(add_balancer_common_target)
       ${CMAKE_SOURCE_DIR}/src/px4_stub
     )
     target_compile_definitions(balancer_common PUBLIC PIGPIOD_STUB_IMPL)
-    target_link_libraries(balancer_common PUBLIC GTest::gmock_main GTest::gtest)
   endif()
 
   if (BAL_PIGPIOD_LIB)

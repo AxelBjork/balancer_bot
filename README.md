@@ -29,6 +29,19 @@ It is both a real robot project and a control/runtime playground. The same codeb
 pytest -q
 ```
 
+### AFL++ Harness Validation
+
+```bash
+pytest --fuzz --build-only
+python3 tools/run_afl.py --list
+python3 tools/run_afl.py udp_sequence --output-dir build-afl/afl-udp -V 60
+python3 tools/run_afl.py simulator_scenario --output-dir build-afl/afl-sim -V 300
+sed -n '1,40p' build-afl/afl-sim/default/fuzzer_stats
+find build-afl/afl-sim/default/queue -maxdepth 1 -type f | head
+```
+
+The seed corpus is generated on demand under `build-afl/fuzz-corpus/`; it is not checked into git.
+
 ### Standalone Simulator
 
 ```bash
@@ -67,6 +80,8 @@ python3 tools/analyze_timeline.py build/sim/realistic_neutral_hold_40s/timeline.
   estimates lag and scale relationships from a `timeline.csv` artifact or captured telemetry log
 - `balancer_tests`
   the C++ unit and integration test binary
+- `tools/run_afl.py`
+  launches `afl-fuzz` against the registered harnesses built in `build-afl/`
 
 ## Simplified BOM
 

@@ -92,6 +92,7 @@ struct SimulatorRunResult {
 
 SimulatorRunResult run_simulator_scenario(const SimulatorScenario& scenario,
                                           const std::string& pid_config_path);
+SimulatorRunResult run_simulator_scenario_with_loaded_pid(const SimulatorScenario& scenario);
 std::optional<SimulatorScenario> simulator_named_scenario(std::string_view name,
                                                           PhysicsProfile physics_profile);
 std::vector<SimulatorScenario> simulator_scenario_set(std::string_view set_name,
