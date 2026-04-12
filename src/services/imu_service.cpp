@@ -17,6 +17,7 @@ ImuService::ImuService(ipc::MessageBus& bus, bool enable_hardware_reader)
             const ImuSample fused = filter_.read_latest();
             ipc::ImuSamplePayload payload{};
             payload.pitch_rad = fused.angle_rad;
+            payload.filtered_pitch_rate_rad_s = fused.gyro_rad_s;
             payload.acc = acc;
             payload.gyr = gyr;
             payload.timestamp_us = std::chrono::duration_cast<std::chrono::microseconds>(

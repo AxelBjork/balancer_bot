@@ -6,6 +6,7 @@ from generated_balancer import BalancerMsgId, ImuSamplePayload
 def test_udp_bridge_relays_imu_data(udp):
     sample = ImuSamplePayload(
         pitch_rad=0.125,
+        filtered_pitch_rate_rad_s=0.2,
         acc=[0.0, 0.0, 9.81],
         gyr=[0.0, 0.25, 0.0],
         timestamp_us=time.monotonic_ns() // 1000,
@@ -21,6 +22,7 @@ def test_udp_bridge_relays_imu_data(udp):
 
         echoed = ImuSamplePayload.unpack(payload_bytes)
         assert echoed.pitch_rad == sample.pitch_rad
+        assert echoed.filtered_pitch_rate_rad_s == sample.filtered_pitch_rate_rad_s
         assert echoed.timestamp_us == sample.timestamp_us
         assert echoed.gyr[1] == sample.gyr[1]
         return

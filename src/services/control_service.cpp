@@ -40,6 +40,7 @@ ControlService::ControlService(ipc::MessageBus& bus)
         p.raw_acc_pitch_deg = last_raw_acc_pitch_deg_;
         p.fused_pitch_deg = last_fused_pitch_deg_;
         p.gyro_pitch_rate_dps = last_gyro_pitch_rate_dps_;
+        p.filtered_pitch_rate_dps = last_filtered_pitch_rate_dps_;
         p.rate_sp_dps = static_cast<float>(t.rate_sp_dps);
         p.out_norm = static_cast<float>(t.out_norm);
         p.u_sps = static_cast<float>(t.u_sps);
@@ -51,8 +52,6 @@ ControlService::ControlService(ipc::MessageBus& bus)
         p.measured_vel_sps = static_cast<float>(t.measured_vel_sps);
         p.filtered_vel_sps = static_cast<float>(t.filtered_vel_sps);
         p.position_target_vel_sps = static_cast<float>(t.position_target_vel_sps);
-        p.velocity_loop_blend = static_cast<float>(t.velocity_loop_blend);
-        p.velocity_hold_active = static_cast<float>(t.velocity_hold_active);
         p.pitch_sp_deg = static_cast<float>(t.pitch_sp_deg);
         p.effective_pitch_sp_deg = static_cast<float>(t.effective_pitch_sp_deg);
         p.pitch_trim_deg = static_cast<float>(t.pitch_trim_deg);
@@ -67,6 +66,8 @@ ControlService::ControlService(ipc::MessageBus& bus)
         p.plant_velocity_error = 0.0f;
         p.f_cmd = 0.0f;
         p.f_app = 0.0f;
+        p.external_force_n = 0.0f;
+        p.external_com_bias_rad = 0.0f;
         p.x_ddot = 0.0f;
         p.theta_ddot = 0.0f;
         p.force_saturated = 0.0f;

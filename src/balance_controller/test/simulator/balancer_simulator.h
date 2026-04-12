@@ -11,7 +11,7 @@ enum class PhysicsProfile {
 };
 
 struct SimulatorPhysics {
-  double driver_kp = 500.0;
+  double drive_force_per_mps = 500.0;
   double max_force_n = 20.0;
   double cart_damping = 2.0;
   double pitch_damping = 0.05;
@@ -46,14 +46,23 @@ class BalancerSimulator {
     double velocity_error = 0.0;
     double f_cmd = 0.0;
     double f_app = 0.0;
+    double external_force_n = 0.0;
+    double external_com_bias_rad = 0.0;
     double x_ddot = 0.0;
     double theta_ddot = 0.0;
     bool command_saturated = false;
   };
 
+  struct LinearizedUprightModel {
+    std::array<std::array<double, 4>, 4> A{};
+    std::array<double, 4> B{};
+  };
+
   explicit BalancerSimulator(const Config& cfg = Config());
 
   void set_motor_targets(float left_sps, float right_sps);
+  void set_external_force_n(double force_n);
+  void set_external_com_bias_rad(double com_bias_rad);
   void step(double dt_s);
   ipc::ImuSamplePayload make_imu_payload(uint64_t sim_time_us) const;
 
@@ -67,6 +76,8 @@ class BalancerSimulator {
 
   static SimulatorPhysics physics_for_profile(PhysicsProfile profile);
   static std::string_view profile_name(PhysicsProfile profile);
+  static LinearizedUprightModel linearized_upright_model(const SimulatorPhysics& physics);
+  static std::array<double, 4> overdamped_candidate_poles(const SimulatorPhysics& physics);
 
  private:
   Config cfg_;
@@ -79,6 +90,8 @@ class BalancerSimulator {
   double measured_velocity_sps_{0.0};
   double imu_pitch_{0.0};
   double imu_pitch_rate_{0.0};
+  double external_force_n_{0.0};
+  double external_com_bias_rad_{0.0};
   Diagnostics diagnostics_{};
 
   static constexpr double gravity = 9.81;

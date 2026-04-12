@@ -2,6 +2,8 @@
 
 #include <chrono>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <vector>
 
 #include "config.h"
@@ -120,11 +122,19 @@ class ControlServiceHarness {
     control_.on_message<MsgId::MotorFeedback>(payload);
   }
 
-  void step_with_imu(double dt_s, uint64_t sim_time_us, double angle_rad = 0.0, double gyro_rad_s = 0.0) {
+  void step_with_imu(double dt_s,
+                     uint64_t sim_time_us,
+                     double angle_rad = 0.0,
+                     double filtered_pitch_rate_rad_s = 0.0,
+                     double raw_pitch_rate_rad_s = 0.0) {
     ipc::ImuSamplePayload imu{};
     imu.pitch_rad = angle_rad;
+    imu.filtered_pitch_rate_rad_s = filtered_pitch_rate_rad_s;
     imu.acc = accel_for_pitch(angle_rad);
-    imu.gyr = {0.0, gyro_rad_s, 0.0};
+    if (raw_pitch_rate_rad_s == 0.0) {
+      raw_pitch_rate_rad_s = filtered_pitch_rate_rad_s;
+    }
+    imu.gyr = {0.0, raw_pitch_rate_rad_s, 0.0};
     imu.timestamp_us = sim_time_us;
     control_.on_message<MsgId::ImuData>(imu);
 
@@ -173,6 +183,7 @@ class ServiceBusHarness {
   void sendStep(double dt_s, uint64_t sim_time_us, double angle_rad = 0.0, double gyro_rad_s = 0.0) {
     ipc::ImuSamplePayload imu{};
     imu.pitch_rad = angle_rad;
+    imu.filtered_pitch_rate_rad_s = gyro_rad_s;
     imu.acc = accel_for_pitch(angle_rad);
     imu.gyr = {0.0, gyro_rad_s, 0.0};
     imu.timestamp_us = sim_time_us;
@@ -223,6 +234,66 @@ class ServiceBusHarness {
   std::vector<ipc::SystemTelemetryPayload> telemetry_;
 };
 
+struct ConfigPidSnapshot {
+  double rate_P = ConfigPid::rate_P;
+  double rate_I = ConfigPid::rate_I;
+  double rate_D = ConfigPid::rate_D;
+  double rate_I_lim = ConfigPid::rate_I_lim;
+  double rate_FF = ConfigPid::rate_FF;
+  double angle_to_rate_k = ConfigPid::angle_to_rate_k;
+  double vel_P = ConfigPid::vel_P;
+  double vel_I = ConfigPid::vel_I;
+  double vel_D = ConfigPid::vel_D;
+  double vel_I_lim = ConfigPid::vel_I_lim;
+  double pos_P = ConfigPid::pos_P;
+  double outer_k_pos = ConfigPid::outer_k_pos;
+  double outer_k_vel = ConfigPid::outer_k_vel;
+  double outer_k_pitch = ConfigPid::outer_k_pitch;
+  double outer_k_pitch_rate = ConfigPid::outer_k_pitch_rate;
+  double angle_I = ConfigPid::angle_I;
+  double lean_trim_I = ConfigPid::lean_trim_I;
+  double lean_trim_max_deg = ConfigPid::lean_trim_max_deg;
+  double lean_trim_decay_s = ConfigPid::lean_trim_decay_s;
+
+  void restore() const {
+    ConfigPid::rate_P = rate_P;
+    ConfigPid::rate_I = rate_I;
+    ConfigPid::rate_D = rate_D;
+    ConfigPid::rate_I_lim = rate_I_lim;
+    ConfigPid::rate_FF = rate_FF;
+    ConfigPid::angle_to_rate_k = angle_to_rate_k;
+    ConfigPid::vel_P = vel_P;
+    ConfigPid::vel_I = vel_I;
+    ConfigPid::vel_D = vel_D;
+    ConfigPid::vel_I_lim = vel_I_lim;
+    ConfigPid::pos_P = pos_P;
+    ConfigPid::outer_k_pos = outer_k_pos;
+    ConfigPid::outer_k_vel = outer_k_vel;
+    ConfigPid::outer_k_pitch = outer_k_pitch;
+    ConfigPid::outer_k_pitch_rate = outer_k_pitch_rate;
+    ConfigPid::angle_I = angle_I;
+    ConfigPid::lean_trim_I = lean_trim_I;
+    ConfigPid::lean_trim_max_deg = lean_trim_max_deg;
+    ConfigPid::lean_trim_decay_s = lean_trim_decay_s;
+  }
+};
+
+struct ScopedConfigPidRestore {
+  ConfigPidSnapshot snapshot{};
+  ~ScopedConfigPidRestore() { snapshot.restore(); }
+};
+
+std::filesystem::path write_temp_pid_conf(const std::string& body) {
+  const auto path =
+      std::filesystem::temp_directory_path() /
+      ("balancer_pid_test_" + std::to_string(::getpid()) + "_" +
+       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".conf");
+  std::ofstream out(path);
+  out << body;
+  out.close();
+  return path;
+}
+
 TEST(RateControllerCoreTest, ZeroInputsStayNearZero) {
   RateControllerHarness h;
   h.setJoystick(0.0f, 0.0f);
@@ -238,6 +309,51 @@ TEST(RateControllerCoreTest, HardwareScalingConstantsMatchValidatedHardwareSetup
   EXPECT_DOUBLE_EQ(kPitchOutToSps, 3200.0);
 }
 
+TEST(ConfigPidTest, LegacyOuterLoopKeysMapIntoRewrittenOuterLawWhenNeeded) {
+  ScopedConfigPidRestore restore;
+  ConfigPid::outer_k_pos = 111.0;
+  ConfigPid::outer_k_vel = 222.0;
+  ConfigPid::outer_k_pitch = 333.0;
+  ConfigPid::outer_k_pitch_rate = 444.0;
+
+  const auto path = write_temp_pid_conf(
+      "angle_to_rate_k = 7\n"
+      "vel_P = -0.0015\n"
+      "vel_I = -0.2\n"
+      "vel_D = 0.3\n"
+      "vel_I_lim = 0.4\n"
+      "pos_P = 2.5\n");
+
+  ConfigPid::load(path.string());
+  std::filesystem::remove(path);
+
+  EXPECT_DOUBLE_EQ(ConfigPid::outer_k_pitch, 7.0);
+  EXPECT_DOUBLE_EQ(ConfigPid::outer_k_vel, -0.0015);
+  EXPECT_DOUBLE_EQ(ConfigPid::outer_k_pos, -0.00375);
+  EXPECT_DOUBLE_EQ(ConfigPid::outer_k_pitch_rate, 0.0);
+}
+
+TEST(ConfigPidTest, ExplicitOuterLoopKeysOverrideLegacyCompatibilityMapping) {
+  ScopedConfigPidRestore restore;
+
+  const auto path = write_temp_pid_conf(
+      "angle_to_rate_k = 7\n"
+      "vel_P = -0.0015\n"
+      "pos_P = 2.5\n"
+      "outer_k_pos = -0.02\n"
+      "outer_k_vel = -0.00011\n"
+      "outer_k_pitch = 15\n"
+      "outer_k_pitch_rate = 0.35\n");
+
+  ConfigPid::load(path.string());
+  std::filesystem::remove(path);
+
+  EXPECT_DOUBLE_EQ(ConfigPid::outer_k_pos, -0.02);
+  EXPECT_DOUBLE_EQ(ConfigPid::outer_k_vel, -0.00011);
+  EXPECT_DOUBLE_EQ(ConfigPid::outer_k_pitch, 15.0);
+  EXPECT_DOUBLE_EQ(ConfigPid::outer_k_pitch_rate, 0.35);
+}
+
 TEST(RateControllerCoreTest, SteeringSplitsWheelCommands) {
   RateControllerHarness h;
   h.setJoystick(0.0f, 0.6f);
@@ -247,7 +363,7 @@ TEST(RateControllerCoreTest, SteeringSplitsWheelCommands) {
   EXPECT_NE(h.runner().lastLeft(), h.runner().lastRight());
 }
 
-TEST(RateControllerCoreTest, SmallResidualVelocityIsIgnoredWithoutCommand) {
+TEST(RateControllerCoreTest, SmallResidualVelocityProducesOnlySmallCorrectivePitchRef) {
   RateControllerHarness h;
   h.setJoystick(0.0f, 0.0f);
   h.run_steps(40, 1.0 / 400.0);
@@ -256,9 +372,9 @@ TEST(RateControllerCoreTest, SmallResidualVelocityIsIgnoredWithoutCommand) {
   h.run_steps(80, 1.0 / 400.0);
 
   ASSERT_FALSE(h.telemetry().empty());
-  EXPECT_NEAR(h.telemetry().back().vel_error, 0.0, 1e-3);
-  EXPECT_NEAR(h.telemetry().back().vel_p_term, 0.0, 1e-3);
-  EXPECT_NEAR(h.telemetry().back().pitch_sp_deg, 0.0, 1e-3);
+  EXPECT_LT(h.telemetry().back().vel_error, 0.0);
+  EXPECT_GT(h.telemetry().back().vel_p_term, 0.0);
+  EXPECT_LT(std::abs(h.telemetry().back().pitch_sp_deg), 1.0);
 }
 
 TEST(RateControllerCoreTest, LargeResidualVelocityIsBrakedWithoutCommand) {
@@ -273,29 +389,6 @@ TEST(RateControllerCoreTest, LargeResidualVelocityIsBrakedWithoutCommand) {
   EXPECT_LT(h.telemetry().back().vel_error, 0.0);
   EXPECT_GT(h.telemetry().back().vel_p_term, 0.0);
   EXPECT_GT(std::abs(h.telemetry().back().pitch_sp_deg), 1e-3);
-}
-
-TEST(RateControllerCoreTest, VelocityHoldUsesHysteresisAroundResidualVelocityThreshold) {
-  RateControllerHarness h;
-  h.setJoystick(0.0f, 0.0f);
-  h.run_steps(40, 1.0 / 400.0);
-
-  h.runner().setActualSpeedSps(240.0f);
-  h.run_steps(20, 1.0 / 400.0);
-  ASSERT_FALSE(h.telemetry().empty());
-  EXPECT_LT(h.telemetry().back().velocity_hold_active, 0.5);
-
-  h.runner().setActualSpeedSps(260.0f);
-  h.run_steps(20, 1.0 / 400.0);
-  EXPECT_GT(h.telemetry().back().velocity_hold_active, 0.5);
-
-  h.runner().setActualSpeedSps(150.0f);
-  h.run_steps(20, 1.0 / 400.0);
-  EXPECT_GT(h.telemetry().back().velocity_hold_active, 0.5);
-
-  h.runner().setActualSpeedSps(80.0f);
-  h.run_steps(20, 1.0 / 400.0);
-  EXPECT_LT(h.telemetry().back().velocity_hold_active, 0.5);
 }
 
 TEST(RateControllerCoreTest, VelocityFeedbackAffectsTelemetryWhenCommanded) {
@@ -314,14 +407,14 @@ TEST(RateControllerCoreTest, VelocityFeedbackAffectsTelemetryWhenCommanded) {
   EXPECT_NE(h.telemetry().back().vel_p_term, 0.0);
 }
 
-TEST(RateControllerCoreTest, PositionHoldAddsVelocityTargetBackTowardAnchor) {
-  const double old_pos_p = ConfigPid::pos_P;
-  struct RestorePosP {
+TEST(RateControllerCoreTest, PositionHoldAddsEquivalentVelocityTargetBackTowardAnchor) {
+  const double old_outer_k_pos = ConfigPid::outer_k_pos;
+  struct RestoreOuterKPos {
     double& slot;
     double old_value;
-    ~RestorePosP() { slot = old_value; }
-  } restore{ConfigPid::pos_P, old_pos_p};
-  ConfigPid::pos_P = 1000.0;
+    ~RestoreOuterKPos() { slot = old_value; }
+  } restore{ConfigPid::outer_k_pos, old_outer_k_pos};
+  ConfigPid::outer_k_pos = -0.4;
 
   RateControllerHarness h;
   h.setJoystick(0.0f, 0.0f);
@@ -332,6 +425,7 @@ TEST(RateControllerCoreTest, PositionHoldAddsVelocityTargetBackTowardAnchor) {
   ASSERT_FALSE(h.telemetry().empty());
   EXPECT_LT(h.telemetry().back().vel_error, 0.0);
   EXPECT_GT(h.telemetry().back().vel_p_term, 0.0);
+  EXPECT_LT(h.telemetry().back().position_target_vel_sps, 0.0);
   EXPECT_NE(h.runner().lastLeft(), 0.0f);
   EXPECT_NE(h.runner().lastRight(), 0.0f);
 }
@@ -519,13 +613,24 @@ TEST(ControlServiceTest, UsesMotorFeedbackForVelocityTelemetry) {
   EXPECT_NEAR(used_velocity_sps, 123.0f, 5.0f);
 }
 
+TEST(ControlServiceTest, UsesFilteredPitchRateForControlAndKeepsRawGyroForDiagnostics) {
+  ControlServiceHarness h;
+  h.sendJoystick(0.0f, 0.0f);
+  h.step_with_imu(1.0 / 400.0, 2500, 0.0, 0.25, 1.0);
+
+  ASSERT_FALSE(h.telemetry().empty());
+  EXPECT_NEAR(h.telemetry().back().pitch_rate_dps, 0.25 * 180.0 / M_PI, 1e-3);
+  EXPECT_NEAR(h.telemetry().back().filtered_pitch_rate_dps, 0.25 * 180.0 / M_PI, 1e-3);
+  EXPECT_NEAR(h.telemetry().back().gyro_pitch_rate_dps, 1.0 * 180.0 / M_PI, 1e-3);
+}
+
 TEST(ControlServiceTest, UsesMotorFeedbackPositionForPositionHold) {
-  const double old_pos_p = ConfigPid::pos_P;
-  struct RestorePosP {
-    ~RestorePosP() { ConfigPid::pos_P = old_value; }
+  const double old_outer_k_pos = ConfigPid::outer_k_pos;
+  struct RestoreOuterKPos {
+    ~RestoreOuterKPos() { ConfigPid::outer_k_pos = old_value; }
     double old_value;
-  } restore{old_pos_p};
-  ConfigPid::pos_P = 1000.0;
+  } restore{old_outer_k_pos};
+  ConfigPid::outer_k_pos = -0.4;
 
   ControlServiceHarness h;
   h.sendJoystick(0.0f, 0.0f);
@@ -544,8 +649,11 @@ TEST(ControlServiceTest, UsesMotorFeedbackPositionForPositionHold) {
   }
 
   ASSERT_FALSE(h.telemetry().empty());
-  const float expected_velocity_sps =
-      -static_cast<float>(displacement_steps) * static_cast<float>(Config::meters_per_step) * 1000.0f;
+  const float expected_velocity_sps = std::clamp(
+      static_cast<float>((ConfigPid::outer_k_pos / ConfigPid::outer_k_vel) *
+                         (-static_cast<float>(displacement_steps) * static_cast<float>(Config::meters_per_step))),
+      -800.0f,
+      800.0f);
   EXPECT_NEAR(h.telemetry().back().vel_error, expected_velocity_sps, 5.0f);
 }
 

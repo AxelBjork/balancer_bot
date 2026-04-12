@@ -141,6 +141,11 @@ if (BUILD_TESTS)
   )
   target_link_libraries(balancer_simulator PRIVATE balancer_common balancer_sim_support)
 
+  add_executable(balancer_plant_audit
+    ${CMAKE_SOURCE_DIR}/src/balance_controller/test/plant_audit_main.cpp
+  )
+  target_link_libraries(balancer_plant_audit PRIVATE balancer_common balancer_sim_support)
+
   # 5) sil_app (Hardware-in-the-loop simulation/testing)
   add_executable(sil_app
     ${CMAKE_SOURCE_DIR}/src/sil_app.cpp

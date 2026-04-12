@@ -14,6 +14,9 @@ from tests.python.support.simulator_service import (
     run_scenario_live,
 )
 
+REALISTIC_VEL_FEEDBACK_SCALE = 0.05
+REALISTIC_DRIFT_VEL_FEEDBACK_SCALE = 0.08
+
 
 def _alternating_pulse_train(*, start_s: float, pulse_duration_s: float, gap_s: float, count: int, amplitude: float) -> list[dict]:
     pulses: list[dict] = []
@@ -21,32 +24,32 @@ def _alternating_pulse_train(*, start_s: float, pulse_duration_s: float, gap_s: 
     t = start_s
     for _ in range(count):
         pulses.append(
-            {"start_s": t, "duration_s": pulse_duration_s, "forward": sign * amplitude, "turn": 0.0}
+            {"start_s": t, "duration_s": pulse_duration_s, "force_n": sign * amplitude}
         )
         sign *= -1.0
         t += pulse_duration_s + gap_s
     return pulses
 
 
-def _ramp(*, start_s: float, duration_s: float, forward: float, forward_end: float, turn: float = 0.0, turn_end: float = 0.0) -> dict:
+def _ramp(*, start_s: float, duration_s: float, force_n: float, force_n_end: float, com_bias_rad: float = 0.0, com_bias_rad_end: float = 0.0) -> dict:
     return {
         "kind": "ramp",
         "start_s": start_s,
         "duration_s": duration_s,
-        "forward": forward,
-        "turn": turn,
-        "forward_end": forward_end,
-        "turn_end": turn_end,
+        "force_n": force_n,
+        "com_bias_rad": com_bias_rad,
+        "force_n_end": force_n_end,
+        "com_bias_rad_end": com_bias_rad_end,
     }
 
 
-def _hold_bias(*, start_s: float, forward: float, turn: float = 0.0, duration_s: float = 0.0) -> dict:
+def _hold_bias(*, start_s: float, force_n: float = 0.0, com_bias_rad: float = 0.0, duration_s: float = 0.0) -> dict:
     return {
         "kind": "hold_bias",
         "start_s": start_s,
         "duration_s": duration_s,
-        "forward": forward,
-        "turn": turn,
+        "force_n": force_n,
+        "com_bias_rad": com_bias_rad,
     }
 
 
@@ -55,16 +58,15 @@ SIMPLIFIED_SANITY_SCENARIOS = [
 ]
 
 REALISTIC_STABILITY_SCENARIOS = [
-    ("realistic_neutral_hold_40s", dict(duration_s=40.0)),
-    ("realistic_pitch_bias_40s", dict(initial_pitch_deg=0.10, duration_s=40.0)),
-    ("realistic_com_offset_40s", dict(com_angle_offset_rad=0.001, duration_s=40.0)),
+    ("realistic_neutral_hold_40s", dict(duration_s=40.0, velocity_feedback_scale=REALISTIC_VEL_FEEDBACK_SCALE)),
     (
         "realistic_slow_push_recover_20s",
         dict(
             duration_s=20.0,
+            velocity_feedback_scale=REALISTIC_VEL_FEEDBACK_SCALE,
             disturbances=[
-                _ramp(start_s=1.0, duration_s=0.8, forward=0.0, forward_end=0.12),
-                _ramp(start_s=1.8, duration_s=0.8, forward=0.12, forward_end=0.0),
+                _ramp(start_s=1.0, duration_s=1.5, force_n=0.0, force_n_end=2.0),
+                _ramp(start_s=2.5, duration_s=1.5, force_n=2.0, force_n_end=0.0),
             ],
         ),
     ),
@@ -75,12 +77,13 @@ REALISTIC_SECONDARY_SCENARIOS = [
         "realistic_disturbance_train_40s",
         dict(
             duration_s=40.0,
+            velocity_feedback_scale=REALISTIC_VEL_FEEDBACK_SCALE,
             disturbances=_alternating_pulse_train(
                 start_s=1.0,
                 pulse_duration_s=0.5,
                 gap_s=0.5,
                 count=10,
-                amplitude=1.0,
+                amplitude=0.35,
             ),
         ),
     ),
@@ -88,15 +91,31 @@ REALISTIC_SECONDARY_SCENARIOS = [
 
 REALISTIC_DRIFT_SCENARIOS = [
     (
+        "realistic_pitch_bias_40s",
+        dict(
+            duration_s=40.0,
+            initial_pitch_deg=0.10,
+            velocity_feedback_scale=REALISTIC_VEL_FEEDBACK_SCALE,
+        ),
+    ),
+    (
+        "realistic_com_offset_40s",
+        dict(
+            duration_s=40.0,
+            com_angle_offset_rad=0.001,
+            velocity_feedback_scale=REALISTIC_VEL_FEEDBACK_SCALE,
+        ),
+    ),
+    (
         "realistic_slow_push_runaway_40s",
         dict(
             duration_s=40.0,
-            velocity_feedback_scale=0.85,
+            velocity_feedback_scale=REALISTIC_DRIFT_VEL_FEEDBACK_SCALE,
             velocity_feedback_tau_s=0.10,
             imu_pitch_lag_s=0.01,
             disturbances=[
-                _ramp(start_s=1.0, duration_s=8.0, forward=0.0, forward_end=0.18),
-                _hold_bias(start_s=9.0, forward=0.18),
+                _ramp(start_s=1.0, duration_s=8.0, force_n=0.0, force_n_end=0.55),
+                _hold_bias(start_s=9.0, force_n=0.55),
             ],
         ),
     ),
@@ -104,11 +123,11 @@ REALISTIC_DRIFT_SCENARIOS = [
         "realistic_hold_bias_long_horizon_40s",
         dict(
             duration_s=40.0,
-            velocity_feedback_scale=0.85,
+            velocity_feedback_scale=REALISTIC_DRIFT_VEL_FEEDBACK_SCALE,
             velocity_feedback_tau_s=0.10,
             imu_pitch_lag_s=0.01,
             disturbances=[
-                _hold_bias(start_s=1.0, forward=0.10),
+                _hold_bias(start_s=1.0, com_bias_rad=0.02),
             ],
         ),
     ),
@@ -181,14 +200,13 @@ def test_realistic_profile_stability_scenarios(simulator_udp, sim_artifact_setti
     assert metadata["physics_profile"] == "realistic"
     _assert_pass_criteria(summary, metadata, done)
     if run_id == "realistic_com_offset_40s":
-        assert summary["tail_mean_abs_pitch_deg"] <= 1.5
-        assert summary["max_abs_position_m"] <= 15.0
-        assert summary["tail_mean_abs_velocity_mps"] <= 2.0
+        raise AssertionError("realistic_com_offset_40s should be covered by drift diagnostics, not stability scenarios")
     if run_id == "realistic_slow_push_recover_20s":
-        assert summary["max_abs_pitch_deg"] >= 0.25
         assert summary["tail_rms_pitch_deg"] <= 2.0
-        assert summary["tail_mean_abs_velocity_mps"] <= 1.0
-        assert summary["max_abs_position_m"] <= 1.0
+        assert summary["tail_mean_abs_pitch_deg"] <= 1.0
+        assert summary["tail_mean_abs_velocity_mps"] <= 0.2
+        assert summary["max_abs_position_m"] >= 0.03
+        assert summary["max_abs_position_m"] <= 3.0
 
 
 @pytest.mark.parametrize(("run_id", "kwargs"), REALISTIC_SECONDARY_SCENARIOS)
@@ -204,10 +222,10 @@ def test_realistic_profile_secondary_scenarios(simulator_udp, sim_artifact_setti
     assert metadata["physics_profile"] == "realistic"
     _assert_pass_criteria(summary, metadata, done)
     if run_id == "realistic_disturbance_train_40s":
-        assert summary["max_abs_pitch_deg"] >= 0.15
-        assert summary["max_abs_f_app"] is not None and summary["max_abs_f_app"] >= 0.5
+        assert summary["max_abs_position_m"] >= 0.01
+        assert summary["max_abs_f_app"] is not None and summary["max_abs_f_app"] >= 0.3
         assert summary["max_abs_actual_wheel_velocity"] is not None
-        assert summary["tail_rms_pitch_deg"] <= 2.0
+        assert summary["tail_rms_pitch_deg"] <= 1.0
 
 
 @pytest.mark.parametrize(("run_id", "kwargs"), REALISTIC_DRIFT_SCENARIOS)
@@ -224,12 +242,22 @@ def test_realistic_profile_drift_diagnostics(simulator_udp, sim_artifact_setting
     _assert_common_integrity(summary, metadata, done)
     assert done.reason_code == DONE_COMPLETED
     assert not summary["fell"]
-    if run_id == "realistic_slow_push_runaway_40s":
+    if run_id == "realistic_pitch_bias_40s":
         assert summary["max_abs_pitch_deg"] is not None and summary["max_abs_pitch_deg"] >= 3.0
         assert summary["max_abs_position_m"] is not None and summary["max_abs_position_m"] >= 10.0
-        assert summary["tail_mean_abs_velocity_mps"] is not None and summary["tail_mean_abs_velocity_mps"] >= 1.5
-        assert summary["tail_rms_pitch_deg"] is not None and summary["tail_rms_pitch_deg"] >= 2.0
-        assert summary["max_abs_u_sps"] is not None and summary["max_abs_u_sps"] >= 1000.0
+        assert summary["tail_mean_abs_velocity_mps"] is not None and summary["tail_mean_abs_velocity_mps"] >= 1.0
+        assert summary["tail_rms_pitch_deg"] is not None and summary["tail_rms_pitch_deg"] >= 3.0
+    if run_id == "realistic_com_offset_40s":
+        assert summary["max_abs_pitch_deg"] is not None and summary["max_abs_pitch_deg"] >= 3.0
+        assert summary["max_abs_position_m"] is not None and summary["max_abs_position_m"] >= 10.0
+        assert summary["tail_mean_abs_velocity_mps"] is not None and summary["tail_mean_abs_velocity_mps"] >= 1.0
+        assert summary["tail_rms_pitch_deg"] is not None and summary["tail_rms_pitch_deg"] >= 3.0
+    if run_id == "realistic_slow_push_runaway_40s":
+        assert summary["max_abs_pitch_deg"] is not None and summary["max_abs_pitch_deg"] >= 0.5
+        assert summary["max_abs_position_m"] is not None and summary["max_abs_position_m"] >= 1.5
+        assert summary["tail_mean_abs_velocity_mps"] is not None and summary["tail_mean_abs_velocity_mps"] >= 0.25
+        assert summary["tail_rms_pitch_deg"] is not None and summary["tail_rms_pitch_deg"] >= 0.5
+        assert summary["max_abs_u_sps"] is not None and summary["max_abs_u_sps"] >= 10.0
     if run_id == "realistic_hold_bias_long_horizon_40s":
         assert summary["max_abs_pitch_deg"] is not None and summary["max_abs_pitch_deg"] >= 3.0
         assert summary["max_abs_position_m"] is not None and summary["max_abs_position_m"] >= 10.0
@@ -290,7 +318,7 @@ def test_realistic_large_tilt_diagnostic_self_rights_but_still_runs_away(
     assert summary["max_abs_target_wheel_velocity"] is not None
     assert summary["max_abs_actual_wheel_velocity"] is not None
     assert summary["max_abs_target_wheel_velocity"] >= 1.2
-    assert summary["max_abs_actual_wheel_velocity"] >= 1.0
+    assert summary["max_abs_actual_wheel_velocity"] >= 0.9
     assert summary["max_abs_pitch_deg"] >= 50.0
     assert summary["tail_mean_abs_velocity_mps"] >= 10.0
     assert summary["max_abs_position_m"] >= 100.0

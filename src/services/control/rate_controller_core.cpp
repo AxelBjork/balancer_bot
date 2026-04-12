@@ -5,7 +5,6 @@
 #include <algorithm>
 #include <cmath>
 #include <matrix/matrix/math.hpp>
-#include <pid/PID.hpp>
 #include <rate_control.hpp>
 #include <utility>
 
@@ -15,10 +14,6 @@ using matrix::Vector3f;
 
 namespace {
 
-constexpr float kVelocityLoopTiltPriorityRad = static_cast<float>(3.0 * M_PI / 180.0);
-constexpr float kVelocityHoldEnablePitchRad = static_cast<float>(10.0 * M_PI / 180.0);
-constexpr float kVelocityHoldEnterSps = 250.0f;
-constexpr float kVelocityHoldExitSps = 100.0f;
 constexpr float kPositionHoldEnablePitchRad = static_cast<float>(3.0 * M_PI / 180.0);
 constexpr float kMaxPositionTargetSps = 800.0f;
 constexpr float kMaxPositionTrimPitchBiasRad = 0.15f;
@@ -43,7 +38,6 @@ struct RateControllerCore::Impl {
 
   std::chrono::steady_clock::time_point start_ts{};
   RateControl rc{};
-  PID velocity_pid{};
 
   float pitch_setpoint_rad{0.0f};
   float filtered_velocity_sps{0.0f};
@@ -52,7 +46,6 @@ struct RateControllerCore::Impl {
   float angle_trim_pitch_bias_rad{0.0f};
   float lean_trim_rad{0.0f};
   bool lean_trim_active{false};
-  bool velocity_hold_active{false};
   bool position_anchor_initialized{false};
 };
 
@@ -61,11 +54,6 @@ RateControllerCore::RateControllerCore() : p_(new Impl) {
                      Vector3f(0.f, ConfigPid::rate_D, 0.f));
   p_->rc.setIntegratorLimit(Vector3f(0.f, ConfigPid::rate_I_lim, 0.f));
   p_->rc.setFeedForwardGain(Vector3f(0.f, ConfigPid::rate_FF, 0.f));
-
-  p_->velocity_pid.setGains(ConfigPid::vel_P, ConfigPid::vel_I, ConfigPid::vel_D);
-  p_->velocity_pid.setIntegralLimit(ConfigPid::vel_I_lim);
-  p_->velocity_pid.setOutputLimit(kMaxPitchSetpointRad);
-  p_->velocity_pid.setSetpoint(0.0f);
 }
 
 RateControllerCore::~RateControllerCore() {
@@ -91,7 +79,7 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
   }
 
   const float pitch_rad = static_cast<float>(p_->latest_imu.angle_rad);
-  const float gyro_rad_s = static_cast<float>(p_->latest_imu.gyro_rad_s);
+  const float filtered_pitch_rate_rad_s = static_cast<float>(p_->latest_imu.gyro_rad_s);
   const float measured_velocity_sps = p_->velocity_cb ? p_->velocity_cb() : 0.0f;
   const float velocity_alpha =
       std::clamp(static_cast<float>((2.0 * M_PI * Config::fc_velocity_hz * dt) /
@@ -123,43 +111,22 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
     }
   }
 
+  const float base_target_vel_sps =
+      user_velocity_active ? joy.forward * static_cast<float>(kMaxSps) : 0.0f;
   float position_target_vel_sps = 0.0f;
-  if (have_position_feedback && !user_velocity_active && ConfigPid::pos_P != 0.0 &&
-      std::abs(pitch_rad) < kPositionHoldEnablePitchRad) {
+  const bool position_hold_enabled =
+      have_position_feedback && !user_velocity_active && ConfigPid::outer_k_pos != 0.0 &&
+      std::abs(ConfigPid::outer_k_vel) > 1e-9 && std::abs(pitch_rad) < kPositionHoldEnablePitchRad;
+  if (position_hold_enabled) {
     const float position_error_m = p_->position_anchor_m - current_position_m;
-    position_target_vel_sps = std::clamp(static_cast<float>(ConfigPid::pos_P * position_error_m),
-                                         -kMaxPositionTargetSps, kMaxPositionTargetSps);
+    position_target_vel_sps = std::clamp(
+        static_cast<float>((ConfigPid::outer_k_pos / ConfigPid::outer_k_vel) * position_error_m),
+        -kMaxPositionTargetSps, kMaxPositionTargetSps);
   }
-
-  // Let large-tilt recovery own the zero-command case, but once we are back
-  // near upright we still need to brake residual translation.
-  if (!user_velocity_active && std::abs(position_target_vel_sps) <= 1e-3f &&
-      std::abs(pitch_rad) < kVelocityHoldEnablePitchRad) {
-    const float enter_threshold =
-        p_->velocity_hold_active ? kVelocityHoldExitSps : kVelocityHoldEnterSps;
-    p_->velocity_hold_active = std::abs(current_velocity_sps) > enter_threshold;
-  } else {
-    p_->velocity_hold_active = false;
-  }
-  const bool zero_command_velocity_hold = p_->velocity_hold_active;
-  const bool enable_velocity_loop =
-      user_velocity_active || std::abs(position_target_vel_sps) > 1e-3f ||
-      zero_command_velocity_hold;
-  float target_vel_sps = user_velocity_active ? joy.forward * static_cast<float>(kMaxSps) : 0.0f;
-  target_vel_sps += position_target_vel_sps;
-  p_->velocity_pid.setSetpoint(target_vel_sps);
-
-  const float velocity_loop_blend =
-      std::clamp(1.0f - (std::abs(pitch_rad) / kVelocityLoopTiltPriorityRad), 0.0f, 1.0f);
-  const bool update_velocity_integral = enable_velocity_loop && velocity_loop_blend > 0.25f;
-  if (!update_velocity_integral) {
-    p_->velocity_pid.resetIntegral();
-  }
-
+  const float target_vel_sps = base_target_vel_sps + position_target_vel_sps;
+  const float vel_error_sps = target_vel_sps - current_velocity_sps;
   const float velocity_pitch_setpoint_rad =
-      enable_velocity_loop
-          ? p_->velocity_pid.update(current_velocity_sps, dt, update_velocity_integral)
-          : 0.0f;
+      static_cast<float>(ConfigPid::outer_k_vel * vel_error_sps);
   if (!user_velocity_active && ConfigPid::angle_I != 0.0 &&
       std::abs(pitch_rad) < kPositionHoldEnablePitchRad) {
     p_->angle_trim_pitch_bias_rad = std::clamp(
@@ -167,16 +134,17 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
         -kMaxPositionTrimPitchBiasRad, kMaxPositionTrimPitchBiasRad);
   }
 
-  p_->pitch_setpoint_rad = velocity_pitch_setpoint_rad * velocity_loop_blend +
-                           p_->angle_trim_pitch_bias_rad + p_->lean_trim_rad;
+  p_->pitch_setpoint_rad = velocity_pitch_setpoint_rad + p_->angle_trim_pitch_bias_rad + p_->lean_trim_rad;
   p_->pitch_setpoint_rad =
       std::clamp(p_->pitch_setpoint_rad, -static_cast<float>(kMaxPitchSetpointRad),
                  static_cast<float>(kMaxPitchSetpointRad));
 
   const float pitch_error_rad = p_->pitch_setpoint_rad - pitch_rad;
-  const float rate_sp_rad_s = static_cast<float>(ConfigPid::angle_to_rate_k * pitch_error_rad);
+  const float rate_sp_rad_s =
+      static_cast<float>(ConfigPid::outer_k_pitch * pitch_error_rad -
+                         ConfigPid::outer_k_pitch_rate * filtered_pitch_rate_rad_s);
 
-  const Vector3f rate{0.f, gyro_rad_s, 0.f};
+  const Vector3f rate{0.f, filtered_pitch_rate_rad_s, 0.f};
   const Vector3f rate_sp{0.f, rate_sp_rad_s, 0.f};
   const Vector3f ang_acc{0.f, 0.f, 0.f};
   const Vector3f u = p_->rc.update(rate, rate_sp, ang_acc, dt, false);
@@ -228,20 +196,19 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
     t.t_sec = std::chrono::duration<double>(now - p_->start_ts).count();
     t.age_ms = std::chrono::duration<double, std::milli>(now - p_->latest_imu.t).count();
     t.pitch_deg = pitch_rad * 180.0 / M_PI;
-    t.pitch_rate_dps = gyro_rad_s * 180.0 / M_PI;
+    t.pitch_rate_dps = filtered_pitch_rate_rad_s * 180.0 / M_PI;
+    t.filtered_pitch_rate_dps = filtered_pitch_rate_rad_s * 180.0 / M_PI;
     t.rate_sp_dps = rate_sp_rad_s * 180.0 / M_PI;
     t.out_norm = u(1);
     t.u_sps = u_sps;
     t.integ_pitch = st.pitchspeed_integ;
-    t.vel_error = enable_velocity_loop ? (target_vel_sps - current_velocity_sps) : 0.0f;
-    t.vel_i_term = p_->velocity_pid.getIntegral();
-    t.vel_p_term = enable_velocity_loop ? (t.vel_error * ConfigPid::vel_P) : 0.0f;
+    t.vel_error = vel_error_sps;
+    t.vel_i_term = 0.0f;
+    t.vel_p_term = velocity_pitch_setpoint_rad;
     t.target_vel_sps = target_vel_sps;
     t.measured_vel_sps = measured_velocity_sps;
     t.filtered_vel_sps = current_velocity_sps;
     t.position_target_vel_sps = position_target_vel_sps;
-    t.velocity_loop_blend = velocity_loop_blend;
-    t.velocity_hold_active = zero_command_velocity_hold ? 1.0 : 0.0;
     t.pitch_sp_deg = p_->pitch_setpoint_rad * 180.0 / M_PI;
     t.effective_pitch_sp_deg = p_->pitch_setpoint_rad * 180.0 / M_PI;
     t.pitch_trim_deg = p_->lean_trim_rad * 180.0 / M_PI;

@@ -35,6 +35,18 @@ pytest -q
 ./build/balancer_simulator
 ```
 
+### Linearized Plant Audit
+
+```bash
+./build/balancer_plant_audit --all
+```
+
+### Timeline Analysis
+
+```bash
+python3 tools/analyze_timeline.py build/sim/realistic_neutral_hold_40s/timeline.csv --summary-json
+```
+
 ### Raspberry Pi Cross-Build
 
 ```bash
@@ -49,6 +61,10 @@ pytest -q
   the UDP-driven software-in-the-loop runtime
 - `balancer_simulator`
   the deterministic plant + controller runner
+- `balancer_plant_audit`
+  prints the linearized upright plant, controllability rank, and candidate overdamped poles
+- `tools/analyze_timeline.py`
+  estimates lag and scale relationships from a `timeline.csv` artifact or captured telemetry log
 - `balancer_tests`
   the C++ unit and integration test binary
 
@@ -94,6 +110,7 @@ The generated flow graph above is the best quick picture of the system:
 - [Documentation Portal](doc/index.md)
 - [Project Overview](doc/overview.md)
 - [Runtime Architecture](doc/arch/runtime.md)
+- [Control / Plant Notes](doc/arch/control_plant.md)
 - [Testing Strategy](doc/testing/strategy.md)
 - [Running on Pi](doc/Running_on_Pi.md)
 - [Current Status](doc/status.md)

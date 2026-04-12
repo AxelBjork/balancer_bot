@@ -10,8 +10,9 @@ namespace ipc {
 
 constexpr std::size_t kMaxSimDisturbances = 10;
 
-struct DOC_DESC("Fused IMU sample published by the IMU service and accepted by the SIL harness.") ImuSamplePayload {
+struct DOC_DESC("Fused IMU sample published by the IMU service and accepted by the SIL harness. The controller consumes `pitch_rad` plus `filtered_pitch_rate_rad_s`; raw accelerometer and gyro vectors are carried alongside them for diagnostics.") ImuSamplePayload {
     double pitch_rad;
+    double filtered_pitch_rate_rad_s;
     std::array<double, 3> acc;
     std::array<double, 3> gyr;
     uint64_t timestamp_us;
@@ -37,6 +38,7 @@ struct DOC_DESC("Detailed controller telemetry streamed out over UDP and used fo
     float raw_acc_pitch_deg;
     float fused_pitch_deg;
     float gyro_pitch_rate_dps;
+    float filtered_pitch_rate_dps;
     float rate_sp_dps;
     float out_norm;
     float u_sps;
@@ -48,8 +50,6 @@ struct DOC_DESC("Detailed controller telemetry streamed out over UDP and used fo
     float measured_vel_sps;
     float filtered_vel_sps;
     float position_target_vel_sps;
-    float velocity_loop_blend;
-    float velocity_hold_active;
     float pitch_sp_deg;
     float effective_pitch_sp_deg;
     float pitch_trim_deg;
@@ -64,6 +64,8 @@ struct DOC_DESC("Detailed controller telemetry streamed out over UDP and used fo
     float plant_velocity_error;
     float f_cmd;
     float f_app;
+    float external_force_n;
+    float external_com_bias_rad;
     float x_ddot;
     float theta_ddot;
     float force_saturated;
@@ -80,16 +82,16 @@ constexpr uint8_t kSimDisturbanceStep = 0;
 constexpr uint8_t kSimDisturbanceRamp = 1;
 constexpr uint8_t kSimDisturbanceHoldBias = 2;
 
-struct DOC_DESC("One scheduled simulator disturbance segment. Step disturbances apply a constant command for the active window. Ramp disturbances interpolate from the start command to the end command across the window. Hold-bias disturbances apply a constant command from start_s until duration_s expires, or to the end of the run when duration_s is non-positive.") SimDisturbancePayload {
+struct DOC_DESC("One scheduled simulator plant disturbance segment. Step disturbances apply a constant external horizontal force and COM bias for the active window. Ramp disturbances interpolate from the start values to the end values across the window. Hold-bias disturbances apply a constant external force and COM bias from start_s until duration_s expires, or to the end of the run when duration_s is non-positive.") SimDisturbancePayload {
     uint8_t kind;
     uint8_t reserved0;
     uint16_t reserved1;
     double start_s;
     double duration_s;
-    float forward;
-    float turn;
-    float forward_end;
-    float turn_end;
+    float force_n;
+    float com_bias_rad;
+    float force_n_end;
+    float com_bias_rad_end;
 };
 
 struct DOC_DESC("Request from Python to start a single simulator run. Only one run may be active at a time.") SimStartRunPayload {

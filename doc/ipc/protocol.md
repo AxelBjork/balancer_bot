@@ -12,7 +12,7 @@ It describes the reflected runtime message bus used by the balancer services, in
 messages consumed by the SIL harness and the internal-only messages exchanged between services.
 
 - Documented balancer message count: `10`
-- Protocol hash: `db1beff0bd9bc5d3`
+- Protocol hash: `9cb34049e2105514`
 - UDP ingress/egress gateway: `UdpBridge`
 
 ## System Architecture
@@ -59,15 +59,13 @@ The architecture is divided into three logical areas:
 
 > Owns the balancing control pipeline that converts `PhysicsTick`, `ImuData`, and `JoystickCommand`, and `MotorFeedback` inputs into wheel-speed targets and streaming controller telemetry.
 >
-> This service is intentionally thin: it caches the latest bus inputs, translates them into the `RateControllerCore` API, and republishes the core's outputs as reflected IPC payloads. The control law itself is a cascaded structure. A joystick forward command or position-hold correction first becomes a target wheel velocity in steps per second. A velocity PID then produces a body pitch setpoint, which is blended down as the measured tilt grows so balance recovery can dominate near larger disturbances. The pitch error is then turned into a rate setpoint and fed through the PX4 `RateControl` block:
+> This service is intentionally thin: it caches the latest bus inputs, translates them into the `RateControllerCore` API, and republishes the core's outputs as reflected IPC payloads. The control law itself is a physics-shaped outer loop wrapped around the PX4 pitch-rate controller. A joystick forward command produces a target wheel velocity in steps per second. When enabled, position hold contributes an equivalent target velocity based on wheel position. That translational state is mapped into a pitch setpoint, lean-trim and angle-trim biases are added, and the PX4 `RateControl` block tracks a damped pitch-rate setpoint:
 >
-> $$ v_{target} = u_{joy} \cdot k_{max\_sps} + v_{hold} $$
+> $$ \theta_{sp} = k_{pos}(x_{ref} - x) + k_{vel}(v_{ref} - v) + \theta_{trim} $$
 >
-> $$ \theta_{sp} = \operatorname{blend}(\theta_{vel}, \theta_{trim}) $$
+> $$ \omega_{sp} = k_{pitch}(\theta_{sp} - \theta) - k_{pitch\_rate}\dot{\theta} $$
 >
-> $$ \omega_{sp} = k_{angle\rightarrow rate}(\theta_{sp} - \theta) $$
->
-> The resulting normalized pitch-axis
+> The resulting normalized pitch-axis effort
 
 - Publishes: `MotorTargets`, `SystemTelemetry`
 - Subscribes: `PhysicsTick`, `ImuData`, `JoystickCommand`, `MotorFeedback`
@@ -126,16 +124,17 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 - Numeric ID: `3000`
 - Payload type: `ImuSamplePayload`
 - Python type: `ImuSamplePayload`
-- Wire size: `64` bytes
+- Wire size: `72` bytes
 - Published by: `ImuService`, `UdpBridge`
 - Consumed by: `ControlService`, `UdpBridge`
 
 | Field | C++ Type | Python Type | Bytes | Offset | Description |
 |---|---|---|---:|---:|---|
 | `pitch_rad` | `double` | `float` | 8 | 0 |  |
-| `acc` | `std::array<double, 3>` | `list[float]` | 24 | 8 |  |
-| `gyr` | `std::array<double, 3>` | `list[float]` | 24 | 32 |  |
-| `timestamp_us` | `uint64_t` | `int` | 8 | 56 |  |
+| `filtered_pitch_rate_rad_s` | `double` | `float` | 8 | 8 |  |
+| `acc` | `std::array<double, 3>` | `list[float]` | 24 | 16 |  |
+| `gyr` | `std::array<double, 3>` | `list[float]` | 24 | 40 |  |
+| `timestamp_us` | `uint64_t` | `int` | 8 | 64 |  |
 
 ### `MsgId::JoystickCommand`
 
@@ -170,7 +169,7 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 - Numeric ID: `3003`
 - Payload type: `SystemTelemetryPayload`
 - Python type: `SystemTelemetryPayload`
-- Wire size: `156` bytes
+- Wire size: `160` bytes
 - Published by: `ControlService`
 - Consumed by: `UdpBridge`
 
@@ -185,36 +184,37 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 | `raw_acc_pitch_deg` | `float` | `float` | 4 | 24 |  |
 | `fused_pitch_deg` | `float` | `float` | 4 | 28 |  |
 | `gyro_pitch_rate_dps` | `float` | `float` | 4 | 32 |  |
-| `rate_sp_dps` | `float` | `float` | 4 | 36 |  |
-| `out_norm` | `float` | `float` | 4 | 40 |  |
-| `u_sps` | `float` | `float` | 4 | 44 |  |
-| `integ_pitch` | `float` | `float` | 4 | 48 |  |
-| `vel_error` | `float` | `float` | 4 | 52 |  |
-| `vel_p_term` | `float` | `float` | 4 | 56 |  |
-| `vel_i_term` | `float` | `float` | 4 | 60 |  |
-| `target_vel_sps` | `float` | `float` | 4 | 64 |  |
-| `measured_vel_sps` | `float` | `float` | 4 | 68 |  |
-| `filtered_vel_sps` | `float` | `float` | 4 | 72 |  |
-| `position_target_vel_sps` | `float` | `float` | 4 | 76 |  |
-| `velocity_loop_blend` | `float` | `float` | 4 | 80 |  |
-| `velocity_hold_active` | `float` | `float` | 4 | 84 |  |
-| `pitch_sp_deg` | `float` | `float` | 4 | 88 |  |
-| `effective_pitch_sp_deg` | `float` | `float` | 4 | 92 |  |
-| `pitch_trim_deg` | `float` | `float` | 4 | 96 |  |
-| `trim_active` | `float` | `float` | 4 | 100 |  |
-| `command_saturated` | `float` | `float` | 4 | 104 |  |
-| `plant_pitch_deg` | `float` | `float` | 4 | 108 |  |
-| `plant_pitch_rate_dps` | `float` | `float` | 4 | 112 |  |
-| `plant_position_m` | `float` | `float` | 4 | 116 |  |
-| `plant_velocity_mps` | `float` | `float` | 4 | 120 |  |
-| `target_wheel_velocity` | `float` | `float` | 4 | 124 |  |
-| `actual_wheel_velocity` | `float` | `float` | 4 | 128 |  |
-| `plant_velocity_error` | `float` | `float` | 4 | 132 |  |
-| `f_cmd` | `float` | `float` | 4 | 136 |  |
-| `f_app` | `float` | `float` | 4 | 140 |  |
-| `x_ddot` | `float` | `float` | 4 | 144 |  |
-| `theta_ddot` | `float` | `float` | 4 | 148 |  |
-| `force_saturated` | `float` | `float` | 4 | 152 |  |
+| `filtered_pitch_rate_dps` | `float` | `float` | 4 | 36 |  |
+| `rate_sp_dps` | `float` | `float` | 4 | 40 |  |
+| `out_norm` | `float` | `float` | 4 | 44 |  |
+| `u_sps` | `float` | `float` | 4 | 48 |  |
+| `integ_pitch` | `float` | `float` | 4 | 52 |  |
+| `vel_error` | `float` | `float` | 4 | 56 |  |
+| `vel_p_term` | `float` | `float` | 4 | 60 |  |
+| `vel_i_term` | `float` | `float` | 4 | 64 |  |
+| `target_vel_sps` | `float` | `float` | 4 | 68 |  |
+| `measured_vel_sps` | `float` | `float` | 4 | 72 |  |
+| `filtered_vel_sps` | `float` | `float` | 4 | 76 |  |
+| `position_target_vel_sps` | `float` | `float` | 4 | 80 |  |
+| `pitch_sp_deg` | `float` | `float` | 4 | 84 |  |
+| `effective_pitch_sp_deg` | `float` | `float` | 4 | 88 |  |
+| `pitch_trim_deg` | `float` | `float` | 4 | 92 |  |
+| `trim_active` | `float` | `float` | 4 | 96 |  |
+| `command_saturated` | `float` | `float` | 4 | 100 |  |
+| `plant_pitch_deg` | `float` | `float` | 4 | 104 |  |
+| `plant_pitch_rate_dps` | `float` | `float` | 4 | 108 |  |
+| `plant_position_m` | `float` | `float` | 4 | 112 |  |
+| `plant_velocity_mps` | `float` | `float` | 4 | 116 |  |
+| `target_wheel_velocity` | `float` | `float` | 4 | 120 |  |
+| `actual_wheel_velocity` | `float` | `float` | 4 | 124 |  |
+| `plant_velocity_error` | `float` | `float` | 4 | 128 |  |
+| `f_cmd` | `float` | `float` | 4 | 132 |  |
+| `f_app` | `float` | `float` | 4 | 136 |  |
+| `external_force_n` | `float` | `float` | 4 | 140 |  |
+| `external_com_bias_rad` | `float` | `float` | 4 | 144 |  |
+| `x_ddot` | `float` | `float` | 4 | 148 |  |
+| `theta_ddot` | `float` | `float` | 4 | 152 |  |
+| `force_saturated` | `float` | `float` | 4 | 156 |  |
 
 ### `MsgId::MotorFeedback`
 

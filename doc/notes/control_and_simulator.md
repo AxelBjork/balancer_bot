@@ -9,20 +9,21 @@ This is the maintainer-facing notebook for the balancing stack. It captures the 
 The control pipeline is:
 
 1. joystick forward input and optional position hold become a target wheel velocity
-2. a velocity PID turns that into a pitch setpoint
+2. a physics-shaped outer law turns velocity and optional position error into a pitch setpoint
 3. slow trims bias the pitch setpoint when persistent error or drift is present
-4. the pitch error becomes a pitch-rate setpoint
+4. the pitch error plus filtered pitch-rate damping become a pitch-rate setpoint
 5. PX4 `RateControl` produces the normalized pitch-axis effort
 6. the effort is scaled into wheel speed commands in steps per second
 
 Important details:
 
 - control is tick-driven by `PhysicsTick`
-- the velocity loop is blended down as tilt grows so balance recovery wins over translation
+- the controller uses fused pitch plus filtered pitch-rate for control; raw gyro stays diagnostic-only
 - `angle_I` is a slow pitch trim for persistent angle bias
 - `lean_trim_I` is a slower drift/COM-offset trim driven by balance effort
 - when hardware feedback exists, velocity and position feedback come from `MotorFeedback`
 - in SIL without a motor backend, the controller falls back to the last commanded wheel speeds
+- the active outer-loop gains are `outer_k_pos`, `outer_k_vel`, `outer_k_pitch`, and `outer_k_pitch_rate`
 
 ## Why Tick-Driven Control Matters
 
@@ -57,6 +58,13 @@ The plant model exposes two named profiles:
 
 `I_com` is kept fixed at the hardware-oriented value in the simulator. Stability work has focused on controller structure, profile tuning, and explicit scenario coverage rather than hiding problems by changing that inertia constant.
 
+The simulator now applies disturbances as exogenous plant inputs rather than controller references:
+
+- external horizontal force
+- optional COM bias
+
+That means a "push" scenario is a plant disturbance, not a synthetic joystick command.
+
 ## Scenario Ladder
 
 The current Python scenario ladder includes:
@@ -65,13 +73,15 @@ The current Python scenario ladder includes:
   - `neutral_hold`
 - realistic representative cases:
   - neutral hold
+  - slow push recover
+  - disturbance train
+- realistic drift diagnostics:
   - small pitch bias
   - COM offset
-  - `0.25 deg`, `0.5 deg`, and `0.75 deg` recovery cases
-  - combined bias
-  - disturbance pulse
+  - slow push runaway
+  - long-horizon hold bias
 - realistic frontier diagnostic:
-  - a harder combined-bias case that remains `xfail`
+  - large-angle recovery that remains `xfail`
 
 The direct simulator, not `sil_app`, is the primary stability gate.
 
@@ -118,9 +128,9 @@ The simulator profile is allowed to diverge while the model and control structur
 
 The hardware runtime now republishes applied wheel rates and actual step counts from `MotorRunner` as `MotorFeedback`. The controller should not assume the last command was achieved, especially because motor ramping and step application are not instantaneous.
 
-### COM-offset behavior needed a controller fix
+### Drift is now treated as the main realism target
 
-The longer COM-offset cases were not solved cleanly by blind gain tuning alone. The controller now uses a slow lean trim to learn a small steady-state bias from persistent drift instead of insisting on zero pitch at all times.
+The rewritten simulator/controller path no longer treats "did not fall" as the main representative signal. The main diagnostic is slow drift or slow runaway under small bias and push cases, because that is closer to the observed hardware failure mode than short pulse rejection alone.
 
 ## What to Watch During Future Tuning
 

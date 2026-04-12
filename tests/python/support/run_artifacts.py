@@ -16,6 +16,7 @@ _DEFAULT_COLUMNS = [
     "sim_time_s",
     "pitch_deg",
     "pitch_rate_dps",
+    "filtered_pitch_rate_dps",
     "raw_acc_pitch_deg",
     "fused_pitch_deg",
     "gyro_pitch_rate_dps",
@@ -31,8 +32,6 @@ _DEFAULT_COLUMNS = [
     "measured_vel_sps",
     "filtered_vel_sps",
     "position_target_vel_sps",
-    "velocity_loop_blend",
-    "velocity_hold_active",
     "out_norm",
     "effective_pitch_sp_deg",
     "pitch_trim_deg",
@@ -46,6 +45,8 @@ _DEFAULT_COLUMNS = [
     "velocity_error",
     "f_cmd",
     "f_app",
+    "external_force_n",
+    "external_com_bias_rad",
     "x_ddot",
     "theta_ddot",
     "command_saturated",
@@ -85,6 +86,183 @@ def _series(rows: list[dict[str, Any]], key: str) -> list[float]:
 
 def _pitch_key(rows: list[dict[str, Any]]) -> str:
     return "plant_pitch_deg" if any("plant_pitch_deg" in row for row in rows) else "pitch_deg"
+
+
+def _time_key(rows: list[dict[str, Any]]) -> str | None:
+    for candidate in ("sim_time_s", "t_sec", "time_s", "time"):
+        if any(_to_float(row.get(candidate)) is not None for row in rows):
+            return candidate
+    return None
+
+
+def _aligned_numeric_series(
+    rows: list[dict[str, Any]],
+    source_key: str,
+    response_key: str,
+    *,
+    time_key: str | None = None,
+) -> tuple[list[float], list[float], list[float]]:
+    time_key = time_key or _time_key(rows)
+    ts: list[float] = []
+    source: list[float] = []
+    response: list[float] = []
+    for row in rows:
+        src = _to_float(row.get(source_key))
+        rsp = _to_float(row.get(response_key))
+        t = _to_float(row.get(time_key)) if time_key is not None else None
+        if src is None or rsp is None:
+            continue
+        if time_key is not None and t is None:
+            continue
+        ts.append(0.0 if t is None else t)
+        source.append(src)
+        response.append(rsp)
+    return ts, source, response
+
+
+def estimate_lag_scale(
+    rows: list[dict[str, Any]],
+    source_key: str,
+    response_key: str,
+    *,
+    max_lag_s: float = 0.5,
+    min_abs_source: float = 0.0,
+    demean: bool = True,
+) -> dict[str, Any]:
+    ts, source, response = _aligned_numeric_series(rows, source_key, response_key)
+    result: dict[str, Any] = {
+        "source_key": source_key,
+        "response_key": response_key,
+        "sample_count": 0,
+        "lag_steps": None,
+        "lag_s": None,
+        "scale": None,
+        "correlation": None,
+        "rmse": None,
+    }
+    if len(ts) < 3:
+        return result
+
+    deltas = [b - a for a, b in zip(ts, ts[1:]) if b > a]
+    if not deltas:
+        return result
+    dt = median(deltas)
+    if dt <= 0.0:
+        return result
+    max_lag_steps = max(0, int(round(max_lag_s / dt)))
+
+    best: dict[str, Any] | None = None
+    for lag_steps in range(max_lag_steps + 1):
+        if lag_steps >= len(source) - 1:
+            break
+        src = source[: len(source) - lag_steps] if lag_steps > 0 else list(source)
+        rsp = response[lag_steps:]
+        if len(src) != len(rsp) or len(src) < 3:
+            continue
+
+        if min_abs_source > 0.0:
+            pairs = [(sx, ry) for sx, ry in zip(src, rsp) if abs(sx) >= min_abs_source]
+            if len(pairs) < 3:
+                continue
+            src = [sx for sx, _ in pairs]
+            rsp = [ry for _, ry in pairs]
+
+        if demean:
+            src_mean = sum(src) / len(src)
+            rsp_mean = sum(rsp) / len(rsp)
+            src_fit = [value - src_mean for value in src]
+            rsp_fit = [value - rsp_mean for value in rsp]
+        else:
+            src_fit = list(src)
+            rsp_fit = list(rsp)
+
+        denom = sum(value * value for value in src_fit)
+        if denom <= 1e-12:
+            continue
+        scale = sum(sx * ry for sx, ry in zip(src_fit, rsp_fit)) / denom
+        residuals = [(scale * sx) - ry for sx, ry in zip(src_fit, rsp_fit)]
+        rmse = math.sqrt(sum(value * value for value in residuals) / len(residuals))
+        lag_src = src_fit
+        lag_rsp = rsp_fit
+        if len(src_fit) >= 4:
+            diff_src = [b - a for a, b in zip(src_fit, src_fit[1:])]
+            diff_rsp = [b - a for a, b in zip(rsp_fit, rsp_fit[1:])]
+            if sum(abs(value) for value in diff_src) > 1e-9 and sum(abs(value) for value in diff_rsp) > 1e-9:
+                lag_src = diff_src
+                lag_rsp = diff_rsp
+        lag_denom = sum(value * value for value in lag_src)
+        rsp_energy = sum(value * value for value in lag_rsp)
+        if rsp_energy <= 1e-12:
+            continue
+        if lag_denom <= 1e-12:
+            continue
+        corr = sum(sx * ry for sx, ry in zip(lag_src, lag_rsp)) / math.sqrt(lag_denom * rsp_energy)
+
+        candidate = {
+            "source_key": source_key,
+            "response_key": response_key,
+            "sample_count": len(src),
+            "lag_steps": lag_steps,
+            "lag_s": lag_steps * dt,
+            "scale": scale,
+            "correlation": corr,
+            "rmse": rmse,
+            "dt_s": dt,
+        }
+        if best is None:
+            best = candidate
+            continue
+        if abs(candidate["correlation"]) > abs(best["correlation"]) + 1e-9:
+            best = candidate
+            continue
+        if abs(candidate["correlation"] - best["correlation"]) <= 1e-9 and candidate["rmse"] < best["rmse"]:
+            best = candidate
+
+    return best or result
+
+
+def analyze_timeline_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    analysis: dict[str, Any] = {
+        "time_key": _time_key(rows),
+    }
+    analysis["estimator_pitch"] = estimate_lag_scale(
+        rows,
+        "raw_acc_pitch_deg",
+        "fused_pitch_deg",
+        max_lag_s=0.5,
+        min_abs_source=0.25,
+    )
+    analysis["estimator_pitch_rate"] = estimate_lag_scale(
+        rows,
+        "gyro_pitch_rate_dps",
+        "filtered_pitch_rate_dps",
+        max_lag_s=0.5,
+        min_abs_source=5.0,
+    )
+    analysis["drive_command_to_measured_velocity"] = estimate_lag_scale(
+        rows,
+        "u_sps",
+        "measured_vel_sps",
+        max_lag_s=1.0,
+        min_abs_source=50.0,
+    )
+    analysis["drive_command_to_filtered_velocity"] = estimate_lag_scale(
+        rows,
+        "u_sps",
+        "filtered_vel_sps",
+        max_lag_s=1.0,
+        min_abs_source=50.0,
+    )
+    if any(_to_float(row.get("plant_velocity")) is not None for row in rows):
+        analysis["plant_velocity_to_measured_velocity"] = estimate_lag_scale(
+            rows,
+            "plant_velocity",
+            "measured_vel_sps",
+            max_lag_s=1.0,
+            min_abs_source=0.02,
+            demean=True,
+        )
+    return analysis
 
 
 def summarize_rows(rows: list[dict[str, Any]], metadata: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -520,7 +698,7 @@ class RunRecorder:
         return summary
 
 
-def _load_csv_rows(path: Path) -> list[dict[str, Any]]:
+def load_csv_rows(path: Path) -> list[dict[str, Any]]:
     with path.open(newline="", encoding="utf-8") as fh:
         reader = csv.DictReader(fh)
         return [dict(row) for row in reader]
@@ -537,7 +715,7 @@ def main() -> int:
     if args.metadata:
         metadata = json.loads(Path(args.metadata).read_text(encoding="utf-8"))
 
-    recorder = RunRecorder(metadata=metadata, rows=_load_csv_rows(Path(args.csv)))
+    recorder = RunRecorder(metadata=metadata, rows=load_csv_rows(Path(args.csv)))
     recorder.write_csv_json_plots(args.output_dir)
     return 0
 

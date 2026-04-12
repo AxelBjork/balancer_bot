@@ -19,10 +19,10 @@ struct SimulatorDisturbance {
   SimulatorDisturbanceKind kind = SimulatorDisturbanceKind::Step;
   double start_s = 0.0;
   double duration_s = 0.0;
-  float forward = 0.0f;
-  float turn = 0.0f;
-  float forward_end = 0.0f;
-  float turn_end = 0.0f;
+  float force_n = 0.0f;
+  float com_bias_rad = 0.0f;
+  float force_n_end = 0.0f;
+  float com_bias_rad_end = 0.0f;
 };
 
 struct SimulatorScenario {
@@ -43,6 +43,10 @@ struct SimulatorTimelineRow {
   double sim_time_s = 0.0;
   double pitch_deg = 0.0;
   double pitch_rate_dps = 0.0;
+  double filtered_pitch_rate_dps = 0.0;
+  double raw_acc_pitch_deg = 0.0;
+  double fused_pitch_deg = 0.0;
+  double gyro_pitch_rate_dps = 0.0;
   double pitch_sp_deg = 0.0;
   double rate_sp_dps = 0.0;
   double u_sps = 0.0;
@@ -55,8 +59,6 @@ struct SimulatorTimelineRow {
   double measured_vel_sps = 0.0;
   double filtered_vel_sps = 0.0;
   double position_target_vel_sps = 0.0;
-  double velocity_loop_blend = 0.0;
-  double velocity_hold_active = 0.0;
   double out_norm = 0.0;
   double effective_pitch_sp_deg = 0.0;
   double pitch_trim_deg = 0.0;
@@ -70,6 +72,8 @@ struct SimulatorTimelineRow {
   double velocity_error = 0.0;
   double f_cmd = 0.0;
   double f_app = 0.0;
+  double external_force_n = 0.0;
+  double external_com_bias_rad = 0.0;
   double x_ddot = 0.0;
   double theta_ddot = 0.0;
   double command_saturated = 0.0;

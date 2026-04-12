@@ -1,6 +1,6 @@
 [tool.pytest.ini_options]
 testpaths = ["tests/python"]
-addopts = "-p no:cov -p no:xdist --maxfail=2"
+addopts = "-p no:cov -p no:xdist"
 cache_dir = "build/.pytest_cache"
 
 [tool.flake8]

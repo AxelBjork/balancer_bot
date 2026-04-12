@@ -13,6 +13,7 @@ from generated_balancer import (
 def make_imu_sample(timestamp_us: int) -> ImuSamplePayload:
     return ImuSamplePayload(
         pitch_rad=0.0,
+        filtered_pitch_rate_rad_s=0.0,
         acc=[0.0, 0.0, 9.81],
         gyr=[0.0, 0.0, 0.0],
         timestamp_us=timestamp_us,

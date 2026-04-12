@@ -14,14 +14,13 @@ inline constexpr char kControlServiceDoc[] =
     "telemetry.\n\n"
     "This service is intentionally thin: it caches the latest bus inputs, translates them into the "
     "`RateControllerCore` API, and republishes the core's outputs as reflected IPC payloads. The "
-    "control law itself is a cascaded structure. A joystick forward command or position-hold "
-    "correction first becomes a target wheel velocity in steps per second. A velocity PID then "
-    "produces a body pitch setpoint, which is blended down as the measured tilt grows so balance "
-    "recovery can dominate near larger disturbances. The pitch error is then turned into a rate "
-    "setpoint and fed through the PX4 `RateControl` block:\n\n"
-    "$$ v_{target} = u_{joy} \\cdot k_{max\\_sps} + v_{hold} $$\n\n"
-    "$$ \\theta_{sp} = \\operatorname{blend}(\\theta_{vel}, \\theta_{trim}) $$\n\n"
-    "$$ \\omega_{sp} = k_{angle\\rightarrow rate}(\\theta_{sp} - \\theta) $$\n\n"
+    "control law itself is a physics-shaped outer loop wrapped around the PX4 pitch-rate "
+    "controller. A joystick forward command produces a target wheel velocity in steps per second. "
+    "When enabled, position hold contributes an equivalent target velocity based on wheel position. "
+    "That translational state is mapped into a pitch setpoint, lean-trim and angle-trim biases are "
+    "added, and the PX4 `RateControl` block tracks a damped pitch-rate setpoint:\n\n"
+    "$$ \\theta_{sp} = k_{pos}(x_{ref} - x) + k_{vel}(v_{ref} - v) + \\theta_{trim} $$\n\n"
+    "$$ \\omega_{sp} = k_{pitch}(\\theta_{sp} - \\theta) - k_{pitch\\_rate}\\dot{\\theta} $$\n\n"
     "The resulting normalized pitch-axis effort is scaled into motor commands in steps per second, "
     "clamped to the configured ceiling, and split into left/right wheel targets by adding a turn "
     "term.\n\n"
@@ -31,9 +30,9 @@ inline constexpr char kControlServiceDoc[] =
     "exists. It also integrates a small position-hold correction when the operator is not driving, "
     "learns a slow lean-trim bias from persistent drift, and resets or decays that trim when the "
     "robot is highly tilted or actively commanded. Every control step also publishes "
-    "`SystemTelemetry`, including pitch, pitch rate, rate setpoint, controller output, wheel-speed "
-    "command, velocity error, integral terms, effective trim, and trim-active state so the SIL "
-    "harness can inspect controller internals without attaching directly to the core.";
+    "`SystemTelemetry`, including fused pitch, filtered pitch rate, raw IMU diagnostics, "
+    "rate setpoint, controller output, wheel-speed command, velocity error, and trim state so the "
+    "SIL harness can inspect controller internals without attaching directly to the core.";
 
 class DOC_DESC(kControlServiceDoc) ControlService {
 public:
@@ -64,6 +63,7 @@ private:
     float last_raw_acc_pitch_deg_ = 0.0f;
     float last_fused_pitch_deg_ = 0.0f;
     float last_gyro_pitch_rate_dps_ = 0.0f;
+    float last_filtered_pitch_rate_dps_ = 0.0f;
 };
 
 template <>
@@ -76,7 +76,7 @@ template <>
 inline void ControlService::on_message<MsgId::ImuData>(const ipc::ImuSamplePayload& p) {
     ImuSample s{};
     s.angle_rad = p.pitch_rad;
-    s.gyro_rad_s = p.gyr[1]; 
+    s.gyro_rad_s = p.filtered_pitch_rate_rad_s;
     s.yaw_rate_z = p.gyr[2]; 
     s.t = std::chrono::steady_clock::time_point(std::chrono::microseconds(p.timestamp_us));
     const double ax = p.acc[0];
@@ -86,6 +86,7 @@ inline void ControlService::on_message<MsgId::ImuData>(const ipc::ImuSamplePaylo
         std::atan2(-ax, std::sqrt(ay * ay + az * az)) * (180.0 / M_PI));
     last_fused_pitch_deg_ = static_cast<float>(p.pitch_rad * (180.0 / M_PI));
     last_gyro_pitch_rate_dps_ = static_cast<float>(p.gyr[1] * (180.0 / M_PI));
+    last_filtered_pitch_rate_dps_ = static_cast<float>(p.filtered_pitch_rate_rad_s * (180.0 / M_PI));
     core_.pushImu(s);
 }
 

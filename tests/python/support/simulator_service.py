@@ -80,26 +80,26 @@ def make_start_payload(
             "reserved1": 0,
             "start_s": 0.0,
             "duration_s": 0.0,
-            "forward": 0.0,
-            "turn": 0.0,
-            "forward_end": 0.0,
-            "turn_end": 0.0,
+            "force_n": 0.0,
+            "com_bias_rad": 0.0,
+            "force_n_end": 0.0,
+            "com_bias_rad_end": 0.0,
         }
         for _ in range(10)
     ]
     for idx, disturbance in enumerate(disturbances):
-        forward = float(disturbance.get("forward", 0.0))
-        turn = float(disturbance.get("turn", 0.0))
+        force_n = float(disturbance.get("force_n", 0.0))
+        com_bias_rad = float(disturbance.get("com_bias_rad", 0.0))
         wire_disturbances[idx] = {
             "kind": _disturbance_kind(disturbance.get("kind")),
             "reserved0": 0,
             "reserved1": 0,
             "start_s": float(disturbance.get("start_s", 0.0)),
             "duration_s": float(disturbance.get("duration_s", 0.0)),
-            "forward": forward,
-            "turn": turn,
-            "forward_end": float(disturbance.get("forward_end", forward)),
-            "turn_end": float(disturbance.get("turn_end", turn)),
+            "force_n": force_n,
+            "com_bias_rad": com_bias_rad,
+            "force_n_end": float(disturbance.get("force_n_end", force_n)),
+            "com_bias_rad_end": float(disturbance.get("com_bias_rad_end", com_bias_rad)),
         }
 
     return SimStartRunPayload(
@@ -221,6 +221,7 @@ def run_scenario_live(
                 "sim_time_s": telemetry.sim_time_s,
                 "pitch_deg": telemetry.pitch_deg,
                 "pitch_rate_dps": telemetry.pitch_rate_dps,
+                "filtered_pitch_rate_dps": telemetry.filtered_pitch_rate_dps,
                 "raw_acc_pitch_deg": telemetry.raw_acc_pitch_deg,
                 "fused_pitch_deg": telemetry.fused_pitch_deg,
                 "gyro_pitch_rate_dps": telemetry.gyro_pitch_rate_dps,
@@ -236,8 +237,6 @@ def run_scenario_live(
                 "measured_vel_sps": telemetry.measured_vel_sps,
                 "filtered_vel_sps": telemetry.filtered_vel_sps,
                 "position_target_vel_sps": telemetry.position_target_vel_sps,
-                "velocity_loop_blend": telemetry.velocity_loop_blend,
-                "velocity_hold_active": telemetry.velocity_hold_active,
                 "out_norm": telemetry.out_norm,
                 "effective_pitch_sp_deg": telemetry.effective_pitch_sp_deg,
                 "pitch_trim_deg": telemetry.pitch_trim_deg,
@@ -251,6 +250,8 @@ def run_scenario_live(
                 "velocity_error": telemetry.plant_velocity_error,
                 "f_cmd": telemetry.f_cmd,
                 "f_app": telemetry.f_app,
+                "external_force_n": telemetry.external_force_n,
+                "external_com_bias_rad": telemetry.external_com_bias_rad,
                 "x_ddot": telemetry.x_ddot,
                 "theta_ddot": telemetry.theta_ddot,
                 "command_saturated": telemetry.command_saturated,
