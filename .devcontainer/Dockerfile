@@ -64,6 +64,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-dev \
     python3-pip \
+    python3-pytest \
+    python3-graphviz \
+    graphviz \
     libsdl2-dev \
     python3-setuptools \
     python3-wheel \
@@ -72,6 +75,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     unzip \
     zip \
     && rm -rf /var/lib/apt/lists/*
+
+# Ubuntu 22.04's python3-pytest package exposes pytest as pytest-3.
+# Keep the project workflow compatible with the standard `pytest ...` command.
+RUN ln -sf /usr/bin/pytest-3 /usr/local/bin/pytest \
+    && ln -sf /usr/bin/py.test-3 /usr/local/bin/py.test
 
 # NuttX Toolchain Dependencies (x86_64)
 RUN apt-get update && apt-get install -y --no-install-recommends \
