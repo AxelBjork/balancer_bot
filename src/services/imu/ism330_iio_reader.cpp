@@ -224,22 +224,22 @@ struct Ism330IioReader::Impl {
 
       if (pfds[0].revents & POLLIN) {
         ssize_t n = ::read(fd_accel, bufA, sizeof(bufA));
-        for (size_t off = 0; n > 0 && off + kStride <= (size_t)n; off += kStride) {
+        for (size_t off = 0; n > 0 && off + kStride <= static_cast<size_t>(n); off += kStride) {
           const uint8_t* p = bufA + off;
-          lastA.ax = double((int16_t)rd16le(p + kOffX)) * kAccelScale;
-          lastA.ay = double((int16_t)rd16le(p + kOffY)) * kAccelScale;
-          lastA.az = double((int16_t)rd16le(p + kOffZ)) * kAccelScale;
+          lastA.ax = static_cast<double>(static_cast<int16_t>(rd16le(p + kOffX))) * kAccelScale;
+          lastA.ay = static_cast<double>(static_cast<int16_t>(rd16le(p + kOffY))) * kAccelScale;
+          lastA.az = static_cast<double>(static_cast<int16_t>(rd16le(p + kOffZ))) * kAccelScale;
           lastA.ts = rd64le_s(p + kOffTS);
           lastA.updated = true;
         }
       }
       if (pfds[1].revents & POLLIN) {
         ssize_t n = ::read(fd_gyro, bufG, sizeof(bufG));
-        for (size_t off = 0; n > 0 && off + kStride <= (size_t)n; off += kStride) {
+        for (size_t off = 0; n > 0 && off + kStride <= static_cast<size_t>(n); off += kStride) {
           const uint8_t* p = bufG + off;
-          lastG.gx = double((int16_t)rd16le(p + kOffX)) * kGyroScale;
-          lastG.gy = double((int16_t)rd16le(p + kOffY)) * kGyroScale;
-          lastG.gz = double((int16_t)rd16le(p + kOffZ)) * kGyroScale;
+          lastG.gx = static_cast<double>(static_cast<int16_t>(rd16le(p + kOffX))) * kGyroScale;
+          lastG.gy = static_cast<double>(static_cast<int16_t>(rd16le(p + kOffY))) * kGyroScale;
+          lastG.gz = static_cast<double>(static_cast<int16_t>(rd16le(p + kOffZ))) * kGyroScale;
           lastG.ts = rd64le_s(p + kOffTS);
           lastG.updated = true;
         }

@@ -23,8 +23,8 @@ struct SimulatorConfig {
   double initial_pitch_deg = 2.0;
   PhysicsProfile physics_profile = PhysicsProfile::Realistic;
   std::optional<SimulatorPhysics> physics_override;
-  float wheel_slip_factor = 1.0f;
-  float velocity_feedback_scale = 1.0f;
+  double wheel_slip_factor = 1.0;
+  double velocity_feedback_scale = 1.0;
   double velocity_feedback_tau_s = 0.0;
   double imu_pitch_lag_s = 0.0;
   uint32_t imu_noise_seed = 0;
@@ -65,7 +65,7 @@ class BalancerSimulator {
 
   explicit BalancerSimulator(const Config& cfg = Config());
 
-  void set_motor_targets(float left_sps, float right_sps);
+  void set_motor_targets(double left_sps, double right_sps);
   void set_external_force_n(double force_n);
   void set_external_com_bias_rad(double com_bias_rad);
   void step(double dt_s);
@@ -78,7 +78,7 @@ class BalancerSimulator {
   const Diagnostics& diagnostics() const { return diagnostics_; }
   double get_pitch() const { return state_.pitch; }
   double get_position() const { return state_.position; }
-  float get_actual_speed_sps() const;
+  double get_actual_speed_sps() const;
 
   static SimulatorPhysics physics_for_profile(PhysicsProfile profile);
   static std::string_view profile_name(PhysicsProfile profile);
@@ -89,8 +89,8 @@ class BalancerSimulator {
   Config cfg_;
   SimulatorPhysics physics_{};
   State state_{};
-  float left_target_sps_{0.0f};
-  float right_target_sps_{0.0f};
+  double left_target_sps_{0.0};
+  double right_target_sps_{0.0};
   double actual_wheel_velocity_{0.0};
   double applied_drive_force_{0.0};
   double measured_velocity_sps_{0.0};

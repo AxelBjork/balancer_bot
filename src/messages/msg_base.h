@@ -23,7 +23,8 @@ struct Desc {
 };
 }  // namespace doc
 
-enum class DOC_DESC("Top-level message type selector. The uint16_t wire value is the first two bytes of every UDP datagram.") MsgId : uint16_t {
+enum class DOC_DESC("Top-level message type selector. The uint16_t wire value is the first two "
+                    "bytes of every UDP datagram.") MsgId : uint16_t {
   PhysicsTick = 1,
   ImuData = 3000,
   JoystickCommand = 3001,
@@ -39,3 +40,8 @@ enum class DOC_DESC("Top-level message type selector. The uint16_t wire value is
 
 template <MsgId Id>
 struct MessageTraits;
+
+template <MsgId Id>
+inline const typename MessageTraits<Id>::Payload& unpack_payload(const void* payload) {
+  return *static_cast<const typename MessageTraits<Id>::Payload*>(payload);
+}

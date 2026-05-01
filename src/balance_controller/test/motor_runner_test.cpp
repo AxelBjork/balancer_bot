@@ -37,8 +37,8 @@ TEST_F(MotorRunnerTest, StepTrackingForwardConstantRate) {
   int64_t leftSteps = runner.getLeftSteps();
   int64_t rightSteps = runner.getRightSteps();
 
-  EXPECT_NEAR(leftSteps, 10, 3) << "Left steps should be ~10";
-  EXPECT_NEAR(rightSteps, 10, 3) << "Right steps should be ~10";
+  EXPECT_NEAR(static_cast<double>(leftSteps), 10.0, 3.0) << "Left steps should be ~10";
+  EXPECT_NEAR(static_cast<double>(rightSteps), 10.0, 3.0) << "Right steps should be ~10";
 }
 
 TEST_F(MotorRunnerTest, StepTrackingReverseDirection) {
@@ -51,8 +51,8 @@ TEST_F(MotorRunnerTest, StepTrackingReverseDirection) {
   int64_t leftSteps = runner.getLeftSteps();
   int64_t rightSteps = runner.getRightSteps();
 
-  EXPECT_NEAR(leftSteps, -10, 3) << "Left steps should be ~-10";
-  EXPECT_NEAR(rightSteps, -10, 3) << "Right steps should be ~-10";
+  EXPECT_NEAR(static_cast<double>(leftSteps), -10.0, 3.0) << "Left steps should be ~-10";
+  EXPECT_NEAR(static_cast<double>(rightSteps), -10.0, 3.0) << "Right steps should be ~-10";
 }
 
 TEST_F(MotorRunnerTest, StepTrackingDifferentialSteering) {
@@ -65,8 +65,8 @@ TEST_F(MotorRunnerTest, StepTrackingDifferentialSteering) {
   int64_t leftSteps = runner.getLeftSteps();
   int64_t rightSteps = runner.getRightSteps();
 
-  EXPECT_NEAR(leftSteps, 10, 3) << "Left steps should be ~10";
-  EXPECT_NEAR(rightSteps, -10, 3) << "Right steps should be ~-10";
+  EXPECT_NEAR(static_cast<double>(leftSteps), 10.0, 3.0) << "Left steps should be ~10";
+  EXPECT_NEAR(static_cast<double>(rightSteps), -10.0, 3.0) << "Right steps should be ~-10";
 }
 
 TEST_F(MotorRunnerTest, StepTrackingAccumulation) {
@@ -81,8 +81,8 @@ TEST_F(MotorRunnerTest, StepTrackingAccumulation) {
   int64_t leftSteps = runner.getLeftSteps();
   int64_t rightSteps = runner.getRightSteps();
 
-  EXPECT_NEAR(leftSteps, 25, 4) << "Left steps should accumulate to ~25";
-  EXPECT_NEAR(rightSteps, 25, 4) << "Right steps should accumulate to ~25";
+  EXPECT_NEAR(static_cast<double>(leftSteps), 25.0, 4.0) << "Left steps should accumulate to ~25";
+  EXPECT_NEAR(static_cast<double>(rightSteps), 25.0, 4.0) << "Right steps should accumulate to ~25";
 }
 
 TEST_F(MotorRunnerTest, StepTrackingZeroRate) {
@@ -95,8 +95,8 @@ TEST_F(MotorRunnerTest, StepTrackingZeroRate) {
   int64_t leftSteps = runner.getLeftSteps();
   int64_t rightSteps = runner.getRightSteps();
 
-  EXPECT_NEAR(leftSteps, 0, 1) << "Left steps should be 0";
-  EXPECT_NEAR(rightSteps, 0, 1) << "Right steps should be 0";
+  EXPECT_NEAR(static_cast<double>(leftSteps), 0.0, 1.0) << "Left steps should be 0";
+  EXPECT_NEAR(static_cast<double>(rightSteps), 0.0, 1.0) << "Right steps should be 0";
 }
 
 TEST_F(MotorRunnerTest, VelocityEstimation) {
@@ -111,14 +111,14 @@ TEST_F(MotorRunnerTest, VelocityEstimation) {
   // Note: RunFor pumps at ~500Hz (2ms sleep), so plenty of updates.
   RunFor(runner, 400.0, 400.0, std::chrono::milliseconds(50));
 
-  float v = runner.getActualSpeedSps();
+  double v = runner.getActualSpeedSps();
   // Allow loose tolerance due to simulation timing jitter
-  EXPECT_NEAR(v, 400.0f, 150.0f) << "Velocity should be approx 1000 sps";
+  EXPECT_NEAR(v, 400.0, 150.0) << "Velocity should be approx 1000 sps";
 
   // Differential (spin)
   RunFor(runner, 400.0, -400.0, std::chrono::milliseconds(50));
   v = runner.getActualSpeedSps();
-  EXPECT_NEAR(v, 0.0f, 50.0f) << "Average velocity should be 0 for pure spin";
+  EXPECT_NEAR(v, 0.0, 50.0) << "Average velocity should be 0 for pure spin";
 }
 
 TEST_F(MotorRunnerTest, VelocityEstimationResolvesBelowOnePulsePerFrame) {
@@ -129,8 +129,8 @@ TEST_F(MotorRunnerTest, VelocityEstimationResolvesBelowOnePulsePerFrame) {
   runner.getActualSpeedSps();
   RunFor(runner, 100.0, 100.0, std::chrono::milliseconds(100));
 
-  const float v = runner.getActualSpeedSps();
-  EXPECT_NEAR(v, 100.0f, 35.0f) << "Estimated velocity should average below the 200 sps quantization step";
+  const double v = runner.getActualSpeedSps();
+  EXPECT_NEAR(v, 100.0, 35.0) << "Estimated velocity should average below the 200 sps quantization step";
 }
 
 TEST_F(MotorRunnerTest, FeedbackSnapshotReflectsAppliedStateNotRawTarget) {
@@ -141,10 +141,10 @@ TEST_F(MotorRunnerTest, FeedbackSnapshotReflectsAppliedStateNotRawTarget) {
   RunFor(runner, 4000.0, 4000.0, std::chrono::milliseconds(50));
 
   const auto feedback = runner.getFeedbackSample();
-  EXPECT_LT(feedback.left_applied_sps, 4000.0f);
-  EXPECT_LT(feedback.right_applied_sps, 4000.0f);
-  EXPECT_GT(feedback.left_applied_sps, 0.0f);
-  EXPECT_GT(feedback.right_applied_sps, 0.0f);
+  EXPECT_LT(feedback.left_applied_sps, 4000.0);
+  EXPECT_LT(feedback.right_applied_sps, 4000.0);
+  EXPECT_GT(feedback.left_applied_sps, 0.0);
+  EXPECT_GT(feedback.right_applied_sps, 0.0);
   EXPECT_GT(feedback.left_actual_steps, 0);
   EXPECT_GT(feedback.right_actual_steps, 0);
 }
@@ -157,8 +157,8 @@ TEST_F(MotorRunnerTest, FeedbackSignMatchesAppliedDirectionWithRightMotorInversi
 
     RunFor(runner, 800.0, 800.0, std::chrono::milliseconds(80));
     const auto feedback = runner.getFeedbackSample();
-    EXPECT_GT(feedback.left_applied_sps, 0.0f);
-    EXPECT_GT(feedback.right_applied_sps, 0.0f);
+    EXPECT_GT(feedback.left_applied_sps, 0.0);
+    EXPECT_GT(feedback.right_applied_sps, 0.0);
     EXPECT_GT(feedback.left_actual_steps, 0);
     EXPECT_GT(feedback.right_actual_steps, 0);
   }
@@ -170,8 +170,8 @@ TEST_F(MotorRunnerTest, FeedbackSignMatchesAppliedDirectionWithRightMotorInversi
 
     RunFor(runner, -800.0, -800.0, std::chrono::milliseconds(80));
     const auto feedback = runner.getFeedbackSample();
-    EXPECT_LT(feedback.left_applied_sps, 0.0f);
-    EXPECT_LT(feedback.right_applied_sps, 0.0f);
+    EXPECT_LT(feedback.left_applied_sps, 0.0);
+    EXPECT_LT(feedback.right_applied_sps, 0.0);
     EXPECT_LT(feedback.left_actual_steps, 0);
     EXPECT_LT(feedback.right_actual_steps, 0);
   }

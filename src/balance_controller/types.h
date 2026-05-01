@@ -14,8 +14,8 @@ struct ImuSample {
 
 // ---- Joystick command (forward/turn normalized to [-1, 1]) ----
 struct JoyCmd {
-  float forward;  // + forward speed command
-  float turn;     // + left faster, right slower (CCW yaw)
+  double forward;  // + forward speed command
+  double turn;     // + left faster, right slower (CCW yaw)
 };
 
 // ---- Telemetry (controller diagnostics) ----

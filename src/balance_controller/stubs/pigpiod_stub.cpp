@@ -27,7 +27,7 @@ int set_mode(int, unsigned, unsigned) {
 }
 int gpio_write(int, unsigned gpio, unsigned level) {
   std::lock_guard<std::mutex> lk(g_mutex);
-  g_state.pin_states[gpio] = level;
+  g_state.pin_states[static_cast<int>(gpio)] = static_cast<int>(level);
   return 0;
 }
 void time_sleep(double) {
@@ -50,7 +50,7 @@ int wave_add_generic(int, unsigned numPulses, gpioPulse_t* pulses) {
   for (unsigned i = 0; i < numPulses; ++i) {
     g_state.current_wave_pulses.push_back(pulses[i]);
   }
-  return numPulses;
+  return static_cast<int>(numPulses);
 }
 
 int wave_create(int) {

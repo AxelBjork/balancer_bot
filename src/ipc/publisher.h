@@ -69,7 +69,26 @@ bool try_publish_raw(MessageBus& bus, MsgId id, const void* data, size_t size, M
           ...);
 }
 
+template <typename Service, MsgId... SubscribedIds>
+bool try_dispatch_raw(Service& service, MsgId id, const void* payload, MsgList<SubscribedIds...>) {
+  return ((id == SubscribedIds && (service.template on_message<SubscribedIds>(unpack_payload<SubscribedIds>(payload)), true)) || ...);
+}
+
 }  // namespace detail
+
+template <typename Service>
+bool dispatch_to_service(Service& service, MsgId id, const void* payload) {
+  if constexpr (requires { typename Service::Subscribes; }) {
+    return detail::try_dispatch_raw(service, id, payload, typename Service::Subscribes{});
+  } else {
+    return false;
+  }
+}
+
+template <typename... Services>
+void dispatch_to_services(MsgId id, const void* payload, Services&... services) {
+  (dispatch_to_service(services, id, payload), ...);
+}
 
 template <typename Component>
 class TypedPublisher {

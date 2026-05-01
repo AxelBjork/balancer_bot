@@ -87,16 +87,30 @@ class SimImuPipeline {
  public:
   explicit SimImuPipeline(const SimulatorScenario& scenario):
         rng_(scenario.imu_noise_seed),
-        accel_noise_(0.0, scenario.accel_noise_std_mps2),
-        gyro_noise_(0.0, scenario.gyro_noise_std_rad_s) {}
+        accel_noise_std_(scenario.accel_noise_std_mps2),
+        gyro_noise_std_(scenario.gyro_noise_std_rad_s),
+        accel_noise_(0.0, scenario.accel_noise_std_mps2 > 0.0 ? scenario.accel_noise_std_mps2 : 1.0),
+        gyro_noise_(0.0, scenario.gyro_noise_std_rad_s > 0.0 ? scenario.gyro_noise_std_rad_s : 1.0) {}
 
   ipc::ImuSamplePayload sample(const BalancerSimulator& sim, uint64_t sim_time_us) {
-    return sim.make_imu_payload(sim_time_us);
+    auto payload = sim.make_imu_payload(sim_time_us);
+    if (accel_noise_std_ > 0.0) {
+      for (int i = 0; i < 3; ++i) {
+        payload.acc[i] += accel_noise_(rng_);
+      }
+    }
+    if (gyro_noise_std_ > 0.0) {
+      for (int i = 0; i < 3; ++i) {
+        payload.gyr[i] += gyro_noise_(rng_);
+      }
+    }
+    return payload;
   }
 
  private:
-  PitchComplementaryFilter filter_{};
   std::mt19937 rng_;
+  double accel_noise_std_;
+  double gyro_noise_std_;
   std::normal_distribution<double> accel_noise_;
   std::normal_distribution<double> gyro_noise_;
 };
@@ -135,21 +149,21 @@ SimulatorRunResult run_simulator_scenario_with_loaded_pid(const SimulatorScenari
   SimImuPipeline imu_pipeline(scenario);
   RateControllerCore core;
 
-  float left_sps = 0.0f;
-  float right_sps = 0.0f;
+  double left_sps = 0.0;
+  double right_sps = 0.0;
   double left_actual_steps = 0.0;
   double right_actual_steps = 0.0;
   Telemetry latest_telemetry{};
   bool have_telemetry = false;
 
-  core.setMotorOutputs([&](float left, float right) {
+  core.setMotorOutputs([&](double left, double right) {
     left_sps = left;
     right_sps = right;
     sim.set_motor_targets(left, right);
   });
   core.setJoystick(JoyCmd{0.0f, 0.0f});
   core.setVelocityFeedback([&]() { return sim.get_actual_speed_sps(); });
-  core.setPositionFeedback([&]() { return static_cast<float>(sim.get_position()); });
+  core.setPositionFeedback([&]() { return sim.get_position(); });
   core.setTelemetrySink([&](const Telemetry& t) {
     latest_telemetry = t;
     have_telemetry = true;
@@ -182,8 +196,8 @@ SimulatorRunResult run_simulator_scenario_with_loaded_pid(const SimulatorScenari
 
     core.pushImu(sample);
     core.step(kTickDtS, sample.t);
-    left_actual_steps += static_cast<double>(left_sps) * kTickDtS;
-    right_actual_steps += static_cast<double>(right_sps) * kTickDtS;
+    left_actual_steps += left_sps * kTickDtS;
+    right_actual_steps += right_sps * kTickDtS;
 
     const auto& diag = sim.diagnostics();
     SimulatorTimelineRow row{};
@@ -292,7 +306,7 @@ std::optional<SimulatorScenario> simulator_named_scenario(std::string_view name,
     scenario.disturbances.push_back(SimulatorDisturbance{
         .start_s = 1.0,
         .duration_s = 0.20,
-        .force_n = 0.25f,
+        .force_n = 0.25,
     });
     return scenario;
   }
@@ -304,19 +318,19 @@ std::optional<SimulatorScenario> simulator_named_scenario(std::string_view name,
             .kind = SimulatorDisturbanceKind::Ramp,
             .start_s = 1.0,
             .duration_s = 4.0,
-            .force_n = 0.0f,
-            .com_bias_rad = 0.0f,
-            .force_n_end = 0.45f,
-            .com_bias_rad_end = 0.0f,
+            .force_n = 0.0,
+            .com_bias_rad = 0.0,
+            .force_n_end = 0.45,
+            .com_bias_rad_end = 0.0,
         },
         SimulatorDisturbance{
             .kind = SimulatorDisturbanceKind::Ramp,
             .start_s = 5.0,
             .duration_s = 4.0,
-            .force_n = 0.45f,
-            .com_bias_rad = 0.0f,
-            .force_n_end = 0.0f,
-            .com_bias_rad_end = 0.0f,
+            .force_n = 0.45,
+            .com_bias_rad = 0.0,
+            .force_n_end = 0.0,
+            .com_bias_rad_end = 0.0,
         },
     };
     return scenario;
@@ -324,7 +338,7 @@ std::optional<SimulatorScenario> simulator_named_scenario(std::string_view name,
   if (name == "slow_push_runaway") {
     auto scenario = make_scenario("slow_push_runaway", 0.0, 0.0, physics_profile);
     scenario.duration_s = 40.0;
-    scenario.velocity_feedback_scale = 0.85f;
+    scenario.velocity_feedback_scale = 0.85;
     scenario.velocity_feedback_tau_s = 0.10;
     scenario.imu_pitch_lag_s = 0.01;
     scenario.disturbances = {
@@ -332,17 +346,17 @@ std::optional<SimulatorScenario> simulator_named_scenario(std::string_view name,
             .kind = SimulatorDisturbanceKind::Ramp,
             .start_s = 1.0,
             .duration_s = 8.0,
-            .force_n = 0.0f,
-            .com_bias_rad = 0.0f,
-            .force_n_end = 0.60f,
-            .com_bias_rad_end = 0.0f,
+            .force_n = 0.0,
+            .com_bias_rad = 0.0,
+            .force_n_end = 0.60,
+            .com_bias_rad_end = 0.0,
         },
         SimulatorDisturbance{
             .kind = SimulatorDisturbanceKind::HoldBias,
             .start_s = 9.0,
             .duration_s = 0.0,
-            .force_n = 0.60f,
-            .com_bias_rad = 0.0f,
+            .force_n = 0.60,
+            .com_bias_rad = 0.0,
         },
     };
     return scenario;
@@ -350,15 +364,15 @@ std::optional<SimulatorScenario> simulator_named_scenario(std::string_view name,
   if (name == "hold_bias_long_horizon") {
     auto scenario = make_scenario("hold_bias_long_horizon", 0.0, 0.0, physics_profile);
     scenario.duration_s = 40.0;
-    scenario.velocity_feedback_scale = 0.85f;
+    scenario.velocity_feedback_scale = 0.85;
     scenario.velocity_feedback_tau_s = 0.10;
     scenario.imu_pitch_lag_s = 0.01;
     scenario.disturbances.push_back(SimulatorDisturbance{
         .kind = SimulatorDisturbanceKind::HoldBias,
         .start_s = 1.0,
         .duration_s = 0.0,
-        .force_n = 0.0f,
-        .com_bias_rad = 0.02f,
+        .force_n = 0.0,
+        .com_bias_rad = 0.02,
     });
     return scenario;
   }

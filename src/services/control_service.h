@@ -1,23 +1,27 @@
 #pragma once
 
-#include "config.h"
-#include "services/control/rate_controller_core.h"
-#include "publisher.h"
-#include "messages/balancer_msgs.h"
 #include <cmath>
+
+#include "config.h"
+#include "messages/balancer_msgs.h"
+#include "publisher.h"
+#include "services/control/rate_controller_core.h"
 
 namespace sil {
 
 inline constexpr char kControlServiceDoc[] =
     "Owns the balancing control pipeline that converts `PhysicsTick`, `ImuData`, and "
-    "`JoystickCommand`, and `MotorFeedback` inputs into wheel-speed targets and streaming controller "
+    "`JoystickCommand`, and `MotorFeedback` inputs into wheel-speed targets and streaming "
+    "controller "
     "telemetry.\n\n"
     "This service is intentionally thin: it caches the latest bus inputs, translates them into the "
     "`RateControllerCore` API, and republishes the core's outputs as reflected IPC payloads. The "
     "control law itself is a physics-shaped outer loop wrapped around the PX4 pitch-rate "
     "controller. A joystick forward command produces a target wheel velocity in steps per second. "
-    "When enabled, position hold contributes a direct pitch-reference term based on wheel position. "
-    "The velocity and position terms are combined into a pitch setpoint, lean-trim and angle-trim biases are "
+    "When enabled, position hold contributes a direct pitch-reference term based on wheel "
+    "position. "
+    "The velocity and position terms are combined into a pitch setpoint, lean-trim and angle-trim "
+    "biases are "
     "added, and the PX4 `RateControl` block tracks a damped pitch-rate setpoint:\n\n"
     "$$ \\theta_{sp} = k_{pos}(x_{ref} - x) + k_{vel}(v_{ref} - v) + \\theta_{trim} $$\n\n"
     "$$ \\omega_{sp} = k_{pitch}(\\theta_{sp} - \\theta) - k_{pitch\\_rate}\\dot{\\theta} $$\n\n"
@@ -36,81 +40,85 @@ inline constexpr char kControlServiceDoc[] =
     "internals without attaching directly to the core.";
 
 class DOC_DESC(kControlServiceDoc) ControlService {
-public:
-    static constexpr const char* kDocDescription = kControlServiceDoc;
+ public:
+  static constexpr const char* kDocDescription = kControlServiceDoc;
 
-    using Publishes = ipc::MsgList<MsgId::MotorTargets, MsgId::SystemTelemetry>;
-    using Subscribes = ipc::MsgList<MsgId::PhysicsTick, MsgId::ImuData, MsgId::JoystickCommand, MsgId::MotorFeedback>;
+  using Publishes = ipc::MsgList<MsgId::MotorTargets, MsgId::SystemTelemetry>;
+  using Subscribes = ipc::MsgList<MsgId::PhysicsTick, MsgId::ImuData, MsgId::JoystickCommand,
+                                  MsgId::MotorFeedback>;
 
-    explicit ControlService(ipc::MessageBus& bus);
-    ~ControlService() = default;
+  explicit ControlService(ipc::MessageBus& bus);
+  ~ControlService() = default;
 
-    void start() {}
-    void stop() {}
+  void start() {
+  }
+  void stop() {
+  }
 
-    template <MsgId Id>
-    void on_message(const typename MessageTraits<Id>::Payload& p) {}
+  template <MsgId Id>
+  void on_message(const typename MessageTraits<Id>::Payload& p) {
+  }
 
-private:
-    ipc::TypedPublisher<ControlService> bus_;
-    RateControllerCore core_;
-    
-    // Fallback proxy for SIL when no explicit motor feedback is available.
-    float last_left_sps_ = 0.0f;
-    float last_right_sps_ = 0.0f;
-    float last_measured_avg_sps_ = 0.0f;
-    float last_left_applied_sps_ = 0.0f;
-    float last_right_applied_sps_ = 0.0f;
-    float last_position_m_ = 0.0f;
-    int64_t last_left_actual_steps_ = 0;
-    int64_t last_right_actual_steps_ = 0;
-    bool have_motor_feedback_ = false;
-    float last_raw_acc_pitch_deg_ = 0.0f;
-    float last_fused_pitch_deg_ = 0.0f;
-    float last_gyro_pitch_rate_dps_ = 0.0f;
-    float last_filtered_pitch_rate_dps_ = 0.0f;
+ private:
+  ipc::TypedPublisher<ControlService> bus_;
+  RateControllerCore core_;
+
+  // Fallback proxy for SIL when no explicit motor feedback is available.
+  double last_left_sps_ = 0.0;
+  double last_right_sps_ = 0.0;
+  double last_measured_avg_sps_ = 0.0;
+  double last_left_applied_sps_ = 0.0;
+  double last_right_applied_sps_ = 0.0;
+  double last_position_m_ = 0.0;
+  int64_t last_left_actual_steps_ = 0;
+  int64_t last_right_actual_steps_ = 0;
+  bool have_motor_feedback_ = false;
+  double last_raw_acc_pitch_deg_ = 0.0;
+  double last_fused_pitch_deg_ = 0.0;
+  double last_gyro_pitch_rate_dps_ = 0.0;
+  double last_filtered_pitch_rate_dps_ = 0.0;
 };
 
 template <>
-inline void ControlService::on_message<MsgId::JoystickCommand>(const ipc::JoystickCommandPayload& p) {
-    JoyCmd cmd{p.forward, p.turn};
-    core_.setJoystick(cmd);
+inline void ControlService::on_message<MsgId::JoystickCommand>(
+    const ipc::JoystickCommandPayload& p) {
+  JoyCmd cmd{p.forward, p.turn};
+  core_.setJoystick(cmd);
 }
 
 template <>
 inline void ControlService::on_message<MsgId::ImuData>(const ipc::ImuSamplePayload& p) {
-    ImuSample s{};
-    s.angle_rad = p.pitch_rad;
-    s.gyro_rad_s = p.filtered_pitch_rate_rad_s;
-    s.yaw_rate_z = p.gyr[2]; 
-    s.t = std::chrono::steady_clock::time_point(std::chrono::microseconds(p.timestamp_us));
-    const double ax = p.acc[0];
-    const double ay = p.acc[1];
-    const double az = p.acc[2];
-    last_raw_acc_pitch_deg_ = static_cast<float>(
-        std::atan2(-ax, std::sqrt(ay * ay + az * az)) * (180.0 / M_PI));
-    last_fused_pitch_deg_ = static_cast<float>(p.pitch_rad * (180.0 / M_PI));
-    last_gyro_pitch_rate_dps_ = static_cast<float>(p.gyr[1] * (180.0 / M_PI));
-    last_filtered_pitch_rate_dps_ = static_cast<float>(p.filtered_pitch_rate_rad_s * (180.0 / M_PI));
-    core_.pushImu(s);
+  ImuSample s{};
+  s.angle_rad = p.pitch_rad;
+  s.gyro_rad_s = p.filtered_pitch_rate_rad_s;
+  s.yaw_rate_z = p.gyr[2];
+  s.t = std::chrono::steady_clock::time_point(std::chrono::microseconds(p.timestamp_us));
+  const double ax = p.acc[0];
+  const double ay = p.acc[1];
+  const double az = p.acc[2];
+  last_raw_acc_pitch_deg_ = std::atan2(-ax, std::sqrt(ay * ay + az * az)) * (180.0 / M_PI);
+  last_fused_pitch_deg_ = p.pitch_rad * (180.0 / M_PI);
+  last_gyro_pitch_rate_dps_ = p.gyr[1] * (180.0 / M_PI);
+  last_filtered_pitch_rate_dps_ = p.filtered_pitch_rate_rad_s * (180.0 / M_PI);
+  core_.pushImu(s);
 }
 
 template <>
 inline void ControlService::on_message<MsgId::PhysicsTick>(const PhysicsTickPayload& p) {
-    const auto now = std::chrono::steady_clock::time_point(std::chrono::microseconds(p.sim_time_us));
-    core_.step(p.dt_s, now);
+  const auto now = std::chrono::steady_clock::time_point(std::chrono::microseconds(p.sim_time_us));
+  core_.step(p.dt_s, now);
 }
 
 template <>
 inline void ControlService::on_message<MsgId::MotorFeedback>(const ipc::MotorFeedbackPayload& p) {
-    last_left_applied_sps_ = p.left_applied_sps;
-    last_right_applied_sps_ = p.right_applied_sps;
-    last_measured_avg_sps_ = p.measured_avg_sps;
-    last_left_actual_steps_ = p.left_actual_steps;
-    last_right_actual_steps_ = p.right_actual_steps;
-    const float avg_steps = 0.5f * static_cast<float>(p.left_actual_steps + p.right_actual_steps);
-    last_position_m_ = avg_steps * static_cast<float>(Config::meters_per_step);
-    have_motor_feedback_ = true;
+  last_left_applied_sps_ = p.left_applied_sps;
+  last_right_applied_sps_ = p.right_applied_sps;
+  last_measured_avg_sps_ = p.measured_avg_sps;
+  last_left_actual_steps_ = p.left_actual_steps;
+  last_right_actual_steps_ = p.right_actual_steps;
+  const double avg_steps = 0.5 * static_cast<double>(p.left_actual_steps + p.right_actual_steps);
+  last_position_m_ = avg_steps * Config::meters_per_step;
+  have_motor_feedback_ = true;
 }
 
-} // namespace sil
+}  // namespace sil

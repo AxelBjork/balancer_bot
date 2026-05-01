@@ -62,14 +62,14 @@ public:
 	 * Set the mximum absolute value of the integrator for all axes
 	 * @param integrator_limit limit value for all axes x, y, z
 	 */
-	void setIntegratorLimit(const matrix::Vector3f &integrator_limit) { _lim_int = integrator_limit; };
+	void setIntegratorLimit(const matrix::Vector3f &integrator_limit) { _lim_int = integrator_limit; }
 
 	/**
 	 * Set direct rate to torque feed forward gain
 	 * @see _gain_ff
 	 * @param FF 3D vector of feed forward gains for body x,y,z axis
 	 */
-	void setFeedForwardGain(const matrix::Vector3f &FF) { _gain_ff = FF; };
+	void setFeedForwardGain(const matrix::Vector3f &FF) { _gain_ff = FF; }
 
 	/**
 	 * Set saturation status

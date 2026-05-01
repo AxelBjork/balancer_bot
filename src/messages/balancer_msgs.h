@@ -33,76 +33,76 @@ struct DOC_DESC(
 
 struct DOC_DESC("Normalized joystick command injected by Python tests or the runtime input layer.")
     JoystickCommandPayload {
-  float forward;
-  float turn;
+  double forward;
+  double turn;
 };
 
 struct DOC_DESC("Wheel speed targets emitted by the controller in steps per second.")
     MotorTargetsPayload {
-  float left_sps;
-  float right_sps;
+  double left_sps;
+  double right_sps;
 };
 
 struct DOC_DESC(
     "Detailed controller telemetry streamed out over UDP and used for runtime logging/visibility.")
     SystemTelemetryPayload {
   uint32_t run_id;
-  float t_sec;
-  float sim_time_s;
-  float age_ms;
-  float pitch_deg;
-  float pitch_rate_dps;
-  float raw_acc_pitch_deg;
-  float fused_pitch_deg;
-  float gyro_pitch_rate_dps;
-  float filtered_pitch_rate_dps;
-  float rate_sp_dps;
-  float out_norm;
-  float u_sps;
-  float integ_pitch;
-  float vel_error;
-  float vel_p_term;
-  float vel_i_term;
-  float target_vel_sps;
-  float measured_vel_sps;
-  float filtered_vel_sps;
-  float position_target_vel_sps;
-  float pitch_ref_from_vel_deg;
-  float pitch_ref_from_pos_deg;
-  float pitch_error_deg;
-  float rate_error_dps;
-  float pitch_sp_deg;
-  float effective_pitch_sp_deg;
-  float pitch_trim_deg;
-  float trim_active;
-  float command_saturated;
-  float left_applied_sps;
-  float right_applied_sps;
+  double t_sec;
+  double sim_time_s;
+  double age_ms;
+  double pitch_deg;
+  double pitch_rate_dps;
+  double raw_acc_pitch_deg;
+  double fused_pitch_deg;
+  double gyro_pitch_rate_dps;
+  double filtered_pitch_rate_dps;
+  double rate_sp_dps;
+  double out_norm;
+  double u_sps;
+  double integ_pitch;
+  double vel_error;
+  double vel_p_term;
+  double vel_i_term;
+  double target_vel_sps;
+  double measured_vel_sps;
+  double filtered_vel_sps;
+  double position_target_vel_sps;
+  double pitch_ref_from_vel_deg;
+  double pitch_ref_from_pos_deg;
+  double pitch_error_deg;
+  double rate_error_dps;
+  double pitch_sp_deg;
+  double effective_pitch_sp_deg;
+  double pitch_trim_deg;
+  double trim_active;
+  double command_saturated;
+  double left_applied_sps;
+  double right_applied_sps;
   int64_t left_actual_steps;
   int64_t right_actual_steps;
-  float plant_pitch_deg;
-  float plant_pitch_rate_dps;
-  float plant_position_m;
-  float plant_velocity_mps;
-  float target_wheel_velocity;
-  float actual_wheel_velocity;
-  float plant_velocity_error;
-  float f_cmd;
-  float f_app;
-  float external_force_n;
-  float external_com_bias_rad;
-  float x_ddot;
-  float theta_ddot;
-  float force_saturated;
+  double plant_pitch_deg;
+  double plant_pitch_rate_dps;
+  double plant_position_m;
+  double plant_velocity_mps;
+  double target_wheel_velocity;
+  double actual_wheel_velocity;
+  double plant_velocity_error;
+  double f_cmd;
+  double f_app;
+  double external_force_n;
+  double external_com_bias_rad;
+  double x_ddot;
+  double theta_ddot;
+  double force_saturated;
 };
 
 struct DOC_DESC(
     "Internal motor feedback sample published by the motor service. It carries the currently "
     "applied wheel rates after slew limiting, a steps-derived average wheel-speed estimate used by "
     "closed-loop hardware feedback, and the integrated actual step counts.") MotorFeedbackPayload {
-  float left_applied_sps;
-  float right_applied_sps;
-  float measured_avg_sps;
+  double left_applied_sps;
+  double right_applied_sps;
+  double measured_avg_sps;
   int64_t left_actual_steps;
   int64_t right_actual_steps;
 };
@@ -124,10 +124,10 @@ struct DOC_DESC(
   uint16_t reserved1;
   double start_s;
   double duration_s;
-  float force_n;
-  float com_bias_rad;
-  float force_n_end;
-  float com_bias_rad_end;
+  double force_n;
+  double com_bias_rad;
+  double force_n_end;
+  double com_bias_rad_end;
 };
 
 struct DOC_DESC(
@@ -140,8 +140,8 @@ struct DOC_DESC(
   double duration_s;
   double initial_pitch_deg;
   double com_angle_offset_rad;
-  float wheel_slip_factor;
-  float velocity_feedback_scale;
+  double wheel_slip_factor;
+  double velocity_feedback_scale;
   double velocity_feedback_tau_s;
   double imu_pitch_lag_s;
   uint32_t imu_noise_seed;
@@ -172,14 +172,14 @@ struct DOC_DESC("Terminal simulator status emitted once per accepted run.") SimR
   uint8_t reserved0;
   uint16_t reserved1;
   uint32_t sample_count;
-  float elapsed_s;
-  float final_pitch_deg;
-  float max_abs_pitch_deg;
-  float tail_rms_pitch_deg;
-  float tail_rail_fraction;
-  float tail_mean_abs_pitch_deg;
-  float max_abs_position_m;
-  float tail_mean_abs_velocity_mps;
+  double elapsed_s;
+  double final_pitch_deg;
+  double max_abs_pitch_deg;
+  double tail_rms_pitch_deg;
+  double tail_rail_fraction;
+  double tail_mean_abs_pitch_deg;
+  double max_abs_position_m;
+  double tail_mean_abs_velocity_mps;
 };
 
 }  // namespace ipc

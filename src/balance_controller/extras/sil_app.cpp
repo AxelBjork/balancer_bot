@@ -33,24 +33,7 @@ void sil_dispatcher(void* ctx, MsgId id, const void* payload) {
     auto* s = static_cast<AppServices*>(ctx);
     if (!s) return;
 
-    if (id == MsgId::ImuRawData) {
-        s->is.on_message<MsgId::ImuRawData>(*static_cast<const ipc::ImuRawPayload*>(payload));
-    } else if (id == MsgId::ImuData) {
-        s->cs.on_message<MsgId::ImuData>(*static_cast<const ipc::ImuSamplePayload*>(payload));
-    } else if (id == MsgId::PhysicsTick) {
-        s->cs.on_message<MsgId::PhysicsTick>(*static_cast<const PhysicsTickPayload*>(payload));
-    } else if (id == MsgId::JoystickCommand) {
-        s->cs.on_message<MsgId::JoystickCommand>(*static_cast<const ipc::JoystickCommandPayload*>(payload));
-    } else if (id == MsgId::MotorFeedback) {
-        s->cs.on_message<MsgId::MotorFeedback>(*static_cast<const ipc::MotorFeedbackPayload*>(payload));
-    } else if (id == MsgId::MotorTargets) {
-        const auto& p = *static_cast<const ipc::MotorTargetsPayload*>(payload);
-        s->ms.on_message<MsgId::MotorTargets>(p);
-        s->udp.on_message<MsgId::MotorTargets>(p);
-    } else if (id == MsgId::SystemTelemetry) {
-        const auto& p = *static_cast<const ipc::SystemTelemetryPayload*>(payload);
-        s->udp.on_message<MsgId::SystemTelemetry>(p);
-    }
+    ipc::dispatch_to_services(id, payload, s->is, s->cs, s->ms, s->udp);
 }
 
 struct BusContainer {

@@ -7,24 +7,23 @@
 #include <chrono>
 #include <cmath>
 #include <csignal>
+#include <cstdio>
 #include <iostream>
 #include <memory>
-#include <cstdio>
 #include <thread>
 
 #include "config.h"
-#include "services/control/rate_controller_core.h"
-#include "motor_runner.h"
-#include "stepper.h"
-#include "xbox_controller.h"
-
 #include "message_bus.h"
 #include "messages/balancer_msgs.h"
+#include "motor_runner.h"
+#include "services/control/rate_controller_core.h"
 #include "services/control_service.h"
-#include "services/motor_service.h"
 #include "services/imu_service.h"
+#include "services/motor_service.h"
 #include "services/time_service.h"
+#include "stepper.h"
 #include "udp_bridge.h"
+#include "xbox_controller.h"
 
 struct PigpioCtx {
   explicit PigpioCtx(const char* host = nullptr, const char* port = nullptr) {
@@ -49,47 +48,37 @@ struct AppServices {
   sil::TimeService ts;
   ipc::UdpBridge udp;
   AppServices(ipc::MessageBus& bus, MotorRunner* runner)
-      : ms(bus, runner), cs(bus), is(bus, true), ts(bus, 1.0 / Config::control_hz), udp(bus) {}
+      : ms(bus, runner), cs(bus), is(bus, true), ts(bus, 1.0 / Config::control_hz), udp(bus) {
+  }
 };
 
 struct BusContainer {
   ipc::MessageBus bus;
   AppServices services;
   BusContainer(MotorRunner* runner, ipc::MessageBus::DispatchFn disp)
-      : bus(&services, disp), services(bus, runner) {}
+      : bus(&services, disp), services(bus, runner) {
+  }
 };
 
-void app_dispatcher(void* ctx, MsgId id, const void* payload) {
+inline void app_dispatcher(void* ctx, MsgId id, const void* payload) {
   auto* s = static_cast<AppServices*>(ctx);
   static int telemetry_count = 0;
-  if (id == MsgId::ImuRawData) {
-    s->is.on_message<MsgId::ImuRawData>(*static_cast<const ipc::ImuRawPayload*>(payload));
-  } else if (id == MsgId::ImuData) {
-    s->cs.on_message<MsgId::ImuData>(*static_cast<const ipc::ImuSamplePayload*>(payload));
-  } else if (id == MsgId::PhysicsTick) {
-    s->cs.on_message<MsgId::PhysicsTick>(*static_cast<const PhysicsTickPayload*>(payload));
-  } else if (id == MsgId::JoystickCommand) {
-    s->cs.on_message<MsgId::JoystickCommand>(*static_cast<const ipc::JoystickCommandPayload*>(payload));
-  } else if (id == MsgId::MotorFeedback) {
-    s->cs.on_message<MsgId::MotorFeedback>(*static_cast<const ipc::MotorFeedbackPayload*>(payload));
-  } else if (id == MsgId::MotorTargets) {
-    const auto& p = *static_cast<const ipc::MotorTargetsPayload*>(payload);
-    s->ms.on_message<MsgId::MotorTargets>(p);
-    s->udp.on_message<MsgId::MotorTargets>(p); // relay to Python
-  } else if (id == MsgId::SystemTelemetry) {
-    const auto& p = *static_cast<const ipc::SystemTelemetryPayload*>(payload);
+
+  ipc::dispatch_to_services(id, payload, s->is, s->cs, s->ms, s->udp, s->ts);
+
+  if (id == MsgId::SystemTelemetry) {
     if constexpr (Config::kPrintEvery != -1) {
       if ((++telemetry_count % Config::kPrintEvery) == 0) {
+        const auto& p = unpack_payload<MsgId::SystemTelemetry>(payload);
         std::printf(
             "t=%7.3f  th=%6.2f deg  dth=%7.2f dps  rsp=%7.2f dps  u=%6.0f%s  "
             "pref=%6.2f (%+5.2f/%+5.2f)  perr=%6.2f  v=%7.1f/%7.1f  ap=%6.0f/%6.0f\n",
             p.t_sec, p.pitch_deg, p.pitch_rate_dps, p.rate_sp_dps, p.u_sps,
-            (std::abs(p.u_sps) >= 0.99f * static_cast<float>(kMaxSps)) ? "*" : "",
-            p.pitch_sp_deg, p.pitch_ref_from_vel_deg, p.pitch_ref_from_pos_deg, p.pitch_error_deg,
+            (std::abs(p.u_sps) >= 0.99 * kMaxSps) ? "*" : "", p.pitch_sp_deg,
+            p.pitch_ref_from_vel_deg, p.pitch_ref_from_pos_deg, p.pitch_error_deg,
             p.measured_vel_sps, p.filtered_vel_sps, p.left_applied_sps, p.right_applied_sps);
       }
     }
-    s->udp.on_message<MsgId::SystemTelemetry>(p); // relay to Python
   }
 }
 
@@ -98,16 +87,15 @@ class CascadedController {
  public:
   CascadedController(MotorRunnerT& motors) : motors_(motors) {
     core_.setMotorOutputs(
-        [this](float left_sps, float right_sps) { motors_.setTargets(left_sps, right_sps); });
+        [this](double left_sps, double right_sps) { motors_.setTargets(left_sps, right_sps); });
 
     // Velocity feedback from motor commanded targets (actual step tracking)
-    core_.setVelocityFeedback([this]() -> float { return motors_.getActualSpeedSps(); });
-    core_.setPositionFeedback([this]() -> float {
-      const float average_steps =
-          0.5f * static_cast<float>(motors_.getActualLeftSteps() + motors_.getActualRightSteps());
-      return average_steps * static_cast<float>(Config::meters_per_step);
+    core_.setVelocityFeedback([this]() -> double { return motors_.getActualSpeedSps(); });
+    core_.setPositionFeedback([this]() -> double {
+      const double average_steps =
+          0.5 * static_cast<double>(motors_.getActualLeftSteps() + motors_.getActualRightSteps());
+      return average_steps * Config::meters_per_step;
     });
-
   }
 
   ~CascadedController() = default;
@@ -154,16 +142,17 @@ class ControlApp {
     app_bus.services.is.start();
     app_bus.services.ts.start();
 
-    // Start UDP Bridge if not in testing, or depending on config. For now, try to start it on port 9000
+    // Start UDP Bridge if not in testing, or depending on config. For now, try to start it on port
+    // 9000
     try {
-        app_bus.services.udp.start();
-        std::cout << "UDP Bridge started on default port 9000\n";
+      app_bus.services.udp.start();
+      std::cout << "UDP Bridge started on default port 9000\n";
     } catch (const std::exception& e) {
-        std::cerr << "Failed to start UDP Bridge (expected if port in use): " << e.what() << "\n";
+      std::cerr << "Failed to start UDP Bridge (expected if port in use): " << e.what() << "\n";
     }
 
     // Note: ImuService internally configures its IioReader, which runs its own thread.
-    // Telemetry is now published to the bus as SystemTelemetry, so we can ignore it here 
+    // Telemetry is now published to the bus as SystemTelemetry, so we can ignore it here
     // or add a dummy subscriber if we want printouts. For now, printouts disabled as requested.
 
     // Main app loop: read gamepad and feed controller setpoints

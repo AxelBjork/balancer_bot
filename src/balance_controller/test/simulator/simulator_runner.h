@@ -19,10 +19,10 @@ struct SimulatorDisturbance {
   SimulatorDisturbanceKind kind = SimulatorDisturbanceKind::Step;
   double start_s = 0.0;
   double duration_s = 0.0;
-  float force_n = 0.0f;
-  float com_bias_rad = 0.0f;
-  float force_n_end = 0.0f;
-  float com_bias_rad_end = 0.0f;
+  double force_n = 0.0;
+  double com_bias_rad = 0.0;
+  double force_n_end = 0.0;
+  double com_bias_rad_end = 0.0;
 };
 
 struct SimulatorScenario {
@@ -33,8 +33,8 @@ struct SimulatorScenario {
   PhysicsProfile physics_profile = PhysicsProfile::Simplified;
   std::optional<SimulatorPhysics> physics_override;
   std::vector<SimulatorDisturbance> disturbances;
-  float wheel_slip_factor = 1.0f;
-  float velocity_feedback_scale = 1.0f;
+  double wheel_slip_factor = 1.0;
+  double velocity_feedback_scale = 1.0;
   double velocity_feedback_tau_s = 0.0;
   double imu_pitch_lag_s = 0.0;
   uint32_t imu_noise_seed = 0;

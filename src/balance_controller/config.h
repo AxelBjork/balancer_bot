@@ -31,10 +31,10 @@ struct Config {
   static constexpr double g_band_rel = 0.12;         // accept |a| in [g*(1-..), g*(1+..)]
   static constexpr double max_use_pitch_deg = 75.0;  // ignore accel when near ±90°
   // Stationary detector for gyro bias learning
-  static constexpr double still_max_rate_dps = 2.0; // |gyro| < this
-  static constexpr double still_max_err_deg = 3.0;  // |acc_pitch - est| < this
-  static constexpr double fc_gyro_bias_hz = 0.2;    // very slow bias update (~10 s τ)
-  static constexpr double fc_acc_prefilt_hz = 30.0; // prefilter on accel (10–20 Hz)
+  static constexpr double still_max_rate_dps = 2.0;  // |gyro| < this
+  static constexpr double still_max_err_deg = 3.0;   // |acc_pitch - est| < this
+  static constexpr double fc_gyro_bias_hz = 0.2;     // very slow bias update (~10 s τ)
+  static constexpr double fc_acc_prefilt_hz = 30.0;  // prefilter on accel (10–20 Hz)
 
   // ========= Controller rates & limits =========
   static constexpr int control_hz = 400;  // Main control loop frequency
@@ -43,7 +43,7 @@ struct Config {
 
   static constexpr int command_hz = 100;
   static constexpr int kPrintEvery = 100;
-  static constexpr float deadzone = 0.05f;
+  static constexpr double deadzone = 0.05;
   static constexpr bool invert_left = false;
   static constexpr bool invert_right = true;
 

@@ -1,11 +1,11 @@
 # cmake/reflection.cmake — Isolates C++26 reflection targets.
 #
-# Only targets in this file use gcc-trunk with -freflection.
-# The rest of the project compiles with the standard C++20 compiler.
+# Only targets in this file use -freflection for C++26 features.
+# The rest of the project compiles with GCC 16 in C++23 mode.
 
-set(REFLECT_CXX /usr/local/gcc-trunk/bin/g++)
-if (NOT EXISTS ${REFLECT_CXX})
-  message(FATAL_ERROR "Reflection compiler not found: ${REFLECT_CXX}")
+set(REFLECT_CXX ${CMAKE_CXX_COMPILER})
+if (NOT REFLECT_CXX)
+  set(REFLECT_CXX g++)
 endif()
 
 find_program(DOT_EXECUTABLE dot)
@@ -38,8 +38,8 @@ add_custom_command(
         -I${CMAKE_SOURCE_DIR}/src/messages
         -I${CMAKE_SOURCE_DIR}/src
         -I${CMAKE_SOURCE_DIR}/src/ipc
-        -L/usr/local/gcc-trunk/lib64
-        -Wl,-rpath,/usr/local/gcc-trunk/lib64
+        -L/usr/local/gcc-16.1.0/lib64
+        -Wl,-rpath,/usr/local/gcc-16.1.0/lib64
         -o ${GEN_BIN}
         ${GEN_SRC}
     DEPENDS ${GEN_SRC}
@@ -73,8 +73,8 @@ add_custom_command(
         -I${CMAKE_SOURCE_DIR}/src
         -I${CMAKE_SOURCE_DIR}/src/balance_controller
         -I${CMAKE_SOURCE_DIR}/src/ipc
-        -L/usr/local/gcc-trunk/lib64
-        -Wl,-rpath,/usr/local/gcc-trunk/lib64
+        -L/usr/local/gcc-16.1.0/lib64
+        -Wl,-rpath,/usr/local/gcc-16.1.0/lib64
         -o ${DOC_BIN}
         ${DOC_SRC}
     DEPENDS ${DOC_SRC}

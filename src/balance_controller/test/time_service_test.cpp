@@ -23,7 +23,7 @@ void on_dispatch(void* ctx, MsgId id, const void* payload) {
 
   auto* sink = static_cast<TickSink*>(ctx);
   std::lock_guard<std::mutex> lock(sink->mu);
-  sink->ticks.push_back(*static_cast<const PhysicsTickPayload*>(payload));
+  sink->ticks.push_back(unpack_payload<MsgId::PhysicsTick>(payload));
 }
 
 TEST(TimeServiceTest, AdvancePublishesExactTicks) {

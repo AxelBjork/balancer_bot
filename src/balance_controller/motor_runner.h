@@ -1,8 +1,8 @@
 // MotorRunner.h
 #pragma once
+#include <array>
 #include <atomic>
 #include <chrono>
-#include <array>
 #include <cmath>
 #include <cstdio>
 #include <mutex>
@@ -109,14 +109,14 @@ class DualWave {
     if (hz == 0) return 0;
 
     const double pulses_f = double(hz) * double(kFrameUs) / 1e6;
-    unsigned n = (unsigned)llround(pulses_f);
+    unsigned n = static_cast<unsigned>(llround(pulses_f));
     if (n == 0) n = 1;
     if (n > kMaxN) n = kMaxN;
 
     unsigned m = 0;
     for (unsigned i = 0; i < n; ++i) {
       const double slot = (i + 0.5) * double(kFrameUs) / double(n);
-      uint32_t t_on = (uint32_t)llround(slot);
+      uint32_t t_on = static_cast<uint32_t>(llround(slot));
       if (t_on >= kFrameUs) t_on = kFrameUs - 1;
 
       uint32_t t_off = t_on + kMinPulse;
@@ -173,7 +173,7 @@ class DualWave {
     }
 
     if (last_t < kFrameUs) {
-      pulses[p++] = gpioPulse_t{0u, 0u, (uint32_t)(kFrameUs - last_t)};
+      pulses[p++] = gpioPulse_t{0u, 0u, kFrameUs - last_t};
     }
     return p;
   }
@@ -203,9 +203,9 @@ class DualWave {
 class MotorRunner {
  public:
   struct FeedbackSample {
-    float left_applied_sps{0.0f};
-    float right_applied_sps{0.0f};
-    float measured_avg_sps{0.0f};
+    double left_applied_sps{0.0};
+    double right_applied_sps{0.0};
+    double measured_avg_sps{0.0};
     int64_t left_actual_steps{0};
     int64_t right_actual_steps{0};
   };
@@ -274,16 +274,18 @@ class MotorRunner {
   FeedbackSample getFeedbackSample() const {
     std::lock_guard<std::mutex> lk(mu_);
 
-    const float left_positive_dir = L_.forwardFromSps(1.0) ? 1.0f : -1.0f;
-    const float right_positive_dir = R_.forwardFromSps(1.0) ? 1.0f : -1.0f;
-    const float left_dir = last_applied_fwdL_ ? 1.0f : -1.0f;
-    const float right_dir = last_applied_fwdR_ ? 1.0f : -1.0f;
+    const double left_positive_dir = L_.forwardFromSps(1.0) ? 1.0 : -1.0;
+    const double right_positive_dir = R_.forwardFromSps(1.0) ? 1.0 : -1.0;
+    const double left_dir = last_applied_fwdL_ ? 1.0 : -1.0;
+    const double right_dir = last_applied_fwdR_ ? 1.0 : -1.0;
 
     FeedbackSample sample;
-    sample.left_applied_sps =
-        (last_applied_hzL_ == 0u) ? 0.0f : static_cast<float>(last_applied_hzL_) * left_dir * left_positive_dir;
-    sample.right_applied_sps =
-        (last_applied_hzR_ == 0u) ? 0.0f : static_cast<float>(last_applied_hzR_) * right_dir * right_positive_dir;
+    sample.left_applied_sps = (last_applied_hzL_ == 0u) ? 0.0
+                                                        : static_cast<double>(last_applied_hzL_) *
+                                                              left_dir * left_positive_dir;
+    sample.right_applied_sps = (last_applied_hzR_ == 0u) ? 0.0
+                                                         : static_cast<double>(last_applied_hzR_) *
+                                                               right_dir * right_positive_dir;
     const double avg_actual_steps = 0.5 * (accum_actual_L_ + accum_actual_R_);
     sample.measured_avg_sps = estimateMeasuredAverageSpsLocked(avg_actual_steps);
     sample.left_actual_steps = actual_steps_left_.load(std::memory_order_relaxed);
@@ -291,7 +293,7 @@ class MotorRunner {
     return sample;
   }
 
-  float getActualSpeedSps() {
+  double getActualSpeedSps() {
     const auto sample = getFeedbackSample();
     return sample.measured_avg_sps;
   }
@@ -324,9 +326,9 @@ class MotorRunner {
 
     // Sigma-Delta modulation
     double total = desired_pulses + error_acc;
-    unsigned pulses = (unsigned)std::llround(total);
+    unsigned pulses = static_cast<unsigned>(std::llround(total));
     // Clamp to valid range
-    if (pulses > (unsigned)max_pulses_possible) pulses = (unsigned)max_pulses_possible;
+    if (pulses > static_cast<unsigned>(max_pulses_possible)) pulses = static_cast<unsigned>(max_pulses_possible);
 
     // Update error for next frame
     error_acc = total - pulses;
@@ -336,7 +338,7 @@ class MotorRunner {
     // We want n = pulses. So hz = pulses * 1e6 / kFrameUs.
     // This results in exact integer pulses in DualWave.
     if (pulses == 0) return {0, 0};
-    unsigned hz = (unsigned)std::llround(double(pulses) * 1e6 / double(kFrameUs));
+    unsigned hz = static_cast<unsigned>(std::llround(double(pulses) * 1e6 / double(kFrameUs)));
     return {hz, pulses};
   }
 
@@ -361,12 +363,10 @@ class MotorRunner {
 
     const double left_positive_dir = L_.forwardFromSps(1.0) ? 1.0 : -1.0;
     const double right_positive_dir = R_.forwardFromSps(1.0) ? 1.0 : -1.0;
-    const double actL =
-        static_cast<double>(last_applied_hzL_) * d_sec * (last_applied_fwdL_ ? 1.0 : -1.0) *
-        left_positive_dir;
-    const double actR =
-        static_cast<double>(last_applied_hzR_) * d_sec * (last_applied_fwdR_ ? 1.0 : -1.0) *
-        right_positive_dir;
+    const double actL = static_cast<double>(last_applied_hzL_) * d_sec *
+                        (last_applied_fwdL_ ? 1.0 : -1.0) * left_positive_dir;
+    const double actR = static_cast<double>(last_applied_hzR_) * d_sec *
+                        (last_applied_fwdR_ ? 1.0 : -1.0) * right_positive_dir;
 
     accum_actual_L_ += actL;
     accum_actual_R_ += actR;
@@ -376,10 +376,9 @@ class MotorRunner {
     last_call_time_ = now;
   }
 
-  float estimateMeasuredAverageSpsLocked(double avg_actual_steps) const {
+  double estimateMeasuredAverageSpsLocked(double avg_actual_steps) const {
     const auto now = std::chrono::steady_clock::now();
-    const double now_s =
-        std::chrono::duration<double>(now.time_since_epoch()).count();
+    const double now_s = std::chrono::duration<double>(now.time_since_epoch()).count();
 
     vel_hist_time_s_[vel_hist_head_] = now_s;
     vel_hist_avg_steps_[vel_hist_head_] = avg_actual_steps;
@@ -389,14 +388,16 @@ class MotorRunner {
     }
 
     if (vel_hist_count_ < 2) {
-      measured_avg_sps_ = 0.0f;
+      measured_avg_sps_ = 0.0;
       return measured_avg_sps_;
     }
 
-    size_t selected_idx = (vel_hist_head_ + kVelocityHistorySize - vel_hist_count_) % kVelocityHistorySize;
+    size_t selected_idx =
+        (vel_hist_head_ + kVelocityHistorySize - vel_hist_count_) % kVelocityHistorySize;
     bool found_window = false;
     for (size_t offset = 1; offset < vel_hist_count_; ++offset) {
-      const size_t idx = (vel_hist_head_ + kVelocityHistorySize - 1u - offset) % kVelocityHistorySize;
+      const size_t idx =
+          (vel_hist_head_ + kVelocityHistorySize - 1u - offset) % kVelocityHistorySize;
       const double age_s = now_s - vel_hist_time_s_[idx];
       if (age_s >= kVelocityEstimateWindowS) {
         selected_idx = idx;
@@ -414,8 +415,7 @@ class MotorRunner {
       return measured_avg_sps_;
     }
 
-    measured_avg_sps_ =
-        static_cast<float>((avg_actual_steps - vel_hist_avg_steps_[selected_idx]) / dt_s);
+    measured_avg_sps_ = (avg_actual_steps - vel_hist_avg_steps_[selected_idx]) / dt_s;
     return measured_avg_sps_;
   }
 
@@ -492,6 +492,5 @@ class MotorRunner {
   mutable std::array<double, kVelocityHistorySize> vel_hist_avg_steps_{};
   mutable size_t vel_hist_head_{0};
   mutable size_t vel_hist_count_{0};
-  mutable float measured_avg_sps_{0.0f};
-
+  mutable double measured_avg_sps_{0.0};
 };

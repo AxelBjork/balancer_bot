@@ -422,14 +422,14 @@ public:
 
 				// if symmetric don't print upper triangular elements
 				if (is_prev_symmetric && (M == N) && (j > i) && (i < N) && (j < M)
-				    && (fabs(d - static_cast<double>(self(j, i))) < (double)eps)
+				    && (fabs(d - static_cast<double>(self(j, i))) < static_cast<double>(eps))
 				   ) {
 					// print empty space
 					printf("         ");
 
 				} else {
 					// avoid -0.0 for display
-					if (fabs(d - 0.0) < (double)eps) {
+					if (fabs(d - 0.0) < static_cast<double>(eps)) {
 						// print fixed width zero
 						printf(" 0       ");
 

@@ -33,16 +33,25 @@ void ConfigPid::load(const std::string& path) {
   }
 
   // Map string keys to the actual variable addresses
-  std::unordered_map<std::string, double*> param_map = {
-      {"rate_P", &rate_P},         {"rate_I", &rate_I},   {"rate_D", &rate_D},
-      {"rate_I_lim", &rate_I_lim}, {"rate_FF", &rate_FF},
-      {"angle_to_rate_k", &angle_to_rate_k}, {"vel_P", &vel_P},
-      {"vel_I", &vel_I},           {"vel_D", &vel_D},     {"vel_I_lim", &vel_I_lim},
-      {"pos_P", &pos_P},           {"outer_k_pos", &outer_k_pos},
-      {"outer_k_vel", &outer_k_vel}, {"outer_k_pitch", &outer_k_pitch},
-      {"outer_k_pitch_rate", &outer_k_pitch_rate}, {"angle_I", &angle_I},
-      {"lean_trim_I", &lean_trim_I}, {"lean_trim_max_deg", &lean_trim_max_deg},
-      {"lean_trim_decay_s", &lean_trim_decay_s}};
+  std::unordered_map<std::string, double*> param_map = {{"rate_P", &rate_P},
+                                                        {"rate_I", &rate_I},
+                                                        {"rate_D", &rate_D},
+                                                        {"rate_I_lim", &rate_I_lim},
+                                                        {"rate_FF", &rate_FF},
+                                                        {"angle_to_rate_k", &angle_to_rate_k},
+                                                        {"vel_P", &vel_P},
+                                                        {"vel_I", &vel_I},
+                                                        {"vel_D", &vel_D},
+                                                        {"vel_I_lim", &vel_I_lim},
+                                                        {"pos_P", &pos_P},
+                                                        {"outer_k_pos", &outer_k_pos},
+                                                        {"outer_k_vel", &outer_k_vel},
+                                                        {"outer_k_pitch", &outer_k_pitch},
+                                                        {"outer_k_pitch_rate", &outer_k_pitch_rate},
+                                                        {"angle_I", &angle_I},
+                                                        {"lean_trim_I", &lean_trim_I},
+                                                        {"lean_trim_max_deg", &lean_trim_max_deg},
+                                                        {"lean_trim_decay_s", &lean_trim_decay_s}};
 
   bool saw_outer_k_pos = false;
   bool saw_outer_k_vel = false;
@@ -85,16 +94,26 @@ void ConfigPid::load(const std::string& path) {
           try {
             *it->second = std::stod(val_str);
             std::cout << "Loaded " << key << " = " << *it->second << "\n";
-            if (key == "outer_k_pos") saw_outer_k_pos = true;
-            else if (key == "outer_k_vel") saw_outer_k_vel = true;
-            else if (key == "outer_k_pitch") saw_outer_k_pitch = true;
-            else if (key == "outer_k_pitch_rate") saw_outer_k_pitch_rate = true;
-            else if (key == "angle_to_rate_k") saw_angle_to_rate_k = true;
-            else if (key == "vel_P") saw_vel_p = true;
-            else if (key == "vel_I") saw_vel_i = true;
-            else if (key == "vel_D") saw_vel_d = true;
-            else if (key == "vel_I_lim") saw_vel_i_lim = true;
-            else if (key == "pos_P") saw_pos_p = true;
+            if (key == "outer_k_pos")
+              saw_outer_k_pos = true;
+            else if (key == "outer_k_vel")
+              saw_outer_k_vel = true;
+            else if (key == "outer_k_pitch")
+              saw_outer_k_pitch = true;
+            else if (key == "outer_k_pitch_rate")
+              saw_outer_k_pitch_rate = true;
+            else if (key == "angle_to_rate_k")
+              saw_angle_to_rate_k = true;
+            else if (key == "vel_P")
+              saw_vel_p = true;
+            else if (key == "vel_I")
+              saw_vel_i = true;
+            else if (key == "vel_D")
+              saw_vel_d = true;
+            else if (key == "vel_I_lim")
+              saw_vel_i_lim = true;
+            else if (key == "pos_P")
+              saw_pos_p = true;
           } catch (...) {
             std::cerr << "[Config] Error parsing value for " << key << ": '" << val_str << "'\n";
           }

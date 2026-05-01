@@ -1,4 +1,11 @@
 cmake_minimum_required(VERSION 3.18)
+
+# Force usage of GCC 16.1.0 if available in the standard location
+if (EXISTS "/usr/local/gcc-16.1.0/bin/g++")
+  set(CMAKE_CXX_COMPILER "/usr/local/gcc-16.1.0/bin/g++")
+  set(CMAKE_C_COMPILER "/usr/local/gcc-16.1.0/bin/gcc")
+endif()
+
 project(MotorQuickBuild LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
@@ -6,6 +13,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# Default to RelWithDebInfo if no build type is specified, to ensure 
+# optimizations are enabled for -fhardened/_FORTIFY_SOURCE.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Choose the type of build." FORCE)
+endif()
 
 # Options: build the quick test by default; app is opt-in and *hard* requires libs.
 option(BUILD_TESTS "Build unit tests" ON)
@@ -21,7 +34,35 @@ include(cmake/balancer_common.cmake)
 
 add_library(project_warnings INTERFACE)
 target_compile_options(project_warnings INTERFACE
-  $<$<COMPILE_LANG_AND_ID:CXX,GNU,Clang>:-Wall;-Wextra;-Werror>
+  -Wall
+  -Wextra
+  -Wshadow
+  -Werror
+  -Wnon-virtual-dtor
+  -Wold-style-cast
+  -Wcast-align
+  -Wunused
+  -Woverloaded-virtual
+  -Wpedantic
+  -Wconversion
+  -Wnull-dereference
+  -Wdouble-promotion
+  -Wformat=2
+  -Wextra-semi
+  -Wredundant-tags
+  -Wsuggest-override
+  -Wduplicated-cond
+  -Wduplicated-branches
+  -Wlogical-op
+  -Wunused-but-set-variable=3
+  -Wuseless-cast
+  -fhardened
+  $<$<CONFIG:Debug>:-Og>
+)
+target_link_options(project_warnings INTERFACE
+  -Wl,-z,relro,-z,now
+  -L/usr/local/gcc-16.1.0/lib64
+  -Wl,-rpath,/usr/local/gcc-16.1.0/lib64
 )
 
 add_library(project_pi_optimization INTERFACE)
@@ -154,7 +195,7 @@ if (BUILD_TESTS)
 
   # 5) sil_app (Hardware-in-the-loop simulation/testing)
   add_executable(sil_app
-    ${CMAKE_SOURCE_DIR}/src/sil_app.cpp
+    ${CMAKE_SOURCE_DIR}/src/balance_controller/extras/sil_app.cpp
     ${CMAKE_SOURCE_DIR}/src/balance_controller/stubs/pigpiod_stub.cpp # Stub pigpiod for SIL
   )
   target_link_libraries(sil_app PRIVATE balancer_common)

@@ -84,7 +84,7 @@ constexpr _Tp constrain(_Tp val, _Tp min_val, _Tp max_val)
  * Invalid values are just clipped to be in the range for int16_t. */
 constexpr int16_t constrainFloatToInt16(float value)
 {
-	return (int16_t)math::constrain(value, (float)INT16_MIN, (float)INT16_MAX);
+	return static_cast<int16_t>(math::constrain(value, static_cast<float>(INT16_MIN), static_cast<float>(INT16_MAX)));
 }
 
 template<typename _Tp>

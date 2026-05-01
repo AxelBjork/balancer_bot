@@ -1,11 +1,11 @@
 #pragma once
 
-#include "messages/balancer_msgs.h"
-#include "publisher.h"
-
 #include <atomic>
 #include <chrono>
 #include <thread>
+
+#include "messages/balancer_msgs.h"
+#include "publisher.h"
 
 namespace sil {
 

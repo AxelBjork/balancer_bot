@@ -4,8 +4,8 @@
 
 namespace sil {
 
-TimeService::TimeService(ipc::MessageBus& bus, double dt_s)
-    : bus_(bus), default_dt_s_(dt_s) {}
+TimeService::TimeService(ipc::MessageBus& bus, double dt_s) : bus_(bus), default_dt_s_(dt_s) {
+}
 
 TimeService::~TimeService() {
   stop();

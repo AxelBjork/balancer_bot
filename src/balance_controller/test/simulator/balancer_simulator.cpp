@@ -59,7 +59,7 @@ BalancerSimulator::BalancerSimulator(const Config& cfg) : cfg_(cfg) {
   imu_pitch_rate_ = state_.pitch_rate;
 }
 
-void BalancerSimulator::set_motor_targets(float left_sps, float right_sps) {
+void BalancerSimulator::set_motor_targets(double left_sps, double right_sps) {
   left_target_sps_ = left_sps;
   right_target_sps_ = right_sps;
 }
@@ -93,7 +93,7 @@ void BalancerSimulator::step(double dt_s) {
   applied_drive_force_ += force_alpha * (desired_force - applied_drive_force_);
   const double F_cmd = desired_force;
   const double F_app =
-      std::clamp(applied_drive_force_ * static_cast<double>(cfg_.wheel_slip_factor),
+      std::clamp(applied_drive_force_ * cfg_.wheel_slip_factor,
                  -physics_.max_force_n, physics_.max_force_n);
   const double total_force = F_app + external_force_n_;
 
@@ -131,7 +131,7 @@ void BalancerSimulator::step(double dt_s) {
   }
 
   const double measured_velocity_target_sps =
-      static_cast<double>(cfg_.velocity_feedback_scale) *
+      cfg_.velocity_feedback_scale *
       (state_.velocity / (2.0 * kPi * wheel_radius) * steps_per_rev);
   if (cfg_.velocity_feedback_tau_s > 0.0) {
     const double alpha =
@@ -198,8 +198,8 @@ ipc::ImuSamplePayload BalancerSimulator::make_imu_payload(uint64_t sim_time_us) 
   return payload;
 }
 
-float BalancerSimulator::get_actual_speed_sps() const {
-  return static_cast<float>(measured_velocity_sps_);
+double BalancerSimulator::get_actual_speed_sps() const {
+  return measured_velocity_sps_;
 }
 
 BalancerSimulator::LinearizedUprightModel BalancerSimulator::linearized_upright_model(

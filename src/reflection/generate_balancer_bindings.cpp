@@ -97,8 +97,8 @@ void generate_struct(std::set<std::string>& visited) {
       unpack_instructions += "        " + unpack_args + " = struct.unpack_from(\"" + pack_fmt +
                              "\", data, offset)[0]\n";
     } else {
-      unpack_instructions += "        " + unpack_args + " = struct.unpack_from(\"" + pack_fmt +
-                             "\", data, offset)\n";
+      unpack_instructions +=
+          "        " + unpack_args + " = struct.unpack_from(\"" + pack_fmt + "\", data, offset)\n";
     }
     unpack_instructions += "        offset += struct.calcsize(\"" + pack_fmt + "\")\n";
 
@@ -156,8 +156,8 @@ void generate_struct(std::set<std::string>& visited) {
             unpack_instructions += "        " + field_name + " = []\n";
             unpack_instructions += "        for _ in range(" + std::to_string(elem_count) + "):\n";
             unpack_instructions += "            sub_size = " + sub_type + ".WIRE_SIZE\n";
-            unpack_instructions += "            item = " + sub_type +
-                                   ".unpack_wire(data[offset:offset+sub_size])\n";
+            unpack_instructions +=
+                "            item = " + sub_type + ".unpack_wire(data[offset:offset+sub_size])\n";
             unpack_instructions += "            " + field_name + ".append(item)\n";
             unpack_instructions += "            offset += sub_size\n";
             current_offset += elem_count * sizeof(ElemT);
@@ -165,8 +165,8 @@ void generate_struct(std::set<std::string>& visited) {
             flush_format();
             const std::string fmt =
                 "<" + std::to_string(elem_count) + std::string(get_struct_format_char<^^ElemT>());
-            pack_instructions += "        data.extend(struct.pack(\"" + fmt + "\", *self." +
-                                 field_name + "))\n";
+            pack_instructions +=
+                "        data.extend(struct.pack(\"" + fmt + "\", *self." + field_name + "))\n";
             unpack_instructions += "        " + field_name + " = list(struct.unpack_from(\"" + fmt +
                                    "\", data, offset))\n";
             unpack_instructions += "        offset += struct.calcsize(\"" + fmt + "\")\n";
@@ -268,9 +268,8 @@ int main() {
   generate_balancer_msg_enum();
 
   std::set<std::string> visited;
-  for_each_udp_message([&]<::MsgId Id>() {
-    generate_struct<typename MessageTraits<Id>::Payload>(visited);
-  });
+  for_each_udp_message(
+      [&]<::MsgId Id>() { generate_struct<typename MessageTraits<Id>::Payload>(visited); });
 
   std::cout << "MESSAGE_BY_ID = {\n";
   for_each_udp_message([&]<::MsgId Id>() {

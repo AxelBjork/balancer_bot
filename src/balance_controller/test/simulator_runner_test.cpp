@@ -119,7 +119,7 @@ TEST(SimulatorRunnerTest, StaticRawImuNoiseIsReducedWithoutErasingPitchBias) {
   constexpr double fs_hz = Config::sampling_hz;
   constexpr int total_samples = static_cast<int>(8.0 * fs_hz);
   constexpr int warmup_samples = static_cast<int>(2.0 * fs_hz);
-  const auto tick = std::chrono::nanoseconds{(long long)std::llround(1e9 / fs_hz)};
+  const auto tick = std::chrono::nanoseconds{std::llround(1e9 / fs_hz)};
   auto now = std::chrono::steady_clock::now();
 
   double raw_sq = 0.0;

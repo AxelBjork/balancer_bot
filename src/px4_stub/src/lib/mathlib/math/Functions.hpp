@@ -83,8 +83,8 @@ T sq(T val)
 template<typename T>
 const T expo(const T &value, const T &e)
 {
-	T x = constrain(value, (T) - 1, (T) 1);
-	T ec = constrain(e, (T) 0, (T) 1);
+	T x = constrain(value, static_cast<T>(-1), static_cast<T>(1));
+	T ec = constrain(e, static_cast<T>(0), static_cast<T>(1));
 	return (1 - ec) * x + ec * x * x * x;
 }
 
@@ -102,8 +102,8 @@ const T expo(const T &value, const T &e)
 template<typename T>
 const T superexpo(const T &value, const T &e, const T &g)
 {
-	T x = constrain(value, (T) - 1, (T) 1);
-	T gc = constrain(g, (T) 0, (T) 0.99);
+	T x = constrain(value, static_cast<T>(-1), static_cast<T>(1));
+	T gc = constrain(g, static_cast<T>(0), static_cast<T>(0.99));
 	return expo(x, e) * (1 - gc) / (1 - fabsf(x) * gc);
 }
 
@@ -124,8 +124,8 @@ const T superexpo(const T &value, const T &e, const T &g)
 template<typename T>
 const T deadzone(const T &value, const T &dz)
 {
-	T x = constrain(value, (T) - 1, (T) 1);
-	T dzc = constrain(dz, (T) 0, (T) 0.99);
+	T x = constrain(value, static_cast<T>(-1), static_cast<T>(1));
+	T dzc = constrain(dz, static_cast<T>(0), static_cast<T>(0.99));
 	// Rescale the input such that we get a piecewise linear function that will be continuous with applied deadzone
 	T out = (x - matrix::sign(x) * dzc) / (1 - dzc);
 	// apply the deadzone (values zero around the middle)
@@ -180,8 +180,8 @@ const T interpolate(const T &value, const T &x_low, const T &x_high, const T &y_
 template<typename T, size_t N>
 const T interpolateN(const T &value, const T(&y)[N])
 {
-	size_t index = constrain((int)(value * (N - 1)), 0, (int)(N - 2));
-	return interpolate(value, (T)index / (T)(N - 1), (T)(index + 1) / (T)(N - 1), y[index], y[index + 1]);
+	size_t index = constrain(static_cast<size_t>(value * static_cast<float>(N - 1)), size_t(0), N - 2);
+	return interpolate(value, static_cast<T>(index) / static_cast<T>(N - 1), static_cast<T>(index + 1) / static_cast<T>(N - 1), y[index], y[index + 1]);
 }
 
 /*

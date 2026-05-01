@@ -86,19 +86,19 @@ class DOC_DESC(kUdpBridgeDoc) UdpBridge {
     peer.sin_addr.s_addr = peer_val.ip;
 
     uint16_t id_raw = static_cast<uint16_t>(Id);
-    struct iovec iov[2];
+    iovec iov[2];
     iov[0].iov_base = &id_raw;
     iov[0].iov_len = sizeof(id_raw);
     iov[1].iov_base = const_cast<Payload*>(&payload);
     iov[1].iov_len = sizeof(Payload);
 
-    struct msghdr msg = {};
+    msghdr msg = {};
     msg.msg_name = &peer;
     msg.msg_namelen = sizeof(peer);
     msg.msg_iov = iov;
     msg.msg_iovlen = 2;
 
-    return ::sendmsg(udp_fd_, &msg, 0);
+    return static_cast<int>(::sendmsg(udp_fd_, &msg, 0));
   }
 };
 

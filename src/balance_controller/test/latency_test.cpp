@@ -132,7 +132,7 @@ TEST(DataPathSanity, ComplementaryFilter_RiseTime_20DegStep) {
   // ---- Test setup
   const double fs_hz = Config::sampling_hz;  // e.g., 833 Hz
   const double dt_s = 1.0 / fs_hz;
-  const auto tick = std::chrono::nanoseconds{(long long)std::llround(1e9 / fs_hz)};
+  const auto tick = std::chrono::nanoseconds{std::llround(1e9 / fs_hz)};
 
   const double target_deg = 20.0;  // keep within reliable range
   const double target_rad = deg2rad(target_deg);
@@ -143,7 +143,7 @@ TEST(DataPathSanity, ComplementaryFilter_RiseTime_20DegStep) {
   const double tau_corr = 1.0 / (2.0 * M_PI * std::max(0.1, Config::fc_acc_corr_hz));
   const double tau_gyro = 1.0 / (2.0 * M_PI * std::max(0.1, Config::fc_gyro_lpf_hz));
   const double tau_dom = std::max(tau_corr, tau_gyro);
-  const int maxN = (int)std::ceil(5.0 * tau_dom * fs_hz);
+  const int maxN = static_cast<int>(std::ceil(5.0 * tau_dom * fs_hz));
 
   auto accel_for_pitch_g = [](double pitch_rad) {
     const double s = std::sin(pitch_rad), c = std::cos(pitch_rad);
@@ -195,7 +195,7 @@ TEST(DataPathSanity, ComplementaryFilter_GyroLPF_RiseTime_RateStep) {
 
   const double fs_hz = Config::sampling_hz;  // e.g., 833 Hz
   const double dt_s = 1.0 / fs_hz;
-  const auto tick = std::chrono::nanoseconds{(long long)std::llround(1e9 / fs_hz)};
+  const auto tick = std::chrono::nanoseconds{std::llround(1e9 / fs_hz)};
 
   // Step the Y gyro from 0 to +Ω
   const double step_dps = 150.0;  // realistic fast rotation
@@ -205,7 +205,7 @@ TEST(DataPathSanity, ComplementaryFilter_GyroLPF_RiseTime_RateStep) {
 
   // Conservative bound again
   const double tau_gyro = 1.0 / (2.0 * M_PI * std::max(0.1, Config::fc_gyro_lpf_hz));
-  const int maxN = (int)std::ceil(5.0 * tau_gyro * fs_hz);
+  const int maxN = static_cast<int>(std::ceil(5.0 * tau_gyro * fs_hz));
 
   auto accel_for_pitch_g = [](double pitch_rad) {
     const double s = std::sin(pitch_rad), c = std::cos(pitch_rad);
@@ -254,7 +254,7 @@ TEST(DataPathSanity, ComplementaryFilter_HoldsNonzeroPitchUnderNoisyInput) {
   constexpr double fs_hz = Config::sampling_hz;
   constexpr int total_samples = static_cast<int>(8.0 * fs_hz);
   constexpr int tail_samples = static_cast<int>(2.0 * fs_hz);
-  const auto tick = std::chrono::nanoseconds{(long long)std::llround(1e9 / fs_hz)};
+  const auto tick = std::chrono::nanoseconds{std::llround(1e9 / fs_hz)};
   const double target_rad = deg2rad(4.0);
 
   std::mt19937 rng(42);
@@ -291,7 +291,7 @@ TEST(DataPathSanity, ComplementaryFilter_ReducesRawAccelPitchNoise) {
   constexpr double fs_hz = Config::sampling_hz;
   constexpr int total_samples = static_cast<int>(8.0 * fs_hz);
   constexpr int warmup_samples = static_cast<int>(2.0 * fs_hz);
-  const auto tick = std::chrono::nanoseconds{(long long)std::llround(1e9 / fs_hz)};
+  const auto tick = std::chrono::nanoseconds{std::llround(1e9 / fs_hz)};
   const double target_rad = deg2rad(3.0);
 
   std::mt19937 rng(77);
@@ -334,7 +334,7 @@ TEST(DataPathSanity, ComplementaryFilter_GyroBiasDoesNotEraseStaticPitchBias) {
   constexpr double fs_hz = Config::sampling_hz;
   constexpr int total_samples = static_cast<int>(12.0 * fs_hz);
   constexpr int tail_samples = static_cast<int>(2.0 * fs_hz);
-  const auto tick = std::chrono::nanoseconds{(long long)std::llround(1e9 / fs_hz)};
+  const auto tick = std::chrono::nanoseconds{std::llround(1e9 / fs_hz)};
   const double target_rad = deg2rad(5.0);
 
   std::mt19937 rng(123);
