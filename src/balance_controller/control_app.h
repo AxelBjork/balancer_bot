@@ -9,7 +9,7 @@
 #include <csignal>
 #include <iostream>
 #include <memory>
-#include <print>
+#include <cstdio>
 #include <thread>
 
 #include "config.h"
@@ -62,7 +62,9 @@ struct BusContainer {
 void app_dispatcher(void* ctx, MsgId id, const void* payload) {
   auto* s = static_cast<AppServices*>(ctx);
   static int telemetry_count = 0;
-  if (id == MsgId::ImuData) {
+  if (id == MsgId::ImuRawData) {
+    s->is.on_message<MsgId::ImuRawData>(*static_cast<const ipc::ImuRawPayload*>(payload));
+  } else if (id == MsgId::ImuData) {
     s->cs.on_message<MsgId::ImuData>(*static_cast<const ipc::ImuSamplePayload*>(payload));
   } else if (id == MsgId::PhysicsTick) {
     s->cs.on_message<MsgId::PhysicsTick>(*static_cast<const PhysicsTickPayload*>(payload));
@@ -78,9 +80,9 @@ void app_dispatcher(void* ctx, MsgId id, const void* payload) {
     const auto& p = *static_cast<const ipc::SystemTelemetryPayload*>(payload);
     if constexpr (Config::kPrintEvery != -1) {
       if ((++telemetry_count % Config::kPrintEvery) == 0) {
-        std::println(
-            "t={:7.3f}  th={:6.2f} deg  dth={:7.2f} dps  rsp={:7.2f} dps  u={:6.0f}{}  "
-            "pref={:6.2f} ({:+5.2f}/{:+5.2f})  perr={:6.2f}  v={:7.1f}/{:7.1f}  ap={:6.0f}/{:6.0f}",
+        std::printf(
+            "t=%7.3f  th=%6.2f deg  dth=%7.2f dps  rsp=%7.2f dps  u=%6.0f%s  "
+            "pref=%6.2f (%+5.2f/%+5.2f)  perr=%6.2f  v=%7.1f/%7.1f  ap=%6.0f/%6.0f\n",
             p.t_sec, p.pitch_deg, p.pitch_rate_dps, p.rate_sp_dps, p.u_sps,
             (std::abs(p.u_sps) >= 0.99f * static_cast<float>(kMaxSps)) ? "*" : "",
             p.pitch_sp_deg, p.pitch_ref_from_vel_deg, p.pitch_ref_from_pos_deg, p.pitch_error_deg,

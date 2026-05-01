@@ -107,6 +107,17 @@ REALISTIC_DRIFT_SCENARIOS = [
         ),
     ),
     (
+        "realistic_com_offset_lpf_noise_40s",
+        dict(
+            duration_s=40.0,
+            com_angle_offset_rad=0.001,
+            velocity_feedback_scale=REALISTIC_VEL_FEEDBACK_SCALE,
+            imu_noise_seed=12345,
+            accel_noise_std_mps2=0.20,
+            gyro_noise_std_rad_s=0.015,
+        ),
+    ),
+    (
         "realistic_slow_push_runaway_40s",
         dict(
             duration_s=40.0,
@@ -251,21 +262,33 @@ def test_realistic_profile_drift_diagnostics(simulator_udp, sim_artifact_setting
         assert summary["tail_rms_pitch_deg"] is not None and summary["tail_rms_pitch_deg"] <= 0.1
     if run_id == "realistic_com_offset_40s":
         assert summary["max_abs_pitch_deg"] is not None and 0.01 <= summary["max_abs_pitch_deg"] <= 0.2
-        assert summary["max_abs_position_m"] is not None and 0.5 <= summary["max_abs_position_m"] <= 5.0
-        assert summary["tail_mean_abs_velocity_mps"] is not None and 0.01 <= summary["tail_mean_abs_velocity_mps"] <= 0.2
+        assert summary["max_abs_position_m"] is not None and 0.5 <= summary["max_abs_position_m"] <= 2.0
+        assert summary["tail_mean_abs_velocity_mps"] is not None and 0.01 <= summary["tail_mean_abs_velocity_mps"] <= 0.05
         assert summary["tail_rms_pitch_deg"] is not None and summary["tail_rms_pitch_deg"] <= 0.1
+    if run_id == "realistic_com_offset_lpf_noise_40s":
+        rows = _read_timeline(output_dir)
+        tail_start = metadata["duration_s"] - 2.0
+        tail = [row for row in rows if row["sim_time_s"] >= tail_start]
+        assert tail
+        mean_abs_fused_bias = sum(
+            abs(row["fused_pitch_deg"] - row["plant_pitch_deg"]) for row in tail
+        ) / len(tail)
+        assert summary["max_abs_pitch_deg"] is not None and summary["max_abs_pitch_deg"] <= 5.0
+        assert summary["tail_mean_abs_velocity_mps"] is not None and summary["tail_mean_abs_velocity_mps"] <= 0.5
+        assert summary["tail_rms_pitch_deg"] is not None and summary["tail_rms_pitch_deg"] <= 3.0
+        assert mean_abs_fused_bias <= 0.5
     if run_id == "realistic_slow_push_runaway_40s":
-        assert summary["max_abs_pitch_deg"] is not None and summary["max_abs_pitch_deg"] >= 0.5
-        assert summary["max_abs_position_m"] is not None and summary["max_abs_position_m"] >= 1.5
-        assert summary["tail_mean_abs_velocity_mps"] is not None and summary["tail_mean_abs_velocity_mps"] >= 0.25
-        assert summary["tail_rms_pitch_deg"] is not None and summary["tail_rms_pitch_deg"] >= 0.5
-        assert summary["max_abs_u_sps"] is not None and summary["max_abs_u_sps"] >= 10.0
+        assert summary["max_abs_pitch_deg"] is not None and summary["max_abs_pitch_deg"] <= 5.0
+        assert summary["max_abs_position_m"] is not None and summary["max_abs_position_m"] <= 0.25
+        assert summary["tail_mean_abs_velocity_mps"] is not None and summary["tail_mean_abs_velocity_mps"] <= 0.5
+        assert summary["tail_rms_pitch_deg"] is not None and summary["tail_rms_pitch_deg"] <= 3.0
+        assert summary["max_abs_u_sps"] is not None and summary["max_abs_u_sps"] >= 1.0
     if run_id == "realistic_hold_bias_long_horizon_40s":
-        assert summary["max_abs_pitch_deg"] is not None and summary["max_abs_pitch_deg"] >= 3.0
-        assert summary["max_abs_position_m"] is not None and summary["max_abs_position_m"] >= 10.0
-        assert summary["tail_mean_abs_velocity_mps"] is not None and summary["tail_mean_abs_velocity_mps"] >= 1.5
-        assert summary["tail_rms_pitch_deg"] is not None and summary["tail_rms_pitch_deg"] >= 2.0
-        assert summary["max_abs_u_sps"] is not None and summary["max_abs_u_sps"] >= 300.0
+        assert summary["max_abs_pitch_deg"] is not None and summary["max_abs_pitch_deg"] <= 5.0
+        assert summary["max_abs_position_m"] is not None and summary["max_abs_position_m"] <= 5.0
+        assert summary["tail_mean_abs_velocity_mps"] is not None and summary["tail_mean_abs_velocity_mps"] <= 0.5
+        assert summary["tail_rms_pitch_deg"] is not None and summary["tail_rms_pitch_deg"] <= 3.0
+        assert summary["max_abs_u_sps"] is not None and summary["max_abs_u_sps"] >= 10.0
 
 
 @pytest.mark.parametrize(("run_id", "kwargs"), REALISTIC_FRONTIER_DIAGNOSTICS)

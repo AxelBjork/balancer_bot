@@ -30,7 +30,7 @@ This is what lets `UdpBridge` accept only the message IDs it is supposed to inje
 
 - `PhysicsTick`
 - `JoystickCommand`
-- `ImuData`
+- `ImuRawData`
 
 ## UDP Bridge Contract
 
@@ -44,7 +44,6 @@ The bridge receives datagrams on port `9000`, reads the leading `uint16_t` messa
 
 The bridge forwards these outbound bus messages:
 
-- `ImuData`
 - `MotorTargets`
 - `SystemTelemetry`
 

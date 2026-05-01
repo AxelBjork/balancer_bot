@@ -16,12 +16,11 @@ It does **not** start `TimeService`. Python is expected to inject `PhysicsTick` 
 Python can inject:
 
 - `PhysicsTick`
-- `ImuData`
+- `ImuRawData`
 - `JoystickCommand`
 
 Python can observe:
 
-- `ImuData`
 - `MotorTargets`
 - `SystemTelemetry`
 

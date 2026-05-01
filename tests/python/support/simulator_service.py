@@ -66,12 +66,21 @@ def make_start_payload(
     velocity_feedback_scale: float = 1.0,
     velocity_feedback_tau_s: float = 0.0,
     imu_pitch_lag_s: float = 0.0,
+    imu_noise_seed: int = 0,
+    accel_noise_std_mps2: float = 0.0,
+    gyro_noise_std_rad_s: float = 0.0,
+    accel_bias_mps2: list[float] | None = None,
+    gyro_bias_rad_s: list[float] | None = None,
     disturbances: list[dict] | None = None,
     pid_config_path: str = "",
 ) -> SimStartRunPayload:
     disturbances = list(disturbances or [])
     if len(disturbances) > 10:
         raise ValueError("SimStartRunPayload supports at most 10 disturbance segments")
+    accel_bias_mps2 = list(accel_bias_mps2 or [0.0, 0.0, 0.0])
+    gyro_bias_rad_s = list(gyro_bias_rad_s or [0.0, 0.0, 0.0])
+    if len(accel_bias_mps2) != 3 or len(gyro_bias_rad_s) != 3:
+        raise ValueError("IMU bias vectors must have exactly three entries")
 
     wire_disturbances = [
         {
@@ -114,6 +123,11 @@ def make_start_payload(
         velocity_feedback_scale=velocity_feedback_scale,
         velocity_feedback_tau_s=velocity_feedback_tau_s,
         imu_pitch_lag_s=imu_pitch_lag_s,
+        imu_noise_seed=imu_noise_seed,
+        accel_noise_std_mps2=accel_noise_std_mps2,
+        gyro_noise_std_rad_s=gyro_noise_std_rad_s,
+        accel_bias_mps2=accel_bias_mps2,
+        gyro_bias_rad_s=gyro_bias_rad_s,
         disturbances=wire_disturbances,
         pid_config_path=_fixed_bytes(pid_config_path, 128),
     )
@@ -162,6 +176,11 @@ def run_scenario_live(
     velocity_feedback_scale: float = 1.0,
     velocity_feedback_tau_s: float = 0.0,
     imu_pitch_lag_s: float = 0.0,
+    imu_noise_seed: int = 0,
+    accel_noise_std_mps2: float = 0.0,
+    gyro_noise_std_rad_s: float = 0.0,
+    accel_bias_mps2: list[float] | None = None,
+    gyro_bias_rad_s: list[float] | None = None,
     disturbances: list[dict] | None = None,
     pid_config_path: str = "",
     fail_fast_pitch_deg: float = 75.0,
@@ -182,6 +201,11 @@ def run_scenario_live(
         "velocity_feedback_scale": velocity_feedback_scale,
         "velocity_feedback_tau_s": velocity_feedback_tau_s,
         "imu_pitch_lag_s": imu_pitch_lag_s,
+        "imu_noise_seed": imu_noise_seed,
+        "accel_noise_std_mps2": accel_noise_std_mps2,
+        "gyro_noise_std_rad_s": gyro_noise_std_rad_s,
+        "accel_bias_mps2": accel_bias_mps2 or [0.0, 0.0, 0.0],
+        "gyro_bias_rad_s": gyro_bias_rad_s or [0.0, 0.0, 0.0],
     }
     if disturbances:
         metadata["disturbances"] = disturbances
@@ -198,6 +222,11 @@ def run_scenario_live(
         velocity_feedback_scale=velocity_feedback_scale,
         velocity_feedback_tau_s=velocity_feedback_tau_s,
         imu_pitch_lag_s=imu_pitch_lag_s,
+        imu_noise_seed=imu_noise_seed,
+        accel_noise_std_mps2=accel_noise_std_mps2,
+        gyro_noise_std_rad_s=gyro_noise_std_rad_s,
+        accel_bias_mps2=accel_bias_mps2,
+        gyro_bias_rad_s=gyro_bias_rad_s,
         disturbances=disturbances,
         pid_config_path=pid_config_path,
     )

@@ -11,7 +11,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tests.python.generated_balancer import (
-    ImuSamplePayload,
+    ImuRawPayload,
     JoystickCommandPayload,
     MsgId,
     PhysicsTickPayload,
@@ -103,9 +103,7 @@ def write_udp_corpus(output_root: Path) -> None:
     _reset_dir(udp_dir)
     timestamp_us = _FIXED_TIMESTAMP_US
 
-    imu = ImuSamplePayload(
-        pitch_rad=0.125,
-        filtered_pitch_rate_rad_s=0.2,
+    imu_raw = ImuRawPayload(
         acc=[0.0, 0.0, 9.81],
         gyr=[0.0, 0.25, 0.0],
         timestamp_us=timestamp_us,
@@ -113,20 +111,18 @@ def write_udp_corpus(output_root: Path) -> None:
     tick = PhysicsTickPayload(dt_s=0.0025, sim_time_us=2500)
     joystick = JoystickCommandPayload(forward=0.2, turn=-0.1)
 
-    _write(udp_dir / "imu_only.bin", _udp_frame(MsgId.ImuData, imu.pack()))
+    _write(udp_dir / "imu_raw_only.bin", _udp_frame(MsgId.ImuRawData, imu_raw.pack()))
     _write(udp_dir / "tick_only.bin", _udp_frame(MsgId.PhysicsTick, tick.pack()))
     _write(udp_dir / "joystick_only.bin", _udp_frame(MsgId.JoystickCommand, joystick.pack()))
 
     sequence = b"".join(
         [
             _udp_frame(MsgId.JoystickCommand, joystick.pack()),
-            _udp_frame(MsgId.ImuData, imu.pack()),
+            _udp_frame(MsgId.ImuRawData, imu_raw.pack()),
             _udp_frame(MsgId.PhysicsTick, tick.pack()),
             _udp_frame(
-                MsgId.ImuData,
-                ImuSamplePayload(
-                    pitch_rad=0.10,
-                    filtered_pitch_rate_rad_s=0.15,
+                MsgId.ImuRawData,
+                ImuRawPayload(
                     acc=[0.0, 0.0, 9.81],
                     gyr=[0.0, 0.20, 0.0],
                     timestamp_us=timestamp_us + 2500,

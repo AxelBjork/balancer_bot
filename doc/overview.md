@@ -24,7 +24,7 @@ The UDP-driven software-in-the-loop runtime. It:
 - loads `pid_sim.conf`
 - disables the hardware IMU reader
 - does not create a real motor backend
-- receives `PhysicsTick`, `ImuData`, and `JoystickCommand` over UDP
+- receives `PhysicsTick`, `ImuRawData`, and `JoystickCommand` over UDP
 - sends `MotorTargets` and `SystemTelemetry` back to Python
 
 This binary is built with `BUILD_TESTS=ON`.

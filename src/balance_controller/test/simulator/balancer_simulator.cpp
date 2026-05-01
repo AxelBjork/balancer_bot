@@ -164,19 +164,16 @@ void BalancerSimulator::step(double dt_s) {
       (std::abs(F_app) >= physics_.max_force_n * 0.999);
 }
 
-ipc::ImuSamplePayload BalancerSimulator::make_imu_payload(uint64_t sim_time_us) const {
-  ipc::ImuSamplePayload payload{};
-
+ipc::ImuRawPayload BalancerSimulator::make_raw_imu_payload(uint64_t sim_time_us) const {
   const double body_pitch = state_.pitch;
-  const double ax_mps2 = diagnostics_.x_ddot * std::cos(body_pitch) + gravity * std::sin(body_pitch);
-  const double az_mps2 = -diagnostics_.x_ddot * std::sin(body_pitch) + gravity * std::cos(body_pitch);
 
-  payload.pitch_rad = imu_pitch_;
-  payload.filtered_pitch_rate_rad_s = imu_pitch_rate_;
+  ipc::ImuRawPayload payload{};
+  // Keep this first hardware-like filter pass focused on sensor noise and pitch bias.
+  // Translational acceleration remains exposed separately through plant diagnostics.
   payload.acc = {
-      -ax_mps2,
+      -gravity * std::sin(body_pitch),
       0.0,
-      -az_mps2,
+      -gravity * std::cos(body_pitch),
   };
   payload.gyr = {
       0.0,
@@ -187,6 +184,17 @@ ipc::ImuSamplePayload BalancerSimulator::make_imu_payload(uint64_t sim_time_us) 
 
   (void)kAccelScale;
   (void)kGyroScale;
+  return payload;
+}
+
+ipc::ImuSamplePayload BalancerSimulator::make_imu_payload(uint64_t sim_time_us) const {
+  const ipc::ImuRawPayload raw = make_raw_imu_payload(sim_time_us);
+  ipc::ImuSamplePayload payload{};
+  payload.pitch_rad = imu_pitch_;
+  payload.filtered_pitch_rate_rad_s = imu_pitch_rate_;
+  payload.acc = raw.acc;
+  payload.gyr = raw.gyr;
+  payload.timestamp_us = raw.timestamp_us;
   return payload;
 }
 

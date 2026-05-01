@@ -51,10 +51,12 @@ def test_run_recorder_writes_summary_and_flags_fall(tmp_path):
     assert summary["max_abs_theta_ddot"] is None
     assert (tmp_path / "timeline.csv").exists()
     assert (tmp_path / "summary.json").exists()
-    assert (tmp_path / "pitch_plot.svg").exists()
-    assert (tmp_path / "command_plot.svg").exists()
-    assert (tmp_path / "wheel_plot.svg").exists()
-    assert (tmp_path / "force_plot.svg").exists()
+    assert (tmp_path / "overview_plot.svg").exists()
+    assert (tmp_path / "actuator_plot.svg").exists()
+    assert not (tmp_path / "pitch_plot.svg").exists()
+    assert not (tmp_path / "command_plot.svg").exists()
+    assert not (tmp_path / "wheel_plot.svg").exists()
+    assert not (tmp_path / "force_plot.svg").exists()
 
 
 def test_reference_parser_handles_clean_csv():

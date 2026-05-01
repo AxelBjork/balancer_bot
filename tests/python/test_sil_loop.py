@@ -3,17 +3,15 @@ import time
 from generated_balancer import (
     BalancerMsgId,
     PhysicsTickPayload,
-    ImuSamplePayload,
+    ImuRawPayload,
     JoystickCommandPayload,
     MotorTargetsPayload,
     SystemTelemetryPayload,
 )
 
 
-def make_imu_sample(timestamp_us: int) -> ImuSamplePayload:
-    return ImuSamplePayload(
-        pitch_rad=0.0,
-        filtered_pitch_rate_rad_s=0.0,
+def make_imu_sample(timestamp_us: int) -> ImuRawPayload:
+    return ImuRawPayload(
         acc=[0.0, 0.0, 9.81],
         gyr=[0.0, 0.0, 0.0],
         timestamp_us=timestamp_us,
@@ -24,11 +22,11 @@ def test_joystick_to_motor_targets(udp):
     cmd = JoystickCommandPayload(forward=1.0, turn=0.5)
     udp.send(BalancerMsgId.JoystickCommand, cmd.pack())
 
-    sim_time_us = 0
+    base_time_us = time.monotonic_ns() // 1000
     for _ in range(32):
-        sim_time_us += 2_500
+        sim_time_us = base_time_us + (_ + 1) * 2_500
         imu = make_imu_sample(sim_time_us)
-        udp.send(BalancerMsgId.ImuData, imu.pack())
+        udp.send(BalancerMsgId.ImuRawData, imu.pack())
         udp.send(BalancerMsgId.PhysicsTick, PhysicsTickPayload(dt_s=0.0025, sim_time_us=sim_time_us).pack())
 
     start_time = time.time()
@@ -51,10 +49,10 @@ def test_joystick_to_motor_targets(udp):
 def test_tick_driven_telemetry_stream(udp):
     udp.send(BalancerMsgId.JoystickCommand, JoystickCommandPayload(forward=0.2, turn=0.0).pack())
 
-    sim_time_us = 0
+    base_time_us = time.monotonic_ns() // 1000
     for _ in range(24):
-        sim_time_us += 2_500
-        udp.send(BalancerMsgId.ImuData, make_imu_sample(sim_time_us).pack())
+        sim_time_us = base_time_us + (_ + 1) * 2_500
+        udp.send(BalancerMsgId.ImuRawData, make_imu_sample(sim_time_us).pack())
         udp.send(BalancerMsgId.PhysicsTick, PhysicsTickPayload(dt_s=0.0025, sim_time_us=sim_time_us).pack())
 
     deadline = time.time() + 2.0

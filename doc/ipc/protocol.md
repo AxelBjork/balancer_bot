@@ -11,8 +11,8 @@ This document is generated from the balancer runtime message registry and the re
 It describes the reflected runtime message bus used by the balancer services, including the UDP-facing
 messages consumed by the SIL harness and the internal-only messages exchanged between services.
 
-- Documented balancer message count: `10`
-- Protocol hash: `47fdefb46721d810`
+- Documented balancer message count: `11`
+- Protocol hash: `d573c452428f77cc`
 - UDP ingress/egress gateway: `UdpBridge`
 
 ## System Architecture
@@ -31,14 +31,14 @@ The architecture is divided into three logical areas:
 
 ### `ImuService`
 
-> Publishes `ImuData` samples that represent the controller's current view of body pitch, specific force, angular rate, and sample time.
+> Consumes raw accelerometer/gyroscope samples and publishes `ImuData` samples that represent the controller's current view of body pitch, specific force, angular rate, and sample time.
 >
-> When hardware reading is enabled, the service owns an `Ism330IioReader` that discovers the split accel/gyro IIO devices, configures their trigger-driven buffers, converts raw sensor counts into SI units, and timestamps each sample before publishing it onto the internal message bus. The raw accelerometer and gyroscope vectors are fused by a complementary filter so the published pitch stays referenced to the balancing frame instead of jumping between upright and inverted branches of a raw accelerometer angle.
+> When hardware reading is enabled, the service owns an `Ism330IioReader` that discovers the split accel/gyro IIO devices, converts raw sensor counts into SI units, timestamps each sample, and publishes `ImuRawData` onto the internal message bus. The raw accelerometer and gyroscope vectors are then fused by a complementary filter before `ImuData` reaches control.
 >
-> In SIL mode the hardware reader can be disabled entirely, in which case this service becomes quiescent and the same `ImuData` payloads are injected externally through `UdpBridge`. That keeps the controller-facing contract identical across hardware and simulation: `ControlService` always consumes the same reflected payload shape regardless of whether the source is the phy
+> In SIL mode the hardware reader can be disabled entirely, but Python can still inject `ImuRawData` through `UdpBridge` to exercise the same filter path. `ImuData` remains an internal controller-facing contract rather than a UDP payload.
 
-- Publishes: `ImuData`
-- Subscribes: _None_
+- Publishes: `ImuRawData`, `ImuData`
+- Subscribes: `ImuRawData`
 
 ### `TimeService`
 
@@ -95,8 +95,8 @@ The architecture is divided into three logical areas:
 >
 > This makes the UDP contract symmetric with the Python bindings generated from the same message definitions. Ope
 
-- Publishes: `PhysicsTick`, `JoystickCommand`, `ImuData`, `SimStartRun`, `SimStopRun`
-- Subscribes: `ImuData`, `MotorTargets`, `SystemTelemetry`, `SimStartAck`, `SimRunDone`
+- Publishes: `PhysicsTick`, `JoystickCommand`, `ImuRawData`, `SimStartRun`, `SimStopRun`
+- Subscribes: `MotorTargets`, `SystemTelemetry`, `SimStartAck`, `SimRunDone`
 
 ---
 
@@ -125,8 +125,8 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 - Payload type: `ImuSamplePayload`
 - Python type: `ImuSamplePayload`
 - Wire size: `72` bytes
-- Published by: `ImuService`, `UdpBridge`
-- Consumed by: `ControlService`, `UdpBridge`
+- Published by: `ImuService`
+- Consumed by: `ControlService`
 
 | Field | C++ Type | Python Type | Bytes | Offset | Description |
 |---|---|---|---:|---:|---|
@@ -246,7 +246,7 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 - Numeric ID: `3005`
 - Payload type: `SimStartRunPayload`
 - Python type: `SimStartRunPayload`
-- Wire size: `584` bytes
+- Wire size: `656` bytes
 - Published by: `UdpBridge`
 - Consumed by: _None_
 
@@ -263,8 +263,13 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 | `velocity_feedback_scale` | `float` | `float` | 4 | 36 |  |
 | `velocity_feedback_tau_s` | `double` | `float` | 8 | 40 |  |
 | `imu_pitch_lag_s` | `double` | `float` | 8 | 48 |  |
-| `disturbances` | `std::array<SimDisturbancePayload, 10>` | `list[SimDisturbancePayload]` | 400 | 56 |  |
-| `pid_config_path` | `std::array<char, 128>` | `bytes` | 128 | 456 |  |
+| `imu_noise_seed` | `uint32_t` | `int` | 4 | 56 |  |
+| `accel_noise_std_mps2` | `double` | `float` | 8 | 64 |  |
+| `gyro_noise_std_rad_s` | `double` | `float` | 8 | 72 |  |
+| `accel_bias_mps2` | `std::array<double, 3>` | `list[float]` | 24 | 80 |  |
+| `gyro_bias_rad_s` | `std::array<double, 3>` | `list[float]` | 24 | 104 |  |
+| `disturbances` | `std::array<SimDisturbancePayload, 10>` | `list[SimDisturbancePayload]` | 400 | 128 |  |
+| `pid_config_path` | `std::array<char, 128>` | `bytes` | 128 | 528 |  |
 
 ### `MsgId::SimStartAck`
 
@@ -319,6 +324,21 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 | `tail_mean_abs_pitch_deg` | `float` | `float` | 4 | 32 |  |
 | `max_abs_position_m` | `float` | `float` | 4 | 36 |  |
 | `tail_mean_abs_velocity_mps` | `float` | `float` | 4 | 40 |  |
+
+### `MsgId::ImuRawData`
+
+- Numeric ID: `3009`
+- Payload type: `ImuRawPayload`
+- Python type: `ImuRawPayload`
+- Wire size: `56` bytes
+- Published by: `ImuService`, `UdpBridge`
+- Consumed by: `ImuService`
+
+| Field | C++ Type | Python Type | Bytes | Offset | Description |
+|---|---|---|---:|---:|---|
+| `acc` | `std::array<double, 3>` | `list[float]` | 24 | 0 |  |
+| `gyr` | `std::array<double, 3>` | `list[float]` | 24 | 24 |  |
+| `timestamp_us` | `uint64_t` | `int` | 8 | 48 |  |
 
 ---
 

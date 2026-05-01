@@ -8,7 +8,6 @@ from typing import Any
 class MsgId(IntEnum):
     """Balancer UDP message identifiers."""
     PhysicsTick = 1
-    ImuData = 3000
     JoystickCommand = 3001
     MotorTargets = 3002
     SystemTelemetry = 3003
@@ -16,6 +15,7 @@ class MsgId(IntEnum):
     SimStartAck = 3006
     SimStopRun = 3007
     SimRunDone = 3008
+    ImuRawData = 3009
 
 BalancerMsgId = MsgId
 
@@ -42,43 +42,6 @@ class PhysicsTickPayload:
 
     @classmethod
     def unpack(cls, data: bytes) -> "PhysicsTickPayload":
-        return cls.unpack_wire(data)
-
-@dataclass
-class ImuSamplePayload:
-    WIRE_SIZE = 72
-    pitch_rad: float
-    filtered_pitch_rate_rad_s: float
-    acc: list[float]
-    gyr: list[float]
-    timestamp_us: int
-
-    def pack_wire(self) -> bytes:
-        data = bytearray()
-        data.extend(struct.pack("<dd", self.pitch_rad, self.filtered_pitch_rate_rad_s))
-        data.extend(struct.pack("<3d", *self.acc))
-        data.extend(struct.pack("<3d", *self.gyr))
-        data.extend(struct.pack("<Q", self.timestamp_us))
-        return bytes(data)
-
-    def pack(self) -> bytes:
-        return self.pack_wire()
-
-    @classmethod
-    def unpack_wire(cls, data: bytes) -> "ImuSamplePayload":
-        offset = 0
-        pitch_rad, filtered_pitch_rate_rad_s = struct.unpack_from("<dd", data, offset)
-        offset += struct.calcsize("<dd")
-        acc = list(struct.unpack_from("<3d", data, offset))
-        offset += struct.calcsize("<3d")
-        gyr = list(struct.unpack_from("<3d", data, offset))
-        offset += struct.calcsize("<3d")
-        timestamp_us = struct.unpack_from("<Q", data, offset)[0]
-        offset += struct.calcsize("<Q")
-        return cls(pitch_rad=pitch_rad, filtered_pitch_rate_rad_s=filtered_pitch_rate_rad_s, acc=acc, gyr=gyr, timestamp_us=timestamp_us)
-
-    @classmethod
-    def unpack(cls, data: bytes) -> "ImuSamplePayload":
         return cls.unpack_wire(data)
 
 @dataclass
@@ -236,7 +199,7 @@ class SimDisturbancePayload:
 
 @dataclass
 class SimStartRunPayload:
-    WIRE_SIZE = 584
+    WIRE_SIZE = 656
     run_id: int
     physics_profile: int
     reserved0: int
@@ -248,12 +211,19 @@ class SimStartRunPayload:
     velocity_feedback_scale: float
     velocity_feedback_tau_s: float
     imu_pitch_lag_s: float
+    imu_noise_seed: int
+    accel_noise_std_mps2: float
+    gyro_noise_std_rad_s: float
+    accel_bias_mps2: list[float]
+    gyro_bias_rad_s: list[float]
     disturbances: list[SimDisturbancePayload]
     pid_config_path: bytes
 
     def pack_wire(self) -> bytes:
         data = bytearray()
-        data.extend(struct.pack("<IBBHdddffdd", self.run_id, self.physics_profile, self.reserved0, self.reserved1, self.duration_s, self.initial_pitch_deg, self.com_angle_offset_rad, self.wheel_slip_factor, self.velocity_feedback_scale, self.velocity_feedback_tau_s, self.imu_pitch_lag_s))
+        data.extend(struct.pack("<IBBHdddffddI4xdd", self.run_id, self.physics_profile, self.reserved0, self.reserved1, self.duration_s, self.initial_pitch_deg, self.com_angle_offset_rad, self.wheel_slip_factor, self.velocity_feedback_scale, self.velocity_feedback_tau_s, self.imu_pitch_lag_s, self.imu_noise_seed, self.accel_noise_std_mps2, self.gyro_noise_std_rad_s))
+        data.extend(struct.pack("<3d", *self.accel_bias_mps2))
+        data.extend(struct.pack("<3d", *self.gyro_bias_rad_s))
         for item in self.disturbances:
             if not hasattr(item, 'pack_wire'):
                 if isinstance(item, tuple):
@@ -272,8 +242,12 @@ class SimStartRunPayload:
     @classmethod
     def unpack_wire(cls, data: bytes) -> "SimStartRunPayload":
         offset = 0
-        run_id, physics_profile, reserved0, reserved1, duration_s, initial_pitch_deg, com_angle_offset_rad, wheel_slip_factor, velocity_feedback_scale, velocity_feedback_tau_s, imu_pitch_lag_s = struct.unpack_from("<IBBHdddffdd", data, offset)
-        offset += struct.calcsize("<IBBHdddffdd")
+        run_id, physics_profile, reserved0, reserved1, duration_s, initial_pitch_deg, com_angle_offset_rad, wheel_slip_factor, velocity_feedback_scale, velocity_feedback_tau_s, imu_pitch_lag_s, imu_noise_seed, accel_noise_std_mps2, gyro_noise_std_rad_s = struct.unpack_from("<IBBHdddffddI4xdd", data, offset)
+        offset += struct.calcsize("<IBBHdddffddI4xdd")
+        accel_bias_mps2 = list(struct.unpack_from("<3d", data, offset))
+        offset += struct.calcsize("<3d")
+        gyro_bias_rad_s = list(struct.unpack_from("<3d", data, offset))
+        offset += struct.calcsize("<3d")
         disturbances = []
         for _ in range(10):
             sub_size = SimDisturbancePayload.WIRE_SIZE
@@ -282,7 +256,7 @@ class SimStartRunPayload:
             offset += sub_size
         pid_config_path = struct.unpack_from("<128s", data, offset)[0]
         offset += struct.calcsize("<128s")
-        return cls(run_id=run_id, physics_profile=physics_profile, reserved0=reserved0, reserved1=reserved1, duration_s=duration_s, initial_pitch_deg=initial_pitch_deg, com_angle_offset_rad=com_angle_offset_rad, wheel_slip_factor=wheel_slip_factor, velocity_feedback_scale=velocity_feedback_scale, velocity_feedback_tau_s=velocity_feedback_tau_s, imu_pitch_lag_s=imu_pitch_lag_s, disturbances=disturbances, pid_config_path=pid_config_path)
+        return cls(run_id=run_id, physics_profile=physics_profile, reserved0=reserved0, reserved1=reserved1, duration_s=duration_s, initial_pitch_deg=initial_pitch_deg, com_angle_offset_rad=com_angle_offset_rad, wheel_slip_factor=wheel_slip_factor, velocity_feedback_scale=velocity_feedback_scale, velocity_feedback_tau_s=velocity_feedback_tau_s, imu_pitch_lag_s=imu_pitch_lag_s, imu_noise_seed=imu_noise_seed, accel_noise_std_mps2=accel_noise_std_mps2, gyro_noise_std_rad_s=gyro_noise_std_rad_s, accel_bias_mps2=accel_bias_mps2, gyro_bias_rad_s=gyro_bias_rad_s, disturbances=disturbances, pid_config_path=pid_config_path)
 
     @classmethod
     def unpack(cls, data: bytes) -> "SimStartRunPayload":
@@ -375,9 +349,40 @@ class SimRunDonePayload:
     def unpack(cls, data: bytes) -> "SimRunDonePayload":
         return cls.unpack_wire(data)
 
+@dataclass
+class ImuRawPayload:
+    WIRE_SIZE = 56
+    acc: list[float]
+    gyr: list[float]
+    timestamp_us: int
+
+    def pack_wire(self) -> bytes:
+        data = bytearray()
+        data.extend(struct.pack("<3d", *self.acc))
+        data.extend(struct.pack("<3d", *self.gyr))
+        data.extend(struct.pack("<Q", self.timestamp_us))
+        return bytes(data)
+
+    def pack(self) -> bytes:
+        return self.pack_wire()
+
+    @classmethod
+    def unpack_wire(cls, data: bytes) -> "ImuRawPayload":
+        offset = 0
+        acc = list(struct.unpack_from("<3d", data, offset))
+        offset += struct.calcsize("<3d")
+        gyr = list(struct.unpack_from("<3d", data, offset))
+        offset += struct.calcsize("<3d")
+        timestamp_us = struct.unpack_from("<Q", data, offset)[0]
+        offset += struct.calcsize("<Q")
+        return cls(acc=acc, gyr=gyr, timestamp_us=timestamp_us)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> "ImuRawPayload":
+        return cls.unpack_wire(data)
+
 MESSAGE_BY_ID = {
     MsgId.PhysicsTick: PhysicsTickPayload,
-    MsgId.ImuData: ImuSamplePayload,
     MsgId.JoystickCommand: JoystickCommandPayload,
     MsgId.MotorTargets: MotorTargetsPayload,
     MsgId.SystemTelemetry: SystemTelemetryPayload,
@@ -385,18 +390,19 @@ MESSAGE_BY_ID = {
     MsgId.SimStartAck: SimStartAckPayload,
     MsgId.SimStopRun: SimStopRunPayload,
     MsgId.SimRunDone: SimRunDonePayload,
+    MsgId.ImuRawData: ImuRawPayload,
 }
 
 PAYLOAD_SIZE_BY_ID = {
     MsgId.PhysicsTick: 16,
-    MsgId.ImuData: 72,
     MsgId.JoystickCommand: 8,
     MsgId.MotorTargets: 8,
     MsgId.SystemTelemetry: 200,
-    MsgId.SimStartRun: 584,
+    MsgId.SimStartRun: 656,
     MsgId.SimStartAck: 8,
     MsgId.SimStopRun: 4,
     MsgId.SimRunDone: 44,
+    MsgId.ImuRawData: 56,
 }
 
-PROTOCOL_HASH = "47fdefb46721d810"
+PROTOCOL_HASH = "d573c452428f77cc"

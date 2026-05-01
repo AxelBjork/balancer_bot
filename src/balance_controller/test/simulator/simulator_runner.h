@@ -37,6 +37,11 @@ struct SimulatorScenario {
   float velocity_feedback_scale = 1.0f;
   double velocity_feedback_tau_s = 0.0;
   double imu_pitch_lag_s = 0.0;
+  uint32_t imu_noise_seed = 0;
+  double accel_noise_std_mps2 = 0.0;
+  double gyro_noise_std_rad_s = 0.0;
+  std::array<double, 3> accel_bias_mps2{};
+  std::array<double, 3> gyro_bias_rad_s{};
 };
 
 struct SimulatorTimelineRow {

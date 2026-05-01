@@ -3,6 +3,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <random>
 
 #include "config.h"
 #include "services/imu/pitch_lpf.h"
@@ -21,6 +22,10 @@ static inline double rad2deg(double r) {
 static inline std::array<double, 3> accel_for_pitch_g(double pitch_rad) {
   const double s = std::sin(pitch_rad), c = std::cos(pitch_rad);
   return {-s * Config::g0, 0.0, c * Config::g0};
+}
+
+static inline double raw_pitch_from_acc_rad(const std::array<double, 3>& acc) {
+  return std::atan2(-acc[0], std::sqrt(acc[1] * acc[1] + acc[2] * acc[2]));
 }
 
 static inline double wrap_pi(double x) {
@@ -241,4 +246,121 @@ TEST(DataPathSanity, ComplementaryFilter_GyroLPF_RiseTime_RateStep) {
   ASSERT_NE(k10, -1) << "Gyro LPF never crossed 10% within bound.";
   ASSERT_NE(k90, -1) << "Gyro LPF never crossed 90% within bound.";
   EXPECT_LE(tr_ms, Config::dpitch_rise_ms) << "Gyro path is too slow for control needs.";
+}
+
+TEST(DataPathSanity, ComplementaryFilter_HoldsNonzeroPitchUnderNoisyInput) {
+  using clock = std::chrono::steady_clock;
+
+  constexpr double fs_hz = Config::sampling_hz;
+  constexpr int total_samples = static_cast<int>(8.0 * fs_hz);
+  constexpr int tail_samples = static_cast<int>(2.0 * fs_hz);
+  const auto tick = std::chrono::nanoseconds{(long long)std::llround(1e9 / fs_hz)};
+  const double target_rad = deg2rad(4.0);
+
+  std::mt19937 rng(42);
+  std::normal_distribution<double> accel_noise(0.0, 0.20);
+  std::normal_distribution<double> gyro_noise(0.0, 0.015);
+
+  PitchComplementaryFilter filt;
+  auto now = clock::now();
+  double tail_sum_rad = 0.0;
+  int tail_count = 0;
+
+  for (int i = 0; i < total_samples; ++i) {
+    auto acc = accel_for_pitch_g(target_rad);
+    for (double& axis : acc) {
+      axis += accel_noise(rng);
+    }
+    const std::array<double, 3> gyr{0.0, gyro_noise(rng), 0.0};
+    now += tick;
+    filt.push_sample(acc, gyr, now);
+    const ImuSample out = filt.read_latest();
+    if (i >= total_samples - tail_samples) {
+      tail_sum_rad += out.angle_rad;
+      ++tail_count;
+    }
+  }
+
+  ASSERT_GT(tail_count, 0);
+  EXPECT_NEAR(rad2deg(tail_sum_rad / tail_count), 4.0, 0.35);
+}
+
+TEST(DataPathSanity, ComplementaryFilter_ReducesRawAccelPitchNoise) {
+  using clock = std::chrono::steady_clock;
+
+  constexpr double fs_hz = Config::sampling_hz;
+  constexpr int total_samples = static_cast<int>(8.0 * fs_hz);
+  constexpr int warmup_samples = static_cast<int>(2.0 * fs_hz);
+  const auto tick = std::chrono::nanoseconds{(long long)std::llround(1e9 / fs_hz)};
+  const double target_rad = deg2rad(3.0);
+
+  std::mt19937 rng(77);
+  std::normal_distribution<double> accel_noise(0.0, 0.25);
+  std::normal_distribution<double> gyro_noise(0.0, 0.010);
+
+  PitchComplementaryFilter filt;
+  auto now = clock::now();
+  double raw_sq = 0.0;
+  double fused_sq = 0.0;
+  int count = 0;
+
+  for (int i = 0; i < total_samples; ++i) {
+    auto acc = accel_for_pitch_g(target_rad);
+    for (double& axis : acc) {
+      axis += accel_noise(rng);
+    }
+    const std::array<double, 3> gyr{0.0, gyro_noise(rng), 0.0};
+    now += tick;
+    filt.push_sample(acc, gyr, now);
+    const ImuSample out = filt.read_latest();
+    if (i >= warmup_samples) {
+      const double raw_err = wrap_pi(raw_pitch_from_acc_rad(acc) - target_rad);
+      const double fused_err = wrap_pi(out.angle_rad - target_rad);
+      raw_sq += raw_err * raw_err;
+      fused_sq += fused_err * fused_err;
+      ++count;
+    }
+  }
+
+  ASSERT_GT(count, 0);
+  const double raw_rms_deg = rad2deg(std::sqrt(raw_sq / count));
+  const double fused_rms_deg = rad2deg(std::sqrt(fused_sq / count));
+  EXPECT_LT(fused_rms_deg, raw_rms_deg * 0.55);
+}
+
+TEST(DataPathSanity, ComplementaryFilter_GyroBiasDoesNotEraseStaticPitchBias) {
+  using clock = std::chrono::steady_clock;
+
+  constexpr double fs_hz = Config::sampling_hz;
+  constexpr int total_samples = static_cast<int>(12.0 * fs_hz);
+  constexpr int tail_samples = static_cast<int>(2.0 * fs_hz);
+  const auto tick = std::chrono::nanoseconds{(long long)std::llround(1e9 / fs_hz)};
+  const double target_rad = deg2rad(5.0);
+
+  std::mt19937 rng(123);
+  std::normal_distribution<double> accel_noise(0.0, 0.15);
+  std::normal_distribution<double> gyro_noise(0.0, 0.006);
+
+  PitchComplementaryFilter filt;
+  auto now = clock::now();
+  double tail_sum_rad = 0.0;
+  int tail_count = 0;
+
+  for (int i = 0; i < total_samples; ++i) {
+    auto acc = accel_for_pitch_g(target_rad);
+    for (double& axis : acc) {
+      axis += accel_noise(rng);
+    }
+    const std::array<double, 3> gyr{0.0, 0.010 + gyro_noise(rng), 0.0};
+    now += tick;
+    filt.push_sample(acc, gyr, now);
+    const ImuSample out = filt.read_latest();
+    if (i >= total_samples - tail_samples) {
+      tail_sum_rad += out.angle_rad;
+      ++tail_count;
+    }
+  }
+
+  ASSERT_GT(tail_count, 0);
+  EXPECT_NEAR(rad2deg(tail_sum_rad / tail_count), 5.0, 0.5);
 }

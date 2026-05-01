@@ -33,9 +33,10 @@ void sil_dispatcher(void* ctx, MsgId id, const void* payload) {
     auto* s = static_cast<AppServices*>(ctx);
     if (!s) return;
 
-    if (id == MsgId::ImuData) {
+    if (id == MsgId::ImuRawData) {
+        s->is.on_message<MsgId::ImuRawData>(*static_cast<const ipc::ImuRawPayload*>(payload));
+    } else if (id == MsgId::ImuData) {
         s->cs.on_message<MsgId::ImuData>(*static_cast<const ipc::ImuSamplePayload*>(payload));
-        s->udp.on_message<MsgId::ImuData>(*static_cast<const ipc::ImuSamplePayload*>(payload));
     } else if (id == MsgId::PhysicsTick) {
         s->cs.on_message<MsgId::PhysicsTick>(*static_cast<const PhysicsTickPayload*>(payload));
     } else if (id == MsgId::JoystickCommand) {

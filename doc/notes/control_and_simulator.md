@@ -92,8 +92,8 @@ Each preserved simulator run writes:
 - `timeline.csv`
 - `metadata.json`
 - `summary.json`
-- `pitch_plot.svg`
-- `command_plot.svg`
+- `overview_plot.svg`
+- `actuator_plot.svg`
 
 The most useful summary fields are:
 
@@ -105,9 +105,10 @@ The most useful summary fields are:
 - `max_abs_position_m`
 - `tail_mean_abs_velocity_mps`
 
-The plots are designed for quick review:
+The multiplots are designed for quick review:
 
 - pitch is centered around zero
+- wheel and plant velocities share a readable velocity panel
 - axes and units are explicit
 - long traces are downsampled for SVG readability while the CSV stays full-fidelity
 

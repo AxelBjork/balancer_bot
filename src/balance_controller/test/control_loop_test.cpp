@@ -9,6 +9,7 @@
 #include "config.h"
 #include "motor_runner.h"
 #include "services/control_service.h"
+#include "services/imu_service.h"
 #include "services/motor_service.h"
 #include "services/control/rate_controller_core.h"
 
@@ -165,6 +166,31 @@ class ControlServiceHarness {
   std::vector<ipc::SystemTelemetryPayload> telemetry_;
 };
 
+class ImuServiceHarness {
+ public:
+  ImuServiceHarness() : bus_(this, &ImuServiceHarness::dispatch), imu_(bus_, false) {}
+
+  void publish_raw(const ipc::ImuRawPayload& payload) {
+    bus_.publish<MsgId::ImuRawData>(payload);
+  }
+
+  const std::vector<ipc::ImuSamplePayload>& fused_samples() const { return fused_samples_; }
+
+ private:
+  static void dispatch(void* ctx, MsgId id, const void* payload) {
+    auto* self = static_cast<ImuServiceHarness*>(ctx);
+    if (id == MsgId::ImuRawData) {
+      self->imu_.on_message<MsgId::ImuRawData>(*static_cast<const ipc::ImuRawPayload*>(payload));
+    } else if (id == MsgId::ImuData) {
+      self->fused_samples_.push_back(*static_cast<const ipc::ImuSamplePayload*>(payload));
+    }
+  }
+
+  ipc::MessageBus bus_;
+  sil::ImuService imu_;
+  std::vector<ipc::ImuSamplePayload> fused_samples_;
+};
+
 class ServiceBusHarness {
  public:
   ServiceBusHarness()
@@ -173,6 +199,7 @@ class ServiceBusHarness {
         runner_(left_, right_, 400.0, 100.0),
         bus_(this, &ServiceBusHarness::dispatch),
         control_(bus_),
+        imu_(bus_, false),
         motor_(bus_, &runner_) {}
 
   void sendJoystick(float forward, float turn) {
@@ -205,7 +232,9 @@ class ServiceBusHarness {
  private:
   static void dispatch(void* ctx, MsgId id, const void* payload) {
     auto* self = static_cast<ServiceBusHarness*>(ctx);
-    if (id == MsgId::ImuData) {
+    if (id == MsgId::ImuRawData) {
+      self->imu_.on_message<MsgId::ImuRawData>(*static_cast<const ipc::ImuRawPayload*>(payload));
+    } else if (id == MsgId::ImuData) {
       self->control_.on_message<MsgId::ImuData>(*static_cast<const ipc::ImuSamplePayload*>(payload));
     } else if (id == MsgId::PhysicsTick) {
       self->control_.on_message<MsgId::PhysicsTick>(*static_cast<const PhysicsTickPayload*>(payload));
@@ -230,6 +259,7 @@ class ServiceBusHarness {
   MotorRunner runner_;
   ipc::MessageBus bus_;
   sil::ControlService control_;
+  sil::ImuService imu_;
   sil::MotorService motor_;
   std::vector<ipc::MotorTargetsPayload> motor_targets_;
   std::vector<ipc::MotorFeedbackPayload> feedback_;
@@ -393,6 +423,7 @@ TEST(RateControllerCoreTest, LargeResidualVelocityIsBrakedWithoutCommand) {
   EXPECT_LT(h.telemetry().back().vel_p_term, 0.0);
   EXPECT_LT(h.telemetry().back().pitch_ref_from_vel_deg, 0.0);
   EXPECT_GT(std::abs(h.telemetry().back().pitch_sp_deg), 1e-3);
+  EXPECT_LE(std::abs(h.telemetry().back().pitch_sp_deg), Config::max_tilt_rad * 180.0 / M_PI + 0.1);
 }
 
 TEST(RateControllerCoreTest, NegativeResidualVelocityProducesPositiveCorrectivePitchRef) {
@@ -425,7 +456,7 @@ TEST(RateControllerCoreTest, VelocityFeedbackAffectsTelemetryWhenCommanded) {
   EXPECT_NE(h.telemetry().back().vel_p_term, 0.0);
 }
 
-TEST(RateControllerCoreTest, PositionHoldAddsEquivalentVelocityTargetBackTowardAnchor) {
+TEST(RateControllerCoreTest, PositionHoldAddsDirectPitchTargetBackTowardAnchor) {
   const double old_outer_k_pos = ConfigPid::outer_k_pos;
   struct RestoreOuterKPos {
     double& slot;
@@ -441,8 +472,8 @@ TEST(RateControllerCoreTest, PositionHoldAddsEquivalentVelocityTargetBackTowardA
   h.run_steps(80, 1.0 / 400.0);
 
   ASSERT_FALSE(h.telemetry().empty());
-  EXPECT_LT(h.telemetry().back().vel_error, 0.0);
-  EXPECT_LT(h.telemetry().back().vel_p_term, 0.0);
+  EXPECT_NEAR(h.telemetry().back().vel_error, 0.0, 1e-3);
+  EXPECT_NEAR(h.telemetry().back().vel_p_term, 0.0, 1e-6);
   EXPECT_LT(h.telemetry().back().position_target_vel_sps, 0.0);
   EXPECT_LT(h.telemetry().back().pitch_ref_from_pos_deg, 0.0);
   EXPECT_NE(h.runner().lastLeft(), 0.0f);
@@ -566,6 +597,79 @@ TEST(RateControllerCoreTest, LeanTrimDecaysWhenOperatorCommandIsPresent) {
   EXPECT_LT(h.telemetry().back().trim_active, 0.5);
 }
 
+TEST(RateControllerCoreTest, LeanTrimHoldsWhenVelocityIsInsideDeadband) {
+  const double old_angle_i = ConfigPid::angle_I;
+  const double old_lean_trim_i = ConfigPid::lean_trim_I;
+  const double old_lean_trim_max_deg = ConfigPid::lean_trim_max_deg;
+  const double old_lean_trim_decay_s = ConfigPid::lean_trim_decay_s;
+  struct RestoreLeanTrimConfig {
+    ~RestoreLeanTrimConfig() {
+      ConfigPid::angle_I = old_angle_i;
+      ConfigPid::lean_trim_I = old_lean_trim_i;
+      ConfigPid::lean_trim_max_deg = old_lean_trim_max_deg;
+      ConfigPid::lean_trim_decay_s = old_lean_trim_decay_s;
+    }
+    double old_angle_i;
+    double old_lean_trim_i;
+    double old_lean_trim_max_deg;
+    double old_lean_trim_decay_s;
+  } restore{old_angle_i, old_lean_trim_i, old_lean_trim_max_deg, old_lean_trim_decay_s};
+  ConfigPid::angle_I = 0.0;
+  ConfigPid::lean_trim_I = 0.12;
+  ConfigPid::lean_trim_max_deg = 4.0;
+  ConfigPid::lean_trim_decay_s = 0.5;
+
+  RateControllerHarness h;
+  h.setJoystick(0.0f, 0.0f);
+  h.runner().setActualSpeedSps(800.0f);
+  h.run_steps(400, 1.0 / 400.0, 0.0, 0.0);
+  const double accumulated_trim_deg = std::abs(h.telemetry().back().pitch_trim_deg);
+  ASSERT_GT(accumulated_trim_deg, 1e-3);
+
+  h.runner().setActualSpeedSps(0.0f);
+  h.run_steps(2400, 1.0 / 400.0, 0.0, 0.0);
+
+  ASSERT_FALSE(h.telemetry().empty());
+  EXPECT_GT(std::abs(h.telemetry().back().pitch_trim_deg), 0.75 * accumulated_trim_deg);
+  EXPECT_LT(h.telemetry().back().trim_active, 0.5);
+}
+
+TEST(RateControllerCoreTest, LeanTrimFreezesOnModerateTilt) {
+  const double old_angle_i = ConfigPid::angle_I;
+  const double old_lean_trim_i = ConfigPid::lean_trim_I;
+  const double old_lean_trim_max_deg = ConfigPid::lean_trim_max_deg;
+  const double old_lean_trim_decay_s = ConfigPid::lean_trim_decay_s;
+  struct RestoreLeanTrimConfig {
+    ~RestoreLeanTrimConfig() {
+      ConfigPid::angle_I = old_angle_i;
+      ConfigPid::lean_trim_I = old_lean_trim_i;
+      ConfigPid::lean_trim_max_deg = old_lean_trim_max_deg;
+      ConfigPid::lean_trim_decay_s = old_lean_trim_decay_s;
+    }
+    double old_angle_i;
+    double old_lean_trim_i;
+    double old_lean_trim_max_deg;
+    double old_lean_trim_decay_s;
+  } restore{old_angle_i, old_lean_trim_i, old_lean_trim_max_deg, old_lean_trim_decay_s};
+  ConfigPid::angle_I = 0.0;
+  ConfigPid::lean_trim_I = 0.12;
+  ConfigPid::lean_trim_max_deg = 4.0;
+  ConfigPid::lean_trim_decay_s = 0.5;
+
+  RateControllerHarness h;
+  h.setJoystick(0.0f, 0.0f);
+  h.runner().setActualSpeedSps(800.0f);
+  h.run_steps(400, 1.0 / 400.0, 0.0, 0.0);
+  const double accumulated_trim_deg = h.telemetry().back().pitch_trim_deg;
+  ASSERT_GT(std::abs(accumulated_trim_deg), 1e-3);
+
+  h.run_steps(800, 1.0 / 400.0, 12.0 * M_PI / 180.0, 0.0);
+
+  ASSERT_FALSE(h.telemetry().empty());
+  EXPECT_NEAR(h.telemetry().back().pitch_trim_deg, accumulated_trim_deg, 1e-3);
+  EXPECT_LT(h.telemetry().back().trim_active, 0.5);
+}
+
 TEST(RateControllerCoreTest, LeanTrimHardResetsOnLargeTilt) {
   const double old_angle_i = ConfigPid::angle_I;
   const double old_lean_trim_i = ConfigPid::lean_trim_I;
@@ -614,6 +718,25 @@ TEST(ControlServiceTest, UsesFallbackVelocityProxyWhenNoMotorFeedbackExists) {
   const float target_velocity_sps = 0.2f * static_cast<float>(kMaxSps);
   const float used_velocity_sps = target_velocity_sps - h.telemetry().back().vel_error;
   EXPECT_GT(std::abs(used_velocity_sps), 1.0f);
+}
+
+TEST(ImuServiceTest, ConvertsRawImuToFusedImuDataAndPreservesRawVectors) {
+  ImuServiceHarness h;
+  const double pitch_rad = 4.0 * M_PI / 180.0;
+  ipc::ImuRawPayload raw{};
+  raw.acc = accel_for_pitch(pitch_rad);
+  raw.gyr = {0.1, 0.2, 0.3};
+  raw.timestamp_us = 123456;
+
+  h.publish_raw(raw);
+
+  ASSERT_EQ(h.fused_samples().size(), 1u);
+  const auto& fused = h.fused_samples().back();
+  EXPECT_NEAR(fused.pitch_rad, pitch_rad, 1e-6);
+  EXPECT_NEAR(fused.filtered_pitch_rate_rad_s, raw.gyr[1], 1e-6);
+  EXPECT_EQ(fused.acc, raw.acc);
+  EXPECT_EQ(fused.gyr, raw.gyr);
+  EXPECT_EQ(fused.timestamp_us, raw.timestamp_us);
 }
 
 TEST(ControlServiceTest, UsesMotorFeedbackForVelocityTelemetry) {
@@ -678,7 +801,8 @@ TEST(ControlServiceTest, UsesMotorFeedbackPositionForPositionHold) {
                          (-static_cast<float>(displacement_steps) * static_cast<float>(Config::meters_per_step))),
       -800.0f,
       800.0f);
-  EXPECT_NEAR(h.telemetry().back().vel_error, expected_velocity_sps, 5.0f);
+  EXPECT_NEAR(h.telemetry().back().vel_error, 0.0f, 1e-3f);
+  EXPECT_NEAR(h.telemetry().back().position_target_vel_sps, expected_velocity_sps, 5.0f);
   EXPECT_LT(h.telemetry().back().pitch_ref_from_pos_deg, 0.0f);
 }
 

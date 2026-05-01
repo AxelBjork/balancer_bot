@@ -4,10 +4,12 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <random>
 #include <stdexcept>
 #include <string>
 
 #include "config.h"
+#include "services/imu/pitch_lpf.h"
 #include "types.h"
 
 namespace {
@@ -77,6 +79,28 @@ DisturbanceSample scenario_disturbance_for_time(const SimulatorScenario& scenari
   return total;
 }
 
+double raw_acc_pitch_deg(const std::array<double, 3>& acc) {
+  return std::atan2(-acc[0], std::sqrt(acc[1] * acc[1] + acc[2] * acc[2])) * 180.0 / kPi;
+}
+
+class SimImuPipeline {
+ public:
+  explicit SimImuPipeline(const SimulatorScenario& scenario):
+        rng_(scenario.imu_noise_seed),
+        accel_noise_(0.0, scenario.accel_noise_std_mps2),
+        gyro_noise_(0.0, scenario.gyro_noise_std_rad_s) {}
+
+  ipc::ImuSamplePayload sample(const BalancerSimulator& sim, uint64_t sim_time_us) {
+    return sim.make_imu_payload(sim_time_us);
+  }
+
+ private:
+  PitchComplementaryFilter filter_{};
+  std::mt19937 rng_;
+  std::normal_distribution<double> accel_noise_;
+  std::normal_distribution<double> gyro_noise_;
+};
+
 SimulatorScenario make_scenario(std::string name,
                                 double initial_pitch_deg,
                                 double com_angle_offset_rad,
@@ -101,8 +125,14 @@ SimulatorRunResult run_simulator_scenario_with_loaded_pid(const SimulatorScenari
   sim_cfg.velocity_feedback_scale = scenario.velocity_feedback_scale;
   sim_cfg.velocity_feedback_tau_s = scenario.velocity_feedback_tau_s;
   sim_cfg.imu_pitch_lag_s = scenario.imu_pitch_lag_s;
+  sim_cfg.imu_noise_seed = scenario.imu_noise_seed;
+  sim_cfg.accel_noise_std_mps2 = scenario.accel_noise_std_mps2;
+  sim_cfg.gyro_noise_std_rad_s = scenario.gyro_noise_std_rad_s;
+  sim_cfg.accel_bias_mps2 = scenario.accel_bias_mps2;
+  sim_cfg.gyro_bias_rad_s = scenario.gyro_bias_rad_s;
 
   BalancerSimulator sim(sim_cfg);
+  SimImuPipeline imu_pipeline(scenario);
   RateControllerCore core;
 
   float left_sps = 0.0f;
@@ -142,7 +172,7 @@ SimulatorRunResult run_simulator_scenario_with_loaded_pid(const SimulatorScenari
 
     sim.step(kTickDtS);
     sim_time_us += static_cast<uint64_t>(kTickDtS * 1e6);
-    const auto imu = sim.make_imu_payload(sim_time_us);
+    const auto imu = imu_pipeline.sample(sim, sim_time_us);
 
     ImuSample sample{};
     sample.angle_rad = imu.pitch_rad;
@@ -180,8 +210,7 @@ SimulatorRunResult run_simulator_scenario_with_loaded_pid(const SimulatorScenari
       row.pitch_deg = latest_telemetry.pitch_deg;
       row.pitch_rate_dps = latest_telemetry.pitch_rate_dps;
       row.filtered_pitch_rate_dps = latest_telemetry.filtered_pitch_rate_dps;
-      row.raw_acc_pitch_deg = std::atan2(-imu.acc[0], std::sqrt(imu.acc[1] * imu.acc[1] + imu.acc[2] * imu.acc[2])) *
-                              180.0 / kPi;
+      row.raw_acc_pitch_deg = raw_acc_pitch_deg(imu.acc);
       row.fused_pitch_deg = imu.pitch_rad * 180.0 / kPi;
       row.gyro_pitch_rate_dps = imu.gyr[1] * 180.0 / kPi;
       row.pitch_sp_deg = latest_telemetry.pitch_sp_deg;

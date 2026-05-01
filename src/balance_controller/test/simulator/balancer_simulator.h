@@ -27,6 +27,11 @@ struct SimulatorConfig {
   float velocity_feedback_scale = 1.0f;
   double velocity_feedback_tau_s = 0.0;
   double imu_pitch_lag_s = 0.0;
+  uint32_t imu_noise_seed = 0;
+  double accel_noise_std_mps2 = 0.0;
+  double gyro_noise_std_rad_s = 0.0;
+  std::array<double, 3> accel_bias_mps2{};
+  std::array<double, 3> gyro_bias_rad_s{};
 };
 
 class BalancerSimulator {
@@ -64,6 +69,7 @@ class BalancerSimulator {
   void set_external_force_n(double force_n);
   void set_external_com_bias_rad(double com_bias_rad);
   void step(double dt_s);
+  ipc::ImuRawPayload make_raw_imu_payload(uint64_t sim_time_us) const;
   ipc::ImuSamplePayload make_imu_payload(uint64_t sim_time_us) const;
 
   const Config& config() const { return cfg_; }

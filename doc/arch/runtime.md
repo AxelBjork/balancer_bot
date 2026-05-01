@@ -22,7 +22,7 @@ Publishes `PhysicsTick`. In production it owns the wall-clock worker thread that
 
 ### `ImuService`
 
-Publishes `ImuData`. In hardware mode it owns the ISM330 IIO reader. In SIL mode the reader is disabled and the same payloads are injected externally over UDP.
+Publishes `ImuRawData` from the hardware reader, consumes that raw sample, and republishes fused `ImuData` internally. In SIL mode the reader is disabled and raw samples are injected externally over UDP as `ImuRawData`.
 
 ### `ControlService`
 
@@ -41,8 +41,8 @@ Consumes `MotorTargets`, forwards them to `MotorRunner` when hardware exists, an
 
 Bridges the internal bus to UDP:
 
-- UDP ingress: `PhysicsTick`, `JoystickCommand`, `ImuData`
-- UDP egress: `ImuData`, `MotorTargets`, `SystemTelemetry`
+- UDP ingress: `PhysicsTick`, `JoystickCommand`, `ImuRawData`
+- UDP egress: `MotorTargets`, `SystemTelemetry`
 
 `MotorFeedback` is intentionally internal-only and is not part of the Python UDP contract.
 

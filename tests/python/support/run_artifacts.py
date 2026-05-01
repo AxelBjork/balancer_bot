@@ -69,8 +69,6 @@ _PLOT_TOP = 28
 _PLOT_BOTTOM = 248
 _PLOT_WIDTH = _PLOT_RIGHT - _PLOT_LEFT
 _PLOT_HEIGHT = _PLOT_BOTTOM - _PLOT_TOP
-
-
 def _to_float(value: Any) -> float | None:
     if value is None:
         return None
@@ -499,6 +497,35 @@ def _scale_points(
     return points
 
 
+def _scale_points_to_rect(
+    xs: list[float],
+    ys: list[float],
+    *,
+    x_min: float,
+    x_max: float,
+    y_min: float,
+    y_max: float,
+    left: float,
+    right: float,
+    top: float,
+    bottom: float,
+) -> list[tuple[float, float]]:
+    if not xs or not ys:
+        return []
+    if x_max <= x_min:
+        x_max = x_min + 1.0
+    if y_max <= y_min:
+        y_max = y_min + 1.0
+    width = right - left
+    height = bottom - top
+    points: list[tuple[float, float]] = []
+    for x, y in zip(xs, ys):
+        px = left + ((x - x_min) / (x_max - x_min)) * width
+        py = top + (1.0 - ((y - y_min) / (y_max - y_min))) * height
+        points.append((px, py))
+    return points
+
+
 def _downsample(xs: list[float], ys: list[float], max_points: int = _MAX_PLOT_POINTS) -> tuple[list[float], list[float]]:
     if len(xs) <= max_points or len(ys) <= max_points:
         return xs, ys
@@ -623,6 +650,146 @@ def _write_svg_plot(
     path.write_text("\n".join(parts), encoding="utf-8")
 
 
+def _write_svg_multiplot(
+    path: Path,
+    rows: list[dict[str, Any]],
+    title: str,
+    panels: list[dict[str, Any]],
+    *,
+    x_label: str = "Time (s)",
+) -> None:
+    width = 1200
+    left = 104.0
+    right = 1156.0
+    top_margin = 52.0
+    panel_height = 250.0
+    panel_gap = 36.0
+    bottom_margin = 48.0
+    height = int(top_margin + len(panels) * panel_height + max(0, len(panels) - 1) * panel_gap + bottom_margin)
+    xs = _series(rows, "sim_time_s")
+    x_min, x_max = (min(xs), max(xs)) if xs else (0.0, 1.0)
+
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">',
+        '<rect width="100%" height="100%" fill="#ffffff" />',
+        f'<text x="{left:.0f}" y="28" font-family="monospace" font-size="18" font-weight="700">{title}</text>',
+    ]
+
+    for panel_idx, panel in enumerate(panels):
+        panel_y = top_margin + panel_idx * (panel_height + panel_gap)
+        plot_top = panel_y + 48.0
+        plot_bottom = panel_y + panel_height - 34.0
+        panel_title_y = panel_y + 16.0
+        legend_y = panel_y + 39.0
+        show_x_labels = panel_idx == len(panels) - 1
+
+        series = panel["series"]
+        series_values: list[float] = []
+        for key, _color, _label in series:
+            series_values.extend(_series(rows, key))
+        y_min, y_max = _data_range(series_values, center_zero=bool(panel.get("center_zero", False)))
+
+        parts.append(
+            f'<text x="{left:.0f}" y="{panel_title_y:.2f}" font-family="monospace" '
+            f'font-size="15" font-weight="700">{panel["title"]}</text>'
+        )
+
+        legend_x = left
+        for key, color, label in series:
+            if not _series(rows, key):
+                continue
+            label_width = 42 + max(132, len(label) * 8)
+            if legend_x + label_width > right:
+                legend_x = left
+                legend_y += 18.0
+                plot_top += 18.0
+            parts.append(
+                f'<line x1="{legend_x:.2f}" y1="{legend_y:.2f}" x2="{legend_x + 24:.2f}" '
+                f'y2="{legend_y:.2f}" stroke="{color}" stroke-width="2.5"/>'
+            )
+            parts.append(
+                f'<text x="{legend_x + 32:.2f}" y="{legend_y + 5:.2f}" '
+                f'font-family="monospace" font-size="13">{label}</text>'
+            )
+            legend_x += label_width
+
+        x_ticks = 6
+        for idx in range(x_ticks):
+            t = idx / (x_ticks - 1)
+            x_value = x_min + (x_max - x_min) * t
+            px = left + t * (right - left)
+            parts.append(
+                f'<line x1="{px:.2f}" y1="{plot_top:.2f}" x2="{px:.2f}" y2="{plot_bottom:.2f}" '
+                'stroke="#E5E7EB" stroke-width="1"/>'
+            )
+            if show_x_labels:
+                parts.append(
+                    f'<text x="{px:.2f}" y="{plot_bottom + 20:.2f}" text-anchor="middle" '
+                    f'font-family="monospace" font-size="12">{_format_tick(x_value)}</text>'
+                )
+
+        y_ticks = 5
+        for idx in range(y_ticks):
+            t = idx / (y_ticks - 1)
+            y_value = y_max - (y_max - y_min) * t
+            py = plot_top + t * (plot_bottom - plot_top)
+            parts.append(
+                f'<line x1="{left:.2f}" y1="{py:.2f}" x2="{right:.2f}" y2="{py:.2f}" '
+                'stroke="#E5E7EB" stroke-width="1"/>'
+            )
+            parts.append(
+                f'<text x="{left - 12:.2f}" y="{py + 4:.2f}" text-anchor="end" '
+                f'font-family="monospace" font-size="12">{_format_tick(y_value)}</text>'
+            )
+
+        if y_min < 0.0 < y_max:
+            zero_y = plot_top + (1.0 - ((0.0 - y_min) / (y_max - y_min))) * (plot_bottom - plot_top)
+            parts.append(
+                f'<line x1="{left:.2f}" y1="{zero_y:.2f}" x2="{right:.2f}" y2="{zero_y:.2f}" '
+                'stroke="#9CA3AF" stroke-width="1.5" stroke-dasharray="4 3"/>'
+            )
+
+        parts.append(
+            f'<rect x="{left:.2f}" y="{plot_top:.2f}" width="{right - left:.2f}" '
+            f'height="{plot_bottom - plot_top:.2f}" fill="none" stroke="#111827" stroke-width="1"/>'
+        )
+        parts.append(
+            f'<text x="28" y="{(plot_top + plot_bottom) / 2:.2f}" text-anchor="middle" '
+            f'font-family="monospace" font-size="13" '
+            f'transform="rotate(-90 28 {(plot_top + plot_bottom) / 2:.2f})">{panel["y_label"]}</text>'
+        )
+
+        for key, color, _label in series:
+            ys = _series(rows, key)
+            if len(xs) != len(ys) or not ys:
+                continue
+            xs_plot, ys_plot = _downsample(xs, ys)
+            parts.append(
+                _polyline(
+                    _scale_points_to_rect(
+                        xs_plot,
+                        ys_plot,
+                        x_min=x_min,
+                        x_max=x_max,
+                        y_min=y_min,
+                        y_max=y_max,
+                        left=left,
+                        right=right,
+                        top=plot_top,
+                        bottom=plot_bottom,
+                    ),
+                    color,
+                )
+            )
+
+    parts.append(
+        f'<text x="{(left + right) / 2:.2f}" y="{height - 16}" text-anchor="middle" '
+        f'font-family="monospace" font-size="13">{x_label}</text>'
+    )
+    parts.append("</svg>")
+    path.write_text("\n".join(parts), encoding="utf-8")
+
+
 def write_summary_json(path: Path, summary: dict[str, Any]) -> None:
     path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -718,26 +885,60 @@ class RunRecorder:
         write_metadata_json(output / "metadata.json", self.metadata)
         summary = self.finalize()
         write_summary_json(output / "summary.json", summary)
-        _write_svg_plot(output / "pitch_plot.svg", self.rows, "Pitch Timeline", [
-            ("pitch_deg", "#2563EB", "Telemetry pitch (deg)"),
-            ("plant_pitch_deg", "#DC2626", "Plant pitch (deg)"),
-            ("pitch_sp_deg", "#059669", "Pitch setpoint (deg)"),
-        ], y_label="Pitch (deg)", center_zero=True)
-        _write_svg_plot(output / "command_plot.svg", self.rows, "Command Timeline", [
-            ("u_sps", "#7C3AED", "Pitch command (steps/s)"),
-            ("left_sps", "#EA580C", "Left command (steps/s)"),
-            ("right_sps", "#0891B2", "Right command (steps/s)"),
-        ], y_label="Command (steps/s)")
-        _write_svg_plot(output / "wheel_plot.svg", self.rows, "Wheel Velocity Timeline", [
-            ("target_wheel_velocity", "#2563EB", "Target wheel velocity (m/s)"),
-            ("actual_wheel_velocity", "#DC2626", "Actual wheel velocity (m/s)"),
-            ("plant_velocity", "#059669", "Plant velocity (m/s)"),
-        ], y_label="Velocity (m/s)", center_zero=True)
-        _write_svg_plot(output / "force_plot.svg", self.rows, "Plant Force Timeline", [
-            ("f_cmd", "#7C3AED", "Commanded force (N)"),
-            ("f_app", "#EA580C", "Applied force (N)"),
-            ("theta_ddot", "#0891B2", "Theta accel (rad/s^2)"),
-        ], y_label="Force / Accel", center_zero=True)
+        _write_svg_multiplot(
+            output / "overview_plot.svg",
+            self.rows,
+            "Simulation Overview",
+            [
+                {
+                    "title": "Pitch",
+                    "series": [
+                        ("pitch_deg", "#2563EB", "Telemetry pitch"),
+                        ("plant_pitch_deg", "#DC2626", "Plant pitch"),
+                        ("pitch_sp_deg", "#059669", "Pitch setpoint"),
+                    ],
+                    "y_label": "Pitch (deg)",
+                    "center_zero": True,
+                },
+                {
+                    "title": "Wheel And Plant Velocity",
+                    "series": [
+                        ("target_wheel_velocity", "#2563EB", "Target wheel"),
+                        ("actual_wheel_velocity", "#DC2626", "Actual wheel"),
+                        ("plant_velocity", "#059669", "Plant velocity"),
+                    ],
+                    "y_label": "Velocity (m/s)",
+                    "center_zero": True,
+                },
+            ],
+        )
+        _write_svg_multiplot(
+            output / "actuator_plot.svg",
+            self.rows,
+            "Actuator Response",
+            [
+                {
+                    "title": "Wheel Commands",
+                    "series": [
+                        ("u_sps", "#7C3AED", "Pitch command"),
+                        ("left_sps", "#EA580C", "Left command"),
+                        ("right_sps", "#0891B2", "Right command"),
+                    ],
+                    "y_label": "Command (steps/s)",
+                    "center_zero": True,
+                },
+                {
+                    "title": "Plant Force And Pitch Accel",
+                    "series": [
+                        ("f_cmd", "#7C3AED", "Commanded force"),
+                        ("f_app", "#EA580C", "Applied force"),
+                        ("theta_ddot", "#0891B2", "Pitch accel"),
+                    ],
+                    "y_label": "Force / accel",
+                    "center_zero": True,
+                },
+            ],
+        )
         return summary
 
 

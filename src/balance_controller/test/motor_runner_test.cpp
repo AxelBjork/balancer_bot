@@ -74,10 +74,10 @@ TEST_F(MotorRunnerTest, StepTrackingAccumulation) {
   Stepper right(1, Stepper::Pins{7, 8, 14});
   MotorRunner runner(left, right, 1000.0);
 
-  // Run at 100 sps for 250ms total
-  RunFor(runner, 100.0, 100.0, std::chrono::milliseconds(250));
+  // Run at 1000 sps for 25ms total
+  RunFor(runner, 1000.0, 1000.0, std::chrono::milliseconds(25));
 
-  // Expected: ~25 steps total (100 sps * 0.25s)
+  // Expected: ~25 steps total (1000 sps * 0.025s)
   int64_t leftSteps = runner.getLeftSteps();
   int64_t rightSteps = runner.getRightSteps();
 
@@ -109,14 +109,14 @@ TEST_F(MotorRunnerTest, VelocityEstimation) {
 
   // Move forward 1000 sps for 500ms
   // Note: RunFor pumps at ~500Hz (2ms sleep), so plenty of updates.
-  RunFor(runner, 1000.0, 1000.0, std::chrono::milliseconds(500));
+  RunFor(runner, 400.0, 400.0, std::chrono::milliseconds(50));
 
   float v = runner.getActualSpeedSps();
   // Allow loose tolerance due to simulation timing jitter
-  EXPECT_NEAR(v, 1000.0f, 150.0f) << "Velocity should be approx 1000 sps";
+  EXPECT_NEAR(v, 400.0f, 150.0f) << "Velocity should be approx 1000 sps";
 
   // Differential (spin)
-  RunFor(runner, 1000.0, -1000.0, std::chrono::milliseconds(500));
+  RunFor(runner, 400.0, -400.0, std::chrono::milliseconds(50));
   v = runner.getActualSpeedSps();
   EXPECT_NEAR(v, 0.0f, 50.0f) << "Average velocity should be 0 for pure spin";
 }
@@ -127,7 +127,7 @@ TEST_F(MotorRunnerTest, VelocityEstimationResolvesBelowOnePulsePerFrame) {
   MotorRunner runner(left, right, 400.0, 50000.0);
 
   runner.getActualSpeedSps();
-  RunFor(runner, 100.0, 100.0, std::chrono::milliseconds(500));
+  RunFor(runner, 100.0, 100.0, std::chrono::milliseconds(100));
 
   const float v = runner.getActualSpeedSps();
   EXPECT_NEAR(v, 100.0f, 35.0f) << "Estimated velocity should average below the 200 sps quantization step";

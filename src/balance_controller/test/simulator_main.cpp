@@ -12,6 +12,7 @@
 #include <deque>
 #include <iostream>
 #include <optional>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -22,6 +23,7 @@
 #include "config.h"
 #include "simulator/balancer_simulator.h"
 #include "types.h"
+#include "services/imu/pitch_lpf.h"
 #include "services/control/rate_controller_core.h"
 
 namespace {
@@ -226,6 +228,12 @@ class SimulatorService {
     double max_abs_pitch_deg = 0.0;
     double max_abs_position_m = 0.0;
     std::deque<TailSample> tail_samples;
+    std::array<double, 3> accel_bias_mps2{};
+    std::array<double, 3> gyro_bias_rad_s{};
+    PitchComplementaryFilter imu_filter{};
+    std::mt19937 imu_rng{};
+    std::normal_distribution<double> accel_noise{0.0, 0.0};
+    std::normal_distribution<double> gyro_noise{0.0, 0.0};
 
     explicit ActiveRun(uint32_t id,
                        std::string pid_path,
@@ -278,6 +286,7 @@ class SimulatorService {
     }
 
     const PhysicsProfile profile = parse_profile(request.physics_profile);
+
     const std::string requested_pid = trim_c_string(request.pid_config_path);
     const std::string pid_path = requested_pid.empty() ? default_pid_config_ : requested_pid;
     ConfigPid::load(pid_path);
@@ -290,6 +299,11 @@ class SimulatorService {
     sim_cfg.velocity_feedback_scale = request.velocity_feedback_scale;
     sim_cfg.velocity_feedback_tau_s = request.velocity_feedback_tau_s;
     sim_cfg.imu_pitch_lag_s = request.imu_pitch_lag_s;
+    sim_cfg.imu_noise_seed = request.imu_noise_seed;
+    sim_cfg.accel_noise_std_mps2 = request.accel_noise_std_mps2;
+    sim_cfg.gyro_noise_std_rad_s = request.gyro_noise_std_rad_s;
+    sim_cfg.accel_bias_mps2 = request.accel_bias_mps2;
+    sim_cfg.gyro_bias_rad_s = request.gyro_bias_rad_s;
     BalancerSimulator sim(sim_cfg);
 
     std::array<ServiceDisturbance, ipc::kMaxSimDisturbances> disturbances{};
@@ -309,6 +323,11 @@ class SimulatorService {
     run_.emplace(request.run_id, pid_path, disturbances, std::move(sim));
     run_->steps_total = std::max(1, static_cast<int>(std::llround(request.duration_s / kTickDtS)));
     run_->max_abs_pitch_deg = std::abs(run_->sim.get_pitch()) * 180.0 / kPi;
+    run_->accel_bias_mps2 = request.accel_bias_mps2;
+    run_->gyro_bias_rad_s = request.gyro_bias_rad_s;
+    run_->imu_rng.seed(request.imu_noise_seed);
+    run_->accel_noise = std::normal_distribution<double>(0.0, request.accel_noise_std_mps2);
+    run_->gyro_noise = std::normal_distribution<double>(0.0, request.gyro_noise_std_rad_s);
 
     run_->core.setMotorOutputs([this](float left, float right) {
       if (!run_.has_value()) {
@@ -398,7 +417,7 @@ class SimulatorService {
     run.sim_time_us += static_cast<uint64_t>(kTickDtS * 1e6);
     ++run.steps_done;
 
-    const auto imu = run.sim.make_imu_payload(run.sim_time_us);
+    const auto imu = make_controller_imu(run);
     ImuSample sample{};
     sample.angle_rad = imu.pitch_rad;
     sample.gyro_rad_s = imu.filtered_pitch_rate_rad_s;
@@ -432,6 +451,10 @@ class SimulatorService {
         std::atan2(-acc[0], std::sqrt(acc[1] * acc[1] + acc[2] * acc[2])) * (180.0 / kPi));
   }
 
+  ipc::ImuSamplePayload make_controller_imu(ActiveRun& run) {
+    return run.sim.make_imu_payload(run.sim_time_us);
+  }
+
   void publish_telemetry(ActiveRun& run, const ImuSample& sample, const ipc::ImuSamplePayload& imu) {
     ipc::SystemTelemetryPayload payload{};
     const auto& diag = run.sim.diagnostics();
@@ -453,7 +476,7 @@ class SimulatorService {
         run.have_telemetry ? static_cast<float>(run.latest_telemetry.pitch_rate_dps)
                            : static_cast<float>(state.pitch_rate * 180.0 / kPi);
     payload.raw_acc_pitch_deg = accel_pitch_deg(imu.acc);
-    payload.fused_pitch_deg = payload.pitch_deg;
+    payload.fused_pitch_deg = static_cast<float>(sample.angle_rad * 180.0 / kPi);
     payload.gyro_pitch_rate_dps = static_cast<float>(imu.gyr[1] * 180.0 / kPi);
     payload.filtered_pitch_rate_dps =
         run.have_telemetry ? static_cast<float>(run.latest_telemetry.filtered_pitch_rate_dps)

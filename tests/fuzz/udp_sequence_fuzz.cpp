@@ -10,6 +10,7 @@
 #include "messages/balancer_msgs.h"
 #include "publisher.h"
 #include "services/control_service.h"
+#include "services/imu_service.h"
 #include "types.h"
 #include "udp_bridge.h"
 
@@ -23,8 +24,8 @@ std::size_t payload_size_for(MsgId id) {
       return sizeof(PhysicsTickPayload);
     case MsgId::JoystickCommand:
       return sizeof(ipc::JoystickCommandPayload);
-    case MsgId::ImuData:
-      return sizeof(ipc::ImuSamplePayload);
+    case MsgId::ImuRawData:
+      return sizeof(ipc::ImuRawPayload);
     default:
       return 0;
   }
@@ -33,6 +34,7 @@ std::size_t payload_size_for(MsgId id) {
 struct ServiceHarness {
   ipc::MessageBus bus;
   sil::ControlService control;
+  sil::ImuService imu;
   ipc::TypedPublisher<ipc::UdpBridge> ingress;
   std::uint64_t messages_processed = 0;
   std::uint64_t motor_targets_seen = 0;
@@ -41,13 +43,17 @@ struct ServiceHarness {
   float last_right_sps = 0.0f;
   float last_u_sps = 0.0f;
 
-  ServiceHarness() : bus(this, &ServiceHarness::dispatch), control(bus), ingress(bus) { control.start(); }
+  ServiceHarness() : bus(this, &ServiceHarness::dispatch), control(bus), imu(bus, false), ingress(bus) { control.start(); }
 
   ~ServiceHarness() { control.stop(); }
 
   static void dispatch(void* ctx, MsgId id, const void* payload) {
     auto* self = static_cast<ServiceHarness*>(ctx);
     switch (id) {
+      case MsgId::ImuRawData:
+        self->imu.on_message<MsgId::ImuRawData>(*static_cast<const ipc::ImuRawPayload*>(payload));
+        ++self->messages_processed;
+        break;
       case MsgId::ImuData:
         self->control.on_message<MsgId::ImuData>(*static_cast<const ipc::ImuSamplePayload*>(payload));
         ++self->messages_processed;

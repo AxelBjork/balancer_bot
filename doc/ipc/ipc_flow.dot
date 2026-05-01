@@ -27,7 +27,7 @@ digraph IPC {
     margin=34;
     ImuService [
       fillcolor="#0369A1",
-      label=<<B><FONT POINT-SIZE="30">ImuService</FONT></B><BR/><FONT POINT-SIZE="24">Publishes `ImuData` samples that<BR/>represent the controller&apos;s current<BR/>view of body pitch, specific force,<BR/>angular rate, and sample time.</FONT>>
+      label=<<B><FONT POINT-SIZE="30">ImuService</FONT></B><BR/><FONT POINT-SIZE="24">Consumes raw accelerometer/gyroscope<BR/>samples and publishes `ImuData`<BR/>samples that represent the<BR/>controller&apos;s current view of body<BR/>pitch, specific force, angular rate,<BR/>and sample time.</FONT>>
     ];
     TimeService [
       fillcolor="#0369A1",
@@ -76,17 +76,18 @@ digraph IPC {
   }
 
   TestCase -> TX [label="send_msg", color="#F1F5F9", penwidth=5];
-  TX -> UdpBridge [label="Inbound Traffic:\nImuData, JoystickCommand\nPhysicsTick", color="#F1F5F9", penwidth=5, fontsize=25];
+  TX -> UdpBridge [label="Inbound Traffic:\nImuRawData, JoystickCommand\nPhysicsTick", color="#F1F5F9", penwidth=5, fontsize=25];
 
   // Internal Service Logic
   ControlService -> MotorService [label="MotorTargets", style=dashed];
   ControlService -> UdpBridge [label="MotorTargets, SystemTelemetry", style=dashed];
   ImuService -> ControlService [label="ImuData", style=dashed];
-  ImuService -> UdpBridge [label="ImuData", style=dashed];
+  ImuService -> ImuService [label="ImuRawData", style=dashed];
   MotorService -> ControlService [label="MotorFeedback", style=dashed];
   TimeService -> ControlService [label="PhysicsTick", style=dashed];
-  UdpBridge -> ControlService [label="ImuData, JoystickCommand\nPhysicsTick", style=dashed];
+  UdpBridge -> ControlService [label="JoystickCommand, PhysicsTick", style=dashed];
+  UdpBridge -> ImuService [label="ImuRawData", style=dashed];
 
-  RX -> UdpBridge [label="Outbound Traffic:\nImuData, MotorTargets\nSystemTelemetry", color="#F1F5F9", penwidth=5, dir=back, fontsize=25, arrowtail=normal];
+  RX -> UdpBridge [label="Outbound Traffic:\nMotorTargets, SystemTelemetry", color="#F1F5F9", penwidth=5, dir=back, fontsize=25, arrowtail=normal];
   TestCase -> RX [label="recv_msg", color="#F1F5F9", penwidth=5, dir=back, arrowtail=normal];
 }

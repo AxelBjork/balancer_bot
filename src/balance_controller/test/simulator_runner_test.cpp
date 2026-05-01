@@ -1,9 +1,13 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <random>
 
+#include "config.h"
+#include "services/imu/pitch_lpf.h"
 #include "simulator/simulator_runner.h"
 
 namespace {
@@ -46,6 +50,10 @@ int matrix_rank(std::vector<std::array<double, 4>> rows) {
     ++pivot_col;
   }
   return rank;
+}
+
+double raw_pitch_deg(const std::array<double, 3>& acc) {
+  return std::atan2(-acc[0], std::sqrt(acc[1] * acc[1] + acc[2] * acc[2])) * 180.0 / M_PI;
 }
 
 TEST(SimulatorRunnerTest, PositivePitchProducesCorrectiveWheelAndPlantResponse) {
@@ -95,6 +103,54 @@ TEST(SimulatorRunnerTest, TelemetryTracksPlantPitch) {
     EXPECT_TRUE(std::isfinite(row.plant_pitch_deg));
     EXPECT_NEAR(row.pitch_deg, row.plant_pitch_deg, 1e-3);
   }
+}
+
+TEST(SimulatorRunnerTest, StaticRawImuNoiseIsReducedWithoutErasingPitchBias) {
+  BalancerSimulator::Config cfg;
+  cfg.initial_pitch_deg = 4.0;
+  cfg.physics_profile = PhysicsProfile::Simplified;
+  BalancerSimulator sim(cfg);
+
+  PitchComplementaryFilter filter;
+  std::mt19937 rng(909);
+  std::normal_distribution<double> accel_noise(0.0, 0.25);
+  std::normal_distribution<double> gyro_noise(0.0, 0.015);
+
+  constexpr double fs_hz = Config::sampling_hz;
+  constexpr int total_samples = static_cast<int>(8.0 * fs_hz);
+  constexpr int warmup_samples = static_cast<int>(2.0 * fs_hz);
+  const auto tick = std::chrono::nanoseconds{(long long)std::llround(1e9 / fs_hz)};
+  auto now = std::chrono::steady_clock::now();
+
+  double raw_sq = 0.0;
+  double fused_sq = 0.0;
+  double fused_sum = 0.0;
+  int count = 0;
+
+  for (int i = 0; i < total_samples; ++i) {
+    ipc::ImuRawPayload raw = sim.make_raw_imu_payload(static_cast<uint64_t>((i + 1) * 1e6 / fs_hz));
+    for (int axis = 0; axis < 3; ++axis) {
+      raw.acc[axis] += accel_noise(rng);
+      raw.gyr[axis] += gyro_noise(rng);
+    }
+    now += tick;
+    filter.push_sample(raw.acc, raw.gyr, now);
+    const ImuSample fused = filter.read_latest();
+    if (i >= warmup_samples) {
+      const double raw_err = raw_pitch_deg(raw.acc) - cfg.initial_pitch_deg;
+      const double fused_err = fused.angle_rad * 180.0 / M_PI - cfg.initial_pitch_deg;
+      raw_sq += raw_err * raw_err;
+      fused_sq += fused_err * fused_err;
+      fused_sum += fused.angle_rad * 180.0 / M_PI;
+      ++count;
+    }
+  }
+
+  ASSERT_GT(count, 0);
+  const double raw_rms = std::sqrt(raw_sq / count);
+  const double fused_rms = std::sqrt(fused_sq / count);
+  EXPECT_LT(fused_rms, raw_rms * 0.55);
+  EXPECT_NEAR(fused_sum / count, cfg.initial_pitch_deg, 0.35);
 }
 
 TEST(SimulatorRunnerTest, PositiveComOffsetBuildsNegativeLeanTrim) {
