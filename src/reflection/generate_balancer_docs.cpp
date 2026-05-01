@@ -17,6 +17,7 @@
 #include "services/imu_service.h"
 #include "services/motor_service.h"
 #include "services/time_service.h"
+#include "services/input_service.h"
 
 using namespace balancer_reflection;
 
@@ -78,6 +79,7 @@ using Components = std::tuple<sil::ImuService,
                               sil::TimeService,
                               sil::ControlService,
                               sil::MotorService,
+                              sil::InputService,
                               ipc::UdpBridge>;
 
 inline std::string dot_escape_label(std::string_view s) {

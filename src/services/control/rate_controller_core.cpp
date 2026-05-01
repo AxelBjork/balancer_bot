@@ -184,6 +184,7 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
   }
 
   const double turn_sps = static_cast<double>(joy.turn) * kMaxSps * 0.5;
+
   const double left_sps = u_sps + turn_sps;
   const double right_sps = u_sps - turn_sps;
 
@@ -204,6 +205,7 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
     t.rate_sp_dps = rate_sp_rad_s * 180.0 / M_PI;
     t.out_norm = u(1);
     t.u_sps = u_sps;
+    t.turn_sps = turn_sps;
     t.integ_pitch = st.pitchspeed_integ;
     t.vel_error = vel_error_sps;
     t.vel_i_term = p_->lean_trim_rad;

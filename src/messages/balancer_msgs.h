@@ -59,6 +59,7 @@ struct DOC_DESC(
   double rate_sp_dps;
   double out_norm;
   double u_sps;
+  double turn_sps;
   double integ_pitch;
   double vel_error;
   double vel_p_term;

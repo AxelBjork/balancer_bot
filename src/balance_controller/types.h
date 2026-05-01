@@ -28,6 +28,7 @@ struct Telemetry {
   double rate_sp_dps;
   double out_norm;     // PX4 rate controller normalized output (pitch axis)
   double u_sps;        // wheel command [steps/s]
+  double turn_sps;     // differential steering command [steps/s]
   double integ_pitch;  // PX4 integral state for pitch
   // Translational outer-loop diagnostics
   double vel_error;

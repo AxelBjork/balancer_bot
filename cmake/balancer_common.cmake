@@ -52,6 +52,7 @@ function(add_balancer_common_target)
     ${CMAKE_SOURCE_DIR}/src/services/control_service.cpp
     ${CMAKE_SOURCE_DIR}/src/services/motor_service.cpp
     ${CMAKE_SOURCE_DIR}/src/services/time_service.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/input_service.cpp
   )
 
   add_library(balancer_common STATIC ${balancer_sources})

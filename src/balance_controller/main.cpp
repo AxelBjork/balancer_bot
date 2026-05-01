@@ -10,5 +10,5 @@ int main() {
 
   PigpioCtx _ctx;
   ControlApp app;
-  return app.run(_ctx, true);
+  return app.run(_ctx);
 }

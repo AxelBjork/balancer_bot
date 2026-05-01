@@ -41,6 +41,10 @@ digraph IPC {
       fillcolor="#0369A1",
       label=<<B><FONT POINT-SIZE="30">MotorService</FONT></B><BR/><FONT POINT-SIZE="24">Implements the actuator boundary<BR/>between reflected IPC commands and the<BR/>low-level motor runner.</FONT>>
     ];
+    InputService [
+      fillcolor="#0369A1",
+      label=<<B><FONT POINT-SIZE="30">InputService</FONT></B><BR/><FONT POINT-SIZE="24">Reads input from a hardware Xbox<BR/>controller and publishes normalized<BR/>`JoystickCommand` messages to the bus.</FONT>>
+    ];
     UdpBridge [
       fillcolor="#0F766E",
       label=<<B><FONT POINT-SIZE="38">UdpBridge</FONT></B><BR/><FONT POINT-SIZE="24">Stateful transport bridge that<BR/>connects the internal `MessageBus` to<BR/>external UDP-based SIL clients.</FONT>>
@@ -83,6 +87,7 @@ digraph IPC {
   ControlService -> UdpBridge [label="MotorTargets, SystemTelemetry", style=dashed];
   ImuService -> ControlService [label="ImuData", style=dashed];
   ImuService -> ImuService [label="ImuRawData", style=dashed];
+  InputService -> ControlService [label="JoystickCommand", style=dashed];
   MotorService -> ControlService [label="MotorFeedback", style=dashed];
   TimeService -> ControlService [label="PhysicsTick", style=dashed];
   UdpBridge -> ControlService [label="JoystickCommand, PhysicsTick", style=dashed];

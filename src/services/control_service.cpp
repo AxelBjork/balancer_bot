@@ -44,6 +44,7 @@ ControlService::ControlService(ipc::MessageBus& bus) : bus_(bus) {
     p.rate_sp_dps = t.rate_sp_dps;
     p.out_norm = t.out_norm;
     p.u_sps = t.u_sps;
+    p.turn_sps = t.turn_sps;
     p.integ_pitch = t.integ_pitch;
     p.vel_error = t.vel_error;
     p.vel_p_term = t.vel_p_term;
