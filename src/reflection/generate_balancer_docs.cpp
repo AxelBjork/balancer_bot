@@ -29,7 +29,11 @@ consteval bool contains_msg(ipc::MsgList<Ids...>) {
 
 template <typename Component, ::MsgId Id>
 consteval bool component_subscribes() {
-  return contains_msg<Id>(typename Component::Subscribes{});
+  if constexpr (requires { typename Component::Subscribes; }) {
+    return contains_msg<Id>(typename Component::Subscribes{});
+  } else {
+    return false;
+  }
 }
 
 template <typename Component, ::MsgId Id>
@@ -349,14 +353,19 @@ void emit_components_impl(std::index_sequence<Is...>) {
     std::cout << "\n";
 
     std::cout << "- Subscribes: ";
-    []<::MsgId... Ids>(ipc::MsgList<Ids...>) {
-      bool first = true;
-      (((std::cout << (first ? "" : ", ") << "`" << MessageTraits<Ids>::name << "`"), first = false),
-       ...);
-      if (first) {
-        std::cout << "_None_";
-      }
-    }(typename Component::Subscribes{});
+    if constexpr (requires { typename Component::Subscribes; }) {
+      []<::MsgId... Ids>(ipc::MsgList<Ids...>) {
+        bool first = true;
+        (((std::cout << (first ? "" : ", ") << "`" << MessageTraits<Ids>::name << "`"),
+          first = false),
+         ...);
+        if (first) {
+          std::cout << "_None_";
+        }
+      }(typename Component::Subscribes{});
+    } else {
+      std::cout << "_None_";
+    }
     std::cout << "\n\n";
   }());
 }

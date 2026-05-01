@@ -1,10 +1,7 @@
 // Stepper.h
 #pragma once
 #include <pigpiod_if2.h>
-
-#include <atomic>
 #include <cmath>
-#include <mutex>
 #include <stdexcept>
 
 class Stepper {

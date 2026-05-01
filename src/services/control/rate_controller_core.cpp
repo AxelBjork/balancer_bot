@@ -19,7 +19,7 @@ constexpr double kMaxPositionTargetSps = 800.0;
 constexpr double kMaxPositionTrimPitchBiasRad = 0.15;
 constexpr double kLeanTrimEnablePitchRad = 10.0 * M_PI / 180.0;
 constexpr double kLeanTrimResetPitchRad = 20.0 * M_PI / 180.0;
-constexpr double kLeanTrimVelocityDeadbandSps = 25.0;
+constexpr double kLeanTrimVelocityDeadbandSps = 10.0;
 constexpr double kLeanTrimVelocityFcHz = 0.5;
 constexpr double kLeanTrimNormalizationSps = 4000.0;
 

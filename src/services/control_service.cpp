@@ -63,6 +63,8 @@ ControlService::ControlService(ipc::MessageBus& bus) : bus_(bus) {
     p.command_saturated = t.command_saturated;
     p.left_applied_sps = have_motor_feedback_ ? last_left_applied_sps_ : last_left_sps_;
     p.right_applied_sps = have_motor_feedback_ ? last_right_applied_sps_ : last_right_sps_;
+    p.motor_update_dt_ms = have_motor_feedback_ ? last_motor_update_dt_ms_ : 0.0;
+    p.motor_feedback_age_ms = have_motor_feedback_ ? last_motor_feedback_age_ms_ : 0.0;
     p.left_actual_steps = last_left_actual_steps_;
     p.right_actual_steps = last_right_actual_steps_;
     p.plant_pitch_deg = t.pitch_deg;

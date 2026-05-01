@@ -11,7 +11,8 @@ class MessageBus {
  public:
   using DispatchFn = void (*)(void* ctx, MsgId id, const void* payload);
 
-  explicit MessageBus(void* ctx, DispatchFn dispatcher) : ctx_(ctx), dispatcher_(dispatcher) {}
+  explicit MessageBus(void* ctx, DispatchFn dispatcher) : ctx_(ctx), dispatcher_(dispatcher) {
+  }
   ~MessageBus() = default;
 
   MessageBus(const MessageBus&) = delete;
@@ -71,7 +72,10 @@ bool try_publish_raw(MessageBus& bus, MsgId id, const void* data, size_t size, M
 
 template <typename Service, MsgId... SubscribedIds>
 bool try_dispatch_raw(Service& service, MsgId id, const void* payload, MsgList<SubscribedIds...>) {
-  return ((id == SubscribedIds && (service.template on_message<SubscribedIds>(unpack_payload<SubscribedIds>(payload)), true)) || ...);
+  return ((id == SubscribedIds &&
+           (service.template on_message<SubscribedIds>(unpack_payload<SubscribedIds>(payload)),
+            true)) ||
+          ...);
 }
 
 }  // namespace detail
@@ -93,7 +97,8 @@ void dispatch_to_services(MsgId id, const void* payload, Services&... services) 
 template <typename Component>
 class TypedPublisher {
  public:
-  explicit TypedPublisher(MessageBus& bus) : bus_(bus) {}
+  explicit TypedPublisher(MessageBus& bus) : bus_(bus) {
+  }
 
   template <MsgId Id>
   void publish(const typename MessageTraits<Id>::Payload& payload) {
@@ -106,7 +111,9 @@ class TypedPublisher {
     return detail::try_publish_raw(bus_, id, data, size, typename Component::Publishes{});
   }
 
-  MessageBus& bus() { return bus_; }
+  MessageBus& bus() {
+    return bus_;
+  }
 
  private:
   MessageBus& bus_;

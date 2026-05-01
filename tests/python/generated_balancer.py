@@ -96,7 +96,7 @@ class MotorTargetsPayload:
 
 @dataclass
 class SystemTelemetryPayload:
-    WIRE_SIZE = 384
+    WIRE_SIZE = 400
     run_id: int
     t_sec: float
     sim_time_s: float
@@ -129,6 +129,8 @@ class SystemTelemetryPayload:
     command_saturated: float
     left_applied_sps: float
     right_applied_sps: float
+    motor_update_dt_ms: float
+    motor_feedback_age_ms: float
     left_actual_steps: int
     right_actual_steps: int
     plant_pitch_deg: float
@@ -148,7 +150,7 @@ class SystemTelemetryPayload:
 
     def pack_wire(self) -> bytes:
         data = bytearray()
-        data.extend(struct.pack("<I4xdddddddddddddddddddddddddddddddqqdddddddddddddd", self.run_id, self.t_sec, self.sim_time_s, self.age_ms, self.pitch_deg, self.pitch_rate_dps, self.raw_acc_pitch_deg, self.fused_pitch_deg, self.gyro_pitch_rate_dps, self.filtered_pitch_rate_dps, self.rate_sp_dps, self.out_norm, self.u_sps, self.integ_pitch, self.vel_error, self.vel_p_term, self.vel_i_term, self.target_vel_sps, self.measured_vel_sps, self.filtered_vel_sps, self.position_target_vel_sps, self.pitch_ref_from_vel_deg, self.pitch_ref_from_pos_deg, self.pitch_error_deg, self.rate_error_dps, self.pitch_sp_deg, self.effective_pitch_sp_deg, self.pitch_trim_deg, self.trim_active, self.command_saturated, self.left_applied_sps, self.right_applied_sps, self.left_actual_steps, self.right_actual_steps, self.plant_pitch_deg, self.plant_pitch_rate_dps, self.plant_position_m, self.plant_velocity_mps, self.target_wheel_velocity, self.actual_wheel_velocity, self.plant_velocity_error, self.f_cmd, self.f_app, self.external_force_n, self.external_com_bias_rad, self.x_ddot, self.theta_ddot, self.force_saturated))
+        data.extend(struct.pack("<I4xdddddddddddddddddddddddddddddddddqqdddddddddddddd", self.run_id, self.t_sec, self.sim_time_s, self.age_ms, self.pitch_deg, self.pitch_rate_dps, self.raw_acc_pitch_deg, self.fused_pitch_deg, self.gyro_pitch_rate_dps, self.filtered_pitch_rate_dps, self.rate_sp_dps, self.out_norm, self.u_sps, self.integ_pitch, self.vel_error, self.vel_p_term, self.vel_i_term, self.target_vel_sps, self.measured_vel_sps, self.filtered_vel_sps, self.position_target_vel_sps, self.pitch_ref_from_vel_deg, self.pitch_ref_from_pos_deg, self.pitch_error_deg, self.rate_error_dps, self.pitch_sp_deg, self.effective_pitch_sp_deg, self.pitch_trim_deg, self.trim_active, self.command_saturated, self.left_applied_sps, self.right_applied_sps, self.motor_update_dt_ms, self.motor_feedback_age_ms, self.left_actual_steps, self.right_actual_steps, self.plant_pitch_deg, self.plant_pitch_rate_dps, self.plant_position_m, self.plant_velocity_mps, self.target_wheel_velocity, self.actual_wheel_velocity, self.plant_velocity_error, self.f_cmd, self.f_app, self.external_force_n, self.external_com_bias_rad, self.x_ddot, self.theta_ddot, self.force_saturated))
         return bytes(data)
 
     def pack(self) -> bytes:
@@ -157,9 +159,9 @@ class SystemTelemetryPayload:
     @classmethod
     def unpack_wire(cls, data: bytes) -> "SystemTelemetryPayload":
         offset = 0
-        run_id, t_sec, sim_time_s, age_ms, pitch_deg, pitch_rate_dps, raw_acc_pitch_deg, fused_pitch_deg, gyro_pitch_rate_dps, filtered_pitch_rate_dps, rate_sp_dps, out_norm, u_sps, integ_pitch, vel_error, vel_p_term, vel_i_term, target_vel_sps, measured_vel_sps, filtered_vel_sps, position_target_vel_sps, pitch_ref_from_vel_deg, pitch_ref_from_pos_deg, pitch_error_deg, rate_error_dps, pitch_sp_deg, effective_pitch_sp_deg, pitch_trim_deg, trim_active, command_saturated, left_applied_sps, right_applied_sps, left_actual_steps, right_actual_steps, plant_pitch_deg, plant_pitch_rate_dps, plant_position_m, plant_velocity_mps, target_wheel_velocity, actual_wheel_velocity, plant_velocity_error, f_cmd, f_app, external_force_n, external_com_bias_rad, x_ddot, theta_ddot, force_saturated = struct.unpack_from("<I4xdddddddddddddddddddddddddddddddqqdddddddddddddd", data, offset)
-        offset += struct.calcsize("<I4xdddddddddddddddddddddddddddddddqqdddddddddddddd")
-        return cls(run_id=run_id, t_sec=t_sec, sim_time_s=sim_time_s, age_ms=age_ms, pitch_deg=pitch_deg, pitch_rate_dps=pitch_rate_dps, raw_acc_pitch_deg=raw_acc_pitch_deg, fused_pitch_deg=fused_pitch_deg, gyro_pitch_rate_dps=gyro_pitch_rate_dps, filtered_pitch_rate_dps=filtered_pitch_rate_dps, rate_sp_dps=rate_sp_dps, out_norm=out_norm, u_sps=u_sps, integ_pitch=integ_pitch, vel_error=vel_error, vel_p_term=vel_p_term, vel_i_term=vel_i_term, target_vel_sps=target_vel_sps, measured_vel_sps=measured_vel_sps, filtered_vel_sps=filtered_vel_sps, position_target_vel_sps=position_target_vel_sps, pitch_ref_from_vel_deg=pitch_ref_from_vel_deg, pitch_ref_from_pos_deg=pitch_ref_from_pos_deg, pitch_error_deg=pitch_error_deg, rate_error_dps=rate_error_dps, pitch_sp_deg=pitch_sp_deg, effective_pitch_sp_deg=effective_pitch_sp_deg, pitch_trim_deg=pitch_trim_deg, trim_active=trim_active, command_saturated=command_saturated, left_applied_sps=left_applied_sps, right_applied_sps=right_applied_sps, left_actual_steps=left_actual_steps, right_actual_steps=right_actual_steps, plant_pitch_deg=plant_pitch_deg, plant_pitch_rate_dps=plant_pitch_rate_dps, plant_position_m=plant_position_m, plant_velocity_mps=plant_velocity_mps, target_wheel_velocity=target_wheel_velocity, actual_wheel_velocity=actual_wheel_velocity, plant_velocity_error=plant_velocity_error, f_cmd=f_cmd, f_app=f_app, external_force_n=external_force_n, external_com_bias_rad=external_com_bias_rad, x_ddot=x_ddot, theta_ddot=theta_ddot, force_saturated=force_saturated)
+        run_id, t_sec, sim_time_s, age_ms, pitch_deg, pitch_rate_dps, raw_acc_pitch_deg, fused_pitch_deg, gyro_pitch_rate_dps, filtered_pitch_rate_dps, rate_sp_dps, out_norm, u_sps, integ_pitch, vel_error, vel_p_term, vel_i_term, target_vel_sps, measured_vel_sps, filtered_vel_sps, position_target_vel_sps, pitch_ref_from_vel_deg, pitch_ref_from_pos_deg, pitch_error_deg, rate_error_dps, pitch_sp_deg, effective_pitch_sp_deg, pitch_trim_deg, trim_active, command_saturated, left_applied_sps, right_applied_sps, motor_update_dt_ms, motor_feedback_age_ms, left_actual_steps, right_actual_steps, plant_pitch_deg, plant_pitch_rate_dps, plant_position_m, plant_velocity_mps, target_wheel_velocity, actual_wheel_velocity, plant_velocity_error, f_cmd, f_app, external_force_n, external_com_bias_rad, x_ddot, theta_ddot, force_saturated = struct.unpack_from("<I4xdddddddddddddddddddddddddddddddddqqdddddddddddddd", data, offset)
+        offset += struct.calcsize("<I4xdddddddddddddddddddddddddddddddddqqdddddddddddddd")
+        return cls(run_id=run_id, t_sec=t_sec, sim_time_s=sim_time_s, age_ms=age_ms, pitch_deg=pitch_deg, pitch_rate_dps=pitch_rate_dps, raw_acc_pitch_deg=raw_acc_pitch_deg, fused_pitch_deg=fused_pitch_deg, gyro_pitch_rate_dps=gyro_pitch_rate_dps, filtered_pitch_rate_dps=filtered_pitch_rate_dps, rate_sp_dps=rate_sp_dps, out_norm=out_norm, u_sps=u_sps, integ_pitch=integ_pitch, vel_error=vel_error, vel_p_term=vel_p_term, vel_i_term=vel_i_term, target_vel_sps=target_vel_sps, measured_vel_sps=measured_vel_sps, filtered_vel_sps=filtered_vel_sps, position_target_vel_sps=position_target_vel_sps, pitch_ref_from_vel_deg=pitch_ref_from_vel_deg, pitch_ref_from_pos_deg=pitch_ref_from_pos_deg, pitch_error_deg=pitch_error_deg, rate_error_dps=rate_error_dps, pitch_sp_deg=pitch_sp_deg, effective_pitch_sp_deg=effective_pitch_sp_deg, pitch_trim_deg=pitch_trim_deg, trim_active=trim_active, command_saturated=command_saturated, left_applied_sps=left_applied_sps, right_applied_sps=right_applied_sps, motor_update_dt_ms=motor_update_dt_ms, motor_feedback_age_ms=motor_feedback_age_ms, left_actual_steps=left_actual_steps, right_actual_steps=right_actual_steps, plant_pitch_deg=plant_pitch_deg, plant_pitch_rate_dps=plant_pitch_rate_dps, plant_position_m=plant_position_m, plant_velocity_mps=plant_velocity_mps, target_wheel_velocity=target_wheel_velocity, actual_wheel_velocity=actual_wheel_velocity, plant_velocity_error=plant_velocity_error, f_cmd=f_cmd, f_app=f_app, external_force_n=external_force_n, external_com_bias_rad=external_com_bias_rad, x_ddot=x_ddot, theta_ddot=theta_ddot, force_saturated=force_saturated)
 
     @classmethod
     def unpack(cls, data: bytes) -> "SystemTelemetryPayload":
@@ -397,7 +399,7 @@ PAYLOAD_SIZE_BY_ID = {
     MsgId.PhysicsTick: 16,
     MsgId.JoystickCommand: 16,
     MsgId.MotorTargets: 16,
-    MsgId.SystemTelemetry: 384,
+    MsgId.SystemTelemetry: 400,
     MsgId.SimStartRun: 824,
     MsgId.SimStartAck: 8,
     MsgId.SimStopRun: 4,
@@ -405,4 +407,4 @@ PAYLOAD_SIZE_BY_ID = {
     MsgId.ImuRawData: 56,
 }
 
-PROTOCOL_HASH = "200e1fe2f8d4287d"
+PROTOCOL_HASH = "ee29ed1ac3ba200f"

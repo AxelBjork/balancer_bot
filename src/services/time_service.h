@@ -30,7 +30,6 @@ class DOC_DESC(kTimeServiceDoc) TimeService {
   static constexpr const char* kDocDescription = kTimeServiceDoc;
 
   using Publishes = ipc::MsgList<MsgId::PhysicsTick>;
-  using Subscribes = ipc::MsgList<>;
 
   explicit TimeService(ipc::MessageBus& bus, double dt_s = 1.0 / 400.0);
   ~TimeService();

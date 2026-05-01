@@ -78,6 +78,8 @@ struct DOC_DESC(
   double command_saturated;
   double left_applied_sps;
   double right_applied_sps;
+  double motor_update_dt_ms;
+  double motor_feedback_age_ms;
   int64_t left_actual_steps;
   int64_t right_actual_steps;
   double plant_pitch_deg;
@@ -103,6 +105,8 @@ struct DOC_DESC(
   double left_applied_sps;
   double right_applied_sps;
   double measured_avg_sps;
+  double update_dt_ms;
+  double feedback_age_ms;
   int64_t left_actual_steps;
   int64_t right_actual_steps;
 };

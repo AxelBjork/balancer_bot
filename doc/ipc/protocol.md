@@ -12,7 +12,7 @@ It describes the reflected runtime message bus used by the balancer services, in
 messages consumed by the SIL harness and the internal-only messages exchanged between services.
 
 - Documented balancer message count: `11`
-- Protocol hash: `200e1fe2f8d4287d`
+- Protocol hash: `ee29ed1ac3ba200f`
 - UDP ingress/egress gateway: `UdpBridge`
 
 ## System Architecture
@@ -169,7 +169,7 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 - Numeric ID: `3003`
 - Payload type: `SystemTelemetryPayload`
 - Python type: `SystemTelemetryPayload`
-- Wire size: `384` bytes
+- Wire size: `400` bytes
 - Published by: `ControlService`
 - Consumed by: `UdpBridge`
 
@@ -207,29 +207,31 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 | `command_saturated` | `double` | `float` | 8 | 232 |  |
 | `left_applied_sps` | `double` | `float` | 8 | 240 |  |
 | `right_applied_sps` | `double` | `float` | 8 | 248 |  |
-| `left_actual_steps` | `int64_t` | `int` | 8 | 256 |  |
-| `right_actual_steps` | `int64_t` | `int` | 8 | 264 |  |
-| `plant_pitch_deg` | `double` | `float` | 8 | 272 |  |
-| `plant_pitch_rate_dps` | `double` | `float` | 8 | 280 |  |
-| `plant_position_m` | `double` | `float` | 8 | 288 |  |
-| `plant_velocity_mps` | `double` | `float` | 8 | 296 |  |
-| `target_wheel_velocity` | `double` | `float` | 8 | 304 |  |
-| `actual_wheel_velocity` | `double` | `float` | 8 | 312 |  |
-| `plant_velocity_error` | `double` | `float` | 8 | 320 |  |
-| `f_cmd` | `double` | `float` | 8 | 328 |  |
-| `f_app` | `double` | `float` | 8 | 336 |  |
-| `external_force_n` | `double` | `float` | 8 | 344 |  |
-| `external_com_bias_rad` | `double` | `float` | 8 | 352 |  |
-| `x_ddot` | `double` | `float` | 8 | 360 |  |
-| `theta_ddot` | `double` | `float` | 8 | 368 |  |
-| `force_saturated` | `double` | `float` | 8 | 376 |  |
+| `motor_update_dt_ms` | `double` | `float` | 8 | 256 |  |
+| `motor_feedback_age_ms` | `double` | `float` | 8 | 264 |  |
+| `left_actual_steps` | `int64_t` | `int` | 8 | 272 |  |
+| `right_actual_steps` | `int64_t` | `int` | 8 | 280 |  |
+| `plant_pitch_deg` | `double` | `float` | 8 | 288 |  |
+| `plant_pitch_rate_dps` | `double` | `float` | 8 | 296 |  |
+| `plant_position_m` | `double` | `float` | 8 | 304 |  |
+| `plant_velocity_mps` | `double` | `float` | 8 | 312 |  |
+| `target_wheel_velocity` | `double` | `float` | 8 | 320 |  |
+| `actual_wheel_velocity` | `double` | `float` | 8 | 328 |  |
+| `plant_velocity_error` | `double` | `float` | 8 | 336 |  |
+| `f_cmd` | `double` | `float` | 8 | 344 |  |
+| `f_app` | `double` | `float` | 8 | 352 |  |
+| `external_force_n` | `double` | `float` | 8 | 360 |  |
+| `external_com_bias_rad` | `double` | `float` | 8 | 368 |  |
+| `x_ddot` | `double` | `float` | 8 | 376 |  |
+| `theta_ddot` | `double` | `float` | 8 | 384 |  |
+| `force_saturated` | `double` | `float` | 8 | 392 |  |
 
 ### `MsgId::MotorFeedback`
 
 - Numeric ID: `3004`
 - Payload type: `MotorFeedbackPayload`
 - Python type: `MotorFeedbackPayload`
-- Wire size: `40` bytes
+- Wire size: `56` bytes
 - Published by: `MotorService`
 - Consumed by: `ControlService`
 
@@ -238,8 +240,10 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 | `left_applied_sps` | `double` | `float` | 8 | 0 |  |
 | `right_applied_sps` | `double` | `float` | 8 | 8 |  |
 | `measured_avg_sps` | `double` | `float` | 8 | 16 |  |
-| `left_actual_steps` | `int64_t` | `int` | 8 | 24 |  |
-| `right_actual_steps` | `int64_t` | `int` | 8 | 32 |  |
+| `update_dt_ms` | `double` | `float` | 8 | 24 |  |
+| `feedback_age_ms` | `double` | `float` | 8 | 32 |  |
+| `left_actual_steps` | `int64_t` | `int` | 8 | 40 |  |
+| `right_actual_steps` | `int64_t` | `int` | 8 | 48 |  |
 
 ### `MsgId::SimStartRun`
 

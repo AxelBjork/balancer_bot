@@ -70,13 +70,17 @@ inline void app_dispatcher(void* ctx, MsgId id, const void* payload) {
     if constexpr (Config::kPrintEvery != -1) {
       if ((++telemetry_count % Config::kPrintEvery) == 0) {
         const auto& p = unpack_payload<MsgId::SystemTelemetry>(payload);
+        const bool motor_dt_warning = p.motor_update_dt_ms > (1500.0 / Config::control_hz);
+        const double applied_avg_sps = 0.5 * (p.left_applied_sps + p.right_applied_sps);
         std::printf(
             "t=%7.3f  th=%6.2f deg  dth=%7.2f dps  rsp=%7.2f dps  u=%6.0f%s  "
-            "pref=%6.2f (%+5.2f/%+5.2f)  perr=%6.2f  v=%7.1f/%7.1f  ap=%6.0f/%6.0f\n",
+            "pref=%6.2f (%+5.2f/%+5.2f)  perr=%6.2f  v=%7.1f/%7.1f  "
+            "ap=%6.0f%s\n",
             p.t_sec, p.pitch_deg, p.pitch_rate_dps, p.rate_sp_dps, p.u_sps,
             (std::abs(p.u_sps) >= 0.99 * kMaxSps) ? "*" : "", p.pitch_sp_deg,
             p.pitch_ref_from_vel_deg, p.pitch_ref_from_pos_deg, p.pitch_error_deg,
-            p.measured_vel_sps, p.filtered_vel_sps, p.left_applied_sps, p.right_applied_sps);
+            p.measured_vel_sps, p.filtered_vel_sps, applied_avg_sps,
+            motor_dt_warning ? "  MOTOR_DT!" : "");
       }
     }
   }

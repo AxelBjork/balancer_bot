@@ -6,7 +6,7 @@
 
 // ====== Control Loop Constants ======
 // Motor / speed ceiling (primary scaling knob)
-static constexpr double kMaxSps = 16000.0;            // clamp for wheel speed command (steps/s)
+static constexpr double kMaxSps = 4000.0;            // clamp for wheel speed command (steps/s)
 static constexpr double kPitchOutToSps = 3200;
 
 static constexpr double kMaxPitchSetpointRad = 0.3;  // ~17 degrees max lean

@@ -69,6 +69,8 @@ class DOC_DESC(kControlServiceDoc) ControlService {
   double last_measured_avg_sps_ = 0.0;
   double last_left_applied_sps_ = 0.0;
   double last_right_applied_sps_ = 0.0;
+  double last_motor_update_dt_ms_ = 0.0;
+  double last_motor_feedback_age_ms_ = 0.0;
   double last_position_m_ = 0.0;
   int64_t last_left_actual_steps_ = 0;
   int64_t last_right_actual_steps_ = 0;
@@ -114,6 +116,8 @@ inline void ControlService::on_message<MsgId::MotorFeedback>(const ipc::MotorFee
   last_left_applied_sps_ = p.left_applied_sps;
   last_right_applied_sps_ = p.right_applied_sps;
   last_measured_avg_sps_ = p.measured_avg_sps;
+  last_motor_update_dt_ms_ = p.update_dt_ms;
+  last_motor_feedback_age_ms_ = p.feedback_age_ms;
   last_left_actual_steps_ = p.left_actual_steps;
   last_right_actual_steps_ = p.right_actual_steps;
   const double avg_steps = 0.5 * static_cast<double>(p.left_actual_steps + p.right_actual_steps);

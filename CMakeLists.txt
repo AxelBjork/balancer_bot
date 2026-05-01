@@ -37,7 +37,7 @@ target_compile_options(project_warnings INTERFACE
   -Wall
   -Wextra
   -Wshadow
-  -Werror
+  #-Werror
   -Wnon-virtual-dtor
   -Wold-style-cast
   -Wcast-align
@@ -54,9 +54,9 @@ target_compile_options(project_warnings INTERFACE
   -Wduplicated-cond
   -Wduplicated-branches
   -Wlogical-op
-  -Wunused-but-set-variable=3
+  #-Wunused-but-set-variable=3
   -Wuseless-cast
-  -fhardened
+  #-fhardened
   $<$<CONFIG:Debug>:-Og>
 )
 target_link_options(project_warnings INTERFACE

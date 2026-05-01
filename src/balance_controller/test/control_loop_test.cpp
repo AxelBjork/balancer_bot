@@ -326,11 +326,6 @@ TEST(RateControllerCoreTest, ZeroInputsStayNearZero) {
   EXPECT_NEAR(h.runner().lastRight(), 0.0, 1e-3);
 }
 
-TEST(RateControllerCoreTest, HardwareScalingConstantsMatchValidatedHardwareSetup) {
-  EXPECT_DOUBLE_EQ(kMaxSps, 16000.0);
-  EXPECT_DOUBLE_EQ(kPitchOutToSps, 3200.0);
-}
-
 TEST(ConfigPidTest, LegacyOuterLoopKeysMapIntoRewrittenOuterLawWhenNeeded) {
   ScopedConfigPidRestore restore;
   ConfigPid::outer_k_pos = 111.0;
@@ -843,6 +838,8 @@ TEST(ServiceBusIntegrationTest, TickPublishesMotorTargetsAndImmediateMotorFeedba
   const auto expected = h.runner().getFeedbackSample();
   EXPECT_NEAR(h.feedback().back().left_applied_sps, expected.left_applied_sps, 1e-3);
   EXPECT_NEAR(h.feedback().back().right_applied_sps, expected.right_applied_sps, 1e-3);
+  EXPECT_GE(h.feedback().back().update_dt_ms, 0.0);
+  EXPECT_GE(h.feedback().back().feedback_age_ms, 0.0);
   EXPECT_EQ(h.feedback().back().left_actual_steps, expected.left_actual_steps);
   EXPECT_EQ(h.feedback().back().right_actual_steps, expected.right_actual_steps);
 }

@@ -39,7 +39,7 @@ struct Config {
   // ========= Controller rates & limits =========
   static constexpr int control_hz = 400;  // Main control loop frequency
 
-  static constexpr double max_tilt_rad = 5.0 * (M_PI / 180.0);
+  static constexpr double max_tilt_rad = 10.0 * (M_PI / 180.0);
 
   static constexpr int command_hz = 100;
   static constexpr int kPrintEvery = 100;

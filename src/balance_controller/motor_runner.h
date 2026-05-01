@@ -23,11 +23,13 @@
 class DualWave {
  public:
   // Compile-time configuration
-  static constexpr unsigned kFrameUs = 5000;  // total frame length
+  static constexpr unsigned kFrameUs = 100000;  // total frame length; 1 pulse/frame = 50 sps
   static constexpr unsigned kMinPulseUs = 2;  // per-pulse "high" width
+  static constexpr unsigned kMaxScheduledHz = 100000;
   // Derived maxima
   static constexpr unsigned kMinPulse = (kMinPulseUs ? kMinPulseUs : 1u);
-  static constexpr unsigned kMaxN = (kFrameUs / (2u * kMinPulse));  // pulses/channel
+  static constexpr unsigned kMaxN =
+      (kMaxScheduledHz * kFrameUs + 999999u) / 1000000u;  // pulses/channel
   static_assert(kMaxN > 0, "kFrameUs/kMinPulseUs too small to schedule any pulses.");
 
   DualWave(int pi, unsigned stepL, unsigned stepR, unsigned /*min_pulse_us*/ = kMinPulseUs,
@@ -107,6 +109,7 @@ class DualWave {
 
   static unsigned scheduleChannel(unsigned gpio, unsigned hz, Edge* out) {
     if (hz == 0) return 0;
+    if (hz > kMaxScheduledHz) hz = kMaxScheduledHz;
 
     const double pulses_f = double(hz) * double(kFrameUs) / 1e6;
     unsigned n = static_cast<unsigned>(llround(pulses_f));
@@ -206,6 +209,8 @@ class MotorRunner {
     double left_applied_sps{0.0};
     double right_applied_sps{0.0};
     double measured_avg_sps{0.0};
+    double update_dt_ms{0.0};
+    double feedback_age_ms{0.0};
     int64_t left_actual_steps{0};
     int64_t right_actual_steps{0};
   };
@@ -240,7 +245,7 @@ class MotorRunner {
     wave_.stop();
     last_cmd_L_ = last_cmd_R_ = 0.0;
     last_applied_hzL_ = last_applied_hzR_ = 0;
-    measured_avg_sps_ = 0.0f;
+    measured_avg_sps_ = 0.0;
     vel_hist_count_ = 0;
     vel_hist_head_ = 0;
     // Reset time to avoid large jump on restart?
@@ -286,6 +291,13 @@ class MotorRunner {
     sample.right_applied_sps = (last_applied_hzR_ == 0u) ? 0.0
                                                          : static_cast<double>(last_applied_hzR_) *
                                                                right_dir * right_positive_dir;
+    sample.update_dt_ms = last_update_dt_s_ * 1000.0;
+    if (last_call_time_.time_since_epoch().count() > 0) {
+      sample.feedback_age_ms =
+          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                    last_call_time_)
+              .count();
+    }
     const double avg_actual_steps = 0.5 * (accum_actual_L_ + accum_actual_R_);
     sample.measured_avg_sps = estimateMeasuredAverageSpsLocked(avg_actual_steps);
     sample.left_actual_steps = actual_steps_left_.load(std::memory_order_relaxed);
@@ -328,8 +340,9 @@ class MotorRunner {
     double total = desired_pulses + error_acc;
     unsigned pulses = static_cast<unsigned>(std::llround(total));
     // Clamp to valid range
-    if (pulses > static_cast<unsigned>(max_pulses_possible)) pulses = static_cast<unsigned>(max_pulses_possible);
-
+    if (pulses > static_cast<unsigned>(max_pulses_possible)) {
+      pulses = static_cast<unsigned>(max_pulses_possible);
+    }
     // Update error for next frame
     error_acc = total - pulses;
 
@@ -337,7 +350,9 @@ class MotorRunner {
     // DualWave does: n = llround(hz * kFrameUs / 1e6)
     // We want n = pulses. So hz = pulses * 1e6 / kFrameUs.
     // This results in exact integer pulses in DualWave.
-    if (pulses == 0) return {0, 0};
+    if (pulses == 0) {
+      return {0, 0};
+    }
     unsigned hz = static_cast<unsigned>(std::llround(double(pulses) * 1e6 / double(kFrameUs)));
     return {hz, pulses};
   }
@@ -354,6 +369,7 @@ class MotorRunner {
       last_call_time_ = now;
       return;
     }
+    last_update_dt_s_ = d_sec;
 
     accum_L_ += last_cmd_L_ * d_sec;
     accum_R_ += last_cmd_R_ * d_sec;
@@ -441,7 +457,9 @@ class MotorRunner {
     // Actual steps are now integrated below based on active Hz
 
     if (hzL == 0u && hzR == 0u) {
-      wave_.stop();
+      if (last_applied_hzL_ != 0u || last_applied_hzR_ != 0u) {
+        wave_.stop();
+      }
       last_applied_hzL_ = 0u;
       last_applied_hzR_ = 0u;
       last_applied_fwdL_ = fwdL;
@@ -452,6 +470,9 @@ class MotorRunner {
     }
 
     const bool dirFlip = (fwdL != L_.dirForward()) || (fwdR != R_.dirForward());
+    const bool scheduleChanged = (hzL != last_applied_hzL_) || (hzR != last_applied_hzR_) ||
+                                 (fwdL != last_applied_fwdL_) ||
+                                 (fwdR != last_applied_fwdR_);
     if (dirFlip) {
       wave_.stop();
       L_.setDirNoWait(fwdL);
@@ -459,7 +480,9 @@ class MotorRunner {
       time_sleep(0.00005);  // ~50 µs settle
     }
 
-    wave_.apply(hzL, hzR);
+    if (scheduleChanged || dirFlip) {
+      wave_.apply(hzL, hzR);
+    }
     last_applied_hzL_ = hzL;
     last_applied_hzR_ = hzR;
     last_applied_fwdL_ = fwdL;
@@ -488,6 +511,7 @@ class MotorRunner {
 
   double accum_L_{0.0}, accum_R_{0.0};
   double accum_actual_L_{0.0}, accum_actual_R_{0.0};
+  double last_update_dt_s_{0.0};
   mutable std::array<double, kVelocityHistorySize> vel_hist_time_s_{};
   mutable std::array<double, kVelocityHistorySize> vel_hist_avg_steps_{};
   mutable size_t vel_hist_head_{0};

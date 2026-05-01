@@ -130,7 +130,33 @@ TEST_F(MotorRunnerTest, VelocityEstimationResolvesBelowOnePulsePerFrame) {
   RunFor(runner, 100.0, 100.0, std::chrono::milliseconds(100));
 
   const double v = runner.getActualSpeedSps();
-  EXPECT_NEAR(v, 100.0, 35.0) << "Estimated velocity should average below the 200 sps quantization step";
+  EXPECT_NEAR(v, 100.0, 35.0) << "Estimated velocity should average below one wave-frame pulse";
+}
+
+TEST_F(MotorRunnerTest, AppliedFeedbackResolvesSubTwoHundredSpsCommands) {
+  Stepper left(1, Stepper::Pins{5, 6, 13});
+  Stepper right(1, Stepper::Pins{7, 8, 14});
+  MotorRunner runner(left, right, 400.0, 50000.0);
+
+  RunFor(runner, 125.0, 125.0, std::chrono::milliseconds(60));
+
+  const auto feedback = runner.getFeedbackSample();
+  EXPECT_GT(feedback.left_applied_sps, 0.0);
+  EXPECT_GT(feedback.right_applied_sps, 0.0);
+  EXPECT_LT(feedback.left_applied_sps, 200.0);
+  EXPECT_LT(feedback.right_applied_sps, 200.0);
+}
+
+TEST_F(MotorRunnerTest, FeedbackReportsUpdateTiming) {
+  Stepper left(1, Stepper::Pins{5, 6, 13});
+  Stepper right(1, Stepper::Pins{7, 8, 14});
+  MotorRunner runner(left, right, 400.0, 50000.0);
+
+  RunFor(runner, 125.0, 125.0, std::chrono::milliseconds(60));
+
+  const auto feedback = runner.getFeedbackSample();
+  EXPECT_GT(feedback.update_dt_ms, 0.0);
+  EXPECT_GE(feedback.feedback_age_ms, 0.0);
 }
 
 TEST_F(MotorRunnerTest, FeedbackSnapshotReflectsAppliedStateNotRawTarget) {
