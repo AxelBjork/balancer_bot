@@ -1,7 +1,7 @@
 #pragma once
 
 #include "messages/balancer_msgs.h"
-#include "motor_runner.h"
+#include "services/motor/motor_runner.h"
 #include "publisher.h"
 
 namespace sil {

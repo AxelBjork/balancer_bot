@@ -16,7 +16,7 @@
 #include <thread>
 #include <unistd.h>
 
-#include "config.h" // for Config::sampling_hz, accel_cfg, gyro_cfg
+#include "services/main/config.h" // for Config::sampling_hz, accel_cfg, gyro_cfg
 
 namespace fs = std::filesystem;
 

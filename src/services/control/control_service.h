@@ -2,7 +2,7 @@
 
 #include <cmath>
 
-#include "config.h"
+#include "services/main/config.h"
 #include "messages/balancer_msgs.h"
 #include "publisher.h"
 #include "services/control/rate_controller_core.h"

@@ -8,7 +8,7 @@
 #include "fuzz_scenario_format.h"
 #include "fuzz_support.h"
 #include "simulator/simulator_runner.h"
-#include "types.h"
+#include "messages/types.h"
 
 namespace {
 

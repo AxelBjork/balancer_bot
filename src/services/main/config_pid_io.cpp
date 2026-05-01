@@ -7,7 +7,7 @@
 #include <string>
 #include <unordered_map>
 
-#include "types.h"
+#include "messages/types.h"
 
 static void write_param(std::ofstream& f, const std::string& name, double value) {
   f << std::left << std::setw(20) << name << " = " << value << "\n";

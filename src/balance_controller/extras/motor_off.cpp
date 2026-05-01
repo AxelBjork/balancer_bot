@@ -1,6 +1,6 @@
 // drive_by_xbox.cpp
-#include "../motor_runner.h"
-#include "../stepper.h"
+#include "services/motor/motor_runner.h"
+#include "services/motor/stepper.h"
 #include <atomic>
 #include <chrono>
 #include <cmath>

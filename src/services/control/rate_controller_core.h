@@ -2,7 +2,7 @@
 #include <chrono>
 #include <functional>
 
-#include "types.h"
+#include "messages/types.h"
 
 // ====== Control Loop Constants ======
 // Motor / speed ceiling (primary scaling knob)

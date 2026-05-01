@@ -2,27 +2,23 @@
 
 #include <pigpiod_if2.h>
 
-#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
-#include <csignal>
 #include <cstdio>
 #include <iostream>
-#include <memory>
 #include <thread>
 
-#include "config.h"
-#include "message_bus.h"
+#include "services/main/config.h"
+#include "services/motor/motor_runner.h"
+#include "services/motor/stepper.h"
 #include "messages/balancer_msgs.h"
-#include "motor_runner.h"
 #include "services/control/rate_controller_core.h"
-#include "services/control_service.h"
-#include "services/imu_service.h"
-#include "services/input_service.h"
-#include "services/motor_service.h"
-#include "services/time_service.h"
-#include "stepper.h"
+#include "services/control/control_service.h"
+#include "services/imu/imu_service.h"
+#include "services/input/input_service.h"
+#include "services/control/motor_service.h"
+#include "services/time/time_service.h"
 #include "udp_bridge.h"
 
 struct PigpioCtx {

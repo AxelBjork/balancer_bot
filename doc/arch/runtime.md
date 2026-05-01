@@ -48,7 +48,7 @@ Bridges the internal bus to UDP:
 
 ## Production Path
 
-`balancer_pi` creates the real runtime in `src/balance_controller/control_app.h`:
+`balancer_pi` creates the real runtime in `src/services/main/control_app.h`:
 
 1. `main.cpp` loads `pid.conf`.
 2. `ControlApp` constructs the `MotorRunner`, services, and `MessageBus`.

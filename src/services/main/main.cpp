@@ -1,7 +1,7 @@
 #include <csignal>
 
-#include "control_app.h"
-#include "types.h"
+#include "services/main/control_app.h"
+#include "messages/types.h"
 
 int main() {
   ConfigPid::load("pid.conf");

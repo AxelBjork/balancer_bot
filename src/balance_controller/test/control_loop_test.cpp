@@ -6,11 +6,11 @@
 #include <fstream>
 #include <vector>
 
-#include "config.h"
-#include "motor_runner.h"
-#include "services/control_service.h"
-#include "services/imu_service.h"
-#include "services/motor_service.h"
+#include "services/main/config.h"
+#include "services/motor/motor_runner.h"
+#include "services/control/control_service.h"
+#include "services/imu/imu_service.h"
+#include "services/control/motor_service.h"
 #include "services/control/rate_controller_core.h"
 
 namespace {

@@ -4,7 +4,7 @@
 #include <algorithm>
 #include <cmath>
 
-#include "config.h"
+#include "services/main/config.h"
 
 PitchComplementaryFilter::PitchComplementaryFilter() {
   push_data = [this](const Acc3& acc, const Gyr3& gyrv, TimePoint ts) {

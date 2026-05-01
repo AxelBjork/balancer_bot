@@ -13,11 +13,11 @@
 
 #include "balancer_message_registry.h"
 #include "udp_bridge.h"
-#include "services/control_service.h"
-#include "services/imu_service.h"
-#include "services/motor_service.h"
-#include "services/time_service.h"
-#include "services/input_service.h"
+#include "services/control/control_service.h"
+#include "services/imu/imu_service.h"
+#include "services/control/motor_service.h"
+#include "services/time/time_service.h"
+#include "services/input/input_service.h"
 
 using namespace balancer_reflection;
 

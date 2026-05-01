@@ -6,7 +6,7 @@
 #include <filesystem>
 #include <random>
 
-#include "config.h"
+#include "services/main/config.h"
 #include "services/imu/pitch_lpf.h"
 #include "simulator/simulator_runner.h"
 

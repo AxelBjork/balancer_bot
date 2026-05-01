@@ -4,7 +4,7 @@
 #include <chrono>
 #include <functional>
 
-#include "types.h"
+#include "messages/types.h"
 
 class PitchComplementaryFilter {
  public:

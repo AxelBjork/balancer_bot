@@ -1,6 +1,6 @@
-#include "input_service.h"
-#include "xbox_controller.h"
-#include "config.h"
+#include "services/input/input_service.h"
+#include "services/input/xbox_controller.h"
+#include "services/main/config.h"
 
 namespace sil {
 

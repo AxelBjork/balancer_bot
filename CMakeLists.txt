@@ -270,7 +270,7 @@ if(NOT BUILD_TESTS)
   
   # Main balancer executable
   add_executable(balancer_pi
-    ${CMAKE_SOURCE_DIR}/src/balance_controller/main.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/main/main.cpp
   )
   
   target_link_libraries(balancer_pi PRIVATE

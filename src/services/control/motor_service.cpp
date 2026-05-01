@@ -1,4 +1,4 @@
-#include "motor_service.h"
+#include "services/control/motor_service.h"
 
 namespace sil {
 // Pure template/inline in header is sufficient, but providing a cpp file

@@ -42,17 +42,19 @@ function(add_balancer_common_target)
   set(src_dir ${CMAKE_SOURCE_DIR}/src/balance_controller)
   set(control_dir ${CMAKE_SOURCE_DIR}/src/services/control)
   set(imu_dir ${CMAKE_SOURCE_DIR}/src/services/imu)
+  set(input_dir ${CMAKE_SOURCE_DIR}/src/services/input)
+  set(main_dir ${CMAKE_SOURCE_DIR}/src/services/main)
   set(balancer_sources
-    ${src_dir}/xbox_controller.cpp
     ${control_dir}/rate_controller_core.cpp
+    ${control_dir}/control_service.cpp
     ${imu_dir}/ism330_iio_reader.cpp
     ${imu_dir}/pitch_lpf.cpp
-    ${src_dir}/config_pid_io.cpp
-    ${CMAKE_SOURCE_DIR}/src/services/imu_service.cpp
-    ${CMAKE_SOURCE_DIR}/src/services/control_service.cpp
-    ${CMAKE_SOURCE_DIR}/src/services/motor_service.cpp
-    ${CMAKE_SOURCE_DIR}/src/services/time_service.cpp
-    ${CMAKE_SOURCE_DIR}/src/services/input_service.cpp
+    ${imu_dir}/imu_service.cpp
+    ${input_dir}/input_service.cpp
+    ${input_dir}/xbox_controller.cpp
+    ${main_dir}/config_pid_io.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/control/motor_service.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/time/time_service.cpp
   )
 
   add_library(balancer_common STATIC ${balancer_sources})
@@ -62,6 +64,8 @@ function(add_balancer_common_target)
     ${src_dir}
     ${control_dir}
     ${imu_dir}
+    ${input_dir}
+    ${main_dir}
     ${BAL_INCLUDE_DIRS}
   )
 

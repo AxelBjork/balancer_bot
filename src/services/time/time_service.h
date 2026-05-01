@@ -1,7 +1,6 @@
 #pragma once
 
 #include <atomic>
-#include <chrono>
 #include <thread>
 
 #include "messages/balancer_msgs.h"

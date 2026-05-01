@@ -8,9 +8,9 @@
 #include <stdexcept>
 #include <string>
 
-#include "config.h"
+#include "services/main/config.h"
 #include "services/imu/pitch_lpf.h"
-#include "types.h"
+#include "messages/types.h"
 
 namespace {
 

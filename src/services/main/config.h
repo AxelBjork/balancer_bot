@@ -1,7 +1,6 @@
 #pragma once
 #include <atomic>
 #include <cmath>
-#include <csignal>
 
 struct AxisCfg {
   int x = 0, y = 1, z = 2;

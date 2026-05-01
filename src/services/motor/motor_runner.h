@@ -7,7 +7,7 @@
 #include <cstdio>
 #include <mutex>
 
-#include "stepper.h"
+#include "services/motor/stepper.h"
 
 // DualWave.h
 #pragma once

@@ -8,7 +8,7 @@
 #include <rate_control.hpp>
 #include <utility>
 
-#include "config.h"
+#include "services/main/config.h"
 
 using matrix::Vector3f;
 

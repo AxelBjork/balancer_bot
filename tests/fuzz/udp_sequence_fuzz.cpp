@@ -9,9 +9,9 @@
 #include "fuzz_support.h"
 #include "messages/balancer_msgs.h"
 #include "publisher.h"
-#include "services/control_service.h"
-#include "services/imu_service.h"
-#include "types.h"
+#include "services/control/control_service.h"
+#include "services/imu/imu_service.h"
+#include "messages/types.h"
 #include "udp_bridge.h"
 
 namespace {

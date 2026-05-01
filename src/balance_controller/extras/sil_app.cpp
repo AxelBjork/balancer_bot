@@ -6,10 +6,10 @@
 
 #include "messages/balancer_msgs.h"
 #include "udp_bridge.h"
-#include "types.h"
-#include "services/control_service.h"
-#include "services/motor_service.h"
-#include "services/imu_service.h"
+#include "messages/types.h"
+#include "services/control/control_service.h"
+#include "services/control/motor_service.h"
+#include "services/imu/imu_service.h"
 
 // Reuse the AppServices logic from control_app.h if possible, 
 // but for SIL we might want a cleaner separation. 

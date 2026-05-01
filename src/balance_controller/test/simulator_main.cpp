@@ -20,9 +20,9 @@
 #include <algorithm>
 
 #include "messages/balancer_msgs.h"
-#include "config.h"
+#include "services/main/config.h"
 #include "simulator/balancer_simulator.h"
-#include "types.h"
+#include "messages/types.h"
 #include "services/imu/pitch_lpf.h"
 #include "services/control/rate_controller_core.h"
 

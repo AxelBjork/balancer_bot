@@ -1,4 +1,4 @@
-#include "imu_service.h"
+#include "services/imu/imu_service.h"
 
 #include "services/imu/ism330_iio_reader.h"
 

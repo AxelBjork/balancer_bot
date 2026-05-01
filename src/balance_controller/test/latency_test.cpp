@@ -5,9 +5,9 @@
 #include <cmath>
 #include <random>
 
-#include "config.h"
+#include "services/main/config.h"
 #include "services/imu/pitch_lpf.h"
-#include "stepper.h"
+#include "services/motor/stepper.h"
 
 // --- Helpers ---
 static inline double deg2rad(double d) {
