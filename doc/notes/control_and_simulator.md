@@ -9,7 +9,7 @@ This is the maintainer-facing notebook for the balancing stack. It captures the 
 The control pipeline is:
 
 1. joystick forward input and optional position hold become a target wheel velocity
-2. a physics-shaped outer law turns velocity and optional position error into a pitch setpoint
+2. a velocity-to-pitch outer law turns wheel speed error into a pitch setpoint
 3. slow trims bias the pitch setpoint when persistent error or drift is present
 4. the pitch error plus filtered pitch-rate damping become a pitch-rate setpoint
 5. PX4 `RateControl` produces the normalized pitch-axis effort
@@ -19,11 +19,10 @@ Important details:
 
 - control is tick-driven by `PhysicsTick`
 - the controller uses fused pitch plus filtered pitch-rate for control; raw gyro stays diagnostic-only
-- `angle_I` is a slow pitch trim for persistent angle bias
-- `lean_trim_I` is a slower drift/COM-offset trim driven by balance effort
+- trim bias is an internal `RateControllerCore` behavior, not a PID file knob
 - when hardware feedback exists, velocity and position feedback come from `MotorFeedback`
 - in SIL without a motor backend, the controller falls back to the last commanded wheel speeds
-- the active outer-loop gains are `outer_k_pos`, `outer_k_vel`, `outer_k_pitch`, and `outer_k_pitch_rate`
+- the active outer-loop gains are `vel_P`, `pitch_P`, and `pitch_D`
 
 ## Why Tick-Driven Control Matters
 

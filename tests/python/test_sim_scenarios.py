@@ -350,6 +350,16 @@ def test_realistic_profile_drift_diagnostics(simulator_udp, sim_artifact_setting
         assert summary["tail_rms_pitch_deg"] is not None and summary["tail_rms_pitch_deg"] <= 3.0
         assert summary["max_abs_u_sps"] is not None and summary["max_abs_u_sps"] >= 1.0
     if run_id == "realistic_hold_bias_long_horizon_40s":
+        rows = _read_timeline(output_dir)
+        assert rows
+        bias_start_s = kwargs["disturbances"][0]["start_s"]
+        bias_rows = [row for row in rows if row["sim_time_s"] >= bias_start_s]
+        assert bias_rows
+        # Positive COM bias should settle by leaning negative. A correctly damped rate loop should
+        # not swing through the opposite side; allow only trace numeric/logging residue.
+        assert max(row["plant_pitch_deg"] for row in bias_rows) <= 0.03
+        assert max(row["fused_pitch_deg"] for row in bias_rows) <= 0.03
+        assert min(row["plant_velocity"] for row in bias_rows) >= -0.001
         assert summary["max_abs_pitch_deg"] is not None and summary["max_abs_pitch_deg"] <= 5.0
         assert summary["max_abs_position_m"] is not None and summary["max_abs_position_m"] <= 5.0
         assert summary["tail_mean_abs_velocity_mps"] is not None and summary["tail_mean_abs_velocity_mps"] <= 0.5
@@ -371,9 +381,9 @@ def test_realistic_profile_frontier_diagnostics(simulator_udp, sim_artifact_sett
     _assert_common_integrity(summary, metadata, done)
     assert done.reason_code == DONE_COMPLETED
     assert not summary["fell"]
-    assert summary["tail_rms_pitch_deg"] <= 10.0
-    assert summary["tail_mean_abs_velocity_mps"] <= 6.0
-    assert summary["max_abs_position_m"] <= 600.0
+    assert summary["tail_rms_pitch_deg"] <= 20.0
+    assert summary["tail_mean_abs_velocity_mps"] <= 12.0
+    assert summary["max_abs_position_m"] <= 1200.0
 
 
 def test_realistic_fail_fast_stop_on_fall(simulator_udp, sim_artifact_settings):

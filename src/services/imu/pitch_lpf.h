@@ -32,7 +32,10 @@ class PitchComplementaryFilter {
   Acc3 acc_f_{0.0, 0.0, 0.0};
   double pitch_{0.0};      // fused estimate (rad, +forward)
   double gyro_lpf_{0.0};   // rad/s (pitch axis)
+  double gyro_accel_lpf_{0.0};  // rad/s^2 (pitch axis)
   double gyro_bias_{0.0};  // rad/s
+  bool have_prev_gyro_lpf_{false};
+  double prev_gyro_lpf_{0.0};
 
   // lock-free publish
   mutable std::atomic<uint64_t> seq_{0};
@@ -46,5 +49,6 @@ class PitchComplementaryFilter {
   static double acc_pitch(const Acc3& a);
   bool accel_reliable(const Acc3& a, double pitch_pred) const;
   double compute_dt(TimePoint ts);
-  void publish(double pitch, double gyro_pitch, double yaw_rate_z, TimePoint ts);
+  void publish(double pitch, double gyro_pitch, double gyro_pitch_accel, double yaw_rate_z,
+               TimePoint ts);
 };

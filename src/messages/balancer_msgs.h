@@ -22,10 +22,12 @@ struct DOC_DESC(
 
 struct DOC_DESC(
     "Fused IMU sample published by the IMU service and accepted by the SIL harness. The controller "
-    "consumes `pitch_rad` plus `filtered_pitch_rate_rad_s`; raw accelerometer and gyro vectors are "
-    "carried alongside them for diagnostics.") ImuSamplePayload {
+    "consumes `pitch_rad`, `pitch_rate_rad_s`, and "
+    "`pitch_accel_rad_s2`; raw accelerometer and gyro vectors are carried alongside them "
+    "for diagnostics.") ImuSamplePayload {
   double pitch_rad;
-  double filtered_pitch_rate_rad_s;
+  double pitch_rate_rad_s;
+  double pitch_accel_rad_s2;
   std::array<double, 3> acc;
   std::array<double, 3> gyr;
   uint64_t timestamp_us;
@@ -48,7 +50,6 @@ struct DOC_DESC(
     SystemTelemetryPayload {
   uint32_t run_id;
   double t_sec;
-  double sim_time_s;
   double age_ms;
   double pitch_deg;
   double pitch_rate_dps;
@@ -56,27 +57,18 @@ struct DOC_DESC(
   double fused_pitch_deg;
   double gyro_pitch_rate_dps;
   double filtered_pitch_rate_dps;
-  double rate_sp_dps;
-  double out_norm;
   double u_sps;
   double turn_sps;
-  double integ_pitch;
   double vel_error;
-  double vel_p_term;
-  double vel_i_term;
-  double target_vel_sps;
   double measured_vel_sps;
-  double filtered_vel_sps;
+  double vel_p_term;
   double position_target_vel_sps;
   double pitch_ref_from_vel_deg;
   double pitch_ref_from_pos_deg;
   double pitch_error_deg;
-  double rate_error_dps;
   double pitch_sp_deg;
-  double effective_pitch_sp_deg;
   double pitch_trim_deg;
   double trim_active;
-  double command_saturated;
   double left_applied_sps;
   double right_applied_sps;
   double motor_update_dt_ms;

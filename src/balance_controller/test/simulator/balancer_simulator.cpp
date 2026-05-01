@@ -191,7 +191,8 @@ ipc::ImuSamplePayload BalancerSimulator::make_imu_payload(uint64_t sim_time_us) 
   const ipc::ImuRawPayload raw = make_raw_imu_payload(sim_time_us);
   ipc::ImuSamplePayload payload{};
   payload.pitch_rad = imu_pitch_;
-  payload.filtered_pitch_rate_rad_s = imu_pitch_rate_;
+  payload.pitch_rate_rad_s = imu_pitch_rate_;
+  payload.pitch_accel_rad_s2 = diagnostics_.theta_ddot;
   payload.acc = raw.acc;
   payload.gyr = raw.gyr;
   payload.timestamp_us = raw.timestamp_us;

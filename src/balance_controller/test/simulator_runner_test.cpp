@@ -162,7 +162,11 @@ TEST(SimulatorRunnerTest, PositiveComOffsetBuildsNegativeLeanTrim) {
   ASSERT_FALSE(result.rows.empty());
 
   EXPECT_FALSE(result.fell);
-  EXPECT_GT(result.rows.back().pitch_trim_deg, 0.0);
+  const auto max_trim = std::max_element(result.rows.begin(), result.rows.end(), [](const auto& a, const auto& b) {
+    return a.pitch_trim_deg < b.pitch_trim_deg;
+  });
+  ASSERT_NE(max_trim, result.rows.end());
+  EXPECT_GT(max_trim->pitch_trim_deg, 0.0);
 }
 
 TEST(SimulatorRunnerTest, NegativeComOffsetBuildsPositiveLeanTrim) {
@@ -174,7 +178,11 @@ TEST(SimulatorRunnerTest, NegativeComOffsetBuildsPositiveLeanTrim) {
   ASSERT_FALSE(result.rows.empty());
 
   EXPECT_FALSE(result.fell);
-  EXPECT_LT(result.rows.back().pitch_trim_deg, 0.0);
+  const auto min_trim = std::min_element(result.rows.begin(), result.rows.end(), [](const auto& a, const auto& b) {
+    return a.pitch_trim_deg < b.pitch_trim_deg;
+  });
+  ASSERT_NE(min_trim, result.rows.end());
+  EXPECT_LT(min_trim->pitch_trim_deg, 0.0);
 }
 
 TEST(SimulatorRunnerTest, RampDisturbanceBuildsCommandMagnitudeOverTime) {

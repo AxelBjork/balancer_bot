@@ -190,7 +190,8 @@ SimulatorRunResult run_simulator_scenario_with_loaded_pid(const SimulatorScenari
 
     ImuSample sample{};
     sample.angle_rad = imu.pitch_rad;
-    sample.gyro_rad_s = imu.filtered_pitch_rate_rad_s;
+    sample.gyro_rad_s = imu.pitch_rate_rad_s;
+    sample.pitch_accel_rad_s2 = imu.pitch_accel_rad_s2;
     sample.yaw_rate_z = imu.gyr[2];
     sample.t = std::chrono::steady_clock::time_point(std::chrono::microseconds(imu.timestamp_us));
 
@@ -228,25 +229,13 @@ SimulatorRunResult run_simulator_scenario_with_loaded_pid(const SimulatorScenari
       row.fused_pitch_deg = imu.pitch_rad * 180.0 / kPi;
       row.gyro_pitch_rate_dps = imu.gyr[1] * 180.0 / kPi;
       row.pitch_sp_deg = latest_telemetry.pitch_sp_deg;
-      row.rate_sp_dps = latest_telemetry.rate_sp_dps;
       row.u_sps = latest_telemetry.u_sps;
       row.vel_error = latest_telemetry.vel_error;
-      row.vel_i_term = latest_telemetry.vel_i_term;
       row.vel_p_term = latest_telemetry.vel_p_term;
-      row.target_vel_sps = latest_telemetry.target_vel_sps;
-      row.measured_vel_sps = latest_telemetry.measured_vel_sps;
-      row.filtered_vel_sps = latest_telemetry.filtered_vel_sps;
-      row.position_target_vel_sps = latest_telemetry.position_target_vel_sps;
       row.pitch_ref_from_vel_deg = latest_telemetry.pitch_ref_from_vel_deg;
       row.pitch_ref_from_pos_deg = latest_telemetry.pitch_ref_from_pos_deg;
-      row.pitch_error_deg = latest_telemetry.pitch_error_deg;
-      row.rate_error_dps = latest_telemetry.rate_error_dps;
-      row.out_norm = latest_telemetry.out_norm;
-      row.pitch_sp_deg = latest_telemetry.pitch_sp_deg;
-      row.effective_pitch_sp_deg = latest_telemetry.effective_pitch_sp_deg;
       row.pitch_trim_deg = latest_telemetry.pitch_trim_deg;
       row.trim_active = latest_telemetry.trim_active;
-      row.command_saturated = latest_telemetry.command_saturated;
     }
     row.left_applied_sps = left_sps;
     row.right_applied_sps = right_sps;

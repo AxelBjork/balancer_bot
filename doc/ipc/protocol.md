@@ -12,7 +12,7 @@ It describes the reflected runtime message bus used by the balancer services, in
 messages consumed by the SIL harness and the internal-only messages exchanged between services.
 
 - Documented balancer message count: `11`
-- Protocol hash: `d2f8071c856f7611`
+- Protocol hash: `508e6f98d2c59474`
 - UDP ingress/egress gateway: `UdpBridge`
 
 ## System Architecture
@@ -133,17 +133,18 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 - Numeric ID: `3000`
 - Payload type: `ImuSamplePayload`
 - Python type: `ImuSamplePayload`
-- Wire size: `72` bytes
+- Wire size: `80` bytes
 - Published by: `ImuService`
 - Consumed by: `ControlService`
 
 | Field | C++ Type | Python Type | Bytes | Offset | Description |
 |---|---|---|---:|---:|---|
 | `pitch_rad` | `double` | `float` | 8 | 0 |  |
-| `filtered_pitch_rate_rad_s` | `double` | `float` | 8 | 8 |  |
-| `acc` | `std::array<double, 3>` | `list[float]` | 24 | 16 |  |
-| `gyr` | `std::array<double, 3>` | `list[float]` | 24 | 40 |  |
-| `timestamp_us` | `uint64_t` | `int` | 8 | 64 |  |
+| `pitch_rate_rad_s` | `double` | `float` | 8 | 8 |  |
+| `pitch_accel_rad_s2` | `double` | `float` | 8 | 16 |  |
+| `acc` | `std::array<double, 3>` | `list[float]` | 24 | 24 |  |
+| `gyr` | `std::array<double, 3>` | `list[float]` | 24 | 48 |  |
+| `timestamp_us` | `uint64_t` | `int` | 8 | 72 |  |
 
 ### `MsgId::JoystickCommand`
 
@@ -178,7 +179,7 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 - Numeric ID: `3003`
 - Payload type: `SystemTelemetryPayload`
 - Python type: `SystemTelemetryPayload`
-- Wire size: `408` bytes
+- Wire size: `328` bytes
 - Published by: `ControlService`
 - Consumed by: `UdpBridge`
 
@@ -186,55 +187,45 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 |---|---|---|---:|---:|---|
 | `run_id` | `uint32_t` | `int` | 4 | 0 |  |
 | `t_sec` | `double` | `float` | 8 | 8 |  |
-| `sim_time_s` | `double` | `float` | 8 | 16 |  |
-| `age_ms` | `double` | `float` | 8 | 24 |  |
-| `pitch_deg` | `double` | `float` | 8 | 32 |  |
-| `pitch_rate_dps` | `double` | `float` | 8 | 40 |  |
-| `raw_acc_pitch_deg` | `double` | `float` | 8 | 48 |  |
-| `fused_pitch_deg` | `double` | `float` | 8 | 56 |  |
-| `gyro_pitch_rate_dps` | `double` | `float` | 8 | 64 |  |
-| `filtered_pitch_rate_dps` | `double` | `float` | 8 | 72 |  |
-| `rate_sp_dps` | `double` | `float` | 8 | 80 |  |
-| `out_norm` | `double` | `float` | 8 | 88 |  |
-| `u_sps` | `double` | `float` | 8 | 96 |  |
-| `turn_sps` | `double` | `float` | 8 | 104 |  |
-| `integ_pitch` | `double` | `float` | 8 | 112 |  |
-| `vel_error` | `double` | `float` | 8 | 120 |  |
-| `vel_p_term` | `double` | `float` | 8 | 128 |  |
-| `vel_i_term` | `double` | `float` | 8 | 136 |  |
-| `target_vel_sps` | `double` | `float` | 8 | 144 |  |
-| `measured_vel_sps` | `double` | `float` | 8 | 152 |  |
-| `filtered_vel_sps` | `double` | `float` | 8 | 160 |  |
-| `position_target_vel_sps` | `double` | `float` | 8 | 168 |  |
-| `pitch_ref_from_vel_deg` | `double` | `float` | 8 | 176 |  |
-| `pitch_ref_from_pos_deg` | `double` | `float` | 8 | 184 |  |
-| `pitch_error_deg` | `double` | `float` | 8 | 192 |  |
-| `rate_error_dps` | `double` | `float` | 8 | 200 |  |
-| `pitch_sp_deg` | `double` | `float` | 8 | 208 |  |
-| `effective_pitch_sp_deg` | `double` | `float` | 8 | 216 |  |
-| `pitch_trim_deg` | `double` | `float` | 8 | 224 |  |
-| `trim_active` | `double` | `float` | 8 | 232 |  |
-| `command_saturated` | `double` | `float` | 8 | 240 |  |
-| `left_applied_sps` | `double` | `float` | 8 | 248 |  |
-| `right_applied_sps` | `double` | `float` | 8 | 256 |  |
-| `motor_update_dt_ms` | `double` | `float` | 8 | 264 |  |
-| `motor_feedback_age_ms` | `double` | `float` | 8 | 272 |  |
-| `left_actual_steps` | `int64_t` | `int` | 8 | 280 |  |
-| `right_actual_steps` | `int64_t` | `int` | 8 | 288 |  |
-| `plant_pitch_deg` | `double` | `float` | 8 | 296 |  |
-| `plant_pitch_rate_dps` | `double` | `float` | 8 | 304 |  |
-| `plant_position_m` | `double` | `float` | 8 | 312 |  |
-| `plant_velocity_mps` | `double` | `float` | 8 | 320 |  |
-| `target_wheel_velocity` | `double` | `float` | 8 | 328 |  |
-| `actual_wheel_velocity` | `double` | `float` | 8 | 336 |  |
-| `plant_velocity_error` | `double` | `float` | 8 | 344 |  |
-| `f_cmd` | `double` | `float` | 8 | 352 |  |
-| `f_app` | `double` | `float` | 8 | 360 |  |
-| `external_force_n` | `double` | `float` | 8 | 368 |  |
-| `external_com_bias_rad` | `double` | `float` | 8 | 376 |  |
-| `x_ddot` | `double` | `float` | 8 | 384 |  |
-| `theta_ddot` | `double` | `float` | 8 | 392 |  |
-| `force_saturated` | `double` | `float` | 8 | 400 |  |
+| `age_ms` | `double` | `float` | 8 | 16 |  |
+| `pitch_deg` | `double` | `float` | 8 | 24 |  |
+| `pitch_rate_dps` | `double` | `float` | 8 | 32 |  |
+| `raw_acc_pitch_deg` | `double` | `float` | 8 | 40 |  |
+| `fused_pitch_deg` | `double` | `float` | 8 | 48 |  |
+| `gyro_pitch_rate_dps` | `double` | `float` | 8 | 56 |  |
+| `filtered_pitch_rate_dps` | `double` | `float` | 8 | 64 |  |
+| `u_sps` | `double` | `float` | 8 | 72 |  |
+| `turn_sps` | `double` | `float` | 8 | 80 |  |
+| `vel_error` | `double` | `float` | 8 | 88 |  |
+| `measured_vel_sps` | `double` | `float` | 8 | 96 |  |
+| `vel_p_term` | `double` | `float` | 8 | 104 |  |
+| `position_target_vel_sps` | `double` | `float` | 8 | 112 |  |
+| `pitch_ref_from_vel_deg` | `double` | `float` | 8 | 120 |  |
+| `pitch_ref_from_pos_deg` | `double` | `float` | 8 | 128 |  |
+| `pitch_error_deg` | `double` | `float` | 8 | 136 |  |
+| `pitch_sp_deg` | `double` | `float` | 8 | 144 |  |
+| `pitch_trim_deg` | `double` | `float` | 8 | 152 |  |
+| `trim_active` | `double` | `float` | 8 | 160 |  |
+| `left_applied_sps` | `double` | `float` | 8 | 168 |  |
+| `right_applied_sps` | `double` | `float` | 8 | 176 |  |
+| `motor_update_dt_ms` | `double` | `float` | 8 | 184 |  |
+| `motor_feedback_age_ms` | `double` | `float` | 8 | 192 |  |
+| `left_actual_steps` | `int64_t` | `int` | 8 | 200 |  |
+| `right_actual_steps` | `int64_t` | `int` | 8 | 208 |  |
+| `plant_pitch_deg` | `double` | `float` | 8 | 216 |  |
+| `plant_pitch_rate_dps` | `double` | `float` | 8 | 224 |  |
+| `plant_position_m` | `double` | `float` | 8 | 232 |  |
+| `plant_velocity_mps` | `double` | `float` | 8 | 240 |  |
+| `target_wheel_velocity` | `double` | `float` | 8 | 248 |  |
+| `actual_wheel_velocity` | `double` | `float` | 8 | 256 |  |
+| `plant_velocity_error` | `double` | `float` | 8 | 264 |  |
+| `f_cmd` | `double` | `float` | 8 | 272 |  |
+| `f_app` | `double` | `float` | 8 | 280 |  |
+| `external_force_n` | `double` | `float` | 8 | 288 |  |
+| `external_com_bias_rad` | `double` | `float` | 8 | 296 |  |
+| `x_ddot` | `double` | `float` | 8 | 304 |  |
+| `theta_ddot` | `double` | `float` | 8 | 312 |  |
+| `force_saturated` | `double` | `float` | 8 | 320 |  |
 
 ### `MsgId::MotorFeedback`
 

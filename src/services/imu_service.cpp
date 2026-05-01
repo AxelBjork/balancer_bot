@@ -39,7 +39,8 @@ void ImuService::handle_raw_imu(const ipc::ImuRawPayload& p) {
 
   ipc::ImuSamplePayload payload{};
   payload.pitch_rad = fused.angle_rad;
-  payload.filtered_pitch_rate_rad_s = fused.gyro_rad_s;
+  payload.pitch_rate_rad_s = fused.gyro_rad_s;
+  payload.pitch_accel_rad_s2 = fused.pitch_accel_rad_s2;
   payload.acc = p.acc;
   payload.gyr = p.gyr;
   payload.timestamp_us = p.timestamp_us;

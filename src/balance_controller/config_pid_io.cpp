@@ -38,31 +38,9 @@ void ConfigPid::load(const std::string& path) {
                                                         {"rate_D", &rate_D},
                                                         {"rate_I_lim", &rate_I_lim},
                                                         {"rate_FF", &rate_FF},
-                                                        {"angle_to_rate_k", &angle_to_rate_k},
                                                         {"vel_P", &vel_P},
-                                                        {"vel_I", &vel_I},
-                                                        {"vel_D", &vel_D},
-                                                        {"vel_I_lim", &vel_I_lim},
-                                                        {"pos_P", &pos_P},
-                                                        {"outer_k_pos", &outer_k_pos},
-                                                        {"outer_k_vel", &outer_k_vel},
-                                                        {"outer_k_pitch", &outer_k_pitch},
-                                                        {"outer_k_pitch_rate", &outer_k_pitch_rate},
-                                                        {"angle_I", &angle_I},
-                                                        {"lean_trim_I", &lean_trim_I},
-                                                        {"lean_trim_max_deg", &lean_trim_max_deg},
-                                                        {"lean_trim_decay_s", &lean_trim_decay_s}};
-
-  bool saw_outer_k_pos = false;
-  bool saw_outer_k_vel = false;
-  bool saw_outer_k_pitch = false;
-  bool saw_outer_k_pitch_rate = false;
-  bool saw_angle_to_rate_k = false;
-  bool saw_vel_p = false;
-  bool saw_vel_i = false;
-  bool saw_vel_d = false;
-  bool saw_vel_i_lim = false;
-  bool saw_pos_p = false;
+                                                        {"pitch_P", &pitch_P},
+                                                        {"pitch_D", &pitch_D}};
 
   std::cout << "[Config] Loading from " << path << "...\n";
   std::string line;
@@ -94,26 +72,6 @@ void ConfigPid::load(const std::string& path) {
           try {
             *it->second = std::stod(val_str);
             std::cout << "Loaded " << key << " = " << *it->second << "\n";
-            if (key == "outer_k_pos")
-              saw_outer_k_pos = true;
-            else if (key == "outer_k_vel")
-              saw_outer_k_vel = true;
-            else if (key == "outer_k_pitch")
-              saw_outer_k_pitch = true;
-            else if (key == "outer_k_pitch_rate")
-              saw_outer_k_pitch_rate = true;
-            else if (key == "angle_to_rate_k")
-              saw_angle_to_rate_k = true;
-            else if (key == "vel_P")
-              saw_vel_p = true;
-            else if (key == "vel_I")
-              saw_vel_i = true;
-            else if (key == "vel_D")
-              saw_vel_d = true;
-            else if (key == "vel_I_lim")
-              saw_vel_i_lim = true;
-            else if (key == "pos_P")
-              saw_pos_p = true;
           } catch (...) {
             std::cerr << "[Config] Error parsing value for " << key << ": '" << val_str << "'\n";
           }
@@ -125,34 +83,6 @@ void ConfigPid::load(const std::string& path) {
     }
   }
 
-  const bool saw_legacy_outer =
-      saw_angle_to_rate_k || saw_vel_p || saw_vel_i || saw_vel_d || saw_vel_i_lim || saw_pos_p;
-  if (saw_legacy_outer) {
-    if (!saw_outer_k_vel && saw_vel_p) {
-      outer_k_vel = -vel_P;
-      std::cout << "[Config] Mapped legacy vel_P -> outer_k_vel = " << outer_k_vel
-                << " (sign-normalized from legacy velocity loop)\n";
-    }
-    if (!saw_outer_k_pitch && saw_angle_to_rate_k) {
-      outer_k_pitch = angle_to_rate_k;
-      std::cout << "[Config] Mapped legacy angle_to_rate_k -> outer_k_pitch = " << outer_k_pitch
-                << "\n";
-    }
-    if (!saw_outer_k_pos && saw_pos_p) {
-      outer_k_pos = pos_P * outer_k_vel;
-      std::cout << "[Config] Mapped legacy pos_P -> outer_k_pos = " << outer_k_pos
-                << " using outer_k_vel = " << outer_k_vel << "\n";
-    }
-    if (!saw_outer_k_pitch_rate) {
-      outer_k_pitch_rate = 0.0;
-      std::cout << "[Config] Legacy outer-loop config detected; defaulting outer_k_pitch_rate = 0"
-                << "\n";
-    }
-    if (saw_vel_i || saw_vel_d || saw_vel_i_lim) {
-      std::cout << "[Config] Legacy vel_I/vel_D/vel_I_lim are loadable for compatibility but are"
-                   " not used by the rewritten outer controller.\n";
-    }
-  }
 }
 
 void ConfigPid::save(const std::string& path) {
@@ -170,24 +100,10 @@ void ConfigPid::save(const std::string& path) {
     f << "\n";
 
     f << "# --- Physics-Based Outer Loop ---\n";
-    write_param(f, "outer_k_pos", outer_k_pos);
-    write_param(f, "outer_k_vel", outer_k_vel);
-    write_param(f, "outer_k_pitch", outer_k_pitch);
-    write_param(f, "outer_k_pitch_rate", outer_k_pitch_rate);
+    write_param(f, "vel_P", vel_P);
+    write_param(f, "pitch_P", pitch_P);
+    write_param(f, "pitch_D", pitch_D);
     f << "\n";
-
-    f << "# --- Trim / Bias Learning ---\n";
-    write_param(f, "angle_I", angle_I);
-    write_param(f, "lean_trim_I", lean_trim_I);
-    write_param(f, "lean_trim_max_deg", lean_trim_max_deg);
-    write_param(f, "lean_trim_decay_s", lean_trim_decay_s);
-    f << "\n";
-
-    f << "# --- Legacy Outer-Loop Keys (load-only compatibility) ---\n";
-    f << "# Older configs may still use:\n";
-    f << "#   angle_to_rate_k, vel_P, vel_I, vel_D, vel_I_lim, pos_P\n";
-    f << "# The rewritten controller reads those keys if present, but new configs should\n";
-    f << "# only tune the outer_k_* fields above.\n";
 
     std::cout << "[Config] Saved defaults to " << path << "\n";
   } else {

@@ -23,6 +23,7 @@ struct Config {
   // LPFs (angles from accel, magnitude-to-g estimate, final angle LPF)
   static constexpr double fallback_dt_s = 1.0 / 400.0;  // Sampling + fallbacks
   static constexpr double fc_gyro_lpf_hz = 100.0;       // Gyro path, 30–45 Hz: low lag, tame noise
+  static constexpr double fc_gyro_accel_lpf_hz = 30.0;  // Gyro derivative path for rate D
   // Complementary accel correction (slow)
   static constexpr double fc_acc_corr_hz = 2.2;  // 0.5–1.2 Hz: drift trim without lag
   // Velocity estimator (fast)

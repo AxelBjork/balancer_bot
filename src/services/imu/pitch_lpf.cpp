@@ -18,6 +18,7 @@ void PitchComplementaryFilter::push_sample(const Acc3& acc, const Gyr3& gyrv, Ti
   // printf("LPF Raw Acc: %.2f %.2f %.2f\n", acc[0], acc[1], acc[2]);
   const double a_acc = exp_coeff(Config::fc_acc_prefilt_hz, dt);
   const double a_gyr = exp_coeff(Config::fc_gyro_lpf_hz, dt);
+  const double a_gyr_accel = exp_coeff(Config::fc_gyro_accel_lpf_hz, dt);
   const double a_corr = exp_coeff(Config::fc_acc_corr_hz, dt);
   const double a_bias = exp_coeff(Config::fc_gyro_bias_hz, dt);
 
@@ -25,10 +26,13 @@ void PitchComplementaryFilter::push_sample(const Acc3& acc, const Gyr3& gyrv, Ti
     acc_f_ = acc;
     pitch_ = acc_pitch(acc);
     gyro_lpf_ = gyrv[1];
+    gyro_accel_lpf_ = 0.0;
+    prev_gyro_lpf_ = gyro_lpf_;
+    have_prev_gyro_lpf_ = true;
     gyro_bias_ = 0.0;
     init_ = true;
     pub_.t = ts;
-    publish(pitch_, gyro_lpf_, gyrv[2], ts);
+    publish(pitch_, gyro_lpf_, gyro_accel_lpf_, gyrv[2], ts);
     return;
   }
 
@@ -39,6 +43,10 @@ void PitchComplementaryFilter::push_sample(const Acc3& acc, const Gyr3& gyrv, Ti
 
   // 2) LPF gyro + bias subtract
   gyro_lpf_ = a_gyr * gyro_lpf_ + (1.0 - a_gyr) * gyrv[1];
+  const double gyro_accel = have_prev_gyro_lpf_ ? (gyro_lpf_ - prev_gyro_lpf_) / dt : 0.0;
+  gyro_accel_lpf_ = a_gyr_accel * gyro_accel_lpf_ + (1.0 - a_gyr_accel) * gyro_accel;
+  prev_gyro_lpf_ = gyro_lpf_;
+  have_prev_gyro_lpf_ = true;
   const double gyro_corr = gyro_lpf_ - gyro_bias_;
 
   // 3) Predict with gyro
@@ -61,7 +69,7 @@ void PitchComplementaryFilter::push_sample(const Acc3& acc, const Gyr3& gyrv, Ti
     gyro_bias_ = a_bias * gyro_bias_ + (1.0 - a_bias) * gyro_lpf_;
   }
 
-  publish(pitch_, gyro_lpf_, gyrv[2], ts);
+  publish(pitch_, gyro_lpf_, gyro_accel_lpf_, gyrv[2], ts);
 }
 
 ImuSample PitchComplementaryFilter::read_latest() const {
@@ -82,7 +90,10 @@ void PitchComplementaryFilter::reset() {
   acc_f_ = {0.0, 0.0, 0.0};
   pitch_ = 0.0;
   gyro_lpf_ = 0.0;
+  gyro_accel_lpf_ = 0.0;
   gyro_bias_ = 0.0;
+  have_prev_gyro_lpf_ = false;
+  prev_gyro_lpf_ = 0.0;
   uint64_t s = seq_.load(std::memory_order_relaxed);
   seq_.store(s + 1, std::memory_order_release);
   pub_ = ImuSample{};
@@ -137,13 +148,14 @@ bool PitchComplementaryFilter::accel_reliable(const Acc3& a, double pitch_pred) 
   return true;
 }
 
-void PitchComplementaryFilter::publish(double pitch, double gyro_pitch, double yaw_rate_z,
-                                       TimePoint ts) {
+void PitchComplementaryFilter::publish(double pitch, double gyro_pitch, double gyro_pitch_accel,
+                                       double yaw_rate_z, TimePoint ts) {
   uint64_t s = seq_.load(std::memory_order_relaxed);
   seq_.store(s + 1, std::memory_order_release);  // begin publish
   pub_.t = ts;
   pub_.angle_rad = pitch;
   pub_.gyro_rad_s = gyro_pitch;
+  pub_.pitch_accel_rad_s2 = gyro_pitch_accel;
   pub_.yaw_rate_z = yaw_rate_z;
   seq_.store(s + 2, std::memory_order_release);  // end publish
 }

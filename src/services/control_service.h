@@ -92,7 +92,8 @@ template <>
 inline void ControlService::on_message<MsgId::ImuData>(const ipc::ImuSamplePayload& p) {
   ImuSample s{};
   s.angle_rad = p.pitch_rad;
-  s.gyro_rad_s = p.filtered_pitch_rate_rad_s;
+  s.gyro_rad_s = p.pitch_rate_rad_s;
+  s.pitch_accel_rad_s2 = p.pitch_accel_rad_s2;
   s.yaw_rate_z = p.gyr[2];
   s.t = std::chrono::steady_clock::time_point(std::chrono::microseconds(p.timestamp_us));
   const double ax = p.acc[0];
@@ -101,7 +102,7 @@ inline void ControlService::on_message<MsgId::ImuData>(const ipc::ImuSamplePaylo
   last_raw_acc_pitch_deg_ = std::atan2(-ax, std::sqrt(ay * ay + az * az)) * (180.0 / M_PI);
   last_fused_pitch_deg_ = p.pitch_rad * (180.0 / M_PI);
   last_gyro_pitch_rate_dps_ = p.gyr[1] * (180.0 / M_PI);
-  last_filtered_pitch_rate_dps_ = p.filtered_pitch_rate_rad_s * (180.0 / M_PI);
+  last_filtered_pitch_rate_dps_ = p.pitch_rate_rad_s * (180.0 / M_PI);
   core_.pushImu(s);
 }
 

@@ -428,7 +428,8 @@ class SimulatorService {
     const auto imu = make_controller_imu(run);
     ImuSample sample{};
     sample.angle_rad = imu.pitch_rad;
-    sample.gyro_rad_s = imu.filtered_pitch_rate_rad_s;
+    sample.gyro_rad_s = imu.pitch_rate_rad_s;
+    sample.pitch_accel_rad_s2 = imu.pitch_accel_rad_s2;
     sample.yaw_rate_z = imu.gyr[2];
     sample.t = std::chrono::steady_clock::time_point(std::chrono::microseconds(imu.timestamp_us));
     run.core.pushImu(sample);
@@ -480,8 +481,8 @@ class SimulatorService {
     const auto& state = run.sim.state();
 
     payload.run_id = run.run_id;
-    payload.sim_time_s = static_cast<double>(run.sim_time_us) / 1e6;
-    payload.t_sec = run.have_telemetry ? run.latest_telemetry.t_sec : payload.sim_time_s;
+    const double sim_time_s = static_cast<double>(run.sim_time_us) / 1e6;
+    payload.t_sec = run.have_telemetry ? run.latest_telemetry.t_sec : sim_time_s;
     payload.age_ms = run.have_telemetry
                          ? run.latest_telemetry.age_ms
                          : std::chrono::duration<double, std::milli>(
@@ -498,41 +499,21 @@ class SimulatorService {
     payload.gyro_pitch_rate_dps = imu.gyr[1] * 180.0 / kPi;
     payload.filtered_pitch_rate_dps =
         run.have_telemetry ? run.latest_telemetry.filtered_pitch_rate_dps
-                           : (imu.filtered_pitch_rate_rad_s * 180.0 / kPi);
-    payload.rate_sp_dps = run.have_telemetry ? run.latest_telemetry.rate_sp_dps : 0.0;
-    payload.out_norm = run.have_telemetry ? run.latest_telemetry.out_norm : 0.0;
+                           : (imu.pitch_rate_rad_s * 180.0 / kPi);
     payload.u_sps = run.have_telemetry ? run.latest_telemetry.u_sps : 0.0;
-    payload.integ_pitch = run.have_telemetry ? run.latest_telemetry.integ_pitch : 0.0;
     payload.vel_error = run.have_telemetry ? run.latest_telemetry.vel_error : 0.0;
     payload.vel_p_term = run.have_telemetry ? run.latest_telemetry.vel_p_term : 0.0;
-    payload.vel_i_term = run.have_telemetry ? run.latest_telemetry.vel_i_term : 0.0;
-    payload.target_vel_sps =
-        run.have_telemetry ? run.latest_telemetry.target_vel_sps : 0.0;
-    payload.measured_vel_sps =
-        run.have_telemetry ? run.latest_telemetry.measured_vel_sps : 0.0;
-    payload.filtered_vel_sps =
-        run.have_telemetry ? run.latest_telemetry.filtered_vel_sps : 0.0;
-    payload.position_target_vel_sps =
-        run.have_telemetry ? run.latest_telemetry.position_target_vel_sps : 0.0;
     payload.pitch_ref_from_vel_deg =
         run.have_telemetry ? run.latest_telemetry.pitch_ref_from_vel_deg : 0.0;
     payload.pitch_ref_from_pos_deg =
         run.have_telemetry ? run.latest_telemetry.pitch_ref_from_pos_deg : 0.0;
     payload.pitch_sp_deg = run.have_telemetry ? run.latest_telemetry.pitch_sp_deg : 0.0;
-    payload.effective_pitch_sp_deg =
-        run.have_telemetry ? run.latest_telemetry.effective_pitch_sp_deg : 0.0;
     payload.pitch_error_deg =
         run.have_telemetry ? run.latest_telemetry.pitch_error_deg
                            : (payload.pitch_sp_deg - payload.pitch_deg);
-    payload.rate_error_dps =
-        run.have_telemetry ? run.latest_telemetry.rate_error_dps
-                           : (payload.rate_sp_dps - payload.filtered_pitch_rate_dps);
     payload.pitch_trim_deg =
         run.have_telemetry ? run.latest_telemetry.pitch_trim_deg : 0.0;
     payload.trim_active = run.have_telemetry ? run.latest_telemetry.trim_active : 0.0;
-    payload.command_saturated =
-        run.have_telemetry ? run.latest_telemetry.command_saturated
-                           : (diag.command_saturated ? 1.0 : 0.0);
     payload.left_applied_sps = run.left_sps;
     payload.right_applied_sps = run.right_sps;
     payload.left_actual_steps = static_cast<int64_t>(std::llround(run.left_actual_steps));

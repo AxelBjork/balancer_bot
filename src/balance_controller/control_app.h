@@ -75,7 +75,7 @@ inline void app_dispatcher(void* ctx, MsgId id, const void* payload) {
   if (id == MsgId::SystemTelemetry) {
     if constexpr (Config::kPrintEvery != -1) {
       if ((++telemetry_count % Config::kPrintEvery) == 0) {
-        const auto& p = unpack_payload<MsgId::SystemTelemetry>(payload);
+        const ipc::SystemTelemetryPayload& p = unpack_payload<MsgId::SystemTelemetry>(payload);
         const bool motor_dt_warning = p.motor_update_dt_ms > (1500.0 / Config::control_hz);
         const double applied_avg_sps = 0.5 * (p.left_applied_sps + p.right_applied_sps);
         std::printf(
@@ -85,7 +85,7 @@ inline void app_dispatcher(void* ctx, MsgId id, const void* payload) {
             p.t_sec, p.pitch_deg, p.pitch_rate_dps, p.u_sps,
             (std::abs(p.u_sps) >= 0.99 * kMaxSps) ? "*" : "", p.pitch_sp_deg,
             p.pitch_ref_from_vel_deg, p.pitch_trim_deg, p.pitch_error_deg,
-            p.measured_vel_sps, p.filtered_vel_sps, applied_avg_sps,
+            p.vel_error, p.measured_vel_sps, applied_avg_sps,
             motor_dt_warning ? "  MOTOR_DT!" : "", p.turn_sps);
       }
     }
