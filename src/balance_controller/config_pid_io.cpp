@@ -110,8 +110,9 @@ void ConfigPid::load(const std::string& path) {
       saw_angle_to_rate_k || saw_vel_p || saw_vel_i || saw_vel_d || saw_vel_i_lim || saw_pos_p;
   if (saw_legacy_outer) {
     if (!saw_outer_k_vel && saw_vel_p) {
-      outer_k_vel = vel_P;
-      std::cout << "[Config] Mapped legacy vel_P -> outer_k_vel = " << outer_k_vel << "\n";
+      outer_k_vel = -vel_P;
+      std::cout << "[Config] Mapped legacy vel_P -> outer_k_vel = " << outer_k_vel
+                << " (sign-normalized from legacy velocity loop)\n";
     }
     if (!saw_outer_k_pitch && saw_angle_to_rate_k) {
       outer_k_pitch = angle_to_rate_k;

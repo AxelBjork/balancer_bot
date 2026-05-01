@@ -121,6 +121,18 @@ TEST_F(MotorRunnerTest, VelocityEstimation) {
   EXPECT_NEAR(v, 0.0f, 50.0f) << "Average velocity should be 0 for pure spin";
 }
 
+TEST_F(MotorRunnerTest, VelocityEstimationResolvesBelowOnePulsePerFrame) {
+  Stepper left(1, Stepper::Pins{5, 6, 13});
+  Stepper right(1, Stepper::Pins{7, 8, 14});
+  MotorRunner runner(left, right, 400.0, 50000.0);
+
+  runner.getActualSpeedSps();
+  RunFor(runner, 100.0, 100.0, std::chrono::milliseconds(500));
+
+  const float v = runner.getActualSpeedSps();
+  EXPECT_NEAR(v, 100.0f, 35.0f) << "Estimated velocity should average below the 200 sps quantization step";
+}
+
 TEST_F(MotorRunnerTest, FeedbackSnapshotReflectsAppliedStateNotRawTarget) {
   Stepper left(1, Stepper::Pins{5, 6, 13});
   Stepper right(1, Stepper::Pins{7, 8, 14});
@@ -135,4 +147,32 @@ TEST_F(MotorRunnerTest, FeedbackSnapshotReflectsAppliedStateNotRawTarget) {
   EXPECT_GT(feedback.right_applied_sps, 0.0f);
   EXPECT_GT(feedback.left_actual_steps, 0);
   EXPECT_GT(feedback.right_actual_steps, 0);
+}
+
+TEST_F(MotorRunnerTest, FeedbackSignMatchesAppliedDirectionWithRightMotorInversion) {
+  {
+    Stepper left(1, Stepper::Pins{5, 6, 13});
+    Stepper right(1, Stepper::Pins{7, 8, 14}, true);
+    MotorRunner runner(left, right, 400.0, 50000.0);
+
+    RunFor(runner, 800.0, 800.0, std::chrono::milliseconds(80));
+    const auto feedback = runner.getFeedbackSample();
+    EXPECT_GT(feedback.left_applied_sps, 0.0f);
+    EXPECT_GT(feedback.right_applied_sps, 0.0f);
+    EXPECT_GT(feedback.left_actual_steps, 0);
+    EXPECT_GT(feedback.right_actual_steps, 0);
+  }
+
+  {
+    Stepper left(1, Stepper::Pins{15, 16, 17});
+    Stepper right(1, Stepper::Pins{18, 19, 20}, true);
+    MotorRunner runner(left, right, 400.0, 50000.0);
+
+    RunFor(runner, -800.0, -800.0, std::chrono::milliseconds(80));
+    const auto feedback = runner.getFeedbackSample();
+    EXPECT_LT(feedback.left_applied_sps, 0.0f);
+    EXPECT_LT(feedback.right_applied_sps, 0.0f);
+    EXPECT_LT(feedback.left_actual_steps, 0);
+    EXPECT_LT(feedback.right_actual_steps, 0);
+  }
 }

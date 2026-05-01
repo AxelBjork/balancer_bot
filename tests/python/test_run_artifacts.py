@@ -157,6 +157,16 @@ def test_analyze_timeline_rows_reports_estimator_and_drive_sections():
                 measured = 0.8 * 120.0
             elif 90 <= prev < 110:
                 measured = 0.8 * -80.0
+        left_applied = 0.0
+        right_applied = 0.0
+        if i >= 2:
+            prev = i - 2
+            if 25 <= prev < 45:
+                left_applied = 120.0
+                right_applied = 120.0
+            elif 90 <= prev < 110:
+                left_applied = -80.0
+                right_applied = -80.0
         rows.append(
             {
                 "sim_time_s": t,
@@ -165,6 +175,8 @@ def test_analyze_timeline_rows_reports_estimator_and_drive_sections():
                 "gyro_pitch_rate_dps": gyro,
                 "filtered_pitch_rate_dps": filtered_gyro,
                 "u_sps": command,
+                "left_applied_sps": left_applied,
+                "right_applied_sps": right_applied,
                 "measured_vel_sps": measured,
                 "filtered_vel_sps": measured,
             }
@@ -175,3 +187,8 @@ def test_analyze_timeline_rows_reports_estimator_and_drive_sections():
     assert analysis["estimator_pitch"]["lag_steps"] == 2
     assert analysis["estimator_pitch_rate"]["lag_steps"] == 1
     assert analysis["drive_command_to_measured_velocity"]["lag_steps"] == 4
+    assert analysis["drive_command_to_left_applied"]["lag_steps"] == 2
+    assert analysis["drive_command_to_right_applied"]["lag_steps"] == 2
+    assert analysis["left_applied_to_measured_velocity"]["lag_steps"] == 2
+    assert analysis["right_applied_to_measured_velocity"]["lag_steps"] == 2
+    assert analysis["fused_pitch_to_filtered_pitch_rate"]["lag_steps"] is not None

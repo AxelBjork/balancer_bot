@@ -107,6 +107,8 @@ SimulatorRunResult run_simulator_scenario_with_loaded_pid(const SimulatorScenari
 
   float left_sps = 0.0f;
   float right_sps = 0.0f;
+  double left_actual_steps = 0.0;
+  double right_actual_steps = 0.0;
   Telemetry latest_telemetry{};
   bool have_telemetry = false;
 
@@ -150,6 +152,8 @@ SimulatorRunResult run_simulator_scenario_with_loaded_pid(const SimulatorScenari
 
     core.pushImu(sample);
     core.step(kTickDtS, sample.t);
+    left_actual_steps += static_cast<double>(left_sps) * kTickDtS;
+    right_actual_steps += static_cast<double>(right_sps) * kTickDtS;
 
     const auto& diag = sim.diagnostics();
     SimulatorTimelineRow row{};
@@ -190,12 +194,21 @@ SimulatorRunResult run_simulator_scenario_with_loaded_pid(const SimulatorScenari
       row.measured_vel_sps = latest_telemetry.measured_vel_sps;
       row.filtered_vel_sps = latest_telemetry.filtered_vel_sps;
       row.position_target_vel_sps = latest_telemetry.position_target_vel_sps;
+      row.pitch_ref_from_vel_deg = latest_telemetry.pitch_ref_from_vel_deg;
+      row.pitch_ref_from_pos_deg = latest_telemetry.pitch_ref_from_pos_deg;
+      row.pitch_error_deg = latest_telemetry.pitch_error_deg;
+      row.rate_error_dps = latest_telemetry.rate_error_dps;
       row.out_norm = latest_telemetry.out_norm;
+      row.pitch_sp_deg = latest_telemetry.pitch_sp_deg;
       row.effective_pitch_sp_deg = latest_telemetry.effective_pitch_sp_deg;
       row.pitch_trim_deg = latest_telemetry.pitch_trim_deg;
       row.trim_active = latest_telemetry.trim_active;
       row.command_saturated = latest_telemetry.command_saturated;
     }
+    row.left_applied_sps = left_sps;
+    row.right_applied_sps = right_sps;
+    row.left_actual_steps = left_actual_steps;
+    row.right_actual_steps = right_actual_steps;
     row.external_force_n = diag.external_force_n;
     row.external_com_bias_rad = diag.external_com_bias_rad;
     result.rows.push_back(row);

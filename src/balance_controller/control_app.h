@@ -9,6 +9,7 @@
 #include <csignal>
 #include <iostream>
 #include <memory>
+#include <print>
 #include <thread>
 
 #include "config.h"
@@ -77,12 +78,13 @@ void app_dispatcher(void* ctx, MsgId id, const void* payload) {
     const auto& p = *static_cast<const ipc::SystemTelemetryPayload*>(payload);
     if constexpr (Config::kPrintEvery != -1) {
       if ((++telemetry_count % Config::kPrintEvery) == 0) {
-        std::printf(
-            "t=%7.3f  theta=%6.2f deg  theta_dot=%6.2f dps  r_sp=%6.2f dps  out=%6.3f  "
-            "u=%6.0f%s  I=%7.3f  psp=%5.2f  ve=%5.1f  vi=%5.3f  vp=%5.3f\n",
-            p.t_sec, p.pitch_deg, p.pitch_rate_dps, p.rate_sp_dps, p.out_norm, p.u_sps,
+        std::println(
+            "t={:7.3f}  th={:6.2f} deg  dth={:7.2f} dps  rsp={:7.2f} dps  u={:6.0f}{}  "
+            "pref={:6.2f} ({:+5.2f}/{:+5.2f})  perr={:6.2f}  v={:7.1f}/{:7.1f}  ap={:6.0f}/{:6.0f}",
+            p.t_sec, p.pitch_deg, p.pitch_rate_dps, p.rate_sp_dps, p.u_sps,
             (std::abs(p.u_sps) >= 0.99f * static_cast<float>(kMaxSps)) ? "*" : "",
-            p.integ_pitch, p.pitch_sp_deg, p.vel_error, p.vel_i_term, p.vel_p_term);
+            p.pitch_sp_deg, p.pitch_ref_from_vel_deg, p.pitch_ref_from_pos_deg, p.pitch_error_deg,
+            p.measured_vel_sps, p.filtered_vel_sps, p.left_applied_sps, p.right_applied_sps);
       }
     }
     s->udp.on_message<MsgId::SystemTelemetry>(p); // relay to Python

@@ -2,6 +2,7 @@
 #pragma once
 #include <atomic>
 #include <chrono>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <mutex>
@@ -204,6 +205,7 @@ class MotorRunner {
   struct FeedbackSample {
     float left_applied_sps{0.0f};
     float right_applied_sps{0.0f};
+    float measured_avg_sps{0.0f};
     int64_t left_actual_steps{0};
     int64_t right_actual_steps{0};
   };
@@ -238,6 +240,9 @@ class MotorRunner {
     wave_.stop();
     last_cmd_L_ = last_cmd_R_ = 0.0;
     last_applied_hzL_ = last_applied_hzR_ = 0;
+    measured_avg_sps_ = 0.0f;
+    vel_hist_count_ = 0;
+    vel_hist_head_ = 0;
     // Reset time to avoid large jump on restart?
     // Or just let it be. If we stop, rate is 0, so integration adds 0.
     // But we should reset last_call_time_ if we want to restart cleanly?
@@ -279,6 +284,8 @@ class MotorRunner {
         (last_applied_hzL_ == 0u) ? 0.0f : static_cast<float>(last_applied_hzL_) * left_dir * left_positive_dir;
     sample.right_applied_sps =
         (last_applied_hzR_ == 0u) ? 0.0f : static_cast<float>(last_applied_hzR_) * right_dir * right_positive_dir;
+    const double avg_actual_steps = 0.5 * (accum_actual_L_ + accum_actual_R_);
+    sample.measured_avg_sps = estimateMeasuredAverageSpsLocked(avg_actual_steps);
     sample.left_actual_steps = actual_steps_left_.load(std::memory_order_relaxed);
     sample.right_actual_steps = actual_steps_right_.load(std::memory_order_relaxed);
     return sample;
@@ -286,10 +293,13 @@ class MotorRunner {
 
   float getActualSpeedSps() {
     const auto sample = getFeedbackSample();
-    return 0.5f * (sample.left_applied_sps + sample.right_applied_sps);
+    return sample.measured_avg_sps;
   }
 
  private:
+  static constexpr size_t kVelocityHistorySize = 64;
+  static constexpr double kVelocityEstimateWindowS = 0.05;
+
   static inline double clampDelta(double from, double to, double max_delta) {
     const double d = to - from;
     if (d > max_delta) return from + max_delta;
@@ -330,8 +340,89 @@ class MotorRunner {
     return {hz, pulses};
   }
 
+  void integrateTrackingLocked(std::chrono::steady_clock::time_point now) {
+    if (last_call_time_.time_since_epoch().count() <= 0) {
+      last_call_time_ = now;
+      return;
+    }
+
+    const std::chrono::duration<double> dt = now - last_call_time_;
+    const double d_sec = dt.count();
+    if (d_sec <= 0.0) {
+      last_call_time_ = now;
+      return;
+    }
+
+    accum_L_ += last_cmd_L_ * d_sec;
+    accum_R_ += last_cmd_R_ * d_sec;
+
+    steps_left_.store(static_cast<int64_t>(accum_L_), std::memory_order_relaxed);
+    steps_right_.store(static_cast<int64_t>(accum_R_), std::memory_order_relaxed);
+
+    const double left_positive_dir = L_.forwardFromSps(1.0) ? 1.0 : -1.0;
+    const double right_positive_dir = R_.forwardFromSps(1.0) ? 1.0 : -1.0;
+    const double actL =
+        static_cast<double>(last_applied_hzL_) * d_sec * (last_applied_fwdL_ ? 1.0 : -1.0) *
+        left_positive_dir;
+    const double actR =
+        static_cast<double>(last_applied_hzR_) * d_sec * (last_applied_fwdR_ ? 1.0 : -1.0) *
+        right_positive_dir;
+
+    accum_actual_L_ += actL;
+    accum_actual_R_ += actR;
+
+    actual_steps_left_.store(static_cast<int64_t>(accum_actual_L_), std::memory_order_relaxed);
+    actual_steps_right_.store(static_cast<int64_t>(accum_actual_R_), std::memory_order_relaxed);
+    last_call_time_ = now;
+  }
+
+  float estimateMeasuredAverageSpsLocked(double avg_actual_steps) const {
+    const auto now = std::chrono::steady_clock::now();
+    const double now_s =
+        std::chrono::duration<double>(now.time_since_epoch()).count();
+
+    vel_hist_time_s_[vel_hist_head_] = now_s;
+    vel_hist_avg_steps_[vel_hist_head_] = avg_actual_steps;
+    vel_hist_head_ = (vel_hist_head_ + 1u) % kVelocityHistorySize;
+    if (vel_hist_count_ < kVelocityHistorySize) {
+      ++vel_hist_count_;
+    }
+
+    if (vel_hist_count_ < 2) {
+      measured_avg_sps_ = 0.0f;
+      return measured_avg_sps_;
+    }
+
+    size_t selected_idx = (vel_hist_head_ + kVelocityHistorySize - vel_hist_count_) % kVelocityHistorySize;
+    bool found_window = false;
+    for (size_t offset = 1; offset < vel_hist_count_; ++offset) {
+      const size_t idx = (vel_hist_head_ + kVelocityHistorySize - 1u - offset) % kVelocityHistorySize;
+      const double age_s = now_s - vel_hist_time_s_[idx];
+      if (age_s >= kVelocityEstimateWindowS) {
+        selected_idx = idx;
+        found_window = true;
+        break;
+      }
+      selected_idx = idx;
+    }
+
+    const double dt_s = now_s - vel_hist_time_s_[selected_idx];
+    if (!found_window && dt_s <= 1e-6) {
+      return measured_avg_sps_;
+    }
+    if (dt_s <= 1e-6) {
+      return measured_avg_sps_;
+    }
+
+    measured_avg_sps_ =
+        static_cast<float>((avg_actual_steps - vel_hist_avg_steps_[selected_idx]) / dt_s);
+    return measured_avg_sps_;
+  }
+
   void applyOnce() {
     std::lock_guard<std::mutex> lk(mu_);
+    const auto now = std::chrono::steady_clock::now();
+    integrateTrackingLocked(now);
 
     const double tgtL =
         clampDelta(last_cmd_L_, tgt_left_.load(std::memory_order_relaxed), slew_per_call_);
@@ -351,6 +442,10 @@ class MotorRunner {
 
     if (hzL == 0u && hzR == 0u) {
       wave_.stop();
+      last_applied_hzL_ = 0u;
+      last_applied_hzR_ = 0u;
+      last_applied_fwdL_ = fwdL;
+      last_applied_fwdR_ = fwdR;
       last_cmd_L_ = tgtL;
       last_cmd_R_ = tgtR;
       return;
@@ -365,40 +460,6 @@ class MotorRunner {
     }
 
     wave_.apply(hzL, hzR);
-
-    // Step tracking
-    auto now = std::chrono::steady_clock::now();
-    if (last_call_time_.time_since_epoch().count() > 0) {
-      std::chrono::duration<double> dt = now - last_call_time_;
-      double d_sec = dt.count();
-
-      // Integrate the commanded rate (smooth), not the quantized Hz
-      // This matches the velocity feedback which also uses commanded values
-      double stepsL = last_cmd_L_ * d_sec;
-      double stepsR = last_cmd_R_ * d_sec;
-
-      accum_L_ += stepsL;
-      accum_R_ += stepsR;
-
-      int64_t totalL = static_cast<int64_t>(accum_L_);
-      int64_t totalR = static_cast<int64_t>(accum_R_);
-      steps_left_.store(totalL, std::memory_order_relaxed);
-      steps_right_.store(totalR, std::memory_order_relaxed);
-
-      // Integrate actual rate (based on applied Hz)
-      double actL = (double)last_applied_hzL_ * d_sec;
-      double actR = (double)last_applied_hzR_ * d_sec;
-
-      if (last_cmd_L_ < 0.0) actL = -actL;
-      if (last_cmd_R_ < 0.0) actR = -actR;
-
-      accum_actual_L_ += actL;
-      accum_actual_R_ += actR;
-
-      actual_steps_left_.store((int64_t)accum_actual_L_, std::memory_order_relaxed);
-      actual_steps_right_.store((int64_t)accum_actual_R_, std::memory_order_relaxed);
-    }
-    last_call_time_ = now;
     last_applied_hzL_ = hzL;
     last_applied_hzR_ = hzR;
     last_applied_fwdL_ = fwdL;
@@ -427,5 +488,10 @@ class MotorRunner {
 
   double accum_L_{0.0}, accum_R_{0.0};
   double accum_actual_L_{0.0}, accum_actual_R_{0.0};
+  mutable std::array<double, kVelocityHistorySize> vel_hist_time_s_{};
+  mutable std::array<double, kVelocityHistorySize> vel_hist_avg_steps_{};
+  mutable size_t vel_hist_head_{0};
+  mutable size_t vel_hist_count_{0};
+  mutable float measured_avg_sps_{0.0f};
 
 };

@@ -114,14 +114,18 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
   const float base_target_vel_sps =
       user_velocity_active ? joy.forward * static_cast<float>(kMaxSps) : 0.0f;
   float position_target_vel_sps = 0.0f;
+  float position_pitch_setpoint_rad = 0.0f;
   const bool position_hold_enabled =
       have_position_feedback && !user_velocity_active && ConfigPid::outer_k_pos != 0.0 &&
-      std::abs(ConfigPid::outer_k_vel) > 1e-9 && std::abs(pitch_rad) < kPositionHoldEnablePitchRad;
+      std::abs(pitch_rad) < kPositionHoldEnablePitchRad;
   if (position_hold_enabled) {
     const float position_error_m = p_->position_anchor_m - current_position_m;
-    position_target_vel_sps = std::clamp(
-        static_cast<float>((ConfigPid::outer_k_pos / ConfigPid::outer_k_vel) * position_error_m),
-        -kMaxPositionTargetSps, kMaxPositionTargetSps);
+    position_pitch_setpoint_rad = static_cast<float>(ConfigPid::outer_k_pos * position_error_m);
+    if (std::abs(ConfigPid::outer_k_vel) > 1e-9) {
+      position_target_vel_sps = std::clamp(
+          static_cast<float>(position_pitch_setpoint_rad / ConfigPid::outer_k_vel),
+          -kMaxPositionTargetSps, kMaxPositionTargetSps);
+    }
   }
   const float target_vel_sps = base_target_vel_sps + position_target_vel_sps;
   const float vel_error_sps = target_vel_sps - current_velocity_sps;
@@ -134,7 +138,8 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
         -kMaxPositionTrimPitchBiasRad, kMaxPositionTrimPitchBiasRad);
   }
 
-  p_->pitch_setpoint_rad = velocity_pitch_setpoint_rad + p_->angle_trim_pitch_bias_rad + p_->lean_trim_rad;
+  p_->pitch_setpoint_rad = velocity_pitch_setpoint_rad + position_pitch_setpoint_rad +
+                           p_->angle_trim_pitch_bias_rad + p_->lean_trim_rad;
   p_->pitch_setpoint_rad =
       std::clamp(p_->pitch_setpoint_rad, -static_cast<float>(kMaxPitchSetpointRad),
                  static_cast<float>(kMaxPitchSetpointRad));
@@ -143,6 +148,7 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
   const float rate_sp_rad_s =
       static_cast<float>(ConfigPid::outer_k_pitch * pitch_error_rad -
                          ConfigPid::outer_k_pitch_rate * filtered_pitch_rate_rad_s);
+  const float rate_error_rad_s = rate_sp_rad_s - filtered_pitch_rate_rad_s;
 
   const Vector3f rate{0.f, filtered_pitch_rate_rad_s, 0.f};
   const Vector3f rate_sp{0.f, rate_sp_rad_s, 0.f};
@@ -209,6 +215,10 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
     t.measured_vel_sps = measured_velocity_sps;
     t.filtered_vel_sps = current_velocity_sps;
     t.position_target_vel_sps = position_target_vel_sps;
+    t.pitch_ref_from_vel_deg = velocity_pitch_setpoint_rad * 180.0 / M_PI;
+    t.pitch_ref_from_pos_deg = position_pitch_setpoint_rad * 180.0 / M_PI;
+    t.pitch_error_deg = pitch_error_rad * 180.0 / M_PI;
+    t.rate_error_dps = rate_error_rad_s * 180.0 / M_PI;
     t.pitch_sp_deg = p_->pitch_setpoint_rad * 180.0 / M_PI;
     t.effective_pitch_sp_deg = p_->pitch_setpoint_rad * 180.0 / M_PI;
     t.pitch_trim_deg = p_->lean_trim_rad * 180.0 / M_PI;

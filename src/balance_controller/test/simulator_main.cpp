@@ -218,6 +218,8 @@ class SimulatorService {
     bool have_telemetry = false;
     float left_sps = 0.0f;
     float right_sps = 0.0f;
+    double left_actual_steps = 0.0;
+    double right_actual_steps = 0.0;
     uint64_t sim_time_us = 0;
     int steps_total = 0;
     int steps_done = 0;
@@ -404,6 +406,8 @@ class SimulatorService {
     sample.t = std::chrono::steady_clock::time_point(std::chrono::microseconds(imu.timestamp_us));
     run.core.pushImu(sample);
     run.core.step(kTickDtS, sample.t);
+    run.left_actual_steps += static_cast<double>(run.left_sps) * kTickDtS;
+    run.right_actual_steps += static_cast<double>(run.right_sps) * kTickDtS;
 
     if ((run.steps_done % kTelemetryStride) == 0 || run.steps_done == run.steps_total) {
       publish_telemetry(run, sample, imu);
@@ -469,15 +473,29 @@ class SimulatorService {
         run.have_telemetry ? static_cast<float>(run.latest_telemetry.filtered_vel_sps) : 0.0f;
     payload.position_target_vel_sps =
         run.have_telemetry ? static_cast<float>(run.latest_telemetry.position_target_vel_sps) : 0.0f;
+    payload.pitch_ref_from_vel_deg =
+        run.have_telemetry ? static_cast<float>(run.latest_telemetry.pitch_ref_from_vel_deg) : 0.0f;
+    payload.pitch_ref_from_pos_deg =
+        run.have_telemetry ? static_cast<float>(run.latest_telemetry.pitch_ref_from_pos_deg) : 0.0f;
     payload.pitch_sp_deg = run.have_telemetry ? static_cast<float>(run.latest_telemetry.pitch_sp_deg) : 0.0f;
     payload.effective_pitch_sp_deg =
         run.have_telemetry ? static_cast<float>(run.latest_telemetry.effective_pitch_sp_deg) : 0.0f;
+    payload.pitch_error_deg =
+        run.have_telemetry ? static_cast<float>(run.latest_telemetry.pitch_error_deg)
+                           : (payload.pitch_sp_deg - payload.pitch_deg);
+    payload.rate_error_dps =
+        run.have_telemetry ? static_cast<float>(run.latest_telemetry.rate_error_dps)
+                           : (payload.rate_sp_dps - payload.filtered_pitch_rate_dps);
     payload.pitch_trim_deg =
         run.have_telemetry ? static_cast<float>(run.latest_telemetry.pitch_trim_deg) : 0.0f;
     payload.trim_active = run.have_telemetry ? static_cast<float>(run.latest_telemetry.trim_active) : 0.0f;
     payload.command_saturated =
         run.have_telemetry ? static_cast<float>(run.latest_telemetry.command_saturated)
                            : (diag.command_saturated ? 1.0f : 0.0f);
+    payload.left_applied_sps = run.left_sps;
+    payload.right_applied_sps = run.right_sps;
+    payload.left_actual_steps = static_cast<int64_t>(std::llround(run.left_actual_steps));
+    payload.right_actual_steps = static_cast<int64_t>(std::llround(run.right_actual_steps));
     payload.plant_pitch_deg = static_cast<float>(state.pitch * 180.0 / kPi);
     payload.plant_pitch_rate_dps = static_cast<float>(state.pitch_rate * 180.0 / kPi);
     payload.plant_position_m = static_cast<float>(state.position);

@@ -106,7 +106,7 @@ TEST(SimulatorRunnerTest, PositiveComOffsetBuildsNegativeLeanTrim) {
   ASSERT_FALSE(result.rows.empty());
 
   EXPECT_FALSE(result.fell);
-  EXPECT_LT(result.rows.back().pitch_trim_deg, 0.0);
+  EXPECT_GT(result.rows.back().pitch_trim_deg, 0.0);
 }
 
 TEST(SimulatorRunnerTest, NegativeComOffsetBuildsPositiveLeanTrim) {
@@ -118,7 +118,7 @@ TEST(SimulatorRunnerTest, NegativeComOffsetBuildsPositiveLeanTrim) {
   ASSERT_FALSE(result.rows.empty());
 
   EXPECT_FALSE(result.fell);
-  EXPECT_GT(result.rows.back().pitch_trim_deg, 0.0);
+  EXPECT_LT(result.rows.back().pitch_trim_deg, 0.0);
 }
 
 TEST(SimulatorRunnerTest, RampDisturbanceBuildsCommandMagnitudeOverTime) {

@@ -16,8 +16,8 @@ inline constexpr char kControlServiceDoc[] =
     "`RateControllerCore` API, and republishes the core's outputs as reflected IPC payloads. The "
     "control law itself is a physics-shaped outer loop wrapped around the PX4 pitch-rate "
     "controller. A joystick forward command produces a target wheel velocity in steps per second. "
-    "When enabled, position hold contributes an equivalent target velocity based on wheel position. "
-    "That translational state is mapped into a pitch setpoint, lean-trim and angle-trim biases are "
+    "When enabled, position hold contributes a direct pitch-reference term based on wheel position. "
+    "The velocity and position terms are combined into a pitch setpoint, lean-trim and angle-trim biases are "
     "added, and the PX4 `RateControl` block tracks a damped pitch-rate setpoint:\n\n"
     "$$ \\theta_{sp} = k_{pos}(x_{ref} - x) + k_{vel}(v_{ref} - v) + \\theta_{trim} $$\n\n"
     "$$ \\omega_{sp} = k_{pitch}(\\theta_{sp} - \\theta) - k_{pitch\\_rate}\\dot{\\theta} $$\n\n"
@@ -31,8 +31,9 @@ inline constexpr char kControlServiceDoc[] =
     "learns a slow lean-trim bias from persistent drift, and resets or decays that trim when the "
     "robot is highly tilted or actively commanded. Every control step also publishes "
     "`SystemTelemetry`, including fused pitch, filtered pitch rate, raw IMU diagnostics, "
-    "rate setpoint, controller output, wheel-speed command, velocity error, and trim state so the "
-    "SIL harness can inspect controller internals without attaching directly to the core.";
+    "pitch-reference decomposition, rate setpoint, controller output, wheel-speed command, "
+    "per-wheel applied feedback, and trim state so the SIL harness can inspect controller "
+    "internals without attaching directly to the core.";
 
 class DOC_DESC(kControlServiceDoc) ControlService {
 public:
@@ -57,8 +58,12 @@ private:
     // Fallback proxy for SIL when no explicit motor feedback is available.
     float last_left_sps_ = 0.0f;
     float last_right_sps_ = 0.0f;
-    float last_applied_avg_sps_ = 0.0f;
+    float last_measured_avg_sps_ = 0.0f;
+    float last_left_applied_sps_ = 0.0f;
+    float last_right_applied_sps_ = 0.0f;
     float last_position_m_ = 0.0f;
+    int64_t last_left_actual_steps_ = 0;
+    int64_t last_right_actual_steps_ = 0;
     bool have_motor_feedback_ = false;
     float last_raw_acc_pitch_deg_ = 0.0f;
     float last_fused_pitch_deg_ = 0.0f;
@@ -98,7 +103,11 @@ inline void ControlService::on_message<MsgId::PhysicsTick>(const PhysicsTickPayl
 
 template <>
 inline void ControlService::on_message<MsgId::MotorFeedback>(const ipc::MotorFeedbackPayload& p) {
-    last_applied_avg_sps_ = 0.5f * (p.left_applied_sps + p.right_applied_sps);
+    last_left_applied_sps_ = p.left_applied_sps;
+    last_right_applied_sps_ = p.right_applied_sps;
+    last_measured_avg_sps_ = p.measured_avg_sps;
+    last_left_actual_steps_ = p.left_actual_steps;
+    last_right_actual_steps_ = p.right_actual_steps;
     const float avg_steps = 0.5f * static_cast<float>(p.left_actual_steps + p.right_actual_steps);
     last_position_m_ = avg_steps * static_cast<float>(Config::meters_per_step);
     have_motor_feedback_ = true;

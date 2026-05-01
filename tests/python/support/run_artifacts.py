@@ -32,10 +32,18 @@ _DEFAULT_COLUMNS = [
     "measured_vel_sps",
     "filtered_vel_sps",
     "position_target_vel_sps",
+    "pitch_ref_from_vel_deg",
+    "pitch_ref_from_pos_deg",
+    "pitch_error_deg",
+    "rate_error_dps",
     "out_norm",
     "effective_pitch_sp_deg",
     "pitch_trim_deg",
     "trim_active",
+    "left_applied_sps",
+    "right_applied_sps",
+    "left_actual_steps",
+    "right_actual_steps",
     "plant_pitch_deg",
     "plant_pitch_rate_dps",
     "plant_position",
@@ -252,6 +260,41 @@ def analyze_timeline_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "filtered_vel_sps",
         max_lag_s=1.0,
         min_abs_source=50.0,
+    )
+    analysis["drive_command_to_left_applied"] = estimate_lag_scale(
+        rows,
+        "u_sps",
+        "left_applied_sps",
+        max_lag_s=1.0,
+        min_abs_source=50.0,
+    )
+    analysis["drive_command_to_right_applied"] = estimate_lag_scale(
+        rows,
+        "u_sps",
+        "right_applied_sps",
+        max_lag_s=1.0,
+        min_abs_source=50.0,
+    )
+    analysis["left_applied_to_measured_velocity"] = estimate_lag_scale(
+        rows,
+        "left_applied_sps",
+        "measured_vel_sps",
+        max_lag_s=1.0,
+        min_abs_source=50.0,
+    )
+    analysis["right_applied_to_measured_velocity"] = estimate_lag_scale(
+        rows,
+        "right_applied_sps",
+        "measured_vel_sps",
+        max_lag_s=1.0,
+        min_abs_source=50.0,
+    )
+    analysis["fused_pitch_to_filtered_pitch_rate"] = estimate_lag_scale(
+        rows,
+        "fused_pitch_deg",
+        "filtered_pitch_rate_dps",
+        max_lag_s=0.5,
+        min_abs_source=0.25,
     )
     if any(_to_float(row.get("plant_velocity")) is not None for row in rows):
         analysis["plant_velocity_to_measured_velocity"] = estimate_lag_scale(

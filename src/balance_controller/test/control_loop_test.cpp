@@ -112,11 +112,13 @@ class ControlServiceHarness {
 
   void sendMotorFeedback(float left_applied_sps,
                          float right_applied_sps,
+                         float measured_avg_sps,
                          int64_t left_actual_steps,
                          int64_t right_actual_steps) {
     ipc::MotorFeedbackPayload payload{};
     payload.left_applied_sps = left_applied_sps;
     payload.right_applied_sps = right_applied_sps;
+    payload.measured_avg_sps = measured_avg_sps;
     payload.left_actual_steps = left_actual_steps;
     payload.right_actual_steps = right_actual_steps;
     control_.on_message<MsgId::MotorFeedback>(payload);
@@ -328,8 +330,8 @@ TEST(ConfigPidTest, LegacyOuterLoopKeysMapIntoRewrittenOuterLawWhenNeeded) {
   std::filesystem::remove(path);
 
   EXPECT_DOUBLE_EQ(ConfigPid::outer_k_pitch, 7.0);
-  EXPECT_DOUBLE_EQ(ConfigPid::outer_k_vel, -0.0015);
-  EXPECT_DOUBLE_EQ(ConfigPid::outer_k_pos, -0.00375);
+  EXPECT_DOUBLE_EQ(ConfigPid::outer_k_vel, 0.0015);
+  EXPECT_DOUBLE_EQ(ConfigPid::outer_k_pos, 0.00375);
   EXPECT_DOUBLE_EQ(ConfigPid::outer_k_pitch_rate, 0.0);
 }
 
@@ -373,7 +375,8 @@ TEST(RateControllerCoreTest, SmallResidualVelocityProducesOnlySmallCorrectivePit
 
   ASSERT_FALSE(h.telemetry().empty());
   EXPECT_LT(h.telemetry().back().vel_error, 0.0);
-  EXPECT_GT(h.telemetry().back().vel_p_term, 0.0);
+  EXPECT_LT(h.telemetry().back().vel_p_term, 0.0);
+  EXPECT_LT(h.telemetry().back().pitch_ref_from_vel_deg, 0.0);
   EXPECT_LT(std::abs(h.telemetry().back().pitch_sp_deg), 1.0);
 }
 
@@ -387,8 +390,23 @@ TEST(RateControllerCoreTest, LargeResidualVelocityIsBrakedWithoutCommand) {
 
   ASSERT_FALSE(h.telemetry().empty());
   EXPECT_LT(h.telemetry().back().vel_error, 0.0);
-  EXPECT_GT(h.telemetry().back().vel_p_term, 0.0);
+  EXPECT_LT(h.telemetry().back().vel_p_term, 0.0);
+  EXPECT_LT(h.telemetry().back().pitch_ref_from_vel_deg, 0.0);
   EXPECT_GT(std::abs(h.telemetry().back().pitch_sp_deg), 1e-3);
+}
+
+TEST(RateControllerCoreTest, NegativeResidualVelocityProducesPositiveCorrectivePitchRef) {
+  RateControllerHarness h;
+  h.setJoystick(0.0f, 0.0f);
+  h.run_steps(40, 1.0 / 400.0);
+
+  h.runner().setActualSpeedSps(-400.0f);
+  h.run_steps(80, 1.0 / 400.0);
+
+  ASSERT_FALSE(h.telemetry().empty());
+  EXPECT_GT(h.telemetry().back().vel_error, 0.0);
+  EXPECT_GT(h.telemetry().back().vel_p_term, 0.0);
+  EXPECT_GT(h.telemetry().back().pitch_ref_from_vel_deg, 0.0);
 }
 
 TEST(RateControllerCoreTest, VelocityFeedbackAffectsTelemetryWhenCommanded) {
@@ -414,7 +432,7 @@ TEST(RateControllerCoreTest, PositionHoldAddsEquivalentVelocityTargetBackTowardA
     double old_value;
     ~RestoreOuterKPos() { slot = old_value; }
   } restore{ConfigPid::outer_k_pos, old_outer_k_pos};
-  ConfigPid::outer_k_pos = -0.4;
+  ConfigPid::outer_k_pos = 0.4;
 
   RateControllerHarness h;
   h.setJoystick(0.0f, 0.0f);
@@ -424,8 +442,9 @@ TEST(RateControllerCoreTest, PositionHoldAddsEquivalentVelocityTargetBackTowardA
 
   ASSERT_FALSE(h.telemetry().empty());
   EXPECT_LT(h.telemetry().back().vel_error, 0.0);
-  EXPECT_GT(h.telemetry().back().vel_p_term, 0.0);
+  EXPECT_LT(h.telemetry().back().vel_p_term, 0.0);
   EXPECT_LT(h.telemetry().back().position_target_vel_sps, 0.0);
+  EXPECT_LT(h.telemetry().back().pitch_ref_from_pos_deg, 0.0);
   EXPECT_NE(h.runner().lastLeft(), 0.0f);
   EXPECT_NE(h.runner().lastRight(), 0.0f);
 }
@@ -603,7 +622,7 @@ TEST(ControlServiceTest, UsesMotorFeedbackForVelocityTelemetry) {
 
   for (int i = 0; i < 200; ++i) {
     const uint64_t sim_time_us = static_cast<uint64_t>((i + 1) * 2500);
-    h.sendMotorFeedback(123.0f, 123.0f, 0, 0);
+    h.sendMotorFeedback(200.0f, 46.0f, 123.0f, 0, 0);
     h.step_with_imu(1.0 / 400.0, sim_time_us);
   }
 
@@ -611,6 +630,11 @@ TEST(ControlServiceTest, UsesMotorFeedbackForVelocityTelemetry) {
   const float target_velocity_sps = 0.2f * static_cast<float>(kMaxSps);
   const float used_velocity_sps = target_velocity_sps - h.telemetry().back().vel_error;
   EXPECT_NEAR(used_velocity_sps, 123.0f, 5.0f);
+  EXPECT_GT(h.telemetry().back().pitch_ref_from_vel_deg, 0.0f);
+  EXPECT_NEAR(h.telemetry().back().left_applied_sps, 200.0f, 1e-3f);
+  EXPECT_NEAR(h.telemetry().back().right_applied_sps, 46.0f, 1e-3f);
+  EXPECT_EQ(h.telemetry().back().left_actual_steps, 0);
+  EXPECT_EQ(h.telemetry().back().right_actual_steps, 0);
 }
 
 TEST(ControlServiceTest, UsesFilteredPitchRateForControlAndKeepsRawGyroForDiagnostics) {
@@ -630,21 +654,21 @@ TEST(ControlServiceTest, UsesMotorFeedbackPositionForPositionHold) {
     ~RestoreOuterKPos() { ConfigPid::outer_k_pos = old_value; }
     double old_value;
   } restore{old_outer_k_pos};
-  ConfigPid::outer_k_pos = -0.4;
+  ConfigPid::outer_k_pos = 0.4;
 
   ControlServiceHarness h;
   h.sendJoystick(0.0f, 0.0f);
 
   for (int i = 0; i < 20; ++i) {
     const uint64_t sim_time_us = static_cast<uint64_t>((i + 1) * 2500);
-    h.sendMotorFeedback(0.0f, 0.0f, 0, 0);
+    h.sendMotorFeedback(0.0f, 0.0f, 0.0f, 0, 0);
     h.step_with_imu(1.0 / 400.0, sim_time_us);
   }
 
   const int64_t displacement_steps = 1000;
   for (int i = 20; i < 200; ++i) {
     const uint64_t sim_time_us = static_cast<uint64_t>((i + 1) * 2500);
-    h.sendMotorFeedback(0.0f, 0.0f, displacement_steps, displacement_steps);
+    h.sendMotorFeedback(0.0f, 0.0f, 0.0f, displacement_steps, displacement_steps);
     h.step_with_imu(1.0 / 400.0, sim_time_us);
   }
 
@@ -655,6 +679,7 @@ TEST(ControlServiceTest, UsesMotorFeedbackPositionForPositionHold) {
       -800.0f,
       800.0f);
   EXPECT_NEAR(h.telemetry().back().vel_error, expected_velocity_sps, 5.0f);
+  EXPECT_LT(h.telemetry().back().pitch_ref_from_pos_deg, 0.0f);
 }
 
 TEST(ControlServiceTest, TelemetryCarriesImuDiagnostics) {
@@ -670,6 +695,26 @@ TEST(ControlServiceTest, TelemetryCarriesImuDiagnostics) {
   EXPECT_NEAR(t.raw_acc_pitch_deg, 5.0f, 0.1f);
   EXPECT_NEAR(t.fused_pitch_deg, 5.0f, 0.1f);
   EXPECT_NEAR(t.gyro_pitch_rate_dps, static_cast<float>(gyro_rad_s * 180.0 / M_PI), 0.1f);
+}
+
+TEST(ControlServiceTest, TelemetryCarriesOuterLoopBreakdownAndMotorFeedback) {
+  ControlServiceHarness h;
+  h.sendJoystick(0.2f, 0.0f);
+
+  for (int i = 0; i < 80; ++i) {
+    const uint64_t sim_time_us = static_cast<uint64_t>((i + 1) * 2500);
+    h.sendMotorFeedback(140.0f, 100.0f, 120.0f, 123, 87);
+    h.step_with_imu(1.0 / 400.0, sim_time_us, 2.0 * M_PI / 180.0, 0.1);
+  }
+
+  ASSERT_FALSE(h.telemetry().empty());
+  const auto& t = h.telemetry().back();
+  EXPECT_GT(t.pitch_ref_from_vel_deg, 0.0f);
+  EXPECT_LT(t.pitch_error_deg, t.pitch_ref_from_vel_deg);
+  EXPECT_NEAR(t.left_applied_sps, 140.0f, 1e-3f);
+  EXPECT_NEAR(t.right_applied_sps, 100.0f, 1e-3f);
+  EXPECT_EQ(t.left_actual_steps, 123);
+  EXPECT_EQ(t.right_actual_steps, 87);
 }
 
 TEST(ServiceBusIntegrationTest, TickPublishesMotorTargetsAndImmediateMotorFeedback) {

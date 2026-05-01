@@ -37,6 +37,10 @@ struct Telemetry {
   double measured_vel_sps;
   double filtered_vel_sps;
   double position_target_vel_sps;
+  double pitch_ref_from_vel_deg;
+  double pitch_ref_from_pos_deg;
+  double pitch_error_deg;
+  double rate_error_dps;
   double pitch_sp_deg;
   double effective_pitch_sp_deg;
   double pitch_trim_deg;
@@ -49,11 +53,11 @@ struct Telemetry {
 // Default values are set here, can be overridden at runtime by load()
 struct ConfigPid {
   // PX4 Rate PID (inner loop, pitch axis only)
-  inline static double rate_P = 0.75;  // User requested (Validated Stable)
-  inline static double rate_I = 0.0;   // 0.02
-  inline static double rate_D = 0.6;   // 0.6 (Critical for stability)
+  inline static double rate_P = 0.25;
+  inline static double rate_I = 0.0;
+  inline static double rate_D = 0.4;
   inline static double rate_I_lim = 0.15;
-  inline static double rate_FF = 0.0;  // 0.06
+  inline static double rate_FF = 0.0;
 
   // Deprecated legacy outer-loop fields retained for config compatibility.
   inline static double angle_to_rate_k = 12.0;
@@ -67,7 +71,7 @@ struct ConfigPid {
   // pitch_ref = outer_k_pos * (x_ref - x) + outer_k_vel * (v_ref - v)
   // rate_sp   = outer_k_pitch * (pitch_ref - pitch) - outer_k_pitch_rate * pitch_rate
   inline static double outer_k_pos = 0.0;
-  inline static double outer_k_vel = -0.000055;
+  inline static double outer_k_vel = 0.000055;
   inline static double outer_k_pitch = 12.0;
   inline static double outer_k_pitch_rate = 0.25;
 

@@ -15,9 +15,10 @@ inline constexpr char kMotorServiceDoc[] =
     "Keeping this service narrow is intentional. Closed-loop balance, trim estimation, and "
     "telemetry all remain in `ControlService` and `RateControllerCore`, while hardware-specific "
     "pulse generation, slew limiting, and direction control remain below this layer in the motor "
-    "runner. When hardware is present the service also republishes the runner's applied rate and "
-    "integrated step state as `MotorFeedback`, which lets `ControlService` use the real actuator "
-    "state instead of assuming the last commanded target was achieved. In SIL or unit-test "
+    "runner. When hardware is present the service also republishes the runner's applied rate, "
+    "steps-derived average speed estimate, and integrated step state as `MotorFeedback`, which lets "
+    "`ControlService` use the real actuator state instead of assuming the last commanded target was "
+    "achieved. In SIL or unit-test "
     "configurations the runner pointer may be null, allowing the bus and controller stack to "
     "execute without requiring a physical motor backend.";
 
@@ -51,6 +52,7 @@ inline void MotorService::on_message<MsgId::MotorTargets>(const ipc::MotorTarget
         ipc::MotorFeedbackPayload payload{};
         payload.left_applied_sps = feedback.left_applied_sps;
         payload.right_applied_sps = feedback.right_applied_sps;
+        payload.measured_avg_sps = feedback.measured_avg_sps;
         payload.left_actual_steps = feedback.left_actual_steps;
         payload.right_actual_steps = feedback.right_actual_steps;
         bus_.publish<MsgId::MotorFeedback>(payload);

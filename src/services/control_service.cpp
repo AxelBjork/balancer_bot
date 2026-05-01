@@ -16,7 +16,7 @@ ControlService::ControlService(ipc::MessageBus& bus)
     
     core_.setVelocityFeedback([this]() {
         if (have_motor_feedback_) {
-            return last_applied_avg_sps_;
+            return last_measured_avg_sps_;
         }
         return 0.5f * (last_left_sps_ + last_right_sps_);
     });
@@ -30,6 +30,8 @@ ControlService::ControlService(ipc::MessageBus& bus)
     
     // Telemetry publishing
     core_.setTelemetrySink([this](const Telemetry& t) {
+        const float telemetry_velocity_sps =
+            have_motor_feedback_ ? last_measured_avg_sps_ : 0.5f * (last_left_sps_ + last_right_sps_);
         ipc::SystemTelemetryPayload p{};
         p.run_id = 0;
         p.t_sec = static_cast<float>(t.t_sec);
@@ -52,17 +54,25 @@ ControlService::ControlService(ipc::MessageBus& bus)
         p.measured_vel_sps = static_cast<float>(t.measured_vel_sps);
         p.filtered_vel_sps = static_cast<float>(t.filtered_vel_sps);
         p.position_target_vel_sps = static_cast<float>(t.position_target_vel_sps);
+        p.pitch_ref_from_vel_deg = static_cast<float>(t.pitch_ref_from_vel_deg);
+        p.pitch_ref_from_pos_deg = static_cast<float>(t.pitch_ref_from_pos_deg);
+        p.pitch_error_deg = static_cast<float>(t.pitch_error_deg);
+        p.rate_error_dps = static_cast<float>(t.rate_error_dps);
         p.pitch_sp_deg = static_cast<float>(t.pitch_sp_deg);
         p.effective_pitch_sp_deg = static_cast<float>(t.effective_pitch_sp_deg);
         p.pitch_trim_deg = static_cast<float>(t.pitch_trim_deg);
         p.trim_active = static_cast<float>(t.trim_active);
         p.command_saturated = static_cast<float>(t.command_saturated);
+        p.left_applied_sps = have_motor_feedback_ ? last_left_applied_sps_ : last_left_sps_;
+        p.right_applied_sps = have_motor_feedback_ ? last_right_applied_sps_ : last_right_sps_;
+        p.left_actual_steps = last_left_actual_steps_;
+        p.right_actual_steps = last_right_actual_steps_;
         p.plant_pitch_deg = static_cast<float>(t.pitch_deg);
         p.plant_pitch_rate_dps = static_cast<float>(t.pitch_rate_dps);
         p.plant_position_m = last_position_m_;
-        p.plant_velocity_mps = last_applied_avg_sps_ * static_cast<float>(Config::meters_per_step);
+        p.plant_velocity_mps = telemetry_velocity_sps * static_cast<float>(Config::meters_per_step);
         p.target_wheel_velocity = 0.0f;
-        p.actual_wheel_velocity = last_applied_avg_sps_;
+        p.actual_wheel_velocity = telemetry_velocity_sps;
         p.plant_velocity_error = 0.0f;
         p.f_cmd = 0.0f;
         p.f_app = 0.0f;

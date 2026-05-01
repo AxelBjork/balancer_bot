@@ -50,11 +50,19 @@ struct DOC_DESC("Detailed controller telemetry streamed out over UDP and used fo
     float measured_vel_sps;
     float filtered_vel_sps;
     float position_target_vel_sps;
+    float pitch_ref_from_vel_deg;
+    float pitch_ref_from_pos_deg;
+    float pitch_error_deg;
+    float rate_error_dps;
     float pitch_sp_deg;
     float effective_pitch_sp_deg;
     float pitch_trim_deg;
     float trim_active;
     float command_saturated;
+    float left_applied_sps;
+    float right_applied_sps;
+    int64_t left_actual_steps;
+    int64_t right_actual_steps;
     float plant_pitch_deg;
     float plant_pitch_rate_dps;
     float plant_position_m;
@@ -71,9 +79,10 @@ struct DOC_DESC("Detailed controller telemetry streamed out over UDP and used fo
     float force_saturated;
 };
 
-struct DOC_DESC("Internal motor feedback sample published by the motor service. It reflects the currently applied wheel rates after slew limiting plus the integrated actual step counts used for closed-loop hardware feedback.") MotorFeedbackPayload {
+struct DOC_DESC("Internal motor feedback sample published by the motor service. It carries the currently applied wheel rates after slew limiting, a steps-derived average wheel-speed estimate used by closed-loop hardware feedback, and the integrated actual step counts.") MotorFeedbackPayload {
     float left_applied_sps;
     float right_applied_sps;
+    float measured_avg_sps;
     int64_t left_actual_steps;
     int64_t right_actual_steps;
 };
