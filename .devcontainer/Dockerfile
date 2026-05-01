@@ -18,21 +18,30 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# ── GCC Trunk Compilation for C++26 Reflection ───────────────────────────────
-# Compile GCC from current trunk source to leverage new P2996 reflection merge
+# ── GCC 16.1 Compilation for C++26 Reflection ────────────────────────────────
+ARG GCC_VERSION=16.1.0
+ARG GCC_TAR_SHA512=b3454958891ab47e1e5b6cb9396c0ad3b04f32fe2a7bf1153a143f21013fdb6b295ca94c98964698a688e4c1d7555ffd8ffbc20187507cce6b1c32cbcc09897a
+ARG GCC_INSTALL_PREFIX=/usr/local/gcc-16.1.0
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    flex \
     bison \
+    build-essential \
+    flex \
+    xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
-RUN git clone --depth 1 git://gcc.gnu.org/git/gcc.git /tmp/gcc-source && \
-    cd /tmp/gcc-source && \
+RUN wget -O /tmp/gcc-${GCC_VERSION}.tar.xz \
+        https://sourceware.org/pub/gcc/releases/gcc-${GCC_VERSION}/gcc-${GCC_VERSION}.tar.xz && \
+    printf "%s  %s\n" "${GCC_TAR_SHA512}" "/tmp/gcc-${GCC_VERSION}.tar.xz" | sha512sum -c - && \
+    tar -xf /tmp/gcc-${GCC_VERSION}.tar.xz -C /tmp && \
+    cd /tmp/gcc-${GCC_VERSION} && \
     ./contrib/download_prerequisites && \
     mkdir build && cd build && \
-    ../configure --disable-bootstrap --enable-languages=c,c++ --disable-multilib --prefix=/usr/local/gcc-trunk && \
+    ../configure --disable-bootstrap --enable-languages=c,c++ --disable-multilib --prefix=${GCC_INSTALL_PREFIX} && \
     make -j$(nproc) && \
     make install && \
-    rm -rf /tmp/gcc-source
+    ln -s ${GCC_INSTALL_PREFIX} /usr/local/gcc-trunk && \
+    rm -rf /tmp/gcc-${GCC_VERSION} /tmp/gcc-${GCC_VERSION}.tar.xz
 
 # PX4 General Dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
