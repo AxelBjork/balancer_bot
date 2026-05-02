@@ -4,10 +4,41 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <mutex>
+#include <utility>
 
 #include "services/motor/stepper.h"
+
+struct MotorFeedbackSample {
+  double left_applied_sps{0.0};
+  double right_applied_sps{0.0};
+  double measured_avg_sps{0.0};
+  double update_dt_ms{0.0};
+  double feedback_age_ms{0.0};
+  int64_t left_actual_steps{0};
+  int64_t right_actual_steps{0};
+};
+
+class IMotorRunner {
+ public:
+  using FeedbackSample = MotorFeedbackSample;
+  virtual ~IMotorRunner() = default;
+
+  virtual void setTargets(double left_sps, double right_sps) = 0;
+  virtual void setLeft(double sps) = 0;
+  virtual void setRight(double sps) = 0;
+  virtual void stop() = 0;
+
+  virtual int64_t getLeftSteps() const = 0;
+  virtual int64_t getRightSteps() const = 0;
+  virtual int64_t getActualLeftSteps() const = 0;
+  virtual int64_t getActualRightSteps() const = 0;
+
+  virtual double getActualSpeedSps() = 0;
+  virtual FeedbackSample getFeedbackSample() const = 0;
+};
 
 // DualWave.h
 #pragma once
@@ -203,17 +234,9 @@ class DualWave {
 
 // -------------------- MotorRunner (paired updates, no retune) --------------------
 
-class MotorRunner {
+class MotorRunner : public IMotorRunner {
  public:
-  struct FeedbackSample {
-    double left_applied_sps{0.0};
-    double right_applied_sps{0.0};
-    double measured_avg_sps{0.0};
-    double update_dt_ms{0.0};
-    double feedback_age_ms{0.0};
-    int64_t left_actual_steps{0};
-    int64_t right_actual_steps{0};
-  };
+  using FeedbackSample = IMotorRunner::FeedbackSample;
 
   // kFrameUs/kMinPulseUs come from DualWave's constexprs
   MotorRunner(Stepper& left, Stepper& right, double control_hz = 1000.0,
@@ -225,22 +248,22 @@ class MotorRunner {
   }
 
   // Only entry point: always rebuild the repeating frame for both channels.
-  void setTargets(double left_sps, double right_sps) {
+  void setTargets(double left_sps, double right_sps) override {
     tgt_left_.store(left_sps, std::memory_order_relaxed);
     tgt_right_.store(right_sps, std::memory_order_relaxed);
     applyOnce();
   }
 
   // Kept for completeness; prefer setTargets() from your controller.
-  void setLeft(double sps) {
+  void setLeft(double sps) override {
     setTargets(sps, tgt_right_.load(std::memory_order_relaxed));
   }
 
-  void setRight(double sps) {
+  void setRight(double sps) override {
     setTargets(tgt_left_.load(std::memory_order_relaxed), sps);
   }
 
-  void stop() {
+  void stop() override {
     std::lock_guard<std::mutex> lk(mu_);
     wave_.stop();
     last_cmd_L_ = last_cmd_R_ = 0.0;
@@ -254,17 +277,17 @@ class MotorRunner {
     // Actually, if we stop, we just set rates to 0. The integration loop handles 0 rate fine.
   }
 
-  int64_t getLeftSteps() const {
+  int64_t getLeftSteps() const override {
     return steps_left_.load(std::memory_order_relaxed);
   }
-  int64_t getRightSteps() const {
+  int64_t getRightSteps() const override {
     return steps_right_.load(std::memory_order_relaxed);
   }
 
-  int64_t getActualLeftSteps() const {
+  int64_t getActualLeftSteps() const override {
     return actual_steps_left_.load(std::memory_order_relaxed);
   }
-  int64_t getActualRightSteps() const {
+  int64_t getActualRightSteps() const override {
     return actual_steps_right_.load(std::memory_order_relaxed);
   }
 
@@ -276,7 +299,7 @@ class MotorRunner {
     return (L + R) / 2.0;
   }
 
-  FeedbackSample getFeedbackSample() const {
+  FeedbackSample getFeedbackSample() const override {
     std::lock_guard<std::mutex> lk(mu_);
 
     const double left_positive_dir = L_.forwardFromSps(1.0) ? 1.0 : -1.0;
@@ -305,7 +328,7 @@ class MotorRunner {
     return sample;
   }
 
-  double getActualSpeedSps() {
+  double getActualSpeedSps() override {
     const auto sample = getFeedbackSample();
     return sample.measured_avg_sps;
   }

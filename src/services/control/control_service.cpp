@@ -20,9 +20,6 @@ ControlService::ControlService(ipc::MessageBus& bus) : bus_(bus) {
   });
 
   core_.setPositionFeedback([this]() -> double {
-    if (have_motor_feedback_) {
-      return last_position_m_;
-    }
     return 0.0;
   });
 

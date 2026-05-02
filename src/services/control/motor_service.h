@@ -33,7 +33,7 @@ class DOC_DESC(kMotorServiceDoc) MotorService {
   using Publishes = ipc::MsgList<MsgId::MotorFeedback>;
   using Subscribes = ipc::MsgList<MsgId::MotorTargets>;
 
-  explicit MotorService(ipc::MessageBus& bus, MotorRunner* runner) : bus_(bus), runner_(runner) {
+  explicit MotorService(ipc::MessageBus& bus, IMotorRunner* runner) : bus_(bus), runner_(runner) {
   }
   ~MotorService() = default;
 
@@ -47,25 +47,13 @@ class DOC_DESC(kMotorServiceDoc) MotorService {
   }
 
  private:
+  void handle_motor_targets(const ipc::MotorTargetsPayload& p);
+
   ipc::TypedPublisher<MotorService> bus_;
-  MotorRunner* runner_;
+  IMotorRunner* runner_;
 };
 
 template <>
-inline void MotorService::on_message<MsgId::MotorTargets>(const ipc::MotorTargetsPayload& p) {
-  if (runner_) {
-    runner_->setTargets(p.left_sps, p.right_sps);
-    const auto feedback = runner_->getFeedbackSample();
-    ipc::MotorFeedbackPayload payload{};
-    payload.left_applied_sps = feedback.left_applied_sps;
-    payload.right_applied_sps = feedback.right_applied_sps;
-    payload.measured_avg_sps = feedback.measured_avg_sps;
-    payload.update_dt_ms = feedback.update_dt_ms;
-    payload.feedback_age_ms = feedback.feedback_age_ms;
-    payload.left_actual_steps = feedback.left_actual_steps;
-    payload.right_actual_steps = feedback.right_actual_steps;
-    bus_.publish<MsgId::MotorFeedback>(payload);
-  }
-}
+void MotorService::on_message<MsgId::MotorTargets>(const ipc::MotorTargetsPayload& p);
 
 }  // namespace sil

@@ -121,8 +121,8 @@ inline void ControlService::on_message<MsgId::MotorFeedback>(const ipc::MotorFee
   last_motor_feedback_age_ms_ = p.feedback_age_ms;
   last_left_actual_steps_ = p.left_actual_steps;
   last_right_actual_steps_ = p.right_actual_steps;
-  const double avg_steps = 0.5 * static_cast<double>(p.left_actual_steps + p.right_actual_steps);
-  last_position_m_ = avg_steps * Config::meters_per_step;
+  last_position_m_ = 0.5 * static_cast<double>(p.left_actual_steps + p.right_actual_steps) *
+                     Config::meters_per_step;
   have_motor_feedback_ = true;
 }
 

@@ -53,7 +53,7 @@ function(add_balancer_common_target)
     ${input_dir}/input_service.cpp
     ${input_dir}/xbox_controller.cpp
     ${main_dir}/config_pid_io.cpp
-    ${CMAKE_SOURCE_DIR}/src/services/control/motor_service.cpp
+    ${CMAKE_SOURCE_DIR}/src/services/motor/motor_service.cpp
     ${CMAKE_SOURCE_DIR}/src/services/time/time_service.cpp
   )
 

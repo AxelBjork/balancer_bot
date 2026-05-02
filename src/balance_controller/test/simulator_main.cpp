@@ -12,19 +12,23 @@
 #include <deque>
 #include <iostream>
 #include <optional>
+#include <functional>
 #include <random>
 #include <stdexcept>
 #include <string>
 #include <thread>
-#include <vector>
 #include <algorithm>
+#include <vector>
 
 #include "messages/balancer_msgs.h"
-#include "services/main/config.h"
-#include "simulator/balancer_simulator.h"
 #include "messages/types.h"
-#include "services/imu/pitch_lpf.h"
-#include "services/control/rate_controller_core.h"
+#include "ipc/message_bus.h"
+#include "services/main/config.h"
+#include "services/control/control_service.h"
+#include "services/control/motor_service.h"
+#include "services/imu/imu_service.h"
+#include "services/motor/motor_runner.h"
+#include "simulator/balancer_simulator.h"
 
 namespace {
 
@@ -191,6 +195,68 @@ class UdpEndpoint {
   uint16_t port_{0};
 };
 
+struct SimClock {
+  std::chrono::steady_clock::time_point now{};
+};
+
+struct ScenarioObserver {
+  using Subscribes = ipc::MsgList<MsgId::SystemTelemetry, MsgId::MotorFeedback>;
+
+  template <MsgId Id>
+  void on_message(const typename MessageTraits<Id>::Payload& p) {
+    (void)p;
+  }
+
+  ipc::SystemTelemetryPayload latest_telemetry{};
+  ipc::MotorFeedbackPayload latest_motor_feedback{};
+  bool have_telemetry = false;
+  bool have_motor_feedback = false;
+};
+
+template <>
+inline void ScenarioObserver::on_message<MsgId::SystemTelemetry>(
+    const ipc::SystemTelemetryPayload& p) {
+  latest_telemetry = p;
+  have_telemetry = true;
+}
+
+template <>
+inline void ScenarioObserver::on_message<MsgId::MotorFeedback>(
+    const ipc::MotorFeedbackPayload& p) {
+  latest_motor_feedback = p;
+  have_motor_feedback = true;
+}
+
+struct ScenarioServices {
+  SimMotorRunner motors;
+  sil::ImuService imu;
+  sil::ControlService control;
+  sil::MotorService motor_service;
+  ScenarioObserver observer;
+
+  ScenarioServices(ipc::MessageBus& bus, SimClock& clock)
+      : motors([clock_ptr = &clock] { return clock_ptr->now; }, Config::control_hz),
+        imu(bus, false),
+        control(bus),
+        motor_service(bus, &motors) {
+  }
+};
+
+struct ScenarioBusContainer {
+  SimClock clock;
+  ipc::MessageBus bus;
+  ScenarioServices services;
+
+  ScenarioBusContainer() : bus(this, &ScenarioBusContainer::dispatch), services(bus, clock) {
+  }
+
+  static void dispatch(void* ctx, MsgId id, const void* payload) {
+    auto* self = static_cast<ScenarioBusContainer*>(ctx);
+    ipc::dispatch_to_services(id, payload, self->services.imu, self->services.control,
+                              self->services.motor_service, self->services.observer);
+  }
+};
+
 class SimulatorService {
  public:
   explicit SimulatorService(uint16_t port, std::string default_pid_config)
@@ -215,13 +281,7 @@ class SimulatorService {
     std::string pid_config_path;
     std::array<ServiceDisturbance, ipc::kMaxSimDisturbances> disturbances{};
     BalancerSimulator sim;
-    RateControllerCore core;
-    Telemetry latest_telemetry{};
-    bool have_telemetry = false;
-    double left_sps = 0.0;
-    double right_sps = 0.0;
-    double left_actual_steps = 0.0;
-    double right_actual_steps = 0.0;
+    ScenarioBusContainer pipeline;
     uint64_t sim_time_us = 0;
     int steps_total = 0;
     int steps_done = 0;
@@ -230,12 +290,13 @@ class SimulatorService {
     std::deque<TailSample> tail_samples;
     std::array<double, 3> accel_bias_mps2{};
     std::array<double, 3> gyro_bias_rad_s{};
-    PitchComplementaryFilter imu_filter{};
     std::mt19937 imu_rng{};
     std::normal_distribution<double> accel_noise;
     std::normal_distribution<double> gyro_noise;
     double accel_noise_std = 0.0;
     double gyro_noise_std = 0.0;
+    double last_left_applied_sps = 0.0;
+    double last_right_applied_sps = 0.0;
 
     explicit ActiveRun(uint32_t id,
                        std::string pid_path,
@@ -337,29 +398,6 @@ class SimulatorService {
       run_->gyro_noise = std::normal_distribution<double>(0.0, run_->gyro_noise_std);
     }
 
-    run_->core.setMotorOutputs([this](double left, double right) {
-      if (!run_.has_value()) {
-        return;
-      }
-      run_->left_sps = left;
-      run_->right_sps = right;
-      run_->sim.set_motor_targets(left, right);
-    });
-    run_->core.setVelocityFeedback([this]() {
-      return run_.has_value() ? run_->sim.get_actual_speed_sps() : 0.0;
-    });
-    run_->core.setJoystick(JoyCmd{0.0, 0.0});
-    run_->core.setPositionFeedback([this]() {
-      return run_.has_value() ? run_->sim.get_position() : 0.0;
-    });
-    run_->core.setTelemetrySink([this](const Telemetry& t) {
-      if (!run_.has_value()) {
-        return;
-      }
-      run_->latest_telemetry = t;
-      run_->have_telemetry = true;
-    });
-
     send_ack(request.run_id, true, kAckAccepted);
   }
 
@@ -425,20 +463,28 @@ class SimulatorService {
     run.sim_time_us += static_cast<uint64_t>(kTickDtS * 1e6);
     ++run.steps_done;
 
-    const auto imu = make_controller_imu(run);
-    ImuSample sample{};
-    sample.angle_rad = imu.pitch_rad;
-    sample.gyro_rad_s = imu.pitch_rate_rad_s;
-    sample.pitch_accel_rad_s2 = imu.pitch_accel_rad_s2;
-    sample.yaw_rate_z = imu.gyr[2];
-    sample.t = std::chrono::steady_clock::time_point(std::chrono::microseconds(imu.timestamp_us));
-    run.core.pushImu(sample);
-    run.core.step(kTickDtS, sample.t);
-    run.left_actual_steps += static_cast<double>(run.left_sps) * kTickDtS;
-    run.right_actual_steps += static_cast<double>(run.right_sps) * kTickDtS;
+    run.pipeline.clock.now =
+        std::chrono::steady_clock::time_point(std::chrono::microseconds(run.sim_time_us));
+
+    const auto raw_imu = make_controller_imu(run);
+    run.pipeline.bus.publish<MsgId::ImuRawData>(raw_imu);
+
+    PhysicsTickPayload tick{};
+    tick.dt_s = kTickDtS;
+    tick.sim_time_us = run.sim_time_us;
+    run.pipeline.bus.publish<MsgId::PhysicsTick>(tick);
+
+    if (run.pipeline.services.observer.have_telemetry) {
+      const auto& telemetry = run.pipeline.services.observer.latest_telemetry;
+      run.last_left_applied_sps = telemetry.left_applied_sps;
+      run.last_right_applied_sps = telemetry.right_applied_sps;
+      run.sim.set_motor_targets(telemetry.left_applied_sps, telemetry.right_applied_sps);
+    } else {
+      run.sim.set_motor_targets(run.last_left_applied_sps, run.last_right_applied_sps);
+    }
 
     if ((run.steps_done % kTelemetryStride) == 0 || run.steps_done == run.steps_total) {
-      publish_telemetry(run, sample, imu);
+      publish_telemetry(run, raw_imu);
     }
 
     const double plant_pitch_deg = run.sim.get_pitch() * 180.0 / kPi;
@@ -460,8 +506,8 @@ class SimulatorService {
         std::atan2(-acc[0], std::sqrt(acc[1] * acc[1] + acc[2] * acc[2])) * (180.0 / kPi));
   }
 
-  ipc::ImuSamplePayload make_controller_imu(ActiveRun& run) {
-    auto payload = run.sim.make_imu_payload(run.sim_time_us);
+  ipc::ImuRawPayload make_controller_imu(ActiveRun& run) {
+    auto payload = run.sim.make_raw_imu_payload(run.sim_time_us);
     if (run.accel_noise_std > 0.0) {
       for (std::size_t i = 0; i < 3; ++i) {
         payload.acc[i] += run.accel_noise(run.imu_rng);
@@ -475,49 +521,52 @@ class SimulatorService {
     return payload;
   }
 
-  void publish_telemetry(ActiveRun& run, const ImuSample& sample, const ipc::ImuSamplePayload& imu) {
+  void publish_telemetry(ActiveRun& run, const ipc::ImuRawPayload& imu) {
     ipc::SystemTelemetryPayload payload{};
-    const auto& diag = run.sim.diagnostics();
     const auto& state = run.sim.state();
+    const auto& diag = run.sim.diagnostics();
+    const auto& telemetry = run.pipeline.services.observer.latest_telemetry;
 
     payload.run_id = run.run_id;
     const double sim_time_s = static_cast<double>(run.sim_time_us) / 1e6;
-    payload.t_sec = run.have_telemetry ? run.latest_telemetry.t_sec : sim_time_s;
-    payload.age_ms = run.have_telemetry
-                         ? run.latest_telemetry.age_ms
-                         : std::chrono::duration<double, std::milli>(
-                               std::chrono::steady_clock::time_point(std::chrono::microseconds(run.sim_time_us)) -
-                               sample.t)
-                               .count();
-    payload.pitch_deg = run.have_telemetry ? run.latest_telemetry.pitch_deg
-                                           : (state.pitch * 180.0 / kPi);
-    payload.pitch_rate_dps =
-        run.have_telemetry ? run.latest_telemetry.pitch_rate_dps
-                           : (state.pitch_rate * 180.0 / kPi);
+    payload.t_sec = run.pipeline.services.observer.have_telemetry ? telemetry.t_sec : sim_time_s;
+    payload.age_ms = run.pipeline.services.observer.have_telemetry ? telemetry.age_ms : 0.0;
+    payload.pitch_deg = run.pipeline.services.observer.have_telemetry ? telemetry.pitch_deg
+                                                                      : (state.pitch * 180.0 / kPi);
+    payload.pitch_rate_dps = run.pipeline.services.observer.have_telemetry
+                                 ? telemetry.pitch_rate_dps
+                                 : (state.pitch_rate * 180.0 / kPi);
     payload.raw_acc_pitch_deg = accel_pitch_deg(imu.acc);
-    payload.fused_pitch_deg = sample.angle_rad * 180.0 / kPi;
+    payload.fused_pitch_deg = run.pipeline.services.observer.have_telemetry
+                                  ? telemetry.fused_pitch_deg
+                                  : payload.pitch_deg;
     payload.gyro_pitch_rate_dps = imu.gyr[1] * 180.0 / kPi;
-    payload.filtered_pitch_rate_dps =
-        run.have_telemetry ? run.latest_telemetry.filtered_pitch_rate_dps
-                           : (imu.pitch_rate_rad_s * 180.0 / kPi);
-    payload.u_sps = run.have_telemetry ? run.latest_telemetry.u_sps : 0.0;
-    payload.vel_error = run.have_telemetry ? run.latest_telemetry.vel_error : 0.0;
-    payload.vel_p_term = run.have_telemetry ? run.latest_telemetry.vel_p_term : 0.0;
+    payload.filtered_pitch_rate_dps = run.pipeline.services.observer.have_telemetry
+                                          ? telemetry.filtered_pitch_rate_dps
+                                          : (imu.gyr[1] * 180.0 / kPi);
+    payload.u_sps = run.pipeline.services.observer.have_telemetry ? telemetry.u_sps : 0.0;
+    payload.vel_error = run.pipeline.services.observer.have_telemetry ? telemetry.vel_error : 0.0;
+    payload.vel_p_term = run.pipeline.services.observer.have_telemetry ? telemetry.vel_p_term : 0.0;
     payload.pitch_ref_from_vel_deg =
-        run.have_telemetry ? run.latest_telemetry.pitch_ref_from_vel_deg : 0.0;
+        run.pipeline.services.observer.have_telemetry ? telemetry.pitch_ref_from_vel_deg : 0.0;
     payload.pitch_ref_from_pos_deg =
-        run.have_telemetry ? run.latest_telemetry.pitch_ref_from_pos_deg : 0.0;
-    payload.pitch_sp_deg = run.have_telemetry ? run.latest_telemetry.pitch_sp_deg : 0.0;
-    payload.pitch_error_deg =
-        run.have_telemetry ? run.latest_telemetry.pitch_error_deg
-                           : (payload.pitch_sp_deg - payload.pitch_deg);
-    payload.pitch_trim_deg =
-        run.have_telemetry ? run.latest_telemetry.pitch_trim_deg : 0.0;
-    payload.trim_active = run.have_telemetry ? run.latest_telemetry.trim_active : 0.0;
-    payload.left_applied_sps = run.left_sps;
-    payload.right_applied_sps = run.right_sps;
-    payload.left_actual_steps = static_cast<int64_t>(std::llround(run.left_actual_steps));
-    payload.right_actual_steps = static_cast<int64_t>(std::llround(run.right_actual_steps));
+        run.pipeline.services.observer.have_telemetry ? telemetry.pitch_ref_from_pos_deg : 0.0;
+    payload.pitch_sp_deg = run.pipeline.services.observer.have_telemetry ? telemetry.pitch_sp_deg : 0.0;
+    payload.pitch_error_deg = run.pipeline.services.observer.have_telemetry
+                                  ? telemetry.pitch_error_deg
+                                  : (payload.pitch_sp_deg - payload.pitch_deg);
+    payload.pitch_trim_deg = run.pipeline.services.observer.have_telemetry ? telemetry.pitch_trim_deg : 0.0;
+    payload.trim_active = run.pipeline.services.observer.have_telemetry ? telemetry.trim_active : 0.0;
+    payload.left_applied_sps = run.last_left_applied_sps;
+    payload.right_applied_sps = run.last_right_applied_sps;
+    payload.left_actual_steps =
+        run.pipeline.services.observer.have_motor_feedback
+            ? run.pipeline.services.observer.latest_motor_feedback.left_actual_steps
+            : 0;
+    payload.right_actual_steps =
+        run.pipeline.services.observer.have_motor_feedback
+            ? run.pipeline.services.observer.latest_motor_feedback.right_actual_steps
+            : 0;
     payload.plant_pitch_deg = state.pitch * 180.0 / kPi;
     payload.plant_pitch_rate_dps = state.pitch_rate * 180.0 / kPi;
     payload.plant_position_m = state.position;
