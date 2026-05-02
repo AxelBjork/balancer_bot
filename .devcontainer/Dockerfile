@@ -15,7 +15,33 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     software-properties-common \
     sudo \
     wget \
+    git \
     && rm -rf /var/lib/apt/lists/*
+
+# ── GCC 16.1 Compilation for C++26 Reflection ────────────────────────────────
+ARG GCC_VERSION=16.1.0
+ARG GCC_TAR_SHA512=b3454958891ab47e1e5b6cb9396c0ad3b04f32fe2a7bf1153a143f21013fdb6b295ca94c98964698a688e4c1d7555ffd8ffbc20187507cce6b1c32cbcc09897a
+ARG GCC_INSTALL_PREFIX=/usr/local/gcc-16.1.0
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bison \
+    build-essential \
+    flex \
+    xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN wget -O /tmp/gcc-${GCC_VERSION}.tar.xz \
+        https://sourceware.org/pub/gcc/releases/gcc-${GCC_VERSION}/gcc-${GCC_VERSION}.tar.xz && \
+    printf "%s  %s\n" "${GCC_TAR_SHA512}" "/tmp/gcc-${GCC_VERSION}.tar.xz" | sha512sum -c - && \
+    tar -xf /tmp/gcc-${GCC_VERSION}.tar.xz -C /tmp && \
+    cd /tmp/gcc-${GCC_VERSION} && \
+    ./contrib/download_prerequisites && \
+    mkdir build && cd build && \
+    ../configure --disable-bootstrap --enable-languages=c,c++ --disable-multilib --prefix=${GCC_INSTALL_PREFIX} && \
+    make -j$(nproc) && \
+    make install && \
+    ln -s ${GCC_INSTALL_PREFIX} /usr/local/gcc-trunk && \
+    rm -rf /tmp/gcc-${GCC_VERSION} /tmp/gcc-${GCC_VERSION}.tar.xz
 
 # PX4 General Dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -38,6 +64,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-dev \
     python3-pip \
+    python3-pytest \
+    python3-graphviz \
+    graphviz \
+    libsdl2-dev \
     python3-setuptools \
     python3-wheel \
     rsync \
@@ -45,6 +75,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     unzip \
     zip \
     && rm -rf /var/lib/apt/lists/*
+
+# Ubuntu 22.04's python3-pytest package exposes pytest as pytest-3.
+# Keep the project workflow compatible with the standard `pytest ...` command.
+RUN ln -sf /usr/bin/pytest-3 /usr/local/bin/pytest \
+    && ln -sf /usr/bin/py.test-3 /usr/local/bin/py.test
 
 # NuttX Toolchain Dependencies (x86_64)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -118,6 +153,8 @@ RUN dpkg --add-architecture arm64 \
     && echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe multiverse" | tee -a /etc/apt/sources.list.d/arm64.list \
     && apt-get update && apt-get install -y --no-install-recommends \
         crossbuild-essential-arm64 \
+        gcc-aarch64-linux-gnu \
+        g++-aarch64-linux-gnu \
         libsdl2-dev:arm64 \
         libpigpiod-if-dev:arm64 \
         curl \

@@ -1,23 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 TEST=${1:-ON}
+
 # Configure
 if [ "$TEST" = "ON" ]; then 
-BUILD_DIR=build
-TOOLCHAIN=""
+  BUILD_DIR=build
+  CMAKE_ARGS=(
+    -DBUILD_TESTS=ON
+    -DCMAKE_BUILD_TYPE=Release
+  )
 else 
-BUILD_DIR=build-pi
-TOOLCHAIN=toolchain-rpi4.cmake
+  BUILD_DIR=build-pi
+  CMAKE_ARGS=(
+    -DBUILD_TESTS=OFF
+    -DCMAKE_BUILD_TYPE=Release
+    -DCMAKE_TOOLCHAIN_FILE="$(realpath cmake/toolchain-rpi4.cmake)"
+  )
 fi
 
-cmake -S . -B $BUILD_DIR \
-        -DCMAKE_TOOLCHAIN_FILE=$TOOLCHAIN \
-        -DBUILD_TESTS=$TEST \
-        -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B "$BUILD_DIR" "${CMAKE_ARGS[@]}"
+
 # Build
-cmake --build $BUILD_DIR -j"$(nproc)"
+cmake --build "$BUILD_DIR" -j"$(nproc)"
 
 # Run tests
 if [ "$TEST" = "ON" ]; then
-    ctest --test-dir $BUILD_DIR --output-on-failure -j8
+    ctest --test-dir "$BUILD_DIR" --output-on-failure -j8
 fi

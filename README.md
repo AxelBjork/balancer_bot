@@ -1,217 +1,132 @@
-# Self-Balancing Robot (Pi-Based)
+# balancer_bot
 
-A compact, personal project that repurposes the **B-robot EVO 2** frame for a Raspberry Pi–based self-balancing robot. This README keeps the hardware generic (no vendor links or prices) but includes part numbers so you can source equivalents easily.
+`balancer_bot` is a Raspberry Pi self-balancing robot project with a strong software spine: a tick-driven controller, a message-bus runtime, a deterministic direct simulator, and a Python SIL harness built from reflected C++ message definitions.
 
-# build
-```
-cd /home/axel/Public/Project/vscode/balancer_bot/PX4-Autopilot
-make px4_sitl_default -j$(nproc) EXTERNAL_MODULES_LOCATION=../external
-```
+It is both a real robot project and a control/runtime playground. The same codebase supports:
 
-## Build Options
+- a hardware runtime on Raspberry Pi
+- a UDP-driven SIL runtime for Python tests
+- a fast direct simulator for stability work
+- generated IPC docs and Python bindings from the C++ message definitions
 
-### Simulator & Tests
-To build the stand-alone simulator and unit tests, enable the `BUILD_TESTS` option. This allows developing and testing the control logic without physical hardware.
+## Why This Project Is Interesting
+
+- **Tick-driven control**
+  The balancing loop runs from an explicit `PhysicsTick`, which makes the control path easier to reason about in both hardware and simulation.
+- **Service-oriented runtime**
+  `TimeService`, `ImuService`, `ControlService`, `MotorService`, and `UdpBridge` are wired through a small internal message bus instead of ad hoc callback chains.
+- **Deterministic simulation**
+  The direct simulator can run representative scenarios, emit artifacts under `build/sim`, and act as the main software stability gate.
+- **Generated interfaces**
+  IPC docs and Python bindings are generated from the reflected message definitions and service metadata, which keeps the UDP contract and documentation aligned with the code.
+
+## Quick Start
+
+### Host Build and Tests
 
 ```bash
-cmake -B build -DBUILD_TESTS=ON .
-cmake --build build
+./build_cmake
+pytest -q
 ```
 
-**Running the Simulator:**
+### AFL++ Harness Validation
+
+```bash
+pytest --fuzz --build-only
+python3 tools/run_afl.py --list
+python3 tools/run_afl.py udp_sequence --output-dir build-afl/afl-udp -V 60
+python3 tools/run_afl.py simulator_scenario --output-dir build-afl/afl-sim -V 300
+sed -n '1,40p' build-afl/afl-sim/default/fuzzer_stats
+find build-afl/afl-sim/default/queue -maxdepth 1 -type f | head
+```
+
+The seed corpus is generated on demand under `build-afl/fuzz-corpus/`; it is not checked into git.
+
+### Standalone Simulator
+
 ```bash
 ./build/balancer_simulator
 ```
-The simulator runs the full control loop against a mock hardware environment (physics model + mock IMU + mock motors).
 
-### Production Build (Hardware)
-For cross-compilation instructions and deployment to the Raspberry Pi, see [Cross Compilation Guide](doc/cross_compile.md).
+### Linearized Plant Audit
 
-For native on-device builds:
 ```bash
-cmake -B build .
-cmake --build build
+./build/balancer_plant_audit --all
 ```
 
-## Run SITL
-```
-make px4_sitl none
+### Timeline Analysis
 
-pxh> balance_controller start
-pxh> balance_controller status
-
-xbox_remote start
-xbox_remote status
+```bash
+python3 tools/analyze_timeline.py build/sim/realistic_neutral_hold_40s/timeline.csv --summary-json
 ```
 
-## Bill of Materials
+### Raspberry Pi Cross-Build
 
-| Qty | Item | Function | Brand/Manufacturer | Part Number / Model |
-| --- | ---- | -------- | ------------------ | ------------------- |
-| 1 | Raspberry Pi 4 Model B (4 GB) | Main controller | Raspberry Pi | SC0194 |
-| 1 | ISM330DHCX 6-DoF IMU breakout (STEMMA QT/Qwiic) | IMU | Adafruit | 4502 |
-| 2 | NEMA-17 stepper motor, 45 N·cm, 1.5 A, 12 V, 42×39 mm | Actuation | STEPPERONLINE | 17HS15-1504S-X1 |
-| 1 | Stepper Motor HAT (dual DRV8825, up to 1/32 microstepping) | Motor driver | Waveshare | 15669 (Stepper Motor HAT) |
-| 1 | 3S 18650 Li-ion battery pack, ~70×55×20 mm | Power | — | Generic (match size/BMS) |
-| 1 | Qwiic SHIM for Raspberry Pi | I²C connector | SparkFun | DEV-15794 |
-| 1 | Qwiic cable, JST-SH 4-pin, 100 mm | I²C cable | SparkFun | PRT-14427 |
-| — | Frame (PA12 SLS print) | Mechanical structure | jjrobots | see link below |
-
-
-## Frame Design Source
-
-- **B-robot EVO 2 (jjrobots)** — Thingiverse: https://www.thingiverse.com/thing:2306541
-
-## Wiring (at a glance)
-
-- **IMU → Pi**: Use the Qwiic SHIM on the Pi and the 100 mm Qwiic cable to the ISM330DHCX breakout (I²C: SDA/SCL, 3V3, GND).
-- **Motors → HAT**: Connect each NEMA-17 to one DRV8825 channel. Set microstepping with DIP switches as needed (e.g., 1/16 or 1/32).
-- **Power**: Feed the Stepper Motor HAT with your 3S (11.1–12.6 V) pack. If you choose to back-power the Pi from the HAT’s 5 V regulator, ensure adequate current; otherwise power the Pi via USB-C 5 V/3 A.
-
-
-xbox_remote start
-xbox_remote status
-
-## Bill of Materials
-
-| Qty | Item | Function | Brand/Manufacturer | Part Number / Model |
-| --- | ---- | -------- | ------------------ | ------------------- |
-| 1 | Raspberry Pi 4 Model B (4 GB) | Main controller | Raspberry Pi | SC0194 |
-| 1 | ISM330DHCX 6-DoF IMU breakout (STEMMA QT/Qwiic) | IMU | Adafruit | 4502 |
-| 2 | NEMA-17 stepper motor, 45 N·cm, 1.5 A, 12 V, 42×39 mm | Actuation | STEPPERONLINE | 17HS15-1504S-X1 |
-| 1 | Stepper Motor HAT (dual DRV8825, up to 1/32 microstepping) | Motor driver | Waveshare | 15669 (Stepper Motor HAT) |
-| 1 | 3S 18650 Li-ion battery pack, ~70×55×20 mm | Power | — | Generic (match size/BMS) |
-| 1 | Qwiic SHIM for Raspberry Pi | I²C connector | SparkFun | DEV-15794 |
-| 1 | Qwiic cable, JST-SH 4-pin, 100 mm | I²C cable | SparkFun | PRT-14427 |
-| — | Frame (PA12 SLS print) | Mechanical structure | jjrobots | see link below |
-
-
-## Frame Design Source
-
-- **B-robot EVO 2 (jjrobots)** — Thingiverse: https://www.thingiverse.com/thing:2306541
-
-## Wiring (at a glance)
-
-- **IMU → Pi**: Use the Qwiic SHIM on the Pi and the 100 mm Qwiic cable to the ISM330DHCX breakout (I²C: SDA/SCL, 3V3, GND).
-- **Motors → HAT**: Connect each NEMA-17 to one DRV8825 channel. Set microstepping with DIP switches as needed (e.g., 1/16 or 1/32).
-- **Power**: Feed the Stepper Motor HAT with your 3S (11.1–12.6 V) pack. If you choose to back-power the Pi from the HAT’s 5 V regulator, ensure adequate current; otherwise power the Pi via USB-C 5 V/3 A.
-
-
-
-# Pi Setup
-`sudo nano /boot/firmware/config.txt`
-Add
-```
-gpio=4=op,dl
-dtparam=i2c_arm=on
-dtparam=i2c_arm_baudrate=400000
+```bash
+./build_cmake OFF
 ```
 
+## Main Binaries
 
-**Enable pigiod daemon** `sudo systemctl enable --now pigpiod`
+- `balancer_pi`
+  the Raspberry Pi hardware runtime
+- `sil_app`
+  the UDP-driven software-in-the-loop runtime
+- `balancer_simulator`
+  the deterministic plant + controller runner
+- `balancer_plant_audit`
+  prints the linearized upright plant, controllability rank, and candidate overdamped poles
+- `tools/analyze_timeline.py`
+  estimates lag and scale relationships from a `timeline.csv` artifact or captured telemetry log
+- `balancer_tests`
+  the C++ unit and integration test binary
+- `tools/run_afl.py`
+  launches `afl-fuzz` against the registered harnesses built in `build-afl/`
 
-## Motor Test
-**Stubs**
-g++ motor_controller.cpp -o motor_controller -lSDL2 -lrt -pthread -I./stubs -DPIGPIOD_STUB_IMPL
-**Pi Build**
-g++ motor_controller.cpp -o motor_controller -lSDL2 -lpigpiod_if2 -lrt -pthread -O2
-g++ extras/motor_off.cpp -o motor_off -lpigpiod_if2 -lrt -pthread
+## Simplified BOM
 
-./motor_controller
+| Area | Main Parts |
+| --- | --- |
+| Compute | Raspberry Pi 4 |
+| Sensing | ISM330DHCX IMU breakout + Qwiic SHIM/cable |
+| Actuation | 2x NEMA-17 steppers + Waveshare Stepper Motor HAT |
+| Power | 3S 18650 battery pack |
+| Structure | B-robot EVO 2 frame + local modified print files |
 
+The detailed parts list, frame assets, and wiring notes live in [hardware/README.md](hardware/README.md).
 
-## Bluetooth connect
-bluetoothctl
-power on
-menu scan
-pattern Xbox
-back
-scan on
-pair 28:EA:0B:E1:04:E6
-connect 28:EA:0B:E1:04:E6
+## Architecture At a Glance
 
-## XBOX Control
+![IPC Flow](doc/ipc/ipc_flow.svg)
 
-sudo apt install libsdl2-dev
+The generated flow graph above is the best quick picture of the system:
 
-g++ extras/xbox_demo.cpp -o xbox_demo -lSDL2
-./xbox_demo
+- `TimeService` drives the control timeline with `PhysicsTick`
+- `ImuService` publishes the robot state estimate
+- `ControlService` converts tick + IMU + input into `MotorTargets` and telemetry
+- `MotorService` closes the loop with real motor feedback on hardware
+- `UdpBridge` exposes the SIL/test boundary without becoming the core runtime
 
-## IMU Demo
+## Project Layout
 
-g++ extras/imu_demo.cpp -o imu_demo -pthread -O2
+- `src/`
+  runtime, services, control code, reflection generators, and platform helpers
+- `tests/`
+  C++ tests, pytest SIL tests, simulator helpers, and captured reference data
+- `hardware/`
+  physical build assets, frame files, and hardware reference notes
+- `doc/`
+  handbook pages plus generated IPC docs
+- `pid.conf` and `pid_sim.conf`
+  default hardware and simulator PID profiles
 
+## Learn More
 
-`mkdir -p ~/lsm6dsx-oot && cd ~/lsm6dsx-oot`
-
-Download only the driver sources from the matching RPi kernel branch
-```
-BRANCH=rpi-6.12.y
-BASE=https://raw.githubusercontent.com/raspberrypi/linux/$BRANCH/drivers/iio/imu/st_lsm6dsx
-for f in st_lsm6dsx_core.c st_lsm6dsx_buffer.c st_lsm6dsx_shub.c st_lsm6dsx_i2c.c st_lsm6dsx.h; do
-  wget -q "$BASE/$f"
-done
-```
-**Create makefile**
-```
-obj-m += st_lsm6dsx.o
-obj-m += st_lsm6dsx_i2c.o
-
-# st_lsm6dsx.ko is built from these three objects:
-st_lsm6dsx-objs := st_lsm6dsx_core.o st_lsm6dsx_buffer.o st_lsm6dsx_shub.o
-```
-
-make -C /lib/modules/$(uname -r)/build M=$PWD modules
-
-sudo mkdir -p /lib/modules/$(uname -r)/kernel/drivers/iio/imu/st_lsm6dsx
-sudo cp st_lsm6dsx*.ko /lib/modules/$(uname -r)/kernel/drivers/iio/imu/st_lsm6dsx/
-sudo depmod -a
-
-// load and bind
-sudo modprobe industrialio industrialio_triggered_buffer
-sudo modprobe st_lsm6dsx_i2c
-
-echo 0x6a | sudo tee /sys/bus/i2c/devices/i2c-1/delete_device 2>/dev/null
-echo ism330dhcx 0x6a | sudo tee /sys/bus/i2c/devices/i2c-1/new_device
-
-g++ extras/imu_demo.cpp -o imu_demo
-
-### Configure auto setup
-printf "industrialio\nindustrialio_triggered_buffer\nst_lsm6dsx_i2c\niio-trig-hrtimer\n" | \
-  sudo tee /etc/modules-load.d/ism330dhcx.conf
-
-
-sudo tee /usr/local/sbin/add-ism330dhcx.sh >/dev/null <<'EOF'
-#!/bin/sh
-NODE="/sys/bus/i2c/devices/i2c-1/new_device"
-for i in $(seq 1 20); do
-  [ -e "$NODE" ] && { echo "ism330dhcx 0x6a" > "$NODE"; exit 0; }
-  sleep 0.25
-done
-exit 1
-EOF
-sudo chmod +x /usr/local/sbin/add-ism330dhcx.sh
-
-sudo tee /etc/udev/rules.d/60-ism330dhcx.rules >/dev/null <<'EOF'
-SUBSYSTEM=="i2c", KERNEL=="i2c-1", ACTION=="add", RUN+="/usr/local/sbin/add-ism330dhcx.sh"
-EOF
-sudo udevadm control --reload
-
-**Setup Kernel trigger & permissions**
-sudo mkdir -p /sys/kernel/config/iio/triggers/hrtimer/imu833
-sudo groupadd -f iio
-sudo usermod -aG iio "$USER"
-# Either re-login, or do:
-newgrp iio
-
-**Verify**
-i2cdetect -y 1
-ls /sys/bus/iio/devices/
-echo 0x6a | sudo tee /sys/bus/i2c/devices/i2c-1/delete_device 2>/dev/null
-echo ism330dhcx 0x6a | sudo tee /sys/bus/i2c/devices/i2c-1/new_device
-ls /sys/bus/iio/devices/
-sudo chmod 0777 /sys/kernel/config/iio/triggers
-
-# Unittest
-
-./build_cmake
+- [Documentation Portal](doc/index.md)
+- [Project Overview](doc/overview.md)
+- [Runtime Architecture](doc/arch/runtime.md)
+- [Control / Plant Notes](doc/arch/control_plant.md)
+- [Testing Strategy](doc/testing/strategy.md)
+- [Running on Pi](doc/Running_on_Pi.md)
+- [Current Status](doc/status.md)
+- [IPC Protocol Reference](doc/ipc/protocol.md)
