@@ -30,9 +30,11 @@ from udp_client import UdpClient  # noqa: E402
 
 DEFAULT_SCENARIO = {
     "duration_s": 40.0,
-    "velocity_feedback_scale": 0.05,
     "velocity_feedback_tau_s": 0.10,
-    "imu_pitch_lag_s": 0.01,
+    "com_angle_offset_rad": 0.01,
+            "imu_noise_seed": 12345,
+            "accel_noise_std_mps2": 0.20,
+            "gyro_noise_std_rad_s": 0.015,
     "disturbances": [
         {
             "kind": "hold_bias",
@@ -141,7 +143,7 @@ def _score(summary: dict, done_reason: int) -> float:
   rms_pitch = abs(float(summary.get("tail_rms_pitch_deg") or 0.0))
   rails = float(summary.get("tail_rail_fraction") or 0.0)
   command_rails = float(summary.get("tail_command_rail_fraction") or 0.0)
-  return 8.0 * velocity + 4.0 * pitch + 2.0 * rms_pitch + 25.0 * (rails + command_rails)
+  return 8.0 * velocity + 4.0 * pitch + 8.0 * rms_pitch + 25.0 * (rails + command_rails)
 
 
 def _candidate_grid(base: dict[str, float], args: argparse.Namespace) -> list[dict[str, float]]:
@@ -194,13 +196,13 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path, default=REPO_ROOT / "build" / "sim_sweeps" / time.strftime("%Y%m%d_%H%M%S"))
     parser.add_argument("--limit", type=int, default=0, help="Optional cap on candidates, useful for smoke runs.")
     parser.add_argument("--run-id-base", type=int, default=7000)
-    parser.add_argument("--rate-p", default="0.20,0.25,0.30")
-    parser.add_argument("--rate-i", default="0.0,0.03,0.06")
-    parser.add_argument("--rate-d", default="0.005,0.01,0.02")
-    parser.add_argument("--vel-p", default="5.5e-05,0.0001,0.0002,0.0004")
-    parser.add_argument("--lean-trim-i", default="0.03")
-    parser.add_argument("--lean-trim-max-deg", default="4.0")
-    parser.add_argument("--pitch-p", default="10,12,14")
+    parser.add_argument("--rate-p", default="0.10,0.15,0.20,0.25")
+    parser.add_argument("--rate-i", default="0.0")
+    parser.add_argument("--rate-d", default="0.04,0.08, 0.12, 0.16")
+    parser.add_argument("--vel-p", default="0.0003,0.0004, 0.0005, 0.0006, 0.0007")
+    parser.add_argument("--lean-trim-i", default="0.30, 0.60")
+    parser.add_argument("--lean-trim-max-deg", default="6.0")
+    parser.add_argument("--pitch-p", default="4, 6, 8, 10,")
     parser.add_argument("--pitch-d", default="0.0,0.25,0.5")
     args = parser.parse_args()
 
@@ -235,6 +237,7 @@ def main() -> int:
                     output_dir=output_dir,
                     physics_profile=PHYSICS_REALISTIC,
                     pid_config_path=str(pid_path),
+                    initial_pitch_deg=67.0,
                     done_timeout=15.0,
                     **DEFAULT_SCENARIO,
                 )

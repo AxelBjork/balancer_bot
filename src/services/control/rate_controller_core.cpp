@@ -60,7 +60,7 @@ void RateControllerCore::updateOuterLoop(double measured_velocity_sps, double dt
   p_->vel_error_sps = -measured_velocity_sps;
   p_->velocity_pitch_setpoint_rad = ConfigPid::vel_P * p_->vel_error_sps;
 
-  const double joy_pitch_rad = static_cast<double>(joy.forward) * kMaxPitchSetpointRad * 0.4;
+  const double joy_pitch_rad = static_cast<double>(joy.forward) * kMaxPitchSetpointRad * 0.8;
   p_->pitch_setpoint_rad = std::clamp(p_->velocity_pitch_setpoint_rad + p_->lean_trim_rad +
                  joy_pitch_rad,
                  -kMaxPitchSetpointRad, kMaxPitchSetpointRad);
@@ -96,7 +96,7 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
   const double pitch_rate_rad_s = p_->latest_imu.gyro_rad_s;
   const double pitch_accel_rad_s2 = p_->latest_imu.pitch_accel_rad_s2;
   const JoyCmd joy = p_->latest_joy;
-  p_->turn_sps = static_cast<double>(joy.turn) * kPitchOutToSps * 0.6;
+  p_->turn_sps = static_cast<double>(joy.turn) * kPitchOutToSps * 0.4;
 
   const double rate_sp_rad_s =
       ConfigPid::pitch_P * (p_->pitch_setpoint_rad - pitch_rad) - ConfigPid::pitch_D * pitch_rate_rad_s;

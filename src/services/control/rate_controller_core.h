@@ -6,9 +6,9 @@
 
 // ====== Control Loop Constants ======
 // Motor / speed ceiling (primary scaling knob)
-static constexpr double kMaxSps = 8000.0;            // clamp for wheel speed command (steps/s)
-static constexpr double kPitchOutToSps = 4000;
-static constexpr double kLeanTrimDecayS = 3.0;
+static constexpr double kMaxSps = 4000.0;  // clamp for wheel speed command (steps/s)
+static constexpr double kPitchOutToSps = 3200;
+static constexpr double kLeanTrimDecayS = 6.0;
 static constexpr double kMaxPitchSetpointRad = 0.4;  // ~17 degrees max lean
 
 // Non-template core; hides PX4/Matrix in the .cpp
