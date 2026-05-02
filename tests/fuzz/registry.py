@@ -51,6 +51,12 @@ FUZZ_TARGETS: dict[str, FuzzTarget] = {
         corpus_name="simulator_scenario",
         timeout_ms=2000,
     ),
+    "simulator_stability": FuzzTarget(
+        name="simulator_stability",
+        binary_name="balancer_fuzz_simulator_stability",
+        corpus_name="simulator_stability",
+        timeout_ms=3000,
+    ),
 }
 
 

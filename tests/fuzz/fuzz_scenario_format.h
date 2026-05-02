@@ -7,7 +7,9 @@
 namespace fuzz {
 
 constexpr uint8_t kFuzzScenarioVersion1 = 1;
+constexpr uint8_t kFuzzScenarioVersion2 = 2;
 constexpr std::size_t kMaxFuzzDisturbances = 4;
+constexpr std::size_t kMaxFuzzJoySegments = 4;
 
 #pragma pack(push, 1)
 struct FuzzDisturbanceV1 {
@@ -36,12 +38,32 @@ struct FuzzSimulatorScenarioV1 {
   float imu_pitch_lag_s = 0.0f;
   FuzzDisturbanceV1 disturbances[kMaxFuzzDisturbances]{};
 };
+
+struct FuzzJoySegmentV1 {
+  float start_s = 0.0f;
+  float duration_s = 0.0f;
+  float forward = 0.0f;
+  float turn = 0.0f;
+  float forward_end = 0.0f;
+  float turn_end = 0.0f;
+};
+
+struct FuzzSimulatorScenarioV2 {
+  FuzzSimulatorScenarioV1 base{};
+  uint8_t joy_segment_count = 0;
+  uint8_t reserved0 = 0;
+  uint16_t reserved1 = 0;
+  FuzzJoySegmentV1 joy_segments[kMaxFuzzJoySegments]{};
+};
 #pragma pack(pop)
 
 static_assert(std::is_trivially_copyable_v<FuzzDisturbanceV1>);
 static_assert(std::is_trivially_copyable_v<FuzzSimulatorScenarioV1>);
+static_assert(std::is_trivially_copyable_v<FuzzJoySegmentV1>);
+static_assert(std::is_trivially_copyable_v<FuzzSimulatorScenarioV2>);
 static_assert(sizeof(FuzzDisturbanceV1) == 28);
 static_assert(sizeof(FuzzSimulatorScenarioV1) == 144);
+static_assert(sizeof(FuzzJoySegmentV1) == 24);
+static_assert(sizeof(FuzzSimulatorScenarioV2) == 244);
 
 }  // namespace fuzz
-

@@ -1,7 +1,8 @@
 cmake_minimum_required(VERSION 3.18)
 
-# Force usage of GCC 16.1.0 if available in the standard location
-if (EXISTS "/usr/local/gcc-16.1.0/bin/g++")
+# Force usage of GCC 16.1.0 if available in the standard location, unless the
+# caller explicitly supplied a compiler wrapper such as AFL++.
+if (EXISTS "/usr/local/gcc-16.1.0/bin/g++" AND NOT CMAKE_CXX_COMPILER)
   set(CMAKE_CXX_COMPILER "/usr/local/gcc-16.1.0/bin/g++")
   set(CMAKE_C_COMPILER "/usr/local/gcc-16.1.0/bin/gcc")
 endif()
@@ -223,10 +224,23 @@ if (BUILD_TESTS)
     )
     enable_project_warnings(balancer_fuzz_simulator_scenario)
 
+    add_executable(balancer_fuzz_simulator_stability EXCLUDE_FROM_ALL
+      ${CMAKE_SOURCE_DIR}/tests/fuzz/simulator_stability_fuzz.cpp
+    )
+    target_compile_definitions(balancer_fuzz_simulator_stability PRIVATE
+      BALANCER_REPO_ROOT="${CMAKE_SOURCE_DIR}"
+    )
+    target_link_libraries(balancer_fuzz_simulator_stability PRIVATE
+      balancer_common
+      balancer_sim_support
+    )
+    enable_project_warnings(balancer_fuzz_simulator_stability)
+
     add_custom_target(balancer_fuzz_targets
       DEPENDS
         balancer_fuzz_udp_sequence
         balancer_fuzz_simulator_scenario
+        balancer_fuzz_simulator_stability
     )
   endif()
 # ================================================================

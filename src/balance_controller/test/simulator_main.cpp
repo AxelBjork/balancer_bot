@@ -349,6 +349,8 @@ class SimulatorService {
           handle_start(payload);
         } else if (id == MsgId::SimStopRun) {
           handle_stop(payload);
+        } else if (id == MsgId::JoystickCommand) {
+          handle_joystick(payload);
         }
       } catch (const std::exception&) {
         if (id == MsgId::SimStartRun && payload.size() >= sizeof(ipc::SimStartRunPayload)) {
@@ -435,6 +437,16 @@ class SimulatorService {
     if (run_.has_value() && run_->run_id == request.run_id) {
       finish_active_run(kDoneStoppedByClient);
     }
+  }
+
+  void handle_joystick(const std::vector<uint8_t>& payload) {
+    if (!run_.has_value() || payload.size() != sizeof(ipc::JoystickCommandPayload)) {
+      return;
+    }
+
+    ipc::JoystickCommandPayload request{};
+    std::memcpy(&request, payload.data(), sizeof(request));
+    run_->pipeline.bus.publish<MsgId::JoystickCommand>(request);
   }
 
   DisturbanceSample disturbance_for_time(const ActiveRun& run, double sim_time_s) const {

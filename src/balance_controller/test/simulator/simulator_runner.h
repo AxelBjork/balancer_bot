@@ -25,6 +25,15 @@ struct SimulatorDisturbance {
   double com_bias_rad_end = 0.0;
 };
 
+struct SimulatorJoySegment {
+  double start_s = 0.0;
+  double duration_s = 0.0;
+  double forward = 0.0;
+  double turn = 0.0;
+  double forward_end = 0.0;
+  double turn_end = 0.0;
+};
+
 struct SimulatorScenario {
   std::string name;
   double initial_pitch_deg = 0.0;
@@ -33,6 +42,7 @@ struct SimulatorScenario {
   PhysicsProfile physics_profile = PhysicsProfile::Simplified;
   std::optional<SimulatorPhysics> physics_override;
   std::vector<SimulatorDisturbance> disturbances;
+  std::vector<SimulatorJoySegment> joy_segments;
   double wheel_slip_factor = 1.0;
   double velocity_feedback_scale = 1.0;
   double velocity_feedback_tau_s = 0.0;

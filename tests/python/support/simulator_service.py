@@ -6,6 +6,7 @@ from pathlib import Path
 
 from generated_balancer import (
     BalancerMsgId,
+    JoystickCommandPayload,
     SimRunDonePayload,
     SimStartAckPayload,
     SimStartRunPayload,
@@ -163,6 +164,27 @@ def wait_for_done(udp, run_id: int, timeout: float = 2.0) -> SimRunDonePayload:
     raise AssertionError(f"Timed out waiting for SimRunDone for run_id={run_id}")
 
 
+def _joy_for_time(joy_segments: list[dict], elapsed_s: float) -> tuple[float, float]:
+    forward = 0.0
+    turn = 0.0
+    for segment in joy_segments:
+        start_s = float(segment.get("start_s", 0.0))
+        duration_s = float(segment.get("duration_s", 0.0))
+        if elapsed_s < start_s:
+            continue
+        if duration_s > 0.0 and elapsed_s >= start_s + duration_s:
+            continue
+        forward = float(segment.get("forward", 0.0))
+        turn = float(segment.get("turn", 0.0))
+        if duration_s > 0.0:
+            progress = min(1.0, max(0.0, (elapsed_s - start_s) / duration_s))
+            forward_end = float(segment.get("forward_end", forward))
+            turn_end = float(segment.get("turn_end", turn))
+            forward += (forward_end - forward) * progress
+            turn += (turn_end - turn) * progress
+    return min(1.0, max(-1.0, forward)), min(1.0, max(-1.0, turn))
+
+
 def run_scenario_live(
     udp,
     *,
@@ -182,6 +204,7 @@ def run_scenario_live(
     accel_bias_mps2: list[float] | None = None,
     gyro_bias_rad_s: list[float] | None = None,
     disturbances: list[dict] | None = None,
+    joy_segments: list[dict] | None = None,
     pid_config_path: str = "",
     fail_fast_pitch_deg: float = 75.0,
     done_timeout: float = 15.0,
@@ -209,6 +232,8 @@ def run_scenario_live(
     }
     if disturbances:
         metadata["disturbances"] = disturbances
+    if joy_segments:
+        metadata["joy_segments"] = joy_segments
     recorder.begin_run(metadata)
 
     udp.drain()
@@ -235,9 +260,17 @@ def run_scenario_live(
     if not ack.accepted:
         raise AssertionError(f"Simulator rejected run_id={run_id} with status={ack.status_code}")
 
+    joy_segments = list(joy_segments or [])
     done = None
+    run_start = time.monotonic()
+    next_joy_send = run_start
     deadline = time.monotonic() + done_timeout
     while time.monotonic() < deadline:
+        now = time.monotonic()
+        if joy_segments and now >= next_joy_send:
+            forward, turn = _joy_for_time(joy_segments, now - run_start)
+            udp.send(BalancerMsgId.JoystickCommand, JoystickCommandPayload(forward, turn).pack())
+            next_joy_send = now + 0.02
         try:
             msg_id, payload = udp.recv(timeout=min(0.1, max(0.01, deadline - time.monotonic())))
         except TimeoutError:
