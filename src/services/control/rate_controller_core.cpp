@@ -13,7 +13,6 @@
 using matrix::Vector3f;
 
 struct RateControllerCore::Impl {
-  static constexpr double kLeanTrimDecayS = 30.0;
 
   std::function<void(double, double)> motors_cb;
   std::function<void(const Telemetry&)> tel_cb;
@@ -60,17 +59,16 @@ void RateControllerCore::updateOuterLoop(double measured_velocity_sps, double dt
   p_->measured_velocity_sps = measured_velocity_sps;
   p_->vel_error_sps = -measured_velocity_sps;
   p_->velocity_pitch_setpoint_rad = ConfigPid::vel_P * p_->vel_error_sps;
-  p_->turn_sps = static_cast<double>(joy.turn) * kMaxSps * 0.5;
 
-  const double joy_pitch_rad = static_cast<double>(joy.forward) * kMaxPitchSetpointRad;
+  const double joy_pitch_rad = static_cast<double>(joy.forward) * kMaxPitchSetpointRad * 0.4;
   p_->pitch_setpoint_rad = std::clamp(p_->velocity_pitch_setpoint_rad + p_->lean_trim_rad +
                  joy_pitch_rad,
                  -kMaxPitchSetpointRad, kMaxPitchSetpointRad);
 
-  const double max_trim_rad =
-      std::clamp(ConfigPid::lean_trim_max_deg * M_PI / 180.0, 0.0, kMaxPitchSetpointRad);
-  if (std::abs(joy.forward) > Config::deadzone && Impl::kLeanTrimDecayS > 0.0) {
-    p_->lean_trim_rad *= (1.0 - std::clamp(dt_s / Impl::kLeanTrimDecayS, 0.0, 1.0));
+  const double max_trim_rad = std::clamp(ConfigPid::lean_trim_max_deg * M_PI / 180.0, 0.0, kMaxPitchSetpointRad);
+
+  if (std::abs(joy.forward) > Config::deadzone && kLeanTrimDecayS > 0.0) {
+    p_->lean_trim_rad *= (1.0 - std::clamp(dt_s / kLeanTrimDecayS, 0.0, 1.0));
     p_->lean_trim_active = false;
   } else if (ConfigPid::lean_trim_I != 0.0 && !p_->command_saturated) {
     p_->lean_trim_rad =
@@ -98,7 +96,7 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
   const double pitch_rate_rad_s = p_->latest_imu.gyro_rad_s;
   const double pitch_accel_rad_s2 = p_->latest_imu.pitch_accel_rad_s2;
   const JoyCmd joy = p_->latest_joy;
-  p_->turn_sps = static_cast<double>(joy.turn) * kMaxSps * 0.5;
+  p_->turn_sps = static_cast<double>(joy.turn) * kPitchOutToSps * 0.6;
 
   const double rate_sp_rad_s =
       ConfigPid::pitch_P * (p_->pitch_setpoint_rad - pitch_rad) - ConfigPid::pitch_D * pitch_rate_rad_s;
