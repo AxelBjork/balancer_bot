@@ -27,16 +27,11 @@ class RateControllerCore {
 
   void pushImu(const ImuSample& s);
   void setJoystick(const JoyCmd& j);  // kept for API compat; may be no-op
+  void updateOuterLoop(double measured_velocity_sps, double dt_s);
   void setTelemetrySink(std::function<void(const Telemetry&)> cb);
 
   // Callbacks to drive motors (steps/s). You wire these from the wrapper.
   void setMotorOutputs(std::function<void(double, double)> motor_cb);
-
-  // Callback to get velocity feedback (average of left+right in steps/s)
-  void setVelocityFeedback(std::function<double()> velocity_cb);
-
-  // Callback to get average wheel position (meters)
-  void setPositionFeedback(std::function<double()> position_cb);
 
  private:
   struct Impl;  // PIMPL hides PX4/Matrix + thread

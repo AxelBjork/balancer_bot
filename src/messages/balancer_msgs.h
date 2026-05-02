@@ -62,9 +62,7 @@ struct DOC_DESC(
   double vel_error;
   double measured_vel_sps;
   double vel_p_term;
-  double position_target_vel_sps;
   double pitch_ref_from_vel_deg;
-  double pitch_ref_from_pos_deg;
   double pitch_error_deg;
   double pitch_sp_deg;
   double pitch_trim_deg;

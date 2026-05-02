@@ -162,8 +162,6 @@ SimulatorRunResult run_simulator_scenario_with_loaded_pid(const SimulatorScenari
     sim.set_motor_targets(left, right);
   });
   core.setJoystick(JoyCmd{0.0f, 0.0f});
-  core.setVelocityFeedback([&]() { return sim.get_actual_speed_sps(); });
-  core.setPositionFeedback([&]() { return sim.get_position(); });
   core.setTelemetrySink([&](const Telemetry& t) {
     latest_telemetry = t;
     have_telemetry = true;
@@ -196,6 +194,7 @@ SimulatorRunResult run_simulator_scenario_with_loaded_pid(const SimulatorScenari
     sample.t = std::chrono::steady_clock::time_point(std::chrono::microseconds(imu.timestamp_us));
 
     core.pushImu(sample);
+    core.updateOuterLoop(sim.get_actual_speed_sps(), kTickDtS);
     core.step(kTickDtS, sample.t);
     left_actual_steps += left_sps * kTickDtS;
     right_actual_steps += right_sps * kTickDtS;
@@ -233,7 +232,6 @@ SimulatorRunResult run_simulator_scenario_with_loaded_pid(const SimulatorScenari
       row.vel_error = latest_telemetry.vel_error;
       row.vel_p_term = latest_telemetry.vel_p_term;
       row.pitch_ref_from_vel_deg = latest_telemetry.pitch_ref_from_vel_deg;
-      row.pitch_ref_from_pos_deg = latest_telemetry.pitch_ref_from_pos_deg;
       row.pitch_trim_deg = latest_telemetry.pitch_trim_deg;
       row.trim_active = latest_telemetry.trim_active;
     }

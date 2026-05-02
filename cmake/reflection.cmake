@@ -86,7 +86,7 @@ add_custom_command(
             ${CMAKE_SOURCE_DIR}/src/ipc/udp_bridge.h
             ${CMAKE_SOURCE_DIR}/src/services/imu/imu_service.h
             ${CMAKE_SOURCE_DIR}/src/services/control/control_service.h
-            ${CMAKE_SOURCE_DIR}/src/services/control/motor_service.h
+            ${CMAKE_SOURCE_DIR}/src/services/motor/motor_service.h
             ${CMAKE_SOURCE_DIR}/src/services/time/time_service.h
     COMMENT "Compiling balancer docs generator with C++26 reflection..."
     VERBATIM

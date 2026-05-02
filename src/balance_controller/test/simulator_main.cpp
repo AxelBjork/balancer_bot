@@ -3,6 +3,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -10,24 +11,24 @@
 #include <cstdint>
 #include <cstring>
 #include <deque>
+#include <functional>
 #include <iostream>
 #include <optional>
-#include <functional>
 #include <random>
 #include <stdexcept>
 #include <string>
 #include <thread>
-#include <algorithm>
 #include <vector>
 
+#include "ipc/message_bus.h"
 #include "messages/balancer_msgs.h"
 #include "messages/types.h"
-#include "ipc/message_bus.h"
-#include "services/main/config.h"
 #include "services/control/control_service.h"
-#include "services/control/motor_service.h"
 #include "services/imu/imu_service.h"
+#include "services/main/config.h"
 #include "services/motor/motor_runner.h"
+#include "services/motor/motor_service.h"
+#include "services/time/time_service.h"
 #include "simulator/balancer_simulator.h"
 
 namespace {
@@ -137,7 +138,9 @@ class UdpEndpoint {
     ::fcntl(fd_, F_SETFL, flags | O_NONBLOCK);
   }
 
-  uint16_t port() const { return port_; }
+  uint16_t port() const {
+    return port_;
+  }
 
   ~UdpEndpoint() {
     if (fd_ >= 0) {
@@ -182,7 +185,7 @@ class UdpEndpoint {
     iov[1].iov_base = const_cast<Payload*>(&payload);
     iov[1].iov_len = sizeof(Payload);
 
-    msghdr msg {};
+    msghdr msg{};
     msg.msg_name = const_cast<sockaddr*>(reinterpret_cast<const sockaddr*>(&peer.addr));
     msg.msg_namelen = sizeof(peer.addr);
     msg.msg_iov = iov;
@@ -195,8 +198,23 @@ class UdpEndpoint {
   uint16_t port_{0};
 };
 
-struct SimClock {
-  std::chrono::steady_clock::time_point now{};
+struct PigpioCtx {
+  PigpioCtx() {
+    pi = pigpio_start(nullptr, nullptr);
+    if (pi < 0) {
+      throw std::runtime_error("pigpio_start failed");
+    }
+  }
+
+  ~PigpioCtx() {
+    pigpio_stop(pi);
+  }
+
+  int handle() const {
+    return pi;
+  }
+
+  int pi{-1};
 };
 
 struct ScenarioObserver {
@@ -221,21 +239,27 @@ inline void ScenarioObserver::on_message<MsgId::SystemTelemetry>(
 }
 
 template <>
-inline void ScenarioObserver::on_message<MsgId::MotorFeedback>(
-    const ipc::MotorFeedbackPayload& p) {
+inline void ScenarioObserver::on_message<MsgId::MotorFeedback>(const ipc::MotorFeedbackPayload& p) {
   latest_motor_feedback = p;
   have_motor_feedback = true;
 }
 
 struct ScenarioServices {
-  SimMotorRunner motors;
+  PigpioCtx pigpio;
+  Stepper left;
+  Stepper right;
+  sil::TimeService time;
+  MotorRunner motors;
   sil::ImuService imu;
   sil::ControlService control;
   sil::MotorService motor_service;
   ScenarioObserver observer;
 
-  ScenarioServices(ipc::MessageBus& bus, SimClock& clock)
-      : motors([clock_ptr = &clock] { return clock_ptr->now; }, Config::control_hz),
+  ScenarioServices(ipc::MessageBus& bus)
+      : left(pigpio.handle(), Stepper::Pins{12, 19, 13}, false, true),
+        right(pigpio.handle(), Stepper::Pins{4, 18, 24}, false, true),
+        time(bus, kTickDtS),
+        motors(left, right, Config::control_hz, 250000.0),
         imu(bus, false),
         control(bus),
         motor_service(bus, &motors) {
@@ -243,28 +267,28 @@ struct ScenarioServices {
 };
 
 struct ScenarioBusContainer {
-  SimClock clock;
   ipc::MessageBus bus;
   ScenarioServices services;
 
-  ScenarioBusContainer() : bus(this, &ScenarioBusContainer::dispatch), services(bus, clock) {
+  ScenarioBusContainer() : bus(this, &ScenarioBusContainer::dispatch), services(bus) {
   }
 
   static void dispatch(void* ctx, MsgId id, const void* payload) {
     auto* self = static_cast<ScenarioBusContainer*>(ctx);
-    ipc::dispatch_to_services(id, payload, self->services.imu, self->services.control,
-                              self->services.motor_service, self->services.observer);
+    ipc::dispatch_to_services(id, payload, self->services.imu, self->services.motor_service,
+                              self->services.control, self->services.observer);
   }
 };
 
 class SimulatorService {
  public:
   explicit SimulatorService(uint16_t port, std::string default_pid_config)
-      : endpoint_(port), default_pid_config_(std::move(default_pid_config)) {}
+      : endpoint_(port), default_pid_config_(std::move(default_pid_config)) {
+  }
 
   void run() {
-    std::cout << "Starting balancer_simulator service on UDP port "
-              << endpoint_.port() << std::endl;
+    std::cout << "Starting balancer_simulator service on UDP port " << endpoint_.port()
+              << std::endl;
     while (!g_stop.load()) {
       pump_messages();
       if (run_.has_value()) {
@@ -298,14 +322,14 @@ class SimulatorService {
     double last_left_applied_sps = 0.0;
     double last_right_applied_sps = 0.0;
 
-    explicit ActiveRun(uint32_t id,
-                       std::string pid_path,
+    explicit ActiveRun(uint32_t id, std::string pid_path,
                        std::array<ServiceDisturbance, ipc::kMaxSimDisturbances> disturbances_in,
                        BalancerSimulator&& sim_in)
         : run_id(id),
           pid_config_path(std::move(pid_path)),
           disturbances(std::move(disturbances_in)),
-          sim(std::move(sim_in)) {}
+          sim(std::move(sim_in)) {
+    }
   };
 
   void pump_messages() {
@@ -432,10 +456,11 @@ class SimulatorService {
               sim_time_s < (disturbance.start_s + disturbance.duration_s)) {
             const double progress =
                 std::clamp((sim_time_s - disturbance.start_s) / disturbance.duration_s, 0.0, 1.0);
-            total.force_n += disturbance.force_n +
-                             (disturbance.force_n_end - disturbance.force_n) * progress;
-            total.com_bias_rad += disturbance.com_bias_rad +
-                                  (disturbance.com_bias_rad_end - disturbance.com_bias_rad) * progress;
+            total.force_n +=
+                disturbance.force_n + (disturbance.force_n_end - disturbance.force_n) * progress;
+            total.com_bias_rad +=
+                disturbance.com_bias_rad +
+                (disturbance.com_bias_rad_end - disturbance.com_bias_rad) * progress;
           }
           break;
         case ipc::kSimDisturbanceHoldBias:
@@ -460,19 +485,14 @@ class SimulatorService {
     run.sim.set_external_com_bias_rad(disturbance.com_bias_rad);
 
     run.sim.step(kTickDtS);
-    run.sim_time_us += static_cast<uint64_t>(kTickDtS * 1e6);
-    ++run.steps_done;
-
-    run.pipeline.clock.now =
-        std::chrono::steady_clock::time_point(std::chrono::microseconds(run.sim_time_us));
-
-    const auto raw_imu = make_controller_imu(run);
+    const uint64_t next_sim_time_us =
+        run.sim_time_us + static_cast<uint64_t>(std::llround(kTickDtS * 1e6));
+    const auto raw_imu = make_controller_imu(run, next_sim_time_us);
     run.pipeline.bus.publish<MsgId::ImuRawData>(raw_imu);
 
-    PhysicsTickPayload tick{};
-    tick.dt_s = kTickDtS;
-    tick.sim_time_us = run.sim_time_us;
-    run.pipeline.bus.publish<MsgId::PhysicsTick>(tick);
+    run.pipeline.services.time.advance(kTickDtS);
+    run.sim_time_us = run.pipeline.services.time.elapsed_time_us();
+    ++run.steps_done;
 
     if (run.pipeline.services.observer.have_telemetry) {
       const auto& telemetry = run.pipeline.services.observer.latest_telemetry;
@@ -502,12 +522,12 @@ class SimulatorService {
   }
 
   static float accel_pitch_deg(const std::array<double, 3>& acc) {
-    return static_cast<float>(
-        std::atan2(-acc[0], std::sqrt(acc[1] * acc[1] + acc[2] * acc[2])) * (180.0 / kPi));
+    return static_cast<float>(std::atan2(-acc[0], std::sqrt(acc[1] * acc[1] + acc[2] * acc[2])) *
+                              (180.0 / kPi));
   }
 
-  ipc::ImuRawPayload make_controller_imu(ActiveRun& run) {
-    auto payload = run.sim.make_raw_imu_payload(run.sim_time_us);
+  ipc::ImuRawPayload make_controller_imu(ActiveRun& run, uint64_t sim_time_us) {
+    auto payload = run.sim.make_raw_imu_payload(sim_time_us);
     if (run.accel_noise_std > 0.0) {
       for (std::size_t i = 0; i < 3; ++i) {
         payload.acc[i] += run.accel_noise(run.imu_rng);
@@ -549,14 +569,15 @@ class SimulatorService {
     payload.vel_p_term = run.pipeline.services.observer.have_telemetry ? telemetry.vel_p_term : 0.0;
     payload.pitch_ref_from_vel_deg =
         run.pipeline.services.observer.have_telemetry ? telemetry.pitch_ref_from_vel_deg : 0.0;
-    payload.pitch_ref_from_pos_deg =
-        run.pipeline.services.observer.have_telemetry ? telemetry.pitch_ref_from_pos_deg : 0.0;
-    payload.pitch_sp_deg = run.pipeline.services.observer.have_telemetry ? telemetry.pitch_sp_deg : 0.0;
+    payload.pitch_sp_deg =
+        run.pipeline.services.observer.have_telemetry ? telemetry.pitch_sp_deg : 0.0;
     payload.pitch_error_deg = run.pipeline.services.observer.have_telemetry
                                   ? telemetry.pitch_error_deg
                                   : (payload.pitch_sp_deg - payload.pitch_deg);
-    payload.pitch_trim_deg = run.pipeline.services.observer.have_telemetry ? telemetry.pitch_trim_deg : 0.0;
-    payload.trim_active = run.pipeline.services.observer.have_telemetry ? telemetry.trim_active : 0.0;
+    payload.pitch_trim_deg =
+        run.pipeline.services.observer.have_telemetry ? telemetry.pitch_trim_deg : 0.0;
+    payload.trim_active =
+        run.pipeline.services.observer.have_telemetry ? telemetry.trim_active : 0.0;
     payload.left_applied_sps = run.last_left_applied_sps;
     payload.right_applied_sps = run.last_right_applied_sps;
     payload.left_actual_steps =

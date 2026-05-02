@@ -9,15 +9,15 @@
 #include <iostream>
 #include <thread>
 
-#include "services/main/config.h"
-#include "services/motor/motor_runner.h"
-#include "services/motor/stepper.h"
 #include "messages/balancer_msgs.h"
-#include "services/control/rate_controller_core.h"
 #include "services/control/control_service.h"
+#include "services/control/rate_controller_core.h"
 #include "services/imu/imu_service.h"
 #include "services/input/input_service.h"
-#include "services/control/motor_service.h"
+#include "services/main/config.h"
+#include "services/motor/motor_runner.h"
+#include "services/motor/motor_service.h"
+#include "services/motor/stepper.h"
 #include "services/time/time_service.h"
 #include "udp_bridge.h"
 
@@ -66,7 +66,7 @@ inline void app_dispatcher(void* ctx, MsgId id, const void* payload) {
   auto* s = static_cast<AppServices*>(ctx);
   static int telemetry_count = 0;
 
-  ipc::dispatch_to_services(id, payload, s->is, s->cs, s->ms, s->udp, s->ts);
+  ipc::dispatch_to_services(id, payload, s->is, s->ms, s->cs, s->udp, s->ts);
 
   if (id == MsgId::SystemTelemetry) {
     if constexpr (Config::kPrintEvery != -1) {
@@ -80,49 +80,13 @@ inline void app_dispatcher(void* ctx, MsgId id, const void* payload) {
             "ap=%6.0f%s  trn=%6.0f\n",
             p.t_sec, p.pitch_deg, p.pitch_rate_dps, p.u_sps,
             (std::abs(p.u_sps) >= 0.99 * kMaxSps) ? "*" : "", p.pitch_sp_deg,
-            p.pitch_ref_from_vel_deg, p.pitch_trim_deg, p.pitch_error_deg,
-            p.vel_error, p.measured_vel_sps, applied_avg_sps,
-            motor_dt_warning ? "  MOTOR_DT!" : "", p.turn_sps);
+            p.pitch_ref_from_vel_deg, p.pitch_trim_deg, p.pitch_error_deg, p.vel_error,
+            p.measured_vel_sps, applied_avg_sps, motor_dt_warning ? "  MOTOR_DT!" : "", p.turn_sps);
       }
     }
   }
 }
 
-template <class MotorRunnerT>
-class CascadedController {
- public:
-  CascadedController(MotorRunnerT& motors) : motors_(motors) {
-    core_.setMotorOutputs(
-        [this](double left_sps, double right_sps) { motors_.setTargets(left_sps, right_sps); });
-
-    // Velocity feedback from motor commanded targets (actual step tracking)
-    core_.setVelocityFeedback([this]() -> double { return motors_.getActualSpeedSps(); });
-    core_.setPositionFeedback([this]() -> double {
-      const double average_steps =
-          0.5 * static_cast<double>(motors_.getActualLeftSteps() + motors_.getActualRightSteps());
-      return average_steps * Config::meters_per_step;
-    });
-  }
-
-  ~CascadedController() = default;
-
-  void pushImu(const ImuSample& s) {
-    core_.pushImu(s);
-  }
-  void setJoystick(const JoyCmd& j) {
-    core_.setJoystick(j);
-  }
-  void setTelemetrySink(std::function<void(const Telemetry&)> cb) {
-    core_.setTelemetrySink(std::move(cb));
-  }
-  void step(double dt_s, std::chrono::steady_clock::time_point now) {
-    core_.step(dt_s, now);
-  }
-
- private:
-  MotorRunnerT& motors_;
-  RateControllerCore core_;
-};
 
 // ---------------------- Motor control runner --------------------------------
 class ControlApp {

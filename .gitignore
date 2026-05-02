@@ -53,3 +53,4 @@ build-pi-arm/*
 tests/python/__pycache__/
 tests/python/support/__pycache__/
 tools/__pycache__/
+build-cov/*

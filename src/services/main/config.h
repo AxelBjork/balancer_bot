@@ -26,7 +26,7 @@ struct Config {
   // Complementary accel correction (slow)
   static constexpr double fc_acc_corr_hz = 2.2;  // 0.5–1.2 Hz: drift trim without lag
   // Velocity estimator (fast)
-  static constexpr double fc_velocity_hz = 50.0;  // 20–30 Hz: smooths out noise
+  static constexpr double fc_velocity_hz = 50.0;  // 50 Hz: smooths out noise
   static constexpr double g0 = 9.81;
   static constexpr double g_band_rel = 0.12;         // accept |a| in [g*(1-..), g*(1+..)]
   static constexpr double max_use_pitch_deg = 75.0;  // ignore accel when near ±90°

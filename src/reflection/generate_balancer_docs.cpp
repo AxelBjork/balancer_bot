@@ -12,12 +12,12 @@
 #include <utility>
 
 #include "balancer_message_registry.h"
-#include "udp_bridge.h"
 #include "services/control/control_service.h"
 #include "services/imu/imu_service.h"
-#include "services/control/motor_service.h"
-#include "services/time/time_service.h"
 #include "services/input/input_service.h"
+#include "services/motor/motor_service.h"
+#include "services/time/time_service.h"
+#include "udp_bridge.h"
 
 using namespace balancer_reflection;
 
@@ -46,7 +46,8 @@ template <typename ComponentsT, ::MsgId Id>
 consteval bool message_used_by_components() {
   return []<std::size_t... Is>(std::index_sequence<Is...>) {
     return ((component_publishes<std::tuple_element_t<Is, ComponentsT>, Id>() ||
-             component_subscribes<std::tuple_element_t<Is, ComponentsT>, Id>()) || ...);
+             component_subscribes<std::tuple_element_t<Is, ComponentsT>, Id>()) ||
+            ...);
   }(std::make_index_sequence<std::tuple_size_v<ComponentsT>>{});
 }
 
@@ -75,12 +76,8 @@ consteval std::size_t documented_message_count() {
   return count;
 }
 
-using Components = std::tuple<sil::ImuService,
-                              sil::TimeService,
-                              sil::ControlService,
-                              sil::MotorService,
-                              sil::InputService,
-                              ipc::UdpBridge>;
+using Components = std::tuple<sil::ImuService, sil::TimeService, sil::ControlService,
+                              sil::MotorService, sil::InputService, ipc::UdpBridge>;
 
 inline std::string dot_escape_label(std::string_view s) {
   std::string out;
@@ -191,9 +188,7 @@ inline std::string wrap_words(std::string_view s, std::size_t width = 40) {
 }
 
 template <typename T>
-concept HasDocDescription = requires {
-  T::kDocDescription;
-};
+concept HasDocDescription = requires { T::kDocDescription; };
 
 template <typename T>
 std::string component_doc_text() {
@@ -295,9 +290,7 @@ void emit_field_table() {
       std::cout << "| `" << std::meta::identifier_of(field) << "`"
                 << " | `" << get_cxx_type_name<FieldT>() << "`"
                 << " | `" << get_python_annotation<FieldT>() << "`"
-                << " | " << sizeof(FieldT)
-                << " | " << std::meta::offset_of(field).bytes
-                << " | ";
+                << " | " << sizeof(FieldT) << " | " << std::meta::offset_of(field).bytes << " | ";
       if (field_desc.text[0] != '\0') {
         std::cout << field_desc.text;
       }
@@ -346,7 +339,8 @@ void emit_components_impl(std::index_sequence<Is...>) {
     std::cout << "- Publishes: ";
     []<::MsgId... Ids>(ipc::MsgList<Ids...>) {
       bool first = true;
-      (((std::cout << (first ? "" : ", ") << "`" << MessageTraits<Ids>::name << "`"), first = false),
+      (((std::cout << (first ? "" : ", ") << "`" << MessageTraits<Ids>::name << "`"),
+        first = false),
        ...);
       if (first) {
         std::cout << "_None_";
@@ -379,11 +373,13 @@ void emit_components() {
 using EdgeMap = std::map<std::pair<std::string, std::string>, std::set<std::string>>;
 
 template <typename Tuple, ::MsgId Id, std::size_t... Is>
-void collect_inbound_edges_impl(EdgeMap& edges, std::index_sequence<Is...>, std::string_view message_name) {
+void collect_inbound_edges_impl(EdgeMap& edges, std::index_sequence<Is...>,
+                                std::string_view message_name) {
   const std::string bridge = dot_id("UdpBridge");
   (..., [&] {
     using Component = std::tuple_element_t<Is, Tuple>;
-    if constexpr (component_subscribes<Component, Id>() && !std::is_same_v<Component, ipc::UdpBridge>) {
+    if constexpr (component_subscribes<Component, Id>() &&
+                  !std::is_same_v<Component, ipc::UdpBridge>) {
       edges[{bridge, dot_id(get_cxx_type_name<Component>())}].insert(std::string(message_name));
     }
   }());
@@ -391,18 +387,18 @@ void collect_inbound_edges_impl(EdgeMap& edges, std::index_sequence<Is...>, std:
 
 template <typename Tuple, ::MsgId Id>
 void collect_inbound_edges(EdgeMap& edges, std::string_view message_name) {
-  collect_inbound_edges_impl<Tuple, Id>(
-      edges, std::make_index_sequence<std::tuple_size_v<Tuple>>{}, message_name);
+  collect_inbound_edges_impl<Tuple, Id>(edges, std::make_index_sequence<std::tuple_size_v<Tuple>>{},
+                                        message_name);
 }
 
 template <typename Tuple, ::MsgId Id, std::size_t... Is>
-void collect_outbound_edges_impl(EdgeMap& edges,
-                                 std::index_sequence<Is...>,
+void collect_outbound_edges_impl(EdgeMap& edges, std::index_sequence<Is...>,
                                  std::string_view message_name) {
   const std::string bridge = dot_id("UdpBridge");
   (..., [&] {
     using Component = std::tuple_element_t<Is, Tuple>;
-    if constexpr (component_publishes<Component, Id>() && !std::is_same_v<Component, ipc::UdpBridge>) {
+    if constexpr (component_publishes<Component, Id>() &&
+                  !std::is_same_v<Component, ipc::UdpBridge>) {
       edges[{dot_id(get_cxx_type_name<Component>()), bridge}].insert(std::string(message_name));
     }
   }());
@@ -415,13 +411,12 @@ void collect_outbound_edges(EdgeMap& edges, std::string_view message_name) {
 }
 
 template <typename Tuple, ::MsgId Id, std::size_t... Is>
-void collect_internal_edges_impl(EdgeMap& edges,
-                                 std::index_sequence<Is...>,
-                                 std::string_view message_name,
-                                 std::string_view publisher_name) {
+void collect_internal_edges_impl(EdgeMap& edges, std::index_sequence<Is...>,
+                                 std::string_view message_name, std::string_view publisher_name) {
   (..., [&] {
     using Component = std::tuple_element_t<Is, Tuple>;
-    if constexpr (component_subscribes<Component, Id>() && !std::is_same_v<Component, ipc::UdpBridge>) {
+    if constexpr (component_subscribes<Component, Id>() &&
+                  !std::is_same_v<Component, ipc::UdpBridge>) {
       edges[{dot_id(publisher_name), dot_id(get_cxx_type_name<Component>())}].insert(
           std::string(message_name));
     }
@@ -429,15 +424,15 @@ void collect_internal_edges_impl(EdgeMap& edges,
 }
 
 template <typename Tuple, ::MsgId Id, std::size_t... Is>
-void collect_internal_edges_pub_impl(EdgeMap& edges,
-                                     std::index_sequence<Is...>,
+void collect_internal_edges_pub_impl(EdgeMap& edges, std::index_sequence<Is...>,
                                      std::string_view message_name) {
   (..., [&] {
     using Component = std::tuple_element_t<Is, Tuple>;
-    if constexpr (component_publishes<Component, Id>() && !std::is_same_v<Component, ipc::UdpBridge>) {
-      collect_internal_edges_impl<Tuple, Id>(
-          edges, std::make_index_sequence<std::tuple_size_v<Tuple>>{}, message_name,
-          get_cxx_type_name<Component>());
+    if constexpr (component_publishes<Component, Id>() &&
+                  !std::is_same_v<Component, ipc::UdpBridge>) {
+      collect_internal_edges_impl<Tuple, Id>(edges,
+                                             std::make_index_sequence<std::tuple_size_v<Tuple>>{},
+                                             message_name, get_cxx_type_name<Component>());
     }
   }());
 }
@@ -449,17 +444,18 @@ void collect_internal_edges(EdgeMap& edges, std::string_view message_name) {
 }
 
 template <typename ComponentsT, ::MsgId Id>
-void collect_msg_edges(EdgeMap& edges,
-                       std::set<std::string>& inbound_message_names,
+void collect_msg_edges(EdgeMap& edges, std::set<std::string>& inbound_message_names,
                        std::set<std::string>& outbound_message_names) {
   constexpr bool has_cpp_subscribers = []<std::size_t... Is>(std::index_sequence<Is...>) {
     return ((component_subscribes<std::tuple_element_t<Is, ComponentsT>, Id>() &&
-             !std::is_same_v<std::tuple_element_t<Is, ComponentsT>, ipc::UdpBridge>) || ...);
+             !std::is_same_v<std::tuple_element_t<Is, ComponentsT>, ipc::UdpBridge>) ||
+            ...);
   }(std::make_index_sequence<std::tuple_size_v<ComponentsT>>{});
 
   constexpr bool has_cpp_publishers = []<std::size_t... Is>(std::index_sequence<Is...>) {
     return ((component_publishes<std::tuple_element_t<Is, ComponentsT>, Id>() &&
-             !std::is_same_v<std::tuple_element_t<Is, ComponentsT>, ipc::UdpBridge>) || ...);
+             !std::is_same_v<std::tuple_element_t<Is, ComponentsT>, ipc::UdpBridge>) ||
+            ...);
   }(std::make_index_sequence<std::tuple_size_v<ComponentsT>>{});
 
   constexpr bool bridge_subscribes = component_subscribes<ipc::UdpBridge, Id>();
@@ -586,8 +582,8 @@ void emit_graphviz_flow_dot(std::ostream& os) {
      << "\", color=\"#F1F5F9\", penwidth=5, fontsize=25];\n\n";
   os << "  // Internal Service Logic\n";
   for (const auto& [edge, names] : edge_map) {
-    os << "  " << edge.first << " -> " << edge.second
-       << " [label=\"" << dot_escape_label(build_label(names)) << "\", style=dashed];\n";
+    os << "  " << edge.first << " -> " << edge.second << " [label=\""
+       << dot_escape_label(build_label(names)) << "\", style=dashed];\n";
   }
   os << "\n  RX -> " << dot_id("UdpBridge") << " [label=\"Outbound Traffic:\\n"
      << dot_escape_label(build_label(outbound_message_names))

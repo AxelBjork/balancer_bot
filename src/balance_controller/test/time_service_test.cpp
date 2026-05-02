@@ -39,6 +39,7 @@ TEST(TimeServiceTest, AdvancePublishesExactTicks) {
   EXPECT_EQ(sink.ticks[0].sim_time_us, 10000U);
   EXPECT_DOUBLE_EQ(sink.ticks[1].dt_s, 0.02);
   EXPECT_EQ(sink.ticks[1].sim_time_us, 30000U);
+  EXPECT_EQ(time.elapsed_time_us(), 30000U);
 }
 
 TEST(TimeServiceTest, RuntimeThreadPublishesMonotonicTicks) {

@@ -1,4 +1,4 @@
-#include "services/control/motor_service.h"
+#include "motor_service.h"
 
 namespace sil {
 
@@ -7,7 +7,7 @@ void MotorService::handle_motor_targets(const ipc::MotorTargetsPayload& p) {
     return;
   }
 
-  runner_->setTargets(p.left_sps, p.right_sps);
+  runner_->setTargets(p.left_sps, p.right_sps, current_tick_us_);
   const auto feedback = runner_->getFeedbackSample();
 
   ipc::MotorFeedbackPayload payload{};
@@ -19,6 +19,11 @@ void MotorService::handle_motor_targets(const ipc::MotorTargetsPayload& p) {
   payload.left_actual_steps = feedback.left_actual_steps;
   payload.right_actual_steps = feedback.right_actual_steps;
   bus_.publish<MsgId::MotorFeedback>(payload);
+}
+
+template <>
+void MotorService::on_message<MsgId::PhysicsTick>(const PhysicsTickPayload& p) {
+  current_tick_us_ = p.sim_time_us;
 }
 
 template <>

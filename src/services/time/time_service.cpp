@@ -43,12 +43,16 @@ void TimeService::advance(double dt_s) {
   publish_tick(dt_s);
 }
 
+uint64_t TimeService::elapsed_time_us() const {
+  return elapsed_time_us_.load(std::memory_order_relaxed);
+}
+
 void TimeService::publish_tick(double dt_s) {
-  sim_time_us_ += static_cast<uint64_t>(dt_s * 1e6);
+  elapsed_time_us_.fetch_add(static_cast<uint64_t>(dt_s * 1e6), std::memory_order_relaxed);
 
   PhysicsTickPayload payload{};
   payload.dt_s = dt_s;
-  payload.sim_time_us = sim_time_us_;
+  payload.sim_time_us = elapsed_time_us();
   bus_.publish<MsgId::PhysicsTick>(payload);
 }
 

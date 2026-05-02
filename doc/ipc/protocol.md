@@ -12,7 +12,7 @@ It describes the reflected runtime message bus used by the balancer services, in
 messages consumed by the SIL harness and the internal-only messages exchanged between services.
 
 - Documented balancer message count: `11`
-- Protocol hash: `508e6f98d2c59474`
+- Protocol hash: `e9f92793dfef58a7`
 - UDP ingress/egress gateway: `UdpBridge`
 
 ## System Architecture
@@ -46,11 +46,11 @@ The architecture is divided into three logical areas:
 >
 > The service supports two operating modes. In runtime mode it owns a worker thread that sleeps against `std::chrono::steady_clock` and emits ticks at the configured default cadence. In SIL or test mode it can instead be advanced explicitly by callers, which lets the rest of the system run from a fully deterministic external timeline instead of wall clock time. The default timestep is currently `1 / 400 s`, so the nominal scheduler frequency is about `400 Hz`.
 >
-> Each tick increments the monotonically increasing simulation timestamp and publishes
+> Each tick increments the monotonically increasing elapsed timestamp and publishes
 >
 > $$ t_{sim,us} \leftarrow t_{sim,us} + \Delta t \cdot 10^6 $$
 >
-> with the exact `dt_s` used for that step embedded in the payload. `ControlService` consumes these ticks as the authoritative integration step, so keeping this service as the sole owner of tick publication prevents divergent notions of time across hardware, SIL replay, and uni
+> with the exact `dt_s` used for that step embedded in the payload. `ControlService` consumes these ticks as the authoritative integration step, so keeping this service as the sole owner of tick publication prevents divergent notions of time across hardware, SIL replay, and unit t
 
 - Publishes: `PhysicsTick`
 - Subscribes: _None_
@@ -59,13 +59,13 @@ The architecture is divided into three logical areas:
 
 > Owns the balancing control pipeline that converts `PhysicsTick`, `ImuData`, and `JoystickCommand`, and `MotorFeedback` inputs into wheel-speed targets and streaming controller telemetry.
 >
-> This service is intentionally thin: it caches the latest bus inputs, translates them into the `RateControllerCore` API, and republishes the core's outputs as reflected IPC payloads. The control law itself is a physics-shaped outer loop wrapped around the PX4 pitch-rate controller. A joystick forward command produces a target wheel velocity in steps per second. When enabled, position hold contributes a direct pitch-reference term based on wheel position. The velocity and position terms are combined into a pitch setpoint, lean-trim and angle-trim biases are added, and the PX4 `RateControl` block tracks a damped pitch-rate setpoint:
+> This service is intentionally thin: it caches the latest bus inputs, translates them into the `RateControllerCore` API, and republishes the core's outputs as reflected IPC payloads. The control law itself is a physics-shaped outer loop wrapped around the PX4 pitch-rate controller. A joystick forward command produces a target wheel velocity in steps per second. The velocity term is combined with lean-trim and angle-trim biases are added, and the PX4 `RateControl` block tracks a damped pitch-rate setpoint:
 >
-> $$ \theta_{sp} = k_{pos}(x_{ref} - x) + k_{vel}(v_{ref} - v) + \theta_{trim} $$
+> $$ \theta_{sp} = k_{vel}(v_{ref} - v) + \theta_{trim} $$
 >
 > $$ \omega_{sp} = k_{pitch}(\theta_{sp} - \theta) - k_{pitch\_rate}\dot{\theta} $$
 >
-> The resulting normalized pitch-a
+> The resulting normalized pitch-axis effort is scaled into motor commands in steps per second, clamped to the configured ceiling, and split into left/right wheel targets by adding a tu
 
 - Publishes: `MotorTargets`, `SystemTelemetry`
 - Subscribes: `PhysicsTick`, `ImuData`, `JoystickCommand`, `MotorFeedback`
@@ -74,14 +74,14 @@ The architecture is divided into three logical areas:
 
 > Implements the actuator boundary between reflected IPC commands and the low-level motor runner.
 >
-> The service subscribes only to `MotorTargets` and deliberately contains almost no control state of its own. Its job is to accept wheel-speed targets expressed in steps per second and forward them to the configured `MotorRunner` if one is attached:
+> The service subscribes to `PhysicsTick` and `MotorTargets` and deliberately contains almost no control state of its own. Its job is to remember the latest physics timestamp, accept wheel-speed targets expressed in steps per second, and forward them to the configured `MotorRunner` if one is attached:
 >
 > $$ u_L, u_R \; [\mathrm{steps/s}] \rightarrow \texttt{MotorRunner::setTargets}(u_L, u_R) $$
 >
-> Keeping this service narrow is intentional. Closed-loop balance, trim estimation, and telemetry all remain in `ControlService` and `RateControllerCore`, while hardware-specific pulse generation, slew limiting, and direction control remain below this layer in the motor runner. When hardware is present the service also republishes the runner's applied rate, steps-derived average speed estimate, and integrated step state as `MotorFeedback`, which lets `ControlService` use the real actuator state instead of assuming the last commanded target was achieved. In SIL or unit-test config
+> Keeping this service narrow is intentional. Closed-loop balance, trim estimation, and telemetry all remain in `ControlService` and `RateControllerCore`, while hardware-specific pulse generation, slew limiting, and direction control remain below this layer in the motor runner. The service also listens for `PhysicsTick` so it can keep the runner aligned with the current physics time before forwarding motor targets. When hardware is present the service also republishes the runner's applied rate, steps-derived average speed estim
 
 - Publishes: `MotorFeedback`
-- Subscribes: `MotorTargets`
+- Subscribes: `PhysicsTick`, `MotorTargets`
 
 ### `InputService`
 
@@ -121,7 +121,7 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 - Python type: `PhysicsTickPayload`
 - Wire size: `16` bytes
 - Published by: `TimeService`, `UdpBridge`
-- Consumed by: `ControlService`
+- Consumed by: `ControlService`, `MotorService`
 
 | Field | C++ Type | Python Type | Bytes | Offset | Description |
 |---|---|---|---:|---:|---|
@@ -179,7 +179,7 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 - Numeric ID: `3003`
 - Payload type: `SystemTelemetryPayload`
 - Python type: `SystemTelemetryPayload`
-- Wire size: `328` bytes
+- Wire size: `312` bytes
 - Published by: `ControlService`
 - Consumed by: `UdpBridge`
 
@@ -199,33 +199,31 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 | `vel_error` | `double` | `float` | 8 | 88 |  |
 | `measured_vel_sps` | `double` | `float` | 8 | 96 |  |
 | `vel_p_term` | `double` | `float` | 8 | 104 |  |
-| `position_target_vel_sps` | `double` | `float` | 8 | 112 |  |
-| `pitch_ref_from_vel_deg` | `double` | `float` | 8 | 120 |  |
-| `pitch_ref_from_pos_deg` | `double` | `float` | 8 | 128 |  |
-| `pitch_error_deg` | `double` | `float` | 8 | 136 |  |
-| `pitch_sp_deg` | `double` | `float` | 8 | 144 |  |
-| `pitch_trim_deg` | `double` | `float` | 8 | 152 |  |
-| `trim_active` | `double` | `float` | 8 | 160 |  |
-| `left_applied_sps` | `double` | `float` | 8 | 168 |  |
-| `right_applied_sps` | `double` | `float` | 8 | 176 |  |
-| `motor_update_dt_ms` | `double` | `float` | 8 | 184 |  |
-| `motor_feedback_age_ms` | `double` | `float` | 8 | 192 |  |
-| `left_actual_steps` | `int64_t` | `int` | 8 | 200 |  |
-| `right_actual_steps` | `int64_t` | `int` | 8 | 208 |  |
-| `plant_pitch_deg` | `double` | `float` | 8 | 216 |  |
-| `plant_pitch_rate_dps` | `double` | `float` | 8 | 224 |  |
-| `plant_position_m` | `double` | `float` | 8 | 232 |  |
-| `plant_velocity_mps` | `double` | `float` | 8 | 240 |  |
-| `target_wheel_velocity` | `double` | `float` | 8 | 248 |  |
-| `actual_wheel_velocity` | `double` | `float` | 8 | 256 |  |
-| `plant_velocity_error` | `double` | `float` | 8 | 264 |  |
-| `f_cmd` | `double` | `float` | 8 | 272 |  |
-| `f_app` | `double` | `float` | 8 | 280 |  |
-| `external_force_n` | `double` | `float` | 8 | 288 |  |
-| `external_com_bias_rad` | `double` | `float` | 8 | 296 |  |
-| `x_ddot` | `double` | `float` | 8 | 304 |  |
-| `theta_ddot` | `double` | `float` | 8 | 312 |  |
-| `force_saturated` | `double` | `float` | 8 | 320 |  |
+| `pitch_ref_from_vel_deg` | `double` | `float` | 8 | 112 |  |
+| `pitch_error_deg` | `double` | `float` | 8 | 120 |  |
+| `pitch_sp_deg` | `double` | `float` | 8 | 128 |  |
+| `pitch_trim_deg` | `double` | `float` | 8 | 136 |  |
+| `trim_active` | `double` | `float` | 8 | 144 |  |
+| `left_applied_sps` | `double` | `float` | 8 | 152 |  |
+| `right_applied_sps` | `double` | `float` | 8 | 160 |  |
+| `motor_update_dt_ms` | `double` | `float` | 8 | 168 |  |
+| `motor_feedback_age_ms` | `double` | `float` | 8 | 176 |  |
+| `left_actual_steps` | `int64_t` | `int` | 8 | 184 |  |
+| `right_actual_steps` | `int64_t` | `int` | 8 | 192 |  |
+| `plant_pitch_deg` | `double` | `float` | 8 | 200 |  |
+| `plant_pitch_rate_dps` | `double` | `float` | 8 | 208 |  |
+| `plant_position_m` | `double` | `float` | 8 | 216 |  |
+| `plant_velocity_mps` | `double` | `float` | 8 | 224 |  |
+| `target_wheel_velocity` | `double` | `float` | 8 | 232 |  |
+| `actual_wheel_velocity` | `double` | `float` | 8 | 240 |  |
+| `plant_velocity_error` | `double` | `float` | 8 | 248 |  |
+| `f_cmd` | `double` | `float` | 8 | 256 |  |
+| `f_app` | `double` | `float` | 8 | 264 |  |
+| `external_force_n` | `double` | `float` | 8 | 272 |  |
+| `external_com_bias_rad` | `double` | `float` | 8 | 280 |  |
+| `x_ddot` | `double` | `float` | 8 | 288 |  |
+| `theta_ddot` | `double` | `float` | 8 | 296 |  |
+| `force_saturated` | `double` | `float` | 8 | 304 |  |
 
 ### `MsgId::MotorFeedback`
 

@@ -18,7 +18,11 @@ class MotorRunnerTest : public ::testing::Test {
     auto start = std::chrono::steady_clock::now();
     auto end = start + duration;
     while (std::chrono::steady_clock::now() < end) {
-      runner.setTargets(spsL, spsR);
+      const auto now_us = static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::microseconds>(
+              std::chrono::steady_clock::now().time_since_epoch())
+              .count());
+      runner.setTargets(spsL, spsR, now_us);
       std::this_thread::sleep_for(std::chrono::milliseconds(2));  // Pump at ~500Hz
     }
   }

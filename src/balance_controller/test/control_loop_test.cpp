@@ -6,12 +6,12 @@
 #include <fstream>
 #include <vector>
 
+#include "services/control/control_service.h"
+#include "services/control/rate_controller_core.h"
+#include "services/imu/imu_service.h"
 #include "services/main/config.h"
 #include "services/motor/motor_runner.h"
-#include "services/control/control_service.h"
-#include "services/imu/imu_service.h"
-#include "services/control/motor_service.h"
-#include "services/control/rate_controller_core.h"
+#include "services/motor/motor_service.h"
 
 namespace {
 
@@ -25,7 +25,7 @@ std::array<double, 3> accel_for_pitch(double angle_rad) {
 
 class FakeMotorRunner {
  public:
-  void setTargets(double left_sps, double right_sps) {
+  void setTargets(double left_sps, double right_sps, uint64_t /*timestamp_us*/) {
     last_left_ = left_sps;
     last_right_ = right_sps;
     ++calls_;
@@ -39,32 +39,28 @@ class FakeMotorRunner {
     actual_speed_sps_ = v;
   }
 
-  double getAveragePositionSteps() const {
-    return position_steps_;
+  double lastLeft() const {
+    return last_left_;
   }
-
-  void setAveragePositionSteps(double v) {
-    position_steps_ = v;
+  double lastRight() const {
+    return last_right_;
   }
-
-  double lastLeft() const { return last_left_; }
-  double lastRight() const { return last_right_; }
-  int callCount() const { return calls_; }
+  int callCount() const {
+    return calls_;
+  }
 
  private:
   double last_left_{0.0};
   double last_right_{0.0};
   double actual_speed_sps_{0.0};
-  double position_steps_{0.0};
   int calls_{0};
 };
 
 class RateControllerHarness {
  public:
   RateControllerHarness() {
-    core_.setMotorOutputs([this](double left, double right) { runner_.setTargets(left, right); });
-    core_.setVelocityFeedback([this]() { return runner_.getActualSpeedSps(); });
-    core_.setPositionFeedback([this]() { return runner_.getAveragePositionSteps() * Config::meters_per_step; });
+    core_.setMotorOutputs(
+        [this](double left, double right) { runner_.setTargets(left, right, current_time_us_); });
     core_.setTelemetrySink([this](const Telemetry& t) { telemetry_.push_back(t); });
   }
 
@@ -72,9 +68,7 @@ class RateControllerHarness {
     core_.setJoystick(JoyCmd{static_cast<float>(forward), static_cast<float>(turn)});
   }
 
-  void setImu(double angle_rad,
-              double gyro_rad_s,
-              uint64_t sim_time_us,
+  void setImu(double angle_rad, double gyro_rad_s, uint64_t sim_time_us,
               double pitch_accel_rad_s2 = 0.0) {
     ImuSample s{};
     s.angle_rad = angle_rad;
@@ -86,6 +80,8 @@ class RateControllerHarness {
 
   void tick(double dt_s, uint64_t sim_time_us) {
     const auto now = std::chrono::steady_clock::time_point(std::chrono::microseconds(sim_time_us));
+    current_time_us_ = sim_time_us;
+    core_.updateOuterLoop(runner_.getActualSpeedSps(), dt_s);
     core_.step(dt_s, now);
   }
 
@@ -97,43 +93,47 @@ class RateControllerHarness {
     }
   }
 
-  const std::vector<Telemetry>& telemetry() const { return telemetry_; }
-  const FakeMotorRunner& runner() const { return runner_; }
-  FakeMotorRunner& runner() { return runner_; }
+  const std::vector<Telemetry>& telemetry() const {
+    return telemetry_;
+  }
+  const FakeMotorRunner& runner() const {
+    return runner_;
+  }
+  FakeMotorRunner& runner() {
+    return runner_;
+  }
 
  private:
   FakeMotorRunner runner_;
   RateControllerCore core_;
   std::vector<Telemetry> telemetry_;
+  uint64_t current_time_us_{0};
 };
 
 class ControlServiceHarness {
  public:
-  ControlServiceHarness() : bus_(this, &ControlServiceHarness::dispatch), control_(bus_) {}
-
-  void sendJoystick(double forward, double turn) {
-    control_.on_message<MsgId::JoystickCommand>(ipc::JoystickCommandPayload{static_cast<float>(forward), static_cast<float>(turn)});
+  ControlServiceHarness() : bus_(this, &ControlServiceHarness::dispatch), control_(bus_) {
   }
 
-  void sendMotorFeedback(double left_applied_sps,
-                         double right_applied_sps,
-                         double measured_avg_sps,
-                         int64_t left_actual_steps,
-                         int64_t right_actual_steps) {
+  void sendJoystick(double forward, double turn) {
+    control_.on_message<MsgId::JoystickCommand>(
+        ipc::JoystickCommandPayload{static_cast<float>(forward), static_cast<float>(turn)});
+  }
+
+  void sendMotorFeedback(double left_applied_sps, double right_applied_sps, double measured_avg_sps,
+                         int64_t left_actual_steps, int64_t right_actual_steps) {
     ipc::MotorFeedbackPayload payload{};
     payload.left_applied_sps = left_applied_sps;
     payload.right_applied_sps = right_applied_sps;
     payload.measured_avg_sps = measured_avg_sps;
+    payload.update_dt_ms = 1000.0 / 400.0;
     payload.left_actual_steps = left_actual_steps;
     payload.right_actual_steps = right_actual_steps;
     control_.on_message<MsgId::MotorFeedback>(payload);
   }
 
-  void step_with_imu(double dt_s,
-                     uint64_t sim_time_us,
-                     double angle_rad = 0.0,
-                     double pitch_rate_rad_s = 0.0,
-                     double raw_pitch_rate_rad_s = 0.0,
+  void step_with_imu(double dt_s, uint64_t sim_time_us, double angle_rad = 0.0,
+                     double pitch_rate_rad_s = 0.0, double raw_pitch_rate_rad_s = 0.0,
                      double pitch_accel_rad_s2 = 0.0) {
     ipc::ImuSamplePayload imu{};
     imu.pitch_rad = angle_rad;
@@ -153,8 +153,12 @@ class ControlServiceHarness {
     control_.on_message<MsgId::PhysicsTick>(tick);
   }
 
-  const std::vector<ipc::MotorTargetsPayload>& motor_targets() const { return motor_targets_; }
-  const std::vector<ipc::SystemTelemetryPayload>& telemetry() const { return telemetry_; }
+  const std::vector<ipc::MotorTargetsPayload>& motor_targets() const {
+    return motor_targets_;
+  }
+  const std::vector<ipc::SystemTelemetryPayload>& telemetry() const {
+    return telemetry_;
+  }
 
  private:
   static void dispatch(void* ctx, MsgId id, const void* payload) {
@@ -174,13 +178,16 @@ class ControlServiceHarness {
 
 class ImuServiceHarness {
  public:
-  ImuServiceHarness() : bus_(this, &ImuServiceHarness::dispatch), imu_(bus_, false) {}
+  ImuServiceHarness() : bus_(this, &ImuServiceHarness::dispatch), imu_(bus_, false) {
+  }
 
   void publish_raw(const ipc::ImuRawPayload& payload) {
     bus_.publish<MsgId::ImuRawData>(payload);
   }
 
-  const std::vector<ipc::ImuSamplePayload>& fused_samples() const { return fused_samples_; }
+  const std::vector<ipc::ImuSamplePayload>& fused_samples() const {
+    return fused_samples_;
+  }
 
  private:
   static void dispatch(void* ctx, MsgId id, const void* payload) {
@@ -205,7 +212,8 @@ class ServiceBusHarness {
         bus_(this, &ServiceBusHarness::dispatch),
         control_(bus_),
         imu_(bus_, false),
-        motor_(bus_, &runner_) {}
+        motor_(bus_, &runner_) {
+  }
 
   void sendJoystick(double forward, double turn) {
     ipc::JoystickCommandPayload payload{};
@@ -214,7 +222,8 @@ class ServiceBusHarness {
     bus_.publish<MsgId::JoystickCommand>(payload);
   }
 
-  void sendStep(double dt_s, uint64_t sim_time_us, double angle_rad = 0.0, double gyro_rad_s = 0.0) {
+  void sendStep(double dt_s, uint64_t sim_time_us, double angle_rad = 0.0,
+                double gyro_rad_s = 0.0) {
     ipc::ImuSamplePayload imu{};
     imu.pitch_rad = angle_rad;
     imu.pitch_rate_rad_s = gyro_rad_s;
@@ -230,15 +239,23 @@ class ServiceBusHarness {
     bus_.publish<MsgId::PhysicsTick>(tick);
   }
 
-  const std::vector<ipc::MotorTargetsPayload>& motor_targets() const { return motor_targets_; }
-  const std::vector<ipc::MotorFeedbackPayload>& feedback() const { return feedback_; }
-  const std::vector<ipc::SystemTelemetryPayload>& telemetry() const { return telemetry_; }
-  MotorRunner& runner() { return runner_; }
+  const std::vector<ipc::MotorTargetsPayload>& motor_targets() const {
+    return motor_targets_;
+  }
+  const std::vector<ipc::MotorFeedbackPayload>& feedback() const {
+    return feedback_;
+  }
+  const std::vector<ipc::SystemTelemetryPayload>& telemetry() const {
+    return telemetry_;
+  }
+  MotorRunner& runner() {
+    return runner_;
+  }
 
  private:
   static void dispatch(void* ctx, MsgId id, const void* payload) {
     auto* self = static_cast<ServiceBusHarness*>(ctx);
-    
+
     // Explicitly handle vector collection for tests
     if (id == MsgId::MotorTargets) {
       self->motor_targets_.push_back(unpack_payload<MsgId::MotorTargets>(payload));
@@ -248,7 +265,7 @@ class ServiceBusHarness {
       self->telemetry_.push_back(unpack_payload<MsgId::SystemTelemetry>(payload));
     }
 
-    ipc::dispatch_to_services(id, payload, self->imu_, self->control_, self->motor_);
+    ipc::dispatch_to_services(id, payload, self->imu_, self->motor_, self->control_);
   }
 
   Stepper left_;
@@ -287,7 +304,9 @@ struct ConfigPidSnapshot {
 
 struct ScopedConfigPidRestore {
   ConfigPidSnapshot snapshot{};
-  ~ScopedConfigPidRestore() { snapshot.restore(); }
+  ~ScopedConfigPidRestore() {
+    snapshot.restore();
+  }
 };
 
 void set_zeroed_gain_audit_config() {
@@ -543,7 +562,7 @@ TEST(RateControllerCoreTest, LeanTrimPersistsThroughLargeTilt) {
   EXPECT_LT(h.telemetry().back().trim_active, 0.5);
 }
 
-TEST(ControlServiceTest, UsesFallbackVelocityProxyWhenNoMotorFeedbackExists) {
+TEST(ControlServiceTest, StaysNeutralWhenNoMotorFeedbackExists) {
   ControlServiceHarness h;
   h.sendJoystick(0.2, 0.0);
 
@@ -553,9 +572,8 @@ TEST(ControlServiceTest, UsesFallbackVelocityProxyWhenNoMotorFeedbackExists) {
   }
 
   ASSERT_FALSE(h.telemetry().empty());
-  // Without motor feedback, fallback velocity proxy is used
-  // vel_error = -fallback, so nonzero when motors are running
-  EXPECT_GT(std::abs(h.telemetry().back().vel_error), 1.0);
+  EXPECT_NEAR(h.telemetry().back().vel_error, 0.0, 1e-6);
+  EXPECT_NEAR(h.telemetry().back().pitch_ref_from_vel_deg, 0.0, 1e-6);
 }
 
 TEST(ImuServiceTest, ConvertsRawImuToFusedImuDataAndPreservesRawVectors) {
@@ -599,6 +617,31 @@ TEST(ControlServiceTest, UsesMotorFeedbackForVelocityTelemetry) {
   EXPECT_EQ(h.telemetry().back().right_actual_steps, 0);
 }
 
+TEST(ControlServiceTest, VelocityObserverUpdatesAtConfiguredCadence) {
+  ControlServiceHarness h;
+  h.sendJoystick(0.0, 0.0);
+  h.sendMotorFeedback(0.0, 0.0, 0.0, 0, 0);
+
+  for (int i = 0; i < 7; ++i) {
+    const uint64_t sim_time_us = static_cast<uint64_t>((i + 1) * 2500);
+    h.step_with_imu(1.0 / 400.0, sim_time_us);
+  }
+
+  ASSERT_FALSE(h.telemetry().empty());
+  EXPECT_NEAR(h.telemetry().back().pitch_ref_from_vel_deg, 0.0, 1e-6);
+  EXPECT_NEAR(h.telemetry().back().vel_error, 0.0, 1e-6);
+
+  for (int i = 0; i < 8; ++i) {
+    h.sendMotorFeedback(0.0, 0.0, 1000.0, 0, 0);
+    const uint64_t sim_time_us = static_cast<uint64_t>((8 + i + 1) * 2500);
+    h.step_with_imu(1.0 / 400.0, sim_time_us);
+  }
+
+  ASSERT_FALSE(h.telemetry().empty());
+  EXPECT_LT(h.telemetry().back().pitch_ref_from_vel_deg, 0.0);
+  EXPECT_NEAR(h.telemetry().back().vel_error, -1000.0, 1e-3);
+}
+
 TEST(ControlServiceTest, UsesFilteredPitchRateForControlAndKeepsRawGyroForDiagnostics) {
   ControlServiceHarness h;
   h.sendJoystick(0.0, 0.0);
@@ -609,7 +652,6 @@ TEST(ControlServiceTest, UsesFilteredPitchRateForControlAndKeepsRawGyroForDiagno
   EXPECT_NEAR(h.telemetry().back().filtered_pitch_rate_dps, 0.25 * 180.0 / M_PI, 1e-3);
   EXPECT_NEAR(h.telemetry().back().gyro_pitch_rate_dps, 1.0 * 180.0 / M_PI, 1e-3);
 }
-
 
 TEST(ControlServiceTest, TelemetryCarriesImuDiagnostics) {
   ControlServiceHarness h;

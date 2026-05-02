@@ -21,24 +21,8 @@ struct MotorFeedbackSample {
   int64_t right_actual_steps{0};
 };
 
-class IMotorRunner {
- public:
-  using FeedbackSample = MotorFeedbackSample;
-  virtual ~IMotorRunner() = default;
-
-  virtual void setTargets(double left_sps, double right_sps) = 0;
-  virtual void setLeft(double sps) = 0;
-  virtual void setRight(double sps) = 0;
-  virtual void stop() = 0;
-
-  virtual int64_t getLeftSteps() const = 0;
-  virtual int64_t getRightSteps() const = 0;
-  virtual int64_t getActualLeftSteps() const = 0;
-  virtual int64_t getActualRightSteps() const = 0;
-
-  virtual double getActualSpeedSps() = 0;
-  virtual FeedbackSample getFeedbackSample() const = 0;
-};
+inline constexpr size_t kVelocityHistorySize = 64;
+inline constexpr double kVelocityEstimateWindowS = 0.05;
 
 // DualWave.h
 #pragma once
@@ -234,9 +218,9 @@ class DualWave {
 
 // -------------------- MotorRunner (paired updates, no retune) --------------------
 
-class MotorRunner : public IMotorRunner {
+class MotorRunner {
  public:
-  using FeedbackSample = IMotorRunner::FeedbackSample;
+  using FeedbackSample = MotorFeedbackSample;
 
   // kFrameUs/kMinPulseUs come from DualWave's constexprs
   MotorRunner(Stepper& left, Stepper& right, double control_hz = 1000.0,
@@ -248,22 +232,25 @@ class MotorRunner : public IMotorRunner {
   }
 
   // Only entry point: always rebuild the repeating frame for both channels.
-  void setTargets(double left_sps, double right_sps) override {
+  void setTargets(double left_sps, double right_sps, uint64_t timestamp_us) {
+    current_time_us_.store(timestamp_us, std::memory_order_relaxed);
     tgt_left_.store(left_sps, std::memory_order_relaxed);
     tgt_right_.store(right_sps, std::memory_order_relaxed);
     applyOnce();
   }
 
   // Kept for completeness; prefer setTargets() from your controller.
-  void setLeft(double sps) override {
-    setTargets(sps, tgt_right_.load(std::memory_order_relaxed));
+  void setLeft(double sps) {
+    setTargets(sps, tgt_right_.load(std::memory_order_relaxed),
+               current_time_us_.load(std::memory_order_relaxed));
   }
 
-  void setRight(double sps) override {
-    setTargets(tgt_left_.load(std::memory_order_relaxed), sps);
+  void setRight(double sps) {
+    setTargets(tgt_left_.load(std::memory_order_relaxed), sps,
+               current_time_us_.load(std::memory_order_relaxed));
   }
 
-  void stop() override {
+  void stop() {
     std::lock_guard<std::mutex> lk(mu_);
     wave_.stop();
     last_cmd_L_ = last_cmd_R_ = 0.0;
@@ -277,17 +264,17 @@ class MotorRunner : public IMotorRunner {
     // Actually, if we stop, we just set rates to 0. The integration loop handles 0 rate fine.
   }
 
-  int64_t getLeftSteps() const override {
+  int64_t getLeftSteps() const {
     return steps_left_.load(std::memory_order_relaxed);
   }
-  int64_t getRightSteps() const override {
+  int64_t getRightSteps() const {
     return steps_right_.load(std::memory_order_relaxed);
   }
 
-  int64_t getActualLeftSteps() const override {
+  int64_t getActualLeftSteps() const {
     return actual_steps_left_.load(std::memory_order_relaxed);
   }
-  int64_t getActualRightSteps() const override {
+  int64_t getActualRightSteps() const {
     return actual_steps_right_.load(std::memory_order_relaxed);
   }
 
@@ -299,44 +286,74 @@ class MotorRunner : public IMotorRunner {
     return (L + R) / 2.0;
   }
 
-  FeedbackSample getFeedbackSample() const override {
+  FeedbackSample getFeedbackSample() const {
     std::lock_guard<std::mutex> lk(mu_);
-
+    FeedbackSample sample{};
     const double left_positive_dir = L_.forwardFromSps(1.0) ? 1.0 : -1.0;
     const double right_positive_dir = R_.forwardFromSps(1.0) ? 1.0 : -1.0;
-    const double left_dir = last_applied_fwdL_ ? 1.0 : -1.0;
-    const double right_dir = last_applied_fwdR_ ? 1.0 : -1.0;
-
-    FeedbackSample sample;
-    sample.left_applied_sps = (last_applied_hzL_ == 0u) ? 0.0
-                                                        : static_cast<double>(last_applied_hzL_) *
-                                                              left_dir * left_positive_dir;
-    sample.right_applied_sps = (last_applied_hzR_ == 0u) ? 0.0
-                                                         : static_cast<double>(last_applied_hzR_) *
-                                                               right_dir * right_positive_dir;
+    sample.left_applied_sps =
+        (last_applied_hzL_ == 0u) ? 0.0 : static_cast<double>(last_applied_hzL_) *
+                                                 (last_applied_fwdL_ ? 1.0 : -1.0) *
+                                                 left_positive_dir;
+    sample.right_applied_sps =
+        (last_applied_hzR_ == 0u) ? 0.0 : static_cast<double>(last_applied_hzR_) *
+                                                  (last_applied_fwdR_ ? 1.0 : -1.0) *
+                                                  right_positive_dir;
     sample.update_dt_ms = last_update_dt_s_ * 1000.0;
-    if (last_call_time_.time_since_epoch().count() > 0) {
+    if (last_call_time_us_ > 0u) {
+      const uint64_t now_us = current_time_us_.load(std::memory_order_relaxed);
       sample.feedback_age_ms =
-          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
-                                                    last_call_time_)
-              .count();
+          (now_us >= last_call_time_us_) ? static_cast<double>(now_us - last_call_time_us_) / 1000.0
+                                         : 0.0;
     }
+
     const double avg_actual_steps = 0.5 * (accum_actual_L_ + accum_actual_R_);
-    sample.measured_avg_sps = estimateMeasuredAverageSpsLocked(avg_actual_steps);
+    if (vel_hist_count_ < 2u) {
+      measured_avg_sps_ = 0.0;
+    } else {
+      const uint64_t now_us = current_time_us_.load(std::memory_order_relaxed);
+      size_t selected_idx = (vel_hist_head_ + kVelocityHistorySize - vel_hist_count_) %
+                            kVelocityHistorySize;
+      bool found_window = false;
+      for (size_t offset = 1; offset < vel_hist_count_; ++offset) {
+        const size_t idx =
+            (vel_hist_head_ + kVelocityHistorySize - 1u - offset) % kVelocityHistorySize;
+        if (now_us <= vel_hist_time_us_[idx]) {
+          continue;
+        }
+        const uint64_t age_us = now_us - vel_hist_time_us_[idx];
+        if (age_us >= static_cast<uint64_t>(kVelocityEstimateWindowS * 1e6)) {
+          selected_idx = idx;
+          found_window = true;
+          break;
+        }
+        selected_idx = idx;
+      }
+
+      if (now_us <= vel_hist_time_us_[selected_idx]) {
+        sample.measured_avg_sps = measured_avg_sps_;
+        sample.left_actual_steps = actual_steps_left_.load(std::memory_order_relaxed);
+        sample.right_actual_steps = actual_steps_right_.load(std::memory_order_relaxed);
+        return sample;
+      }
+      const double dt_s = static_cast<double>(now_us - vel_hist_time_us_[selected_idx]) / 1e6;
+      if ((found_window || dt_s > 1e-6) && dt_s > 1e-6) {
+        measured_avg_sps_ = (avg_actual_steps - vel_hist_avg_steps_[selected_idx]) / dt_s;
+      }
+    }
+
+    sample.measured_avg_sps = measured_avg_sps_;
     sample.left_actual_steps = actual_steps_left_.load(std::memory_order_relaxed);
     sample.right_actual_steps = actual_steps_right_.load(std::memory_order_relaxed);
     return sample;
   }
 
-  double getActualSpeedSps() override {
+  double getActualSpeedSps() {
     const auto sample = getFeedbackSample();
     return sample.measured_avg_sps;
   }
 
  private:
-  static constexpr size_t kVelocityHistorySize = 64;
-  static constexpr double kVelocityEstimateWindowS = 0.05;
-
   static inline double clampDelta(double from, double to, double max_delta) {
     const double d = to - from;
     if (d > max_delta) return from + max_delta;
@@ -380,16 +397,17 @@ class MotorRunner : public IMotorRunner {
     return {hz, pulses};
   }
 
-  void integrateTrackingLocked(std::chrono::steady_clock::time_point now) {
-    if (last_call_time_.time_since_epoch().count() <= 0) {
-      last_call_time_ = now;
+  void integrateTrackingLocked(uint64_t now_us) {
+    if (last_call_time_us_ == 0u) {
+      last_call_time_us_ = now_us;
       return;
     }
 
-    const std::chrono::duration<double> dt = now - last_call_time_;
-    const double d_sec = dt.count();
+    const double d_sec = (now_us > last_call_time_us_)
+                             ? static_cast<double>(now_us - last_call_time_us_) / 1e6
+                             : 0.0;
     if (d_sec <= 0.0) {
-      last_call_time_ = now;
+      last_call_time_us_ = now_us;
       return;
     }
     last_update_dt_s_ = d_sec;
@@ -410,58 +428,26 @@ class MotorRunner : public IMotorRunner {
     accum_actual_L_ += actL;
     accum_actual_R_ += actR;
 
+    recordVelocityHistoryLocked(now_us, 0.5 * (accum_actual_L_ + accum_actual_R_));
+
     actual_steps_left_.store(static_cast<int64_t>(accum_actual_L_), std::memory_order_relaxed);
     actual_steps_right_.store(static_cast<int64_t>(accum_actual_R_), std::memory_order_relaxed);
-    last_call_time_ = now;
+    last_call_time_us_ = now_us;
   }
 
-  double estimateMeasuredAverageSpsLocked(double avg_actual_steps) const {
-    const auto now = std::chrono::steady_clock::now();
-    const double now_s = std::chrono::duration<double>(now.time_since_epoch()).count();
-
-    vel_hist_time_s_[vel_hist_head_] = now_s;
+  void recordVelocityHistoryLocked(uint64_t now_us, double avg_actual_steps) {
+    vel_hist_time_us_[vel_hist_head_] = now_us;
     vel_hist_avg_steps_[vel_hist_head_] = avg_actual_steps;
     vel_hist_head_ = (vel_hist_head_ + 1u) % kVelocityHistorySize;
     if (vel_hist_count_ < kVelocityHistorySize) {
       ++vel_hist_count_;
     }
-
-    if (vel_hist_count_ < 2) {
-      measured_avg_sps_ = 0.0;
-      return measured_avg_sps_;
-    }
-
-    size_t selected_idx =
-        (vel_hist_head_ + kVelocityHistorySize - vel_hist_count_) % kVelocityHistorySize;
-    bool found_window = false;
-    for (size_t offset = 1; offset < vel_hist_count_; ++offset) {
-      const size_t idx =
-          (vel_hist_head_ + kVelocityHistorySize - 1u - offset) % kVelocityHistorySize;
-      const double age_s = now_s - vel_hist_time_s_[idx];
-      if (age_s >= kVelocityEstimateWindowS) {
-        selected_idx = idx;
-        found_window = true;
-        break;
-      }
-      selected_idx = idx;
-    }
-
-    const double dt_s = now_s - vel_hist_time_s_[selected_idx];
-    if (!found_window && dt_s <= 1e-6) {
-      return measured_avg_sps_;
-    }
-    if (dt_s <= 1e-6) {
-      return measured_avg_sps_;
-    }
-
-    measured_avg_sps_ = (avg_actual_steps - vel_hist_avg_steps_[selected_idx]) / dt_s;
-    return measured_avg_sps_;
   }
 
   void applyOnce() {
     std::lock_guard<std::mutex> lk(mu_);
-    const auto now = std::chrono::steady_clock::now();
-    integrateTrackingLocked(now);
+    const uint64_t now_us = current_time_us_.load(std::memory_order_relaxed);
+    integrateTrackingLocked(now_us);
 
     const double tgtL =
         clampDelta(last_cmd_L_, tgt_left_.load(std::memory_order_relaxed), slew_per_call_);
@@ -521,11 +507,12 @@ class MotorRunner : public IMotorRunner {
   mutable std::mutex mu_;
 
   std::atomic<double> tgt_left_{0.0}, tgt_right_{0.0};
+  std::atomic<uint64_t> current_time_us_{0};
   double last_cmd_L_{0.0}, last_cmd_R_{0.0};
   const double slew_per_call_;
 
   // Step tracking state
-  std::chrono::steady_clock::time_point last_call_time_;
+  uint64_t last_call_time_us_{0};
   unsigned last_applied_hzL_{0}, last_applied_hzR_{0};
   bool last_applied_fwdL_{true}, last_applied_fwdR_{true};
   std::atomic<int64_t> steps_left_{0}, steps_right_{0};
@@ -535,7 +522,7 @@ class MotorRunner : public IMotorRunner {
   double accum_L_{0.0}, accum_R_{0.0};
   double accum_actual_L_{0.0}, accum_actual_R_{0.0};
   double last_update_dt_s_{0.0};
-  mutable std::array<double, kVelocityHistorySize> vel_hist_time_s_{};
+  mutable std::array<uint64_t, kVelocityHistorySize> vel_hist_time_us_{};
   mutable std::array<double, kVelocityHistorySize> vel_hist_avg_steps_{};
   mutable size_t vel_hist_head_{0};
   mutable size_t vel_hist_count_{0};

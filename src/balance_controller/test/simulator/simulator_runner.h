@@ -58,9 +58,7 @@ struct SimulatorTimelineRow {
   double right_sps = 0.0;
   double vel_error = 0.0;
   double vel_p_term = 0.0;
-  double position_target_vel_sps = 0.0;
   double pitch_ref_from_vel_deg = 0.0;
-  double pitch_ref_from_pos_deg = 0.0;
   double pitch_error_deg = 0.0;
   double pitch_trim_deg = 0.0;
   double trim_active = 0.0;

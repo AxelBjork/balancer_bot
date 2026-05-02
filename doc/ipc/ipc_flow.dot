@@ -90,8 +90,10 @@ digraph IPC {
   InputService -> ControlService [label="JoystickCommand", style=dashed];
   MotorService -> ControlService [label="MotorFeedback", style=dashed];
   TimeService -> ControlService [label="PhysicsTick", style=dashed];
+  TimeService -> MotorService [label="PhysicsTick", style=dashed];
   UdpBridge -> ControlService [label="JoystickCommand, PhysicsTick", style=dashed];
   UdpBridge -> ImuService [label="ImuRawData", style=dashed];
+  UdpBridge -> MotorService [label="PhysicsTick", style=dashed];
 
   RX -> UdpBridge [label="Outbound Traffic:\nMotorTargets, SystemTelemetry", color="#F1F5F9", penwidth=5, dir=back, fontsize=25, arrowtail=normal];
   TestCase -> RX [label="recv_msg", color="#F1F5F9", penwidth=5, dir=back, arrowtail=normal];
