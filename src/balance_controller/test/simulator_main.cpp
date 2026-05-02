@@ -566,6 +566,8 @@ class SimulatorService {
                                           : (imu.gyr[1] * 180.0 / kPi);
     payload.u_sps = run.pipeline.services.observer.have_telemetry ? telemetry.u_sps : 0.0;
     payload.vel_error = run.pipeline.services.observer.have_telemetry ? telemetry.vel_error : 0.0;
+    payload.measured_vel_sps =
+        run.pipeline.services.observer.have_telemetry ? telemetry.measured_vel_sps : 0.0;
     payload.vel_p_term = run.pipeline.services.observer.have_telemetry ? telemetry.vel_p_term : 0.0;
     payload.pitch_ref_from_vel_deg =
         run.pipeline.services.observer.have_telemetry ? telemetry.pitch_ref_from_vel_deg : 0.0;

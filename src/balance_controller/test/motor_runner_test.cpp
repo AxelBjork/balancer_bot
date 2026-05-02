@@ -26,6 +26,14 @@ class MotorRunnerTest : public ::testing::Test {
       std::this_thread::sleep_for(std::chrono::milliseconds(2));  // Pump at ~500Hz
     }
   }
+
+  void RunDeterministic(MotorRunner& runner, double spsL, double spsR, uint64_t& now_us,
+                        int ticks, uint64_t dt_us = 2500) {
+    for (int i = 0; i < ticks; ++i) {
+      now_us += dt_us;
+      runner.setTargets(spsL, spsR, now_us);
+    }
+  }
 };
 
 TEST_F(MotorRunnerTest, StepTrackingForwardConstantRate) {
@@ -135,6 +143,35 @@ TEST_F(MotorRunnerTest, VelocityEstimationResolvesBelowOnePulsePerFrame) {
 
   const double v = runner.getActualSpeedSps();
   EXPECT_NEAR(v, 100.0, 35.0) << "Estimated velocity should average below one wave-frame pulse";
+}
+
+TEST_F(MotorRunnerTest, VelocityEstimationUsesActualStepDeltaOverWindow) {
+  Stepper left(1, Stepper::Pins{5, 6, 13});
+  Stepper right(1, Stepper::Pins{7, 8, 14});
+  MotorRunner runner(left, right, 400.0, 500000.0);
+
+  uint64_t now_us = 1000;
+  RunDeterministic(runner, 400.0, 400.0, now_us, 60);
+
+  const auto feedback = runner.getFeedbackSample();
+  EXPECT_NEAR(feedback.update_dt_ms, 2.5, 1e-9);
+  EXPECT_NEAR(feedback.measured_avg_sps, 400.0, 20.0);
+  EXPECT_NEAR(static_cast<double>(feedback.left_actual_steps), 59.0, 1.0);
+  EXPECT_NEAR(static_cast<double>(feedback.right_actual_steps), 59.0, 1.0);
+}
+
+TEST_F(MotorRunnerTest, VelocityEstimationAveragesSubFrameSigmaDeltaSteps) {
+  Stepper left(1, Stepper::Pins{5, 6, 13});
+  Stepper right(1, Stepper::Pins{7, 8, 14});
+  MotorRunner runner(left, right, 400.0, 500000.0);
+
+  uint64_t now_us = 1000;
+  RunDeterministic(runner, 125.0, 125.0, now_us, 100);
+
+  const auto feedback = runner.getFeedbackSample();
+  EXPECT_NEAR(feedback.measured_avg_sps, 125.0, 25.0);
+  EXPECT_NEAR(static_cast<double>(feedback.left_actual_steps), 31.0, 2.0);
+  EXPECT_NEAR(static_cast<double>(feedback.right_actual_steps), 31.0, 2.0);
 }
 
 TEST_F(MotorRunnerTest, AppliedFeedbackResolvesSubTwoHundredSpsCommands) {

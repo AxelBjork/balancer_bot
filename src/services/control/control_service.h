@@ -108,9 +108,9 @@ inline void ControlService::on_message<MsgId::PhysicsTick>(const PhysicsTickPayl
 template <>
 inline void ControlService::on_message<MsgId::MotorFeedback>(const ipc::MotorFeedbackPayload& p) {
   latest_motor_feedback_ = p;
-  observed_velocity_sps_ = p.measured_avg_sps;
+  observed_velocity_sps_ = -p.measured_avg_sps;
   if (!have_motor_feedback_) {
-    filtered_velocity_sps_ = p.measured_avg_sps;
+    filtered_velocity_sps_ = observed_velocity_sps_;
   }
   const double dt_s = std::max(0.0, p.update_dt_ms / 1000.0);
   velocity_observer_accum_s_ += dt_s;

@@ -53,7 +53,9 @@ struct ConfigPid {
   // Physics-based outer loop:
   // pitch_ref = vel_P * velocity_error + internal trim_bias
   // rate_sp   = pitch_P * (pitch_ref - pitch) - pitch_D * pitch_rate
-  inline static double vel_P = 0.000055;
+  inline static double vel_P = 0.00015;
+  inline static double lean_trim_I = 0.60;
+  inline static double lean_trim_max_deg = 4.0;
   inline static double pitch_P = 12.0;
   inline static double pitch_D = 0.25;
 

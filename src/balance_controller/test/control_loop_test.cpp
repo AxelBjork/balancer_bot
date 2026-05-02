@@ -287,6 +287,8 @@ struct ConfigPidSnapshot {
   double rate_I_lim = ConfigPid::rate_I_lim;
   double rate_FF = ConfigPid::rate_FF;
   double vel_P = ConfigPid::vel_P;
+  double lean_trim_I = ConfigPid::lean_trim_I;
+  double lean_trim_max_deg = ConfigPid::lean_trim_max_deg;
   double pitch_P = ConfigPid::pitch_P;
   double pitch_D = ConfigPid::pitch_D;
 
@@ -297,6 +299,8 @@ struct ConfigPidSnapshot {
     ConfigPid::rate_I_lim = rate_I_lim;
     ConfigPid::rate_FF = rate_FF;
     ConfigPid::vel_P = vel_P;
+    ConfigPid::lean_trim_I = lean_trim_I;
+    ConfigPid::lean_trim_max_deg = lean_trim_max_deg;
     ConfigPid::pitch_P = pitch_P;
     ConfigPid::pitch_D = pitch_D;
   }
@@ -316,6 +320,8 @@ void set_zeroed_gain_audit_config() {
   ConfigPid::rate_I_lim = 1.0;
   ConfigPid::rate_FF = 0.0;
   ConfigPid::vel_P = 0.0;
+  ConfigPid::lean_trim_I = 0.03;
+  ConfigPid::lean_trim_max_deg = 4.0;
   ConfigPid::pitch_P = 0.0;
   ConfigPid::pitch_D = 0.0;
 }
@@ -532,6 +538,9 @@ TEST(RateControllerCoreTest, LeanTrimHoldsWhenVelocityIsInsideDeadband) {
 }
 
 TEST(RateControllerCoreTest, LeanTrimContinuesAtModerateTilt) {
+  ScopedConfigPidRestore guard;
+  ConfigPid::lean_trim_I = 0.03;
+
   RateControllerHarness h;
   h.setJoystick(0.0, 0.0);
   h.runner().setActualSpeedSps(800.0);
@@ -554,11 +563,12 @@ TEST(RateControllerCoreTest, LeanTrimPersistsThroughLargeTilt) {
   const double trim_before = h.telemetry().back().pitch_trim_deg;
   ASSERT_GT(std::abs(trim_before), 1e-3);
 
-  // Trim persists through large tilt (no hard reset)
+  // Trim persists through large tilt (no hard reset). Higher trim authority may continue
+  // integrating slightly over these few ticks; the important property is that it is retained.
   h.run_steps(8, 1.0 / 400.0, 25.0 * M_PI / 180.0, 0.0);
 
   ASSERT_FALSE(h.telemetry().empty());
-  EXPECT_NEAR(h.telemetry().back().pitch_trim_deg, trim_before, 1e-3);
+  EXPECT_NEAR(h.telemetry().back().pitch_trim_deg, trim_before, 0.02);
   EXPECT_LT(h.telemetry().back().trim_active, 0.5);
 }
 
@@ -607,10 +617,10 @@ TEST(ControlServiceTest, UsesMotorFeedbackForVelocityTelemetry) {
   }
 
   ASSERT_FALSE(h.telemetry().empty());
-  // Velocity braking always targets zero: error = -measured
-  EXPECT_NEAR(h.telemetry().back().vel_error, -123.0, 5.0);
-  // Positive velocity produces negative braking pitch ref
-  EXPECT_LT(h.telemetry().back().pitch_ref_from_vel_deg, 0.0);
+  // Motor step feedback is converted into controller velocity convention at the service boundary.
+  EXPECT_NEAR(h.telemetry().back().measured_vel_sps, -123.0, 5.0);
+  EXPECT_NEAR(h.telemetry().back().vel_error, 123.0, 5.0);
+  EXPECT_GT(h.telemetry().back().pitch_ref_from_vel_deg, 0.0);
   EXPECT_NEAR(h.telemetry().back().left_applied_sps, 200.0, 1e-3);
   EXPECT_NEAR(h.telemetry().back().right_applied_sps, 46.0, 1e-3);
   EXPECT_EQ(h.telemetry().back().left_actual_steps, 0);
@@ -638,8 +648,8 @@ TEST(ControlServiceTest, VelocityObserverUpdatesAtConfiguredCadence) {
   }
 
   ASSERT_FALSE(h.telemetry().empty());
-  EXPECT_LT(h.telemetry().back().pitch_ref_from_vel_deg, 0.0);
-  EXPECT_NEAR(h.telemetry().back().vel_error, -1000.0, 1e-3);
+  EXPECT_GT(h.telemetry().back().pitch_ref_from_vel_deg, 0.0);
+  EXPECT_NEAR(h.telemetry().back().vel_error, 1000.0, 1e-3);
 }
 
 TEST(ControlServiceTest, UsesFilteredPitchRateForControlAndKeepsRawGyroForDiagnostics) {
@@ -680,8 +690,7 @@ TEST(ControlServiceTest, TelemetryCarriesOuterLoopBreakdownAndMotorFeedback) {
 
   ASSERT_FALSE(h.telemetry().empty());
   const auto& t = h.telemetry().back();
-  // Positive measured velocity produces negative braking pitch ref
-  EXPECT_LT(t.pitch_ref_from_vel_deg, 0.0);
+  EXPECT_GT(t.pitch_ref_from_vel_deg, 0.0);
   EXPECT_NE(t.pitch_error_deg, 0.0);
   EXPECT_NEAR(t.left_applied_sps, 140.0, 1e-3);
   EXPECT_NEAR(t.right_applied_sps, 100.0, 1e-3);

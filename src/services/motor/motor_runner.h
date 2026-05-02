@@ -258,6 +258,7 @@ class MotorRunner {
     measured_avg_sps_ = 0.0;
     vel_hist_count_ = 0;
     vel_hist_head_ = 0;
+    have_last_call_time_ = false;
     // Reset time to avoid large jump on restart?
     // Or just let it be. If we stop, rate is 0, so integration adds 0.
     // But we should reset last_call_time_ if we want to restart cleanly?
@@ -398,8 +399,10 @@ class MotorRunner {
   }
 
   void integrateTrackingLocked(uint64_t now_us) {
-    if (last_call_time_us_ == 0u) {
+    if (!have_last_call_time_) {
       last_call_time_us_ = now_us;
+      have_last_call_time_ = true;
+      recordVelocityHistoryLocked(now_us, 0.5 * (accum_actual_L_ + accum_actual_R_));
       return;
     }
 
@@ -428,10 +431,9 @@ class MotorRunner {
     accum_actual_L_ += actL;
     accum_actual_R_ += actR;
 
-    recordVelocityHistoryLocked(now_us, 0.5 * (accum_actual_L_ + accum_actual_R_));
-
     actual_steps_left_.store(static_cast<int64_t>(accum_actual_L_), std::memory_order_relaxed);
     actual_steps_right_.store(static_cast<int64_t>(accum_actual_R_), std::memory_order_relaxed);
+    recordVelocityHistoryLocked(now_us, 0.5 * (accum_actual_L_ + accum_actual_R_));
     last_call_time_us_ = now_us;
   }
 
@@ -513,6 +515,7 @@ class MotorRunner {
 
   // Step tracking state
   uint64_t last_call_time_us_{0};
+  bool have_last_call_time_{false};
   unsigned last_applied_hzL_{0}, last_applied_hzR_{0};
   bool last_applied_fwdL_{true}, last_applied_fwdR_{true};
   std::atomic<int64_t> steps_left_{0}, steps_right_{0};

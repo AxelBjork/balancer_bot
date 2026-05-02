@@ -13,8 +13,6 @@
 using matrix::Vector3f;
 
 struct RateControllerCore::Impl {
-  static constexpr double kLeanTrimI = 0.03;
-  static constexpr double kLeanTrimMaxDeg = 4.0;
   static constexpr double kLeanTrimDecayS = 30.0;
 
   std::function<void(double, double)> motors_cb;
@@ -70,13 +68,14 @@ void RateControllerCore::updateOuterLoop(double measured_velocity_sps, double dt
                  -kMaxPitchSetpointRad, kMaxPitchSetpointRad);
 
   const double max_trim_rad =
-      std::clamp(Impl::kLeanTrimMaxDeg * M_PI / 180.0, 0.0, kMaxPitchSetpointRad);
+      std::clamp(ConfigPid::lean_trim_max_deg * M_PI / 180.0, 0.0, kMaxPitchSetpointRad);
   if (std::abs(joy.forward) > Config::deadzone && Impl::kLeanTrimDecayS > 0.0) {
     p_->lean_trim_rad *= (1.0 - std::clamp(dt_s / Impl::kLeanTrimDecayS, 0.0, 1.0));
     p_->lean_trim_active = false;
-  } else if (Impl::kLeanTrimI != 0.0 && !p_->command_saturated) {
+  } else if (ConfigPid::lean_trim_I != 0.0 && !p_->command_saturated) {
     p_->lean_trim_rad =
-        std::clamp(p_->lean_trim_rad - Impl::kLeanTrimI * (measured_velocity_sps / kMaxSps) * dt_s,
+        std::clamp(p_->lean_trim_rad -
+                       ConfigPid::lean_trim_I * (measured_velocity_sps / kMaxSps) * dt_s,
                    -max_trim_rad, max_trim_rad);
     p_->lean_trim_active = std::abs(measured_velocity_sps) > 1e-3;
   } else {

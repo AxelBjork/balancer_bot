@@ -39,6 +39,8 @@ void ConfigPid::load(const std::string& path) {
                                                         {"rate_I_lim", &rate_I_lim},
                                                         {"rate_FF", &rate_FF},
                                                         {"vel_P", &vel_P},
+                                                        {"lean_trim_I", &lean_trim_I},
+                                                        {"lean_trim_max_deg", &lean_trim_max_deg},
                                                         {"pitch_P", &pitch_P},
                                                         {"pitch_D", &pitch_D}};
 
@@ -101,6 +103,8 @@ void ConfigPid::save(const std::string& path) {
 
     f << "# --- Physics-Based Outer Loop ---\n";
     write_param(f, "vel_P", vel_P);
+    write_param(f, "lean_trim_I", lean_trim_I);
+    write_param(f, "lean_trim_max_deg", lean_trim_max_deg);
     write_param(f, "pitch_P", pitch_P);
     write_param(f, "pitch_D", pitch_D);
     f << "\n";
