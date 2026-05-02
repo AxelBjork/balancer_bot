@@ -67,7 +67,6 @@ class DOC_DESC(kControlServiceDoc) ControlService {
   bool have_motor_feedback_ = false;
   double observed_velocity_sps_ = 0.0;
   double filtered_velocity_sps_ = 0.0;
-  double velocity_observer_accum_s_ = 0.0;
   double last_raw_acc_pitch_deg_ = 0.0;
   double last_fused_pitch_deg_ = 0.0;
   double last_gyro_pitch_rate_dps_ = 0.0;
@@ -109,17 +108,14 @@ template <>
 inline void ControlService::on_message<MsgId::MotorFeedback>(const ipc::MotorFeedbackPayload& p) {
   latest_motor_feedback_ = p;
   observed_velocity_sps_ = -p.measured_avg_sps;
-  if (!have_motor_feedback_) {
-    filtered_velocity_sps_ = observed_velocity_sps_;
-  }
   const double dt_s = std::max(0.0, p.update_dt_ms / 1000.0);
-  velocity_observer_accum_s_ += dt_s;
-  const double period_s = (Config::fc_velocity_hz > 0.0) ? (1.0 / Config::fc_velocity_hz) : 0.0;
-  if (!have_motor_feedback_ || period_s <= 0.0 || velocity_observer_accum_s_ + 1e-12 >= period_s) {
+  if (!have_motor_feedback_ || Config::fc_velocity_hz <= 0.0 || dt_s <= 0.0) {
     filtered_velocity_sps_ = observed_velocity_sps_;
-    velocity_observer_accum_s_ = 0.0;
+  } else {
+    const double alpha = std::exp(-2.0 * M_PI * Config::fc_velocity_hz * dt_s);
+    filtered_velocity_sps_ = alpha * filtered_velocity_sps_ + (1.0 - alpha) * observed_velocity_sps_;
   }
-  core_.updateOuterLoop(have_motor_feedback_ ? filtered_velocity_sps_ : 0.0, dt_s);
+  core_.updateOuterLoop(filtered_velocity_sps_, dt_s);
   have_motor_feedback_ = true;
 }
 

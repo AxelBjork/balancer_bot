@@ -243,6 +243,36 @@ TEST(SimulatorRunnerTest, HoldBiasDisturbancePersistsUntilRunEnds) {
   EXPECT_GT(tail.external_com_bias_rad, 0.0);
 }
 
+TEST(SimulatorRunnerTest, JoySegmentsDriveForwardAndTurnCommands) {
+  SimulatorScenario scenario;
+  scenario.name = "joy_segments";
+  scenario.duration_s = 0.8;
+  scenario.physics_profile = PhysicsProfile::Simplified;
+  scenario.joy_segments.push_back(SimulatorJoySegment{
+      .start_s = 0.1,
+      .duration_s = 0.4,
+      .forward = 0.0,
+      .turn = 0.0,
+      .forward_end = 0.6,
+      .turn_end = 0.7,
+  });
+
+  const auto result = run_simulator_scenario(scenario, sim_pid_path());
+  ASSERT_FALSE(result.rows.empty());
+
+  double max_pitch_sp = 0.0;
+  double max_turn_split = 0.0;
+  for (const auto& row : result.rows) {
+    if (row.sim_time_s >= 0.2 && row.sim_time_s <= 0.5) {
+      max_pitch_sp = std::max(max_pitch_sp, std::abs(row.pitch_sp_deg));
+      max_turn_split = std::max(max_turn_split, std::abs(row.left_sps - row.right_sps));
+    }
+  }
+
+  EXPECT_GT(max_pitch_sp, 1.0);
+  EXPECT_GT(max_turn_split, 100.0);
+}
+
 TEST(SimulatorRunnerTest, DriveForceUsesExplicitActuatorGainInsteadOfControllerScaling) {
   auto scenario = simulator_named_scenario("pitch_bias_pos", PhysicsProfile::Realistic);
   ASSERT_TRUE(scenario.has_value());

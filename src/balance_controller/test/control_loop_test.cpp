@@ -121,12 +121,13 @@ class ControlServiceHarness {
   }
 
   void sendMotorFeedback(double left_applied_sps, double right_applied_sps, double measured_avg_sps,
-                         int64_t left_actual_steps, int64_t right_actual_steps) {
+                         int64_t left_actual_steps, int64_t right_actual_steps,
+                         double update_dt_ms = 1000.0 / 400.0) {
     ipc::MotorFeedbackPayload payload{};
     payload.left_applied_sps = left_applied_sps;
     payload.right_applied_sps = right_applied_sps;
     payload.measured_avg_sps = measured_avg_sps;
-    payload.update_dt_ms = 1000.0 / 400.0;
+    payload.update_dt_ms = update_dt_ms;
     payload.left_actual_steps = left_actual_steps;
     payload.right_actual_steps = right_actual_steps;
     control_.on_message<MsgId::MotorFeedback>(payload);
@@ -395,6 +396,118 @@ TEST(RateControllerCoreGainAuditTest, RateDConsumesImuPitchAcceleration) {
   EXPECT_NEAR(h.runner().lastLeft(), h.runner().lastRight(), 1e-6);
 }
 
+TEST(RateControllerCoreTest, PitchRateSetpointIsLimitedBeforeRateController) {
+  ScopedConfigPidRestore restore;
+  set_zeroed_gain_audit_config();
+  ConfigPid::rate_P = 0.25;
+  ConfigPid::pitch_P = 100.0;
+
+  RateControllerHarness h;
+  h.setJoystick(1.0, 0.0);
+  h.setImu(0.0, 0.0, 2500);
+  h.tick(1.0 / 400.0, 2500);
+
+  ASSERT_FALSE(h.telemetry().empty());
+  EXPECT_NEAR(h.runner().lastLeft(), 0.25 * 4.0 * kPitchOutToSps, 1e-3);
+  EXPECT_NEAR(h.runner().lastRight(), h.runner().lastLeft(), 1e-6);
+}
+
+TEST(RateControllerCoreTest, MixedWheelCommandsStayInsideSpeedLimitAndTrimTurnAtRail) {
+  ScopedConfigPidRestore restore;
+  set_zeroed_gain_audit_config();
+  ConfigPid::rate_P = 1.0;
+  ConfigPid::pitch_P = 100.0;
+
+  RateControllerHarness h;
+  h.setJoystick(1.0, 0.6);
+  h.setImu(0.0, 0.0, 2500);
+  h.tick(1.0 / 400.0, 2500);
+
+  ASSERT_FALSE(h.telemetry().empty());
+  EXPECT_LE(std::abs(h.runner().lastLeft()), kMaxSps);
+  EXPECT_LE(std::abs(h.runner().lastRight()), kMaxSps);
+  EXPECT_NEAR(h.telemetry().back().u_sps, kMaxSps, 1e-6);
+  EXPECT_NEAR(h.telemetry().back().turn_sps, 0.0, 1e-6);
+  EXPECT_NEAR(h.runner().lastLeft(), kMaxSps, 1e-6);
+  EXPECT_NEAR(h.runner().lastRight(), kMaxSps, 1e-6);
+}
+
+TEST(RateControllerCoreTest, MixedWheelSaturationBlocksLeanTrimIntegration) {
+  ScopedConfigPidRestore restore;
+  set_zeroed_gain_audit_config();
+  const double expected_turn_sps = 0.6 * kPitchOutToSps * 0.4;
+  ConfigPid::rate_P = (kMaxSps - expected_turn_sps) / (4.0 * kPitchOutToSps);
+  ConfigPid::pitch_P = 100.0;
+  ConfigPid::vel_P = 0.0;
+  ConfigPid::lean_trim_I = 0.60;
+
+  RateControllerHarness h;
+  h.setJoystick(1.0, 0.6);
+  h.setImu(0.0, 0.0, 2500);
+  h.tick(1.0 / 400.0, 2500);
+
+  ASSERT_FALSE(h.telemetry().empty());
+  EXPECT_NEAR(h.runner().lastLeft(), kMaxSps, 1e-6);
+  EXPECT_LT(h.runner().lastRight(), kMaxSps);
+  EXPECT_GT(h.telemetry().back().turn_sps, 0.0);
+
+  h.runner().setActualSpeedSps(800.0);
+  h.setImu(0.0, 0.0, 5000);
+  h.tick(1.0 / 400.0, 5000);
+
+  ASSERT_FALSE(h.telemetry().empty());
+  EXPECT_NEAR(h.telemetry().back().pitch_trim_deg, 0.0, 1e-6);
+  EXPECT_LT(h.telemetry().back().trim_active, 0.5);
+}
+
+TEST(RateControllerCoreTest, StaleImuCommandsZeroAndClearsTrim) {
+  ScopedConfigPidRestore restore;
+  set_zeroed_gain_audit_config();
+  ConfigPid::rate_P = 1.0;
+  ConfigPid::pitch_P = 100.0;
+  ConfigPid::lean_trim_I = 0.60;
+
+  RateControllerHarness h;
+  h.setJoystick(1.0, 0.0);
+  h.runner().setActualSpeedSps(800.0);
+  h.setImu(0.0, 0.0, 2500);
+  h.tick(1.0 / 400.0, 2500);
+  ASSERT_GT(std::abs(h.runner().lastLeft()), 1.0);
+
+  h.tick(1.0 / 400.0, 40000);
+
+  EXPECT_NEAR(h.runner().lastLeft(), 0.0, 1e-6);
+  EXPECT_NEAR(h.runner().lastRight(), 0.0, 1e-6);
+
+  h.setJoystick(0.0, 0.0);
+  h.runner().setActualSpeedSps(0.0);
+  h.setImu(0.0, 0.0, 42500);
+  h.tick(1.0 / 400.0, 42500);
+
+  ASSERT_FALSE(h.telemetry().empty());
+  EXPECT_NEAR(h.telemetry().back().pitch_trim_deg, 0.0, 1e-6);
+  EXPECT_NEAR(h.telemetry().back().pitch_sp_deg, 0.0, 1e-6);
+}
+
+TEST(RateControllerCoreTest, FalloverCommandsZeroAndClearsTrim) {
+  ScopedConfigPidRestore restore;
+  set_zeroed_gain_audit_config();
+  ConfigPid::rate_P = 1.0;
+  ConfigPid::pitch_P = 100.0;
+
+  RateControllerHarness h;
+  h.setJoystick(1.0, 0.0);
+  h.setImu(0.0, 0.0, 2500);
+  h.tick(1.0 / 400.0, 2500);
+  ASSERT_GT(std::abs(h.runner().lastLeft()), 1.0);
+
+  h.setImu((kMaxPitchSetpointRad + 6.0 * M_PI / 180.0), 0.0, 5000);
+  h.tick(1.0 / 400.0, 5000);
+
+  EXPECT_NEAR(h.runner().lastLeft(), 0.0, 1e-6);
+  EXPECT_NEAR(h.runner().lastRight(), 0.0, 1e-6);
+}
+
 TEST(RateControllerCoreGainAuditTest, OuterKVelSignControlsVelocityPitchReference) {
   ScopedConfigPidRestore restore;
   set_zeroed_gain_audit_config();
@@ -627,29 +740,27 @@ TEST(ControlServiceTest, UsesMotorFeedbackForVelocityTelemetry) {
   EXPECT_EQ(h.telemetry().back().right_actual_steps, 0);
 }
 
-TEST(ControlServiceTest, VelocityObserverUpdatesAtConfiguredCadence) {
+TEST(ControlServiceTest, VelocityObserverUsesFirstOrderLowPass) {
   ControlServiceHarness h;
   h.sendJoystick(0.0, 0.0);
   h.sendMotorFeedback(0.0, 0.0, 0.0, 0, 0);
 
-  for (int i = 0; i < 7; ++i) {
-    const uint64_t sim_time_us = static_cast<uint64_t>((i + 1) * 2500);
-    h.step_with_imu(1.0 / 400.0, sim_time_us);
-  }
+  h.step_with_imu(1.0 / 400.0, 2500);
 
   ASSERT_FALSE(h.telemetry().empty());
   EXPECT_NEAR(h.telemetry().back().pitch_ref_from_vel_deg, 0.0, 1e-6);
   EXPECT_NEAR(h.telemetry().back().vel_error, 0.0, 1e-6);
 
-  for (int i = 0; i < 8; ++i) {
-    h.sendMotorFeedback(0.0, 0.0, 1000.0, 0, 0);
-    const uint64_t sim_time_us = static_cast<uint64_t>((8 + i + 1) * 2500);
-    h.step_with_imu(1.0 / 400.0, sim_time_us);
-  }
+  h.sendMotorFeedback(0.0, 0.0, 1000.0, 0, 0);
+  h.step_with_imu(1.0 / 400.0, 5000);
 
   ASSERT_FALSE(h.telemetry().empty());
+  const double alpha = std::exp(-2.0 * M_PI * Config::fc_velocity_hz * (1.0 / 400.0));
+  const double expected_vel_error = (1.0 - alpha) * 1000.0;
+  EXPECT_NEAR(h.telemetry().back().measured_vel_sps, -expected_vel_error, 1e-3);
+  EXPECT_NEAR(h.telemetry().back().vel_error, expected_vel_error, 1e-3);
   EXPECT_GT(h.telemetry().back().pitch_ref_from_vel_deg, 0.0);
-  EXPECT_NEAR(h.telemetry().back().vel_error, 1000.0, 1e-3);
+  EXPECT_LT(h.telemetry().back().vel_error, 1000.0);
 }
 
 TEST(ControlServiceTest, UsesFilteredPitchRateForControlAndKeepsRawGyroForDiagnostics) {

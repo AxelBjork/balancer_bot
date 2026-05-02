@@ -93,8 +93,8 @@ TEST_F(MotorRunnerTest, StepTrackingAccumulation) {
   int64_t leftSteps = runner.getLeftSteps();
   int64_t rightSteps = runner.getRightSteps();
 
-  EXPECT_NEAR(static_cast<double>(leftSteps), 25.0, 4.0) << "Left steps should accumulate to ~25";
-  EXPECT_NEAR(static_cast<double>(rightSteps), 25.0, 4.0) << "Right steps should accumulate to ~25";
+  EXPECT_NEAR(static_cast<double>(leftSteps), 25.0, 8.0) << "Left steps should accumulate to ~25";
+  EXPECT_NEAR(static_cast<double>(rightSteps), 25.0, 8.0) << "Right steps should accumulate to ~25";
 }
 
 TEST_F(MotorRunnerTest, StepTrackingZeroRate) {

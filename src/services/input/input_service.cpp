@@ -41,8 +41,7 @@ void InputService::run() {
       // Arcade Drive: Left Stick Y = Forward (inverted)
       // Steering: Combined Right Stick X (standard) and Right Stick Y (combined steer)
       ly = -pad_->leftY();
-      rx = pad_->rightX() - pad_->rightY();
-      rx = std::clamp(rx, -1.0f, 1.0f);
+      rx = pad_->rightX();
     }
 
     ipc::JoystickCommandPayload j{};

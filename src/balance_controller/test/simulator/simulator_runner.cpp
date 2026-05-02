@@ -79,6 +79,34 @@ DisturbanceSample scenario_disturbance_for_time(const SimulatorScenario& scenari
   return total;
 }
 
+JoyCmd scenario_joy_for_time(const SimulatorScenario& scenario, double sim_time_s) {
+  JoyCmd joy{0.0f, 0.0f};
+  for (const auto& segment : scenario.joy_segments) {
+    if (sim_time_s < segment.start_s) {
+      continue;
+    }
+
+    const bool active = segment.duration_s <= 0.0 ||
+                        sim_time_s < (segment.start_s + segment.duration_s);
+    if (!active) {
+      continue;
+    }
+
+    double forward = segment.forward;
+    double turn = segment.turn;
+    if (segment.duration_s > 0.0) {
+      const double progress =
+          std::clamp((sim_time_s - segment.start_s) / segment.duration_s, 0.0, 1.0);
+      forward += (segment.forward_end - segment.forward) * progress;
+      turn += (segment.turn_end - segment.turn) * progress;
+    }
+
+    joy.forward = static_cast<float>(std::clamp(forward, -1.0, 1.0));
+    joy.turn = static_cast<float>(std::clamp(turn, -1.0, 1.0));
+  }
+  return joy;
+}
+
 double raw_acc_pitch_deg(const std::array<double, 3>& acc) {
   return std::atan2(-acc[0], std::sqrt(acc[1] * acc[1] + acc[2] * acc[2])) * 180.0 / kPi;
 }
@@ -181,6 +209,7 @@ SimulatorRunResult run_simulator_scenario_with_loaded_pid(const SimulatorScenari
     const DisturbanceSample disturbance = scenario_disturbance_for_time(scenario, sim_time_s);
     sim.set_external_force_n(disturbance.force_n);
     sim.set_external_com_bias_rad(disturbance.com_bias_rad);
+    core.setJoystick(scenario_joy_for_time(scenario, sim_time_s));
 
     sim.step(kTickDtS);
     sim_time_us += static_cast<uint64_t>(kTickDtS * 1e6);

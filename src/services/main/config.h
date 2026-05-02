@@ -9,7 +9,7 @@ struct AxisCfg {
 
 struct Config {
   // ========= General =========
-  static constexpr int run_seconds = 60;
+  static constexpr int run_seconds = 120;
   static constexpr double wheel_diam_m = 0.080;              // 80 mm
   static constexpr double steps_per_rev = 360 / 1.8 * 16.0;  // 1.8° * 16x
   static constexpr double meters_per_step = M_PI * wheel_diam_m / steps_per_rev;

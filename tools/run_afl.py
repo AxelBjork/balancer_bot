@@ -22,6 +22,16 @@ from tests.fuzz.generate_corpora import write_corpora  # noqa: E402
 from tests.fuzz.registry import DEFAULT_BUILD_DIR, FUZZ_TARGETS, corpus_root, get_fuzz_target  # noqa: E402
 
 
+def _find_afl_fuzz() -> str | None:
+    afl_fuzz = shutil.which("afl-fuzz")
+    if afl_fuzz:
+        return afl_fuzz
+    repo_local = Path("/usr/local/bin/afl-fuzz")
+    if repo_local.exists():
+        return str(repo_local)
+    return None
+
+
 def _default_asan_options() -> str:
     return "abort_on_error=1:detect_leaks=0:symbolize=0"
 
@@ -46,9 +56,9 @@ def main() -> int:
     if not args.target:
         parser.error("target is required unless --list is used")
 
-    afl_fuzz = shutil.which("afl-fuzz")
+    afl_fuzz = _find_afl_fuzz()
     if not afl_fuzz:
-        print("afl-fuzz not found on PATH", file=sys.stderr)
+        print("afl-fuzz not found on PATH or at ./AFLplusplus/afl-fuzz", file=sys.stderr)
         return 1
 
     target = get_fuzz_target(args.target)

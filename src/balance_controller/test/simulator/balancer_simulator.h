@@ -25,7 +25,7 @@ struct SimulatorConfig {
   std::optional<SimulatorPhysics> physics_override;
   double wheel_slip_factor = 1.0;
   double velocity_feedback_scale = 1.0;
-  double velocity_feedback_tau_s = 0.0;
+  double velocity_feedback_tau_s = 0.1;
   double imu_pitch_lag_s = 0.0;
   uint32_t imu_noise_seed = 0;
   double accel_noise_std_mps2 = 0.0;
