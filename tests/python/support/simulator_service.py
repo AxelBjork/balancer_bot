@@ -14,6 +14,7 @@ from generated_balancer import (
 )
 
 from tests.python.support.run_artifacts import RunRecorder
+from tests.python.support.telemetry_rows import system_telemetry_to_row
 
 PHYSICS_SIMPLIFIED = 0
 PHYSICS_REALISTIC = 1
@@ -246,53 +247,7 @@ def run_scenario_live(
             telemetry = SystemTelemetryPayload.unpack(payload)
             if telemetry.run_id != run_id:
                 continue
-            row = {
-                "sim_time_s": telemetry.t_sec,
-                "pitch_deg": telemetry.pitch_deg,
-                "pitch_rate_dps": telemetry.pitch_rate_dps,
-                "filtered_pitch_rate_dps": telemetry.filtered_pitch_rate_dps,
-                "raw_acc_pitch_deg": telemetry.raw_acc_pitch_deg,
-                "fused_pitch_deg": telemetry.fused_pitch_deg,
-                "gyro_pitch_rate_dps": telemetry.gyro_pitch_rate_dps,
-                "pitch_sp_deg": telemetry.pitch_sp_deg,
-                "rate_sp_dps": getattr(telemetry, "rate_sp_dps", 0.0),
-                "u_sps": telemetry.u_sps,
-                "left_sps": telemetry.left_applied_sps,
-                "right_sps": telemetry.right_applied_sps,
-                "vel_error": telemetry.vel_error,
-                "vel_i_term": getattr(telemetry, "vel_i_term", 0.0),
-                "vel_p_term": telemetry.vel_p_term,
-                "target_vel_sps": getattr(telemetry, "target_vel_sps", 0.0),
-                "measured_vel_sps": getattr(telemetry, "measured_vel_sps", 0.0),
-                "filtered_vel_sps": getattr(telemetry, "filtered_vel_sps", 0.0),
-                "pitch_ref_from_vel_deg": telemetry.pitch_ref_from_vel_deg,
-                "pitch_error_deg": telemetry.pitch_error_deg,
-                "rate_error_dps": getattr(telemetry, "rate_error_dps", 0.0),
-                "out_norm": getattr(telemetry, "out_norm", 0.0),
-                "effective_pitch_sp_deg": getattr(telemetry, "effective_pitch_sp_deg", 0.0),
-                "pitch_trim_deg": telemetry.pitch_trim_deg,
-                "trim_active": telemetry.trim_active,
-                "left_applied_sps": telemetry.left_applied_sps,
-                "right_applied_sps": telemetry.right_applied_sps,
-                "left_actual_steps": telemetry.left_actual_steps,
-                "right_actual_steps": telemetry.right_actual_steps,
-                "plant_pitch_deg": telemetry.plant_pitch_deg,
-                "plant_pitch_rate_dps": telemetry.plant_pitch_rate_dps,
-                "plant_position": telemetry.plant_position_m,
-                "plant_velocity": telemetry.plant_velocity_mps,
-                "target_wheel_velocity": telemetry.target_wheel_velocity,
-                "actual_wheel_velocity": telemetry.actual_wheel_velocity,
-                "velocity_error": telemetry.plant_velocity_error,
-                "f_cmd": telemetry.f_cmd,
-                "f_app": telemetry.f_app,
-                "external_force_n": telemetry.external_force_n,
-                "external_com_bias_rad": telemetry.external_com_bias_rad,
-                "x_ddot": telemetry.x_ddot,
-                "theta_ddot": telemetry.theta_ddot,
-                "command_saturated": getattr(telemetry, "command_saturated", 0.0),
-                "force_saturated": telemetry.force_saturated,
-            }
-            recorder.record_step(row)
+            recorder.record_step(system_telemetry_to_row(telemetry))
             if abs(telemetry.plant_pitch_deg) > fail_fast_pitch_deg:
                 udp.send(BalancerMsgId.SimStopRun, SimStopRunPayload(run_id=run_id).pack())
         elif msg_id == int(BalancerMsgId.SimRunDone):

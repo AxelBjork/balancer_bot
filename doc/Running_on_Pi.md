@@ -235,6 +235,18 @@ Notes:
 - it still loads `pid.conf` from the current working directory
 - `UdpBridge` is also started, so you can observe telemetry if port `9000` is reachable
 
+## Capturing Telemetry to CSV
+
+For a run that mirrors the simulator artifact flow, use the same binary with a capture directory:
+
+```bash
+./balancer_pi \
+  --capture-dir build-pi/captures/pi_run_001 \
+  --run-seconds 120
+```
+
+This writes `timeline.csv`, `metadata.json`, `summary.json`, and `done.json` into the capture directory while the real app is running.
+
 ## Recommended First Hardware Session
 
 1. Start with the wheels off the ground or the robot physically restrained.
