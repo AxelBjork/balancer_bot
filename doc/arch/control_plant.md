@@ -172,10 +172,14 @@ The equations above are the compact small-angle audit model. The current code ad
 
 Current controller structure in code:
 
-Outer translation law:
+Outer velocity PI at 50 Hz:
 
 > $$
-> \theta_{\mathrm{ref}} = k_{\mathrm{vel}}(v_{\mathrm{ref}} - v) + k_{\mathrm{pos}}(x_{\mathrm{ref}} - x)
+> e_v = v_{\mathrm{ref}} - v_{\mathrm{completed\ pulses}}
+> $$
+
+> $$
+> \theta_{\mathrm{ref}} = \operatorname{clamp}(K_{pv}e_v + K_{iv}\int e_v dt)
 > $$
 
 Inner attitude shaping:
@@ -188,23 +192,26 @@ PX4 rate loop:
 
 - it tracks `theta_dot_ref` and produces the normalized motor command
 
-Motor scaling:
+Motor scaling and target-speed feed-forward:
 
 - the normalized PX4 output is converted to wheel command with fixed
 
 > $$
-> u_{\mathrm{sps}} = u_{\mathrm{norm}} \cdot kPitchOutToSps
+> u_{\mathrm{sps}} = v_{\mathrm{ref,sps}} - u_{\mathrm{norm}}\,k_{\mathrm{output}}
 > $$
 
-- the result is then clamped by `kMaxSps`
+- the result is clamped by `balance_max_sps`, then turn allocation consumes only the remaining
+  balance authority
 
 Notes:
 
 - `theta_dot_f` is the filtered pitch-rate signal from the complementary filter, not the raw gyro debug signal
 - the simulator now applies disturbances as exogenous plant inputs:
   external horizontal force and optional COM bias
-- the simulator plant is intentionally richer than the cheat-sheet model:
-  it includes cart damping, pitch damping, actuator lag, force limits, slip scaling, and measurement lag knobs
+- the simulator plant is intentionally richer than the cheat-sheet model: scheduled pulses advance
+  commanded motor phase; completed pulses supply controller feedback; a separate rotor/wheel state,
+  torque-speed limit, actuator lag, missed-step estimate, and traction-limited tire coupling produce
+  force on the nonlinear cart-pole
 
 ## Audit Command
 

@@ -9,7 +9,7 @@ struct DOC_DESC(
     "controller execution using an explicit delta time plus accumulated monotonic time.")
     PhysicsTickPayload {
   double dt_s;
-  uint64_t sim_time_us;
+  uint64_t timestamp_us;
 };
 
 template <>

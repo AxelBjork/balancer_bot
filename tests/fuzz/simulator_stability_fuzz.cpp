@@ -35,17 +35,24 @@ SimulatorDisturbanceKind map_disturbance_kind(uint8_t raw_kind) {
 }
 
 void decode_base_scenario(const fuzz::FuzzSimulatorScenarioV1& wire, SimulatorScenario& scenario) {
-  scenario.name = wire.version == fuzz::kFuzzScenarioVersion2 ? "stability_fuzz_v2" : "stability_fuzz_v1";
-  scenario.physics_profile = PhysicsProfile::Realistic;
+  const auto transfer_scenarios = transfer_scenario_set();
+  const bool uses_transfer_catalog = wire.version == fuzz::kFuzzScenarioVersion4 &&
+                                     wire.transfer_scenario_index < transfer_scenarios.size();
+  if (uses_transfer_catalog) {
+    scenario = transfer_scenarios[wire.transfer_scenario_index];
+    scenario.name = "stability_fuzz_transfer_" + scenario.name;
+  } else {
+    scenario.name = "stability_fuzz_custom";
+    scenario.physics_profile = PhysicsProfile::Realistic;
+  }
   scenario.duration_s = clamp_finite(wire.duration_s, 0.25f, 4.0f, 1.0f);
   scenario.initial_pitch_deg = clamp_finite(wire.initial_pitch_deg, -20.0f, 20.0f, 0.0f);
-  scenario.com_angle_offset_rad =
-      clamp_finite(wire.com_angle_offset_rad, -0.02f, 0.02f, 0.0f);
-  scenario.wheel_slip_factor = clamp_finite(wire.wheel_slip_factor, 0.3f, 1.5f, 1.0f);
-  scenario.velocity_feedback_scale =
-      clamp_finite(wire.velocity_feedback_scale, 0.0f, 1.2f, 0.05f);
-  scenario.velocity_feedback_tau_s =
-      clamp_finite(wire.velocity_feedback_tau_s, 0.0f, 0.20f, 0.0f);
+  scenario.com_angle_offset_rad = clamp_finite(wire.com_angle_offset_rad, -0.02f, 0.02f, 0.0f);
+  if (!scenario.physics_override.has_value()) {
+    scenario.physics_override = BalancerSimulator::physics_for_profile(scenario.physics_profile);
+  }
+  scenario.physics_override->traction_coefficient *=
+      static_cast<double>(clamp_finite(wire.traction_coefficient, 0.3f, 1.5f, 1.0f));
   scenario.imu_pitch_lag_s = clamp_finite(wire.imu_pitch_lag_s, 0.0f, 0.04f, 0.0f);
 
   const std::size_t disturbance_count =
@@ -57,14 +64,14 @@ void decode_base_scenario(const fuzz::FuzzSimulatorScenarioV1& wire, SimulatorSc
     sanitized.kind = map_disturbance_kind(disturbance.kind);
     sanitized.start_s =
         clamp_finite(disturbance.start_s, 0.0f, static_cast<float>(scenario.duration_s), 0.0f);
-    sanitized.duration_s = clamp_finite(
-        disturbance.duration_s, 0.0f, static_cast<float>(scenario.duration_s), 0.0f);
+    sanitized.duration_s =
+        clamp_finite(disturbance.duration_s, 0.0f, static_cast<float>(scenario.duration_s), 0.0f);
     sanitized.force_n = clamp_finite(disturbance.force_n, -3.0f, 3.0f, 0.0f);
     sanitized.com_bias_rad = clamp_finite(disturbance.com_bias_rad, -0.03f, 0.03f, 0.0f);
     sanitized.force_n_end =
         clamp_finite(disturbance.force_n_end, -3.0f, 3.0f, static_cast<float>(sanitized.force_n));
-    sanitized.com_bias_rad_end =
-        clamp_finite(disturbance.com_bias_rad_end, -0.03f, 0.03f, static_cast<float>(sanitized.com_bias_rad));
+    sanitized.com_bias_rad_end = clamp_finite(disturbance.com_bias_rad_end, -0.03f, 0.03f,
+                                              static_cast<float>(sanitized.com_bias_rad));
     scenario.disturbances.push_back(sanitized);
   }
 }
@@ -85,8 +92,10 @@ SimulatorScenario decode_stability_scenario(const fuzz::FuzzSimulatorScenarioV2&
         clamp_finite(segment.duration_s, 0.0f, static_cast<float>(scenario.duration_s), 0.0f);
     sanitized.forward = clamp_finite(segment.forward, -1.0f, 1.0f, 0.0f);
     sanitized.turn = clamp_finite(segment.turn, -1.0f, 1.0f, 0.0f);
-    sanitized.forward_end = clamp_finite(segment.forward_end, -1.0f, 1.0f, sanitized.forward);
-    sanitized.turn_end = clamp_finite(segment.turn_end, -1.0f, 1.0f, sanitized.turn);
+    sanitized.forward_end =
+        clamp_finite(segment.forward_end, -1.0f, 1.0f, static_cast<float>(sanitized.forward));
+    sanitized.turn_end =
+        clamp_finite(segment.turn_end, -1.0f, 1.0f, static_cast<float>(sanitized.turn));
     scenario.joy_segments.push_back(sanitized);
   }
 
@@ -134,7 +143,8 @@ void fail_if_bad_stability(const SimulatorRunResult& result) {
       fail_stability("non-finite row");
     }
     max_abs_velocity_mps = std::max(max_abs_velocity_mps, std::abs(row.plant_velocity));
-    max_abs_motor_sps = std::max(max_abs_motor_sps, std::max(std::abs(row.left_sps), std::abs(row.right_sps)));
+    max_abs_motor_sps =
+        std::max(max_abs_motor_sps, std::max(std::abs(row.left_sps), std::abs(row.right_sps)));
     rail_samples += row.command_saturated >= 0.5 ? 1.0 : 0.0;
   }
 
@@ -167,7 +177,8 @@ int main(int argc, char** argv) {
 
     fuzz::FuzzSimulatorScenarioV2 wire{};
     fuzz::copy_prefix(input, wire);
-    if (wire.base.version != fuzz::kFuzzScenarioVersion2) {
+    if (wire.base.version != fuzz::kFuzzScenarioVersion3 &&
+        wire.base.version != fuzz::kFuzzScenarioVersion4) {
       fuzz::FuzzSimulatorScenarioV1 legacy{};
       fuzz::copy_prefix(input, legacy);
       wire = {};
@@ -177,8 +188,9 @@ int main(int argc, char** argv) {
     const SimulatorScenario scenario = decode_stability_scenario(wire);
     const SimulatorRunResult result = run_simulator_scenario_with_loaded_pid(scenario);
 
-    g_stability_sink ^= result.rows.size();
-    g_stability_sink += static_cast<std::uint64_t>(std::llround(std::abs(result.final_pitch_deg)));
+    g_stability_sink = g_stability_sink ^ result.rows.size();
+    g_stability_sink = g_stability_sink +
+                       static_cast<std::uint64_t>(std::llround(std::abs(result.final_pitch_deg)));
     fail_if_bad_stability(result);
   }
 

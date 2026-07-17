@@ -3,8 +3,11 @@
 # Only targets in this file use -freflection for C++26 features.
 # The rest of the project compiles with GCC 16 in C++23 mode.
 
-set(REFLECT_CXX ${CMAKE_CXX_COMPILER})
-if (NOT REFLECT_CXX)
+if (EXISTS "/usr/local/gcc-16.1.0/bin/g++")
+  set(REFLECT_CXX "/usr/local/gcc-16.1.0/bin/g++")
+elseif (CMAKE_CXX_COMPILER)
+  set(REFLECT_CXX ${CMAKE_CXX_COMPILER})
+else()
   set(REFLECT_CXX g++)
 endif()
 

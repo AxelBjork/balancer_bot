@@ -1,10 +1,11 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
-#include <iostream>
-#include <optional>
+#include <cmath>
+#include <stdexcept>
 #include <sstream>
 #include <string>
+#include <unordered_set>
 #include <unordered_map>
 
 #include "messages/types.h"
@@ -16,37 +17,24 @@ static void write_param(std::ofstream& f, const std::string& name, double value)
 void ConfigPid::load(const std::string& path) {
   namespace fs = std::filesystem;
   if (!fs::exists(path)) {
-    std::cout << "[Config] File '" << path << "' not found. Creating defaults.\n";
-    // Ensure parent directory exists
-    fs::path p(path);
-    if (p.has_parent_path()) {
-      fs::create_directories(p.parent_path());
-    }
-    save(path);
-    return;
+    throw std::runtime_error("PID configuration does not exist: " + path);
   }
 
   std::ifstream f(path);
   if (!f.is_open()) {
-    std::cerr << "[Config] Failed to open existing file: " << path << "\n";
-    return;
+    throw std::runtime_error("PID configuration cannot be opened: " + path);
   }
 
-  // Map string keys to the actual variable addresses
-  std::unordered_map<std::string, double*> param_map = {{"rate_P", &rate_P},
-                                                        {"rate_I", &rate_I},
-                                                        {"rate_D", &rate_D},
-                                                        {"rate_I_lim", &rate_I_lim},
-                                                        {"rate_FF", &rate_FF},
-                                                        {"vel_P", &vel_P},
-                                                        {"lean_trim_I", &lean_trim_I},
-                                                        {"lean_trim_max_deg", &lean_trim_max_deg},
-                                                        {"pitch_P", &pitch_P},
-                                                        {"pitch_D", &pitch_D}};
-
-  std::cout << "[Config] Loading from " << path << "...\n";
+  std::unordered_map<std::string, double> values;
+  std::unordered_set<std::string> allowed = {
+      "config_version", "rate_P", "rate_I", "rate_D", "rate_I_lim", "rate_FF",
+      "velocity_P", "velocity_I", "velocity_I_limit_deg", "angle_P", "angle_D",
+      "drive_max_sps", "turn_max_sps", "pitch_max_deg", "balance_max_sps",
+      "output_scale_sps"};
   std::string line;
+  size_t line_number = 0;
   while (std::getline(f, line)) {
+    ++line_number;
     // Strip comments #
     size_t comment_pos = line.find('#');
     if (comment_pos != std::string::npos) {
@@ -57,34 +45,79 @@ void ConfigPid::load(const std::string& path) {
     line.erase(0, line.find_first_not_of(" \t\r\n"));
     if (line.empty()) continue;
 
-    std::stringstream ss(line);
-    std::string key, val_str;
-
-    // Split by '='
-    if (std::getline(ss, key, '=')) {
-      if (std::getline(ss, val_str)) {
-        // Trim key and value
-        key.erase(0, key.find_first_not_of(" \t"));
-        key.erase(key.find_last_not_of(" \t") + 1);
-        val_str.erase(0, val_str.find_first_not_of(" \t"));
-        val_str.erase(val_str.find_last_not_of(" \t\r\n") + 1);
-
-        auto it = param_map.find(key);
-        if (it != param_map.end()) {
-          try {
-            *it->second = std::stod(val_str);
-            std::cout << "Loaded " << key << " = " << *it->second << "\n";
-          } catch (...) {
-            std::cerr << "[Config] Error parsing value for " << key << ": '" << val_str << "'\n";
-          }
-        } else {
-          // Optional: Warn about unknown keys
-          // std::cerr << "[Config] Unknown key: " << key << "\n";
-        }
-      }
+    const size_t equals = line.find('=');
+    if (equals == std::string::npos || line.find('=', equals + 1) != std::string::npos) {
+      throw std::runtime_error("Malformed PID configuration line " +
+                               std::to_string(line_number));
     }
+    auto trim = [](std::string text) {
+      const size_t first = text.find_first_not_of(" \t\r\n");
+      if (first == std::string::npos) return std::string{};
+      const size_t last = text.find_last_not_of(" \t\r\n");
+      return text.substr(first, last - first + 1);
+    };
+    const std::string key = trim(line.substr(0, equals));
+    const std::string value_text = trim(line.substr(equals + 1));
+    if (!allowed.contains(key)) {
+      throw std::runtime_error("Unknown PID configuration key: " + key);
+    }
+    if (values.contains(key)) {
+      throw std::runtime_error("Duplicate PID configuration key: " + key);
+    }
+    size_t parsed = 0;
+    double value = 0.0;
+    try {
+      value = std::stod(value_text, &parsed);
+    } catch (const std::exception&) {
+      throw std::runtime_error("Invalid value for PID configuration key: " + key);
+    }
+    if (parsed != value_text.size() || !std::isfinite(value)) {
+      throw std::runtime_error("Non-finite or malformed PID value for key: " + key);
+    }
+    values.emplace(key, value);
   }
 
+  for (const auto& key : allowed) {
+    if (!values.contains(key)) {
+      throw std::runtime_error("Missing PID configuration key: " + key);
+    }
+  }
+  if (values.at("config_version") != static_cast<double>(config_version)) {
+    throw std::runtime_error("PID configuration requires config_version = 2");
+  }
+
+  const auto nonnegative = [&](const char* key) {
+    if (values.at(key) < 0.0) throw std::runtime_error(std::string(key) + " must be non-negative");
+  };
+  for (const char* key : {"rate_P", "rate_I", "rate_D", "rate_I_lim", "rate_FF",
+                          "velocity_P", "velocity_I", "velocity_I_limit_deg", "angle_P",
+                          "angle_D", "turn_max_sps"}) {
+    nonnegative(key);
+  }
+  for (const char* key : {"drive_max_sps", "pitch_max_deg", "balance_max_sps",
+                          "output_scale_sps"}) {
+    if (values.at(key) <= 0.0) throw std::runtime_error(std::string(key) + " must be positive");
+  }
+  if (values.at("drive_max_sps") > 12000.0 || values.at("turn_max_sps") > 12000.0 ||
+      values.at("balance_max_sps") > 12000.0 || values.at("pitch_max_deg") > 45.0) {
+    throw std::runtime_error("PID configuration limit exceeds the supported range");
+  }
+
+  rate_P = values.at("rate_P");
+  rate_I = values.at("rate_I");
+  rate_D = values.at("rate_D");
+  rate_I_lim = values.at("rate_I_lim");
+  rate_FF = values.at("rate_FF");
+  velocity_P = values.at("velocity_P");
+  velocity_I = values.at("velocity_I");
+  velocity_I_limit_deg = values.at("velocity_I_limit_deg");
+  angle_P = values.at("angle_P");
+  angle_D = values.at("angle_D");
+  drive_max_sps = values.at("drive_max_sps");
+  turn_max_sps = values.at("turn_max_sps");
+  pitch_max_deg = values.at("pitch_max_deg");
+  balance_max_sps = values.at("balance_max_sps");
+  output_scale_sps = values.at("output_scale_sps");
 }
 
 void ConfigPid::save(const std::string& path) {
@@ -93,7 +126,8 @@ void ConfigPid::save(const std::string& path) {
     f << "# Balancer Bot PID Configuration\n";
     f << "# Modifying this file requires application restart (or reload logic)\n\n";
 
-    f << "# --- Rate Controller (Inner Loop) ---\n";
+    f << "config_version       = 2\n\n";
+    f << "# --- Rate Controller (400 Hz) ---\n";
     write_param(f, "rate_P", rate_P);
     write_param(f, "rate_I", rate_I);
     write_param(f, "rate_D", rate_D);
@@ -101,16 +135,19 @@ void ConfigPid::save(const std::string& path) {
     write_param(f, "rate_FF", rate_FF);
     f << "\n";
 
-    f << "# --- Physics-Based Outer Loop ---\n";
-    write_param(f, "vel_P", vel_P);
-    write_param(f, "lean_trim_I", lean_trim_I);
-    write_param(f, "lean_trim_max_deg", lean_trim_max_deg);
-    write_param(f, "pitch_P", pitch_P);
-    write_param(f, "pitch_D", pitch_D);
+    f << "# --- Velocity PI (50 Hz) and allocation ---\n";
+    write_param(f, "velocity_P", velocity_P);
+    write_param(f, "velocity_I", velocity_I);
+    write_param(f, "velocity_I_limit_deg", velocity_I_limit_deg);
+    write_param(f, "angle_P", angle_P);
+    write_param(f, "angle_D", angle_D);
+    write_param(f, "drive_max_sps", drive_max_sps);
+    write_param(f, "turn_max_sps", turn_max_sps);
+    write_param(f, "pitch_max_deg", pitch_max_deg);
+    write_param(f, "balance_max_sps", balance_max_sps);
+    write_param(f, "output_scale_sps", output_scale_sps);
     f << "\n";
-
-    std::cout << "[Config] Saved defaults to " << path << "\n";
   } else {
-    std::cerr << "[Config] Failed to save " << path << "\n";
+    throw std::runtime_error("PID configuration cannot be written: " + path);
   }
 }

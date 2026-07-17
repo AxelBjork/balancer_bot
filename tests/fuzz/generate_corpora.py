@@ -70,10 +70,9 @@ def _encode_scenario(
     duration_s: float,
     initial_pitch_deg: float = 0.0,
     com_angle_offset_rad: float = 0.0,
-    wheel_slip_factor: float = 1.0,
-    velocity_feedback_scale: float = 1.0,
-    velocity_feedback_tau_s: float = 0.0,
+    traction_coefficient: float = 1.0,
     imu_pitch_lag_s: float = 0.0,
+    transfer_scenario_index: int = 0xFF,
     disturbances: list[bytes] | None = None,
 ) -> bytes:
     raw_disturbances = list(disturbances or [])
@@ -82,17 +81,15 @@ def _encode_scenario(
     disturbance_count = len(raw_disturbances)
     raw_disturbances += [_encode_disturbance()] * (4 - len(raw_disturbances))
     header = struct.pack(
-        "<BBBB7f",
-        1,
+        "<BBBB5f",
+        4,
         physics_profile,
         disturbance_count,
-        0,
+        transfer_scenario_index,
         duration_s,
         initial_pitch_deg,
         com_angle_offset_rad,
-        wheel_slip_factor,
-        velocity_feedback_scale,
-        velocity_feedback_tau_s,
+        traction_coefficient,
         imu_pitch_lag_s,
     )
     return header + b"".join(raw_disturbances[:4])
@@ -120,10 +117,9 @@ def _encode_stability_scenario(
     duration_s: float,
     initial_pitch_deg: float = 0.0,
     com_angle_offset_rad: float = 0.0,
-    wheel_slip_factor: float = 1.0,
-    velocity_feedback_scale: float = 1.0,
-    velocity_feedback_tau_s: float = 0.0,
+    traction_coefficient: float = 1.0,
     imu_pitch_lag_s: float = 0.0,
+    transfer_scenario_index: int = 0xFF,
     disturbances: list[bytes] | None = None,
     joy_segments: list[bytes] | None = None,
 ) -> bytes:
@@ -133,14 +129,13 @@ def _encode_stability_scenario(
             duration_s=duration_s,
             initial_pitch_deg=initial_pitch_deg,
             com_angle_offset_rad=com_angle_offset_rad,
-            wheel_slip_factor=wheel_slip_factor,
-            velocity_feedback_scale=velocity_feedback_scale,
-            velocity_feedback_tau_s=velocity_feedback_tau_s,
+            traction_coefficient=traction_coefficient,
             imu_pitch_lag_s=imu_pitch_lag_s,
+            transfer_scenario_index=transfer_scenario_index,
             disturbances=disturbances,
         )
     )
-    base[0] = 2
+    base[0] = 4
     raw_joy = list(joy_segments or [])
     if len(raw_joy) > 4:
         raise ValueError("simulator stability corpus seeds support at most four joystick segments")
@@ -159,7 +154,7 @@ def write_udp_corpus(output_root: Path) -> None:
         gyr=[0.0, 0.25, 0.0],
         timestamp_us=timestamp_us,
     )
-    tick = PhysicsTickPayload(dt_s=0.0025, sim_time_us=2500)
+    tick = PhysicsTickPayload(dt_s=0.0025, timestamp_us=2500)
     joystick = JoystickCommandPayload(forward=0.2, turn=-0.1)
 
     _write(udp_dir / "imu_raw_only.bin", _udp_frame(MsgId.ImuRawData, imu_raw.pack()))
@@ -181,7 +176,7 @@ def write_udp_corpus(output_root: Path) -> None:
             ),
             _udp_frame(
                 MsgId.PhysicsTick,
-                PhysicsTickPayload(dt_s=0.0025, sim_time_us=5000).pack(),
+                PhysicsTickPayload(dt_s=0.0025, timestamp_us=5000).pack(),
             ),
         ]
     )
@@ -194,18 +189,23 @@ def write_simulator_corpus(output_root: Path) -> None:
 
     _write(
         sim_dir / "simplified_neutral_hold.bin",
-        _encode_scenario(physics_profile=0, duration_s=1.0),
+        _encode_scenario(physics_profile=0, duration_s=1.0, transfer_scenario_index=0),
     )
     _write(
         sim_dir / "simplified_pitch_bias.bin",
-        _encode_scenario(physics_profile=0, duration_s=1.0, initial_pitch_deg=0.10),
+        _encode_scenario(
+            physics_profile=0,
+            duration_s=1.0,
+            initial_pitch_deg=0.10,
+            transfer_scenario_index=1,
+        ),
     )
     _write(
         sim_dir / "realistic_slow_push_recover.bin",
         _encode_scenario(
             physics_profile=1,
             duration_s=2.0,
-            velocity_feedback_scale=0.05,
+            transfer_scenario_index=2,
             disturbances=[
                 _encode_disturbance(kind=1, start_s=0.2, duration_s=0.7, force_n=0.0, force_n_end=2.0),
                 _encode_disturbance(kind=1, start_s=0.9, duration_s=0.7, force_n=2.0, force_n_end=0.0),
@@ -217,8 +217,7 @@ def write_simulator_corpus(output_root: Path) -> None:
         _encode_scenario(
             physics_profile=1,
             duration_s=2.0,
-            velocity_feedback_scale=0.08,
-            velocity_feedback_tau_s=0.10,
+            transfer_scenario_index=4,
             imu_pitch_lag_s=0.01,
             disturbances=[
                 _encode_disturbance(kind=2, start_s=0.3, duration_s=0.0, com_bias_rad=0.02),
@@ -233,15 +232,17 @@ def write_simulator_stability_corpus(output_root: Path) -> None:
 
     _write(
         sim_dir / "realistic_neutral_recoverable.bin",
-        _encode_stability_scenario(physics_profile=1, duration_s=1.0, velocity_feedback_scale=0.05),
+        _encode_stability_scenario(
+            physics_profile=1, duration_s=1.0, transfer_scenario_index=0
+        ),
     )
     _write(
-        sim_dir / "realistic_recoverable_pitch.bin",
+        sim_dir / "realistic_pitch_perturbation.bin",
         _encode_stability_scenario(
             physics_profile=1,
             duration_s=1.5,
-            initial_pitch_deg=12.0,
-            velocity_feedback_scale=0.05,
+            initial_pitch_deg=3.0,
+            transfer_scenario_index=1,
         ),
     )
     _write(
@@ -249,7 +250,7 @@ def write_simulator_stability_corpus(output_root: Path) -> None:
         _encode_stability_scenario(
             physics_profile=1,
             duration_s=2.0,
-            velocity_feedback_scale=0.05,
+            transfer_scenario_index=2,
             disturbances=[
                 _encode_disturbance(kind=1, start_s=0.2, duration_s=0.6, force_n=0.0, force_n_end=1.5),
                 _encode_disturbance(kind=1, start_s=0.8, duration_s=0.6, force_n=1.5, force_n_end=0.0),
@@ -261,8 +262,7 @@ def write_simulator_stability_corpus(output_root: Path) -> None:
         _encode_stability_scenario(
             physics_profile=1,
             duration_s=2.0,
-            velocity_feedback_scale=0.05,
-            velocity_feedback_tau_s=0.10,
+            transfer_scenario_index=8,
             imu_pitch_lag_s=0.01,
             disturbances=[
                 _encode_disturbance(kind=2, start_s=0.3, duration_s=0.0, com_bias_rad=0.01),
@@ -274,7 +274,7 @@ def write_simulator_stability_corpus(output_root: Path) -> None:
         _encode_stability_scenario(
             physics_profile=1,
             duration_s=2.0,
-            velocity_feedback_scale=0.05,
+            transfer_scenario_index=3,
             joy_segments=[
                 _encode_joy_segment(start_s=0.15, duration_s=0.6, forward=0.0, turn=0.0, forward_end=0.8),
                 _encode_joy_segment(start_s=0.75, duration_s=0.6, forward=0.8, turn=0.0, forward_end=0.0),
@@ -286,7 +286,7 @@ def write_simulator_stability_corpus(output_root: Path) -> None:
         _encode_stability_scenario(
             physics_profile=1,
             duration_s=2.5,
-            velocity_feedback_scale=0.05,
+            transfer_scenario_index=14,
             joy_segments=[
                 _encode_joy_segment(start_s=0.2, duration_s=0.5, forward=0.0, turn=0.0, forward_end=0.6, turn_end=0.7),
                 _encode_joy_segment(start_s=0.7, duration_s=0.5, forward=0.6, turn=0.7, forward_end=-0.4, turn_end=-0.7),

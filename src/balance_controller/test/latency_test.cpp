@@ -122,28 +122,21 @@ TEST(DataPathSanity, StepperStepN_ManyDirFlips_CumulativeMatchesSetupDelay) {
 
 // ------------------------------------------------------------
 // 2) PitchComplementaryFilter tracks large step (0, to 20°).
-//    We feed samples at a fixed dt and check convergence in "a few" samples.
+//    A physical attitude change has a matching gyro signal. An accel-only
+//    discontinuity represents linear specific force and must not tilt the
+//    estimate.
 // ------------------------------------------------------------
-TEST(DataPathSanity, ComplementaryFilter_RiseTime_20DegStep) {
+TEST(DataPathSanity, ComplementaryFilterTracksRotationAndRejectsAccelOnlyJump) {
   using clock = std::chrono::steady_clock;
 
   // ---- Required budgets for this project (tune to your plant)
 
   // ---- Test setup
   const double fs_hz = Config::sampling_hz;  // e.g., 833 Hz
-  const double dt_s = 1.0 / fs_hz;
   const auto tick = std::chrono::nanoseconds{std::llround(1e9 / fs_hz)};
 
   const double target_deg = 20.0;  // keep within reliable range
   const double target_rad = deg2rad(target_deg);
-  const double y10 = 0.10 * target_rad;
-  const double y90 = 0.90 * target_rad;
-
-  // Conservative sample bound (5× slower time constant among corr/gyro LPFs)
-  const double tau_corr = 1.0 / (2.0 * M_PI * std::max(0.1, Config::fc_acc_corr_hz));
-  const double tau_gyro = 1.0 / (2.0 * M_PI * std::max(0.1, Config::fc_gyro_lpf_hz));
-  const double tau_dom = std::max(tau_corr, tau_gyro);
-  const int maxN = static_cast<int>(std::ceil(5.0 * tau_dom * fs_hz));
 
   auto accel_for_pitch_g = [](double pitch_rad) {
     const double s = std::sin(pitch_rad), c = std::cos(pitch_rad);
@@ -161,33 +154,24 @@ TEST(DataPathSanity, ComplementaryFilter_RiseTime_20DegStep) {
   // Prime
   for (int i = 0; i < 5; ++i) (void)push(0.0, 0.0);
 
-  // Instant step and hold (gyro=0 so we isolate accel-correction)
-  (void)push(target_rad, 0.0);
-
-  int k10 = -1, k90 = -1;
-  for (int k = 1; k <= maxN; ++k) {
-    const double y = push(target_rad, 0.0).angle_rad;
-    if (k10 < 0 && y >= y10) k10 = k;
-    if (k90 < 0 && y >= y90) {
-      k90 = k;
-      break;
-    }
+  for (int i = 0; i < static_cast<int>(0.25 * fs_hz); ++i) {
+    (void)push(target_rad, 0.0);
   }
+  EXPECT_LT(std::abs(filt.read_latest().angle_rad), deg2rad(2.0));
 
-  // Always print a compact summary
-  const double t10_ms = (k10 > 0 ? k10 : maxN) * dt_s * 1e3;
-  const double t90_ms = (k90 > 0 ? k90 : maxN) * dt_s * 1e3;
-  const double tr_ms = (k10 > 0 && k90 > 0) ? (t90_ms - t10_ms) : (maxN * dt_s * 1e3);
-  std::printf(
-      "[Pitch rise] step=%.1f° fs=%.0fHz k10=%d (%.1f ms) k90=%d (%.1f "
-      "ms) rise=%.1f ms (bound=%d)\n",
-      target_deg, fs_hz, k10, t10_ms, k90, t90_ms, tr_ms, maxN);
-
-  ASSERT_NE(k10, -1) << "Never crossed 10% within bound.";
-  ASSERT_NE(k90, -1) << "Never crossed 90% within bound.";
-
-  // Project requirement: accel-correction must converge fast enough
-  EXPECT_LE(tr_ms, Config::pitch_rise_ms) << "Accel-correction path is too slow for control needs.";
+  filt.reset();
+  for (int i = 0; i < 5; ++i) (void)push(0.0, 0.0);
+  constexpr double rotation_s = 0.5;
+  const double rate_rad_s = target_rad / rotation_s;
+  const int rotation_samples = static_cast<int>(rotation_s * fs_hz);
+  for (int i = 1; i <= rotation_samples; ++i) {
+    const double physical_pitch = target_rad * static_cast<double>(i) / rotation_samples;
+    (void)push(physical_pitch, rate_rad_s);
+  }
+  for (int i = 0; i < static_cast<int>(0.1 * fs_hz); ++i) {
+    (void)push(target_rad, 0.0);
+  }
+  EXPECT_NEAR(filt.read_latest().angle_rad, target_rad, deg2rad(1.0));
 }
 
 TEST(DataPathSanity, ComplementaryFilter_GyroLPF_RiseTime_RateStep) {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstring>
+#include <mutex>
 #include <type_traits>
 
 #include "messages/msg_base.h"
@@ -29,6 +30,7 @@ class MessageBus {
  private:
   void* const ctx_;
   const DispatchFn dispatcher_;
+  std::recursive_mutex dispatch_mu_;
 
   void dispatch(MsgId id, const void* payload);
 };

@@ -145,6 +145,7 @@ if (BUILD_TESTS)
   set(TEST_DIR ${CMAKE_SOURCE_DIR}/src/balance_controller/test)
   add_library(balancer_sim_support STATIC
     ${TEST_DIR}/simulator/balancer_simulator.cpp
+    ${TEST_DIR}/simulator/simulator_engine.cpp
     ${TEST_DIR}/simulator/simulator_runner.cpp
   )
   target_link_libraries(balancer_sim_support PRIVATE balancer_common)
@@ -160,6 +161,7 @@ if (BUILD_TESTS)
     ${TEST_DIR}/control_loop_test.cpp
     ${TEST_DIR}/simulator_runner_test.cpp
     ${TEST_DIR}/time_service_test.cpp
+    ${TEST_DIR}/runtime_correctness_test.cpp
     ${TEST_DIR}/latency_test.cpp
     ${CMAKE_SOURCE_DIR}/src/balance_controller/stubs/pigpiod_stub.cpp
   )
@@ -194,6 +196,12 @@ if (BUILD_TESTS)
   )
   target_link_libraries(balancer_plant_audit PRIVATE balancer_common balancer_sim_support)
 
+  add_executable(balancer_simulator_tuner
+    ${CMAKE_SOURCE_DIR}/src/balance_controller/test/simulator_tuner_main.cpp
+    ${CMAKE_SOURCE_DIR}/src/balance_controller/stubs/pigpiod_stub.cpp
+  )
+  target_link_libraries(balancer_simulator_tuner PRIVATE balancer_common balancer_sim_support)
+
   # 5) sil_app (Hardware-in-the-loop simulation/testing)
   add_executable(sil_app
     ${CMAKE_SOURCE_DIR}/src/balance_controller/extras/sil_app.cpp
@@ -214,6 +222,7 @@ if (BUILD_TESTS)
 
     add_executable(balancer_fuzz_simulator_scenario EXCLUDE_FROM_ALL
       ${CMAKE_SOURCE_DIR}/tests/fuzz/simulator_scenario_fuzz.cpp
+      ${CMAKE_SOURCE_DIR}/src/balance_controller/stubs/pigpiod_stub.cpp
     )
     target_compile_definitions(balancer_fuzz_simulator_scenario PRIVATE
       BALANCER_REPO_ROOT="${CMAKE_SOURCE_DIR}"
@@ -226,6 +235,7 @@ if (BUILD_TESTS)
 
     add_executable(balancer_fuzz_simulator_stability EXCLUDE_FROM_ALL
       ${CMAKE_SOURCE_DIR}/tests/fuzz/simulator_stability_fuzz.cpp
+      ${CMAKE_SOURCE_DIR}/src/balance_controller/stubs/pigpiod_stub.cpp
     )
     target_compile_definitions(balancer_fuzz_simulator_stability PRIVATE
       BALANCER_REPO_ROOT="${CMAKE_SOURCE_DIR}"

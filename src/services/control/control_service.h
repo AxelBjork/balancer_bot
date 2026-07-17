@@ -19,21 +19,19 @@ inline constexpr char kControlServiceDoc[] =
     "`RateControllerCore` API, and republishes the core's outputs as reflected IPC payloads. The "
     "control law itself is a physics-shaped outer loop wrapped around the PX4 pitch-rate "
     "controller. A joystick forward command produces a target wheel velocity in steps per second. "
-    "The velocity term is combined with lean-trim and angle-trim biases are "
-    "added, and the PX4 `RateControl` block tracks a damped pitch-rate setpoint:\n\n"
-    "$$ \\theta_{sp} = k_{vel}(v_{ref} - v) + \\theta_{trim} $$\n\n"
+    "A 50 Hz velocity PI produces the pitch reference, and the PX4 `RateControl` block "
+    "tracks a damped pitch-rate setpoint:\n\n"
+    "$$ \\theta_{sp} = k_{vp}(v_{ref} - v) + \\int k_{vi}(v_{ref} - v)dt $$\n\n"
     "$$ \\omega_{sp} = k_{pitch}(\\theta_{sp} - \\theta) - k_{pitch\\_rate}\\dot{\\theta} $$\n\n"
-    "The resulting normalized pitch-axis effort is scaled into motor commands in steps per second, "
-    "clamped to the configured ceiling, and split into left/right wheel targets by adding a turn "
-    "term.\n\n"
+    "The target wheel speed is fed forward at the velocity-command actuator boundary. The "
+    "normalized pitch-axis effort is scaled into a balance correction, clamped to the configured "
+    "ceiling, and split into left/right wheel targets with balance-priority turn allocation.\n\n"
     "The service also exposes several practical adaptations that matter for balancing behavior: it "
-    "uses real motor feedback from `MotorService` whenever it is available and falls back to the "
-    "last commanded wheel speeds only in SIL-style configurations where no hardware feedback "
-    "exists. It learns a slow lean-trim bias from persistent drift, and resets or decays that trim when the "
-    "robot is highly tilted or actively commanded. Every control step also publishes "
+    "uses completed-pulse feedback from `MotorService`. It resets both controller integrators on "
+    "fallover, stale IMU data, or an actuator fault. Every control step also publishes "
     "`SystemTelemetry`, including fused pitch, filtered pitch rate, raw IMU diagnostics, "
     "pitch-reference decomposition, rate setpoint, controller output, wheel-speed command, "
-    "per-wheel applied feedback, and trim state so the SIL harness can inspect controller "
+    "per-wheel applied feedback, saturation, and actuator-fault state so the SIL harness can inspect controller "
     "internals without attaching directly to the core.";
 
 class DOC_DESC(kControlServiceDoc) ControlService {
@@ -60,7 +58,6 @@ class DOC_DESC(kControlServiceDoc) ControlService {
   ipc::TypedPublisher<ControlService> bus_;
   RateControllerCore core_;
 
-  // Fallback proxy for SIL when no explicit motor feedback is available.
   double last_left_sps_ = 0.0;
   double last_right_sps_ = 0.0;
   ipc::MotorFeedbackPayload latest_motor_feedback_{};
@@ -100,14 +97,14 @@ inline void ControlService::on_message<MsgId::ImuData>(const ipc::ImuSamplePaylo
 
 template <>
 inline void ControlService::on_message<MsgId::PhysicsTick>(const PhysicsTickPayload& p) {
-  const auto now = std::chrono::steady_clock::time_point(std::chrono::microseconds(p.sim_time_us));
+  const auto now = std::chrono::steady_clock::time_point(std::chrono::microseconds(p.timestamp_us));
   core_.step(p.dt_s, now);
 }
 
 template <>
 inline void ControlService::on_message<MsgId::MotorFeedback>(const ipc::MotorFeedbackPayload& p) {
   latest_motor_feedback_ = p;
-  observed_velocity_sps_ = -p.measured_avg_sps;
+  observed_velocity_sps_ = p.measured_avg_sps;
   const double dt_s = std::max(0.0, p.update_dt_ms / 1000.0);
   if (!have_motor_feedback_ || Config::fc_velocity_hz <= 0.0 || dt_s <= 0.0) {
     filtered_velocity_sps_ = observed_velocity_sps_;
@@ -115,7 +112,7 @@ inline void ControlService::on_message<MsgId::MotorFeedback>(const ipc::MotorFee
     const double alpha = std::exp(-2.0 * M_PI * Config::fc_velocity_hz * dt_s);
     filtered_velocity_sps_ = alpha * filtered_velocity_sps_ + (1.0 - alpha) * observed_velocity_sps_;
   }
-  core_.updateOuterLoop(filtered_velocity_sps_, dt_s);
+  core_.setMotorFeedback(filtered_velocity_sps_, p.actuator_fault != 0);
   have_motor_feedback_ = true;
 }
 

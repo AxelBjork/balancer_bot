@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import select
 import signal
 import socket
 import subprocess
@@ -75,17 +76,31 @@ def udp(sil_process):
 def _start_sil_process():
     proc = subprocess.Popen(
         [str(_sil_binary())],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=0,
         preexec_fn=os.setsid,
     )
 
-    deadline = time.monotonic() + 0.01
+    deadline = time.monotonic() + 5.0
+    startup_output = bytearray()
     while time.monotonic() < deadline:
         if proc.poll() is not None:
-            pytest.fail(f"sil_app exited during startup (rc={proc.returncode})")
-        time.sleep(0.001)
-    return proc
+            output = startup_output.decode(errors="replace")
+            pytest.fail(f"sil_app exited during startup (rc={proc.returncode})\n{output}")
+
+        ready, _, _ = select.select([proc.stdout], [], [], 0.1)
+        if not ready:
+            continue
+
+        chunk = os.read(proc.stdout.fileno(), 4096)
+        startup_output.extend(chunk)
+        if b"UDP Bridge listening" in startup_output:
+            return proc
+
+    _stop_sil_process(proc)
+    output = startup_output.decode(errors="replace")
+    pytest.fail(f"sil_app did not become ready within 5 seconds\n{output}")
 
 
 def _stop_sil_process(proc):

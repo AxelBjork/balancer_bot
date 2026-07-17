@@ -17,9 +17,8 @@ inline constexpr char kTimeServiceDoc[] =
     "system run from a fully deterministic external timeline instead of wall clock time. The "
     "default timestep is currently `1 / 400 s`, so the nominal scheduler frequency is about "
     "`400 Hz`.\n\n"
-    "Each tick increments the monotonically increasing elapsed timestamp and publishes\n\n"
-    "$$ t_{sim,us} \\leftarrow t_{sim,us} + \\Delta t \\cdot 10^6 $$\n\n"
-    "with the exact `dt_s` used for that step embedded in the payload. `ControlService` consumes "
+    "Deterministic ticks increment a zero-based timestamp. Runtime ticks publish an absolute "
+    "`std::chrono::steady_clock` timestamp and the elapsed wall-clock `dt_s`. `ControlService` consumes "
     "these ticks as the authoritative integration step, so keeping this service as the sole owner "
     "of tick publication prevents divergent notions of time across hardware, SIL replay, and unit "
     "tests.";
@@ -36,16 +35,16 @@ class DOC_DESC(kTimeServiceDoc) TimeService {
   void start();
   void stop();
   void advance(double dt_s);
-  uint64_t elapsed_time_us() const;
+  uint64_t current_time_us() const;
 
  private:
   ipc::TypedPublisher<TimeService> bus_;
   const double default_dt_s_;
   std::atomic<bool> running_{false};
   std::thread worker_;
-  std::atomic<uint64_t> elapsed_time_us_{0};
+  std::atomic<uint64_t> current_time_us_{0};
 
-  void publish_tick(double dt_s);
+  void publish_tick(double dt_s, uint64_t timestamp_us);
 };
 
 }  // namespace sil

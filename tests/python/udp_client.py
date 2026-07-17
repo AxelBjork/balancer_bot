@@ -11,6 +11,10 @@ class UdpClient:
     def __init__(self, bridge_host: str = BRIDGE_HOST, bridge_port: int = BRIDGE_PORT):
         self._bridge = (bridge_host, bridge_port)
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # Full-rate simulator telemetry is intentionally emitted at 400 Hz.  A
+        # large receive queue prevents a fast deterministic run from dropping
+        # its terminal SimRunDone datagram while the client drains telemetry.
+        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8 * 1024 * 1024)
         self._sock.bind(("127.0.0.1", 0))
         self._sock.settimeout(1.0)
 

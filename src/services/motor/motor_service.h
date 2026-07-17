@@ -15,7 +15,7 @@ inline constexpr char kMotorServiceDoc[] =
     "`MotorRunner` if one is attached:\n\n"
     "$$ u_L, u_R \\; [\\mathrm{steps/s}] \\rightarrow \\texttt{MotorRunner::setTargets}(u_L, u_R) "
     "$$\n\n"
-    "Keeping this service narrow is intentional. Closed-loop balance, trim estimation, and "
+    "Keeping this service narrow is intentional. Closed-loop balance, velocity estimation, and "
     "telemetry all remain in `ControlService` and `RateControllerCore`, while hardware-specific "
     "pulse generation, slew limiting, and direction control remain below this layer in the motor "
     "runner. The service also listens for `PhysicsTick` so it can keep the runner aligned with "

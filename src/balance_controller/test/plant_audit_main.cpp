@@ -94,11 +94,14 @@ void print_profile_audit(PhysicsProfile profile) {
 
   std::cout << "Profile: " << profile_name(profile) << "\n";
   std::cout << "Physics:\n";
-  std::cout << "  drive_force_per_mps = " << physics.drive_force_per_mps << "\n";
   std::cout << "  max_force_n         = " << physics.max_force_n << "\n";
+  std::cout << "  no_load_speed_mps   = " << physics.no_load_speed_mps << "\n";
+  std::cout << "  traction_coefficient= " << physics.traction_coefficient << "\n";
+  std::cout << "  motor_vel_damping   = " << physics.motor_velocity_damping << "\n";
   std::cout << "  cart_damping        = " << physics.cart_damping << "\n";
   std::cout << "  pitch_damping       = " << physics.pitch_damping << "\n";
   std::cout << "  motor_tau_s         = " << physics.motor_tau_s << "\n";
+  std::cout << "  phase_limit_steps   = " << physics.phase_error_limit_steps << "\n";
   std::cout << "Linearized A:\n";
   for (const auto& row : model.A) {
     print_row(row);

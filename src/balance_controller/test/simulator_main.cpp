@@ -12,7 +12,9 @@
 #include <cstring>
 #include <deque>
 #include <functional>
+#include <iomanip>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <random>
 #include <stdexcept>
@@ -30,6 +32,7 @@
 #include "services/motor/motor_service.h"
 #include "services/time/time_service.h"
 #include "simulator/balancer_simulator.h"
+#include "simulator/simulator_runner.h"
 
 namespace {
 
@@ -38,7 +41,6 @@ constexpr double kTickDtS = 1.0 / 400.0;
 constexpr double kFallPitchDeg = 75.0;
 constexpr std::size_t kMaxDatagram = 4096;
 constexpr std::size_t kTailWindowSamples = static_cast<std::size_t>(2.0 / kTickDtS);
-constexpr int kTelemetryStride = 80;
 
 constexpr uint8_t kPhysicsSimplified = 0;
 constexpr uint8_t kPhysicsRealistic = 1;
@@ -51,6 +53,7 @@ constexpr uint8_t kDoneCompleted = 0;
 constexpr uint8_t kDoneStoppedByClient = 1;
 constexpr uint8_t kDoneFell = 2;
 constexpr uint8_t kDoneInternalError = 3;
+constexpr uint8_t kDoneAcceptanceFailed = 4;
 
 std::atomic<bool> g_stop{false};
 
@@ -124,6 +127,8 @@ class UdpEndpoint {
 
     int opt = 1;
     ::setsockopt(fd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    const int send_buffer_bytes = 4 * 1024 * 1024;
+    ::setsockopt(fd_, SOL_SOCKET, SO_SNDBUF, &send_buffer_bytes, sizeof(send_buffer_bytes));
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
@@ -293,6 +298,12 @@ class SimulatorService {
       pump_messages();
       if (run_.has_value()) {
         step_active_run();
+        // Full-rate artifact capture needs light pacing so the UDP consumer can
+        // drain every row. Downsampled and summary-only validation runs remain
+        // fully deterministic and run without wall-clock sleeps.
+        if (run_.has_value() && run_->telemetry_stride == 1) {
+          std::this_thread::sleep_for(std::chrono::microseconds(100));
+        }
       } else {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
       }
@@ -303,32 +314,32 @@ class SimulatorService {
   struct ActiveRun {
     uint32_t run_id = 0;
     std::string pid_config_path;
-    std::array<ServiceDisturbance, ipc::kMaxSimDisturbances> disturbances{};
-    BalancerSimulator sim;
-    ScenarioBusContainer pipeline;
+    SimulatorScenario scenario;
+    SimulatorEngine engine;
     uint64_t sim_time_us = 0;
     int steps_total = 0;
     int steps_done = 0;
+    uint16_t telemetry_stride = 1;
+    bool transfer_validation = false;
     double max_abs_pitch_deg = 0.0;
     double max_abs_position_m = 0.0;
+    double current_saturation_s = 0.0;
+    double max_continuous_saturation_s = 0.0;
+    uint32_t actuator_fault_count = 0;
+    uint32_t controller_fault_flags = 0;
+    uint64_t timeline_hash = 1469598103934665603ULL;
     std::deque<TailSample> tail_samples;
-    std::array<double, 3> accel_bias_mps2{};
-    std::array<double, 3> gyro_bias_rad_s{};
-    std::mt19937 imu_rng{};
-    std::normal_distribution<double> accel_noise;
-    std::normal_distribution<double> gyro_noise;
-    double accel_noise_std = 0.0;
-    double gyro_noise_std = 0.0;
-    double last_left_applied_sps = 0.0;
-    double last_right_applied_sps = 0.0;
-
-    explicit ActiveRun(uint32_t id, std::string pid_path,
-                       std::array<ServiceDisturbance, ipc::kMaxSimDisturbances> disturbances_in,
-                       BalancerSimulator&& sim_in)
+    std::vector<SimulatorTimelineRow> transfer_rows;
+    explicit ActiveRun(uint32_t id, std::string pid_path, SimulatorScenario scenario_in,
+                       bool is_transfer_validation)
         : run_id(id),
           pid_config_path(std::move(pid_path)),
-          disturbances(std::move(disturbances_in)),
-          sim(std::move(sim_in)) {
+          scenario(std::move(scenario_in)),
+          engine(scenario),
+          transfer_validation(is_transfer_validation) {
+      if (transfer_validation) {
+        transfer_rows.reserve(static_cast<size_t>(std::llround(scenario.duration_s / kTickDtS)));
+      }
     }
   };
 
@@ -380,49 +391,80 @@ class SimulatorService {
     const std::string pid_path = requested_pid.empty() ? default_pid_config_ : requested_pid;
     ConfigPid::load(pid_path);
 
-    BalancerSimulator::Config sim_cfg;
-    sim_cfg.physics_profile = profile;
-    sim_cfg.initial_pitch_deg = request.initial_pitch_deg;
-    sim_cfg.com_angle_offset_rad = request.com_angle_offset_rad;
-    sim_cfg.wheel_slip_factor = request.wheel_slip_factor;
-    sim_cfg.velocity_feedback_scale = request.velocity_feedback_scale;
-    sim_cfg.velocity_feedback_tau_s = request.velocity_feedback_tau_s;
-    sim_cfg.imu_pitch_lag_s = request.imu_pitch_lag_s;
-    sim_cfg.imu_noise_seed = request.imu_noise_seed;
-    sim_cfg.accel_noise_std_mps2 = request.accel_noise_std_mps2;
-    sim_cfg.gyro_noise_std_rad_s = request.gyro_noise_std_rad_s;
-    sim_cfg.accel_bias_mps2 = request.accel_bias_mps2;
-    sim_cfg.gyro_bias_rad_s = request.gyro_bias_rad_s;
-    BalancerSimulator sim(sim_cfg);
-
-    std::array<ServiceDisturbance, ipc::kMaxSimDisturbances> disturbances{};
-    for (std::size_t i = 0; i < disturbances.size(); ++i) {
-      const auto& wire = request.disturbances[i];
-      disturbances[i] = ServiceDisturbance{
-          .kind = wire.kind,
-          .start_s = wire.start_s,
-          .duration_s = wire.duration_s,
-          .force_n = wire.force_n,
-          .com_bias_rad = wire.com_bias_rad,
-          .force_n_end = wire.force_n_end,
-          .com_bias_rad_end = wire.com_bias_rad_end,
-      };
+    SimulatorScenario scenario;
+    const bool transfer_validation =
+        request.transfer_scenario_index != std::numeric_limits<uint16_t>::max();
+    if (transfer_validation) {
+      const auto transfer_scenarios = transfer_scenario_set();
+      if (request.transfer_scenario_index >= transfer_scenarios.size()) {
+        throw std::runtime_error("invalid transfer scenario index");
+      }
+      scenario = transfer_scenarios[request.transfer_scenario_index];
+    } else {
+      scenario.name = "udp_run_" + std::to_string(request.run_id);
+      scenario.physics_profile = profile;
+      scenario.duration_s = request.duration_s;
+      scenario.initial_pitch_deg = request.initial_pitch_deg;
+      scenario.com_angle_offset_rad = request.com_angle_offset_rad;
+      scenario.mass_scale = request.mass_scale;
+      scenario.com_height_scale = request.com_height_scale;
+      scenario.inertia_scale = request.inertia_scale;
+      if (request.has_physics_override != 0) {
+        SimulatorPhysics physics;
+        physics.max_force_n = request.motor_max_force_n;
+        physics.no_load_speed_mps = request.motor_no_load_speed_mps;
+        physics.motor_velocity_damping = request.motor_velocity_damping;
+        physics.motor_tau_s = request.motor_tau_s;
+        physics.traction_coefficient = request.traction_coefficient;
+        physics.pitch_damping = request.pitch_damping;
+        physics.cart_damping = request.cart_damping;
+        physics.phase_error_limit_steps = request.phase_error_limit_steps;
+        physics.tire_stiffness_n_per_m = request.tire_stiffness_n_per_m;
+        physics.tire_damping_n_s_per_m = request.tire_damping_n_s_per_m;
+        physics.wheel_equivalent_mass_kg = request.wheel_equivalent_mass_kg;
+        scenario.physics_override = physics;
+      }
+      scenario.imu_pitch_lag_s = request.imu_pitch_lag_s;
+      scenario.imu_noise_seed = request.imu_noise_seed;
+      scenario.accel_noise_std_mps2 = request.accel_noise_std_mps2;
+      scenario.gyro_noise_std_rad_s = request.gyro_noise_std_rad_s;
+      scenario.imu_timestamp_jitter_us = request.imu_timestamp_jitter_us;
+      scenario.imu_sample_loss_rate = request.imu_sample_loss_rate;
+      scenario.accel_bias_mps2 = request.accel_bias_mps2;
+      scenario.gyro_bias_rad_s = request.gyro_bias_rad_s;
+      for (std::size_t i = 0; i < request.disturbances.size(); ++i) {
+        const auto& wire = request.disturbances[i];
+        SimulatorDisturbanceKind kind = SimulatorDisturbanceKind::Step;
+        if (wire.kind == ipc::kSimDisturbanceRamp) kind = SimulatorDisturbanceKind::Ramp;
+        if (wire.kind == ipc::kSimDisturbanceHoldBias) kind = SimulatorDisturbanceKind::HoldBias;
+        scenario.disturbances.push_back(SimulatorDisturbance{
+            .kind = kind,
+            .start_s = wire.start_s,
+            .duration_s = wire.duration_s,
+            .force_n = wire.force_n,
+            .com_bias_rad = wire.com_bias_rad,
+            .force_n_end = wire.force_n_end,
+            .com_bias_rad_end = wire.com_bias_rad_end,
+        });
+      }
+      for (const auto& wire : request.joy_segments) {
+        if (wire.duration_s <= 0.0) continue;
+        scenario.joy_segments.push_back(SimulatorJoySegment{
+            .start_s = wire.start_s,
+            .duration_s = wire.duration_s,
+            .forward = wire.forward,
+            .turn = wire.turn,
+            .forward_end = wire.forward_end,
+            .turn_end = wire.turn_end,
+        });
+      }
     }
 
-    run_.emplace(request.run_id, pid_path, disturbances, std::move(sim));
-    run_->steps_total = std::max(1, static_cast<int>(std::llround(request.duration_s / kTickDtS)));
-    run_->max_abs_pitch_deg = std::abs(run_->sim.get_pitch()) * 180.0 / kPi;
-    run_->accel_bias_mps2 = request.accel_bias_mps2;
-    run_->gyro_bias_rad_s = request.gyro_bias_rad_s;
-    run_->imu_rng.seed(request.imu_noise_seed);
-    run_->accel_noise_std = request.accel_noise_std_mps2;
-    run_->gyro_noise_std = request.gyro_noise_std_rad_s;
-    if (run_->accel_noise_std > 0.0) {
-      run_->accel_noise = std::normal_distribution<double>(0.0, run_->accel_noise_std);
-    }
-    if (run_->gyro_noise_std > 0.0) {
-      run_->gyro_noise = std::normal_distribution<double>(0.0, run_->gyro_noise_std);
-    }
+    run_.emplace(request.run_id, pid_path, std::move(scenario), transfer_validation);
+    run_->telemetry_stride = request.telemetry_stride;
+    run_->steps_total =
+        std::max(1, static_cast<int>(std::llround(run_->scenario.duration_s / kTickDtS)));
+    run_->max_abs_pitch_deg = std::abs(run_->engine.simulator().get_pitch()) * 180.0 / kPi;
 
     send_ack(request.run_id, true, kAckAccepted);
   }
@@ -446,82 +488,40 @@ class SimulatorService {
 
     ipc::JoystickCommandPayload request{};
     std::memcpy(&request, payload.data(), sizeof(request));
-    run_->pipeline.bus.publish<MsgId::JoystickCommand>(request);
-  }
-
-  DisturbanceSample disturbance_for_time(const ActiveRun& run, double sim_time_s) const {
-    DisturbanceSample total{};
-    for (const auto& disturbance : run.disturbances) {
-      if (sim_time_s < disturbance.start_s) {
-        continue;
-      }
-      switch (disturbance.kind) {
-        case ipc::kSimDisturbanceStep:
-          if (disturbance.duration_s > 0.0 &&
-              sim_time_s < (disturbance.start_s + disturbance.duration_s)) {
-            total.force_n += disturbance.force_n;
-            total.com_bias_rad += disturbance.com_bias_rad;
-          }
-          break;
-        case ipc::kSimDisturbanceRamp:
-          if (disturbance.duration_s > 0.0 &&
-              sim_time_s < (disturbance.start_s + disturbance.duration_s)) {
-            const double progress =
-                std::clamp((sim_time_s - disturbance.start_s) / disturbance.duration_s, 0.0, 1.0);
-            total.force_n +=
-                disturbance.force_n + (disturbance.force_n_end - disturbance.force_n) * progress;
-            total.com_bias_rad +=
-                disturbance.com_bias_rad +
-                (disturbance.com_bias_rad_end - disturbance.com_bias_rad) * progress;
-          }
-          break;
-        case ipc::kSimDisturbanceHoldBias:
-          if (disturbance.duration_s <= 0.0 ||
-              sim_time_s < (disturbance.start_s + disturbance.duration_s)) {
-            total.force_n += disturbance.force_n;
-            total.com_bias_rad += disturbance.com_bias_rad;
-          }
-          break;
-        default:
-          break;
-      }
-    }
-    return total;
+    run_->engine.set_joystick(request.forward, request.turn);
   }
 
   void step_active_run() {
     ActiveRun& run = *run_;
-    const double current_sim_time_s = static_cast<double>(run.sim_time_us) / 1e6;
-    const DisturbanceSample disturbance = disturbance_for_time(run, current_sim_time_s);
-    run.sim.set_external_force_n(disturbance.force_n);
-    run.sim.set_external_com_bias_rad(disturbance.com_bias_rad);
-
-    run.sim.step(kTickDtS);
-    const uint64_t next_sim_time_us =
-        run.sim_time_us + static_cast<uint64_t>(std::llround(kTickDtS * 1e6));
-    const auto raw_imu = make_controller_imu(run, next_sim_time_us);
-    run.pipeline.bus.publish<MsgId::ImuRawData>(raw_imu);
-
-    run.pipeline.services.time.advance(kTickDtS);
-    run.sim_time_us = run.pipeline.services.time.elapsed_time_us();
+    const SimulatorTimelineRow row = run.engine.step();
+    run.timeline_hash = update_simulator_timeline_hash(run.timeline_hash, row);
+    if (run.transfer_validation) run.transfer_rows.push_back(row);
+    run.sim_time_us = run.engine.current_time_us();
     ++run.steps_done;
 
-    if (run.pipeline.services.observer.have_telemetry) {
-      const auto& telemetry = run.pipeline.services.observer.latest_telemetry;
-      run.last_left_applied_sps = telemetry.left_applied_sps;
-      run.last_right_applied_sps = telemetry.right_applied_sps;
-      run.sim.set_motor_targets(telemetry.left_applied_sps, telemetry.right_applied_sps);
-    } else {
-      run.sim.set_motor_targets(run.last_left_applied_sps, run.last_right_applied_sps);
+    if (run.telemetry_stride > 0 &&
+        ((run.steps_done % run.telemetry_stride) == 0 || run.steps_done == run.steps_total)) {
+      publish_telemetry(run, row);
     }
 
-    if ((run.steps_done % kTelemetryStride) == 0 || run.steps_done == run.steps_total) {
-      publish_telemetry(run, raw_imu);
-    }
-
-    const double plant_pitch_deg = run.sim.get_pitch() * 180.0 / kPi;
+    const double plant_pitch_deg = row.plant_pitch_deg;
     run.max_abs_pitch_deg = std::max(run.max_abs_pitch_deg, std::abs(plant_pitch_deg));
-    run.max_abs_position_m = std::max(run.max_abs_position_m, std::abs(run.sim.get_position()));
+    run.max_abs_position_m = std::max(run.max_abs_position_m, std::abs(row.plant_position));
+    run.controller_fault_flags |= row.controller_fault_flags;
+    if (row.actuator_fault > 0.5) ++run.actuator_fault_count;
+    if (row.command_saturated > 0.5) {
+      run.current_saturation_s += kTickDtS;
+      run.max_continuous_saturation_s =
+          std::max(run.max_continuous_saturation_s, run.current_saturation_s);
+    } else {
+      run.current_saturation_s = 0.0;
+    }
+    run.tail_samples.push_back(TailSample{
+        .pitch_deg = row.plant_pitch_deg,
+        .velocity_mps = row.plant_velocity,
+        .force_saturated = row.force_saturated,
+    });
+    while (run.tail_samples.size() > kTailWindowSamples) run.tail_samples.pop_front();
 
     if (run.max_abs_pitch_deg > kFallPitchDeg) {
       finish_active_run(kDoneFell);
@@ -538,100 +538,81 @@ class SimulatorService {
                               (180.0 / kPi));
   }
 
-  ipc::ImuRawPayload make_controller_imu(ActiveRun& run, uint64_t sim_time_us) {
-    auto payload = run.sim.make_raw_imu_payload(sim_time_us);
-    if (run.accel_noise_std > 0.0) {
-      for (std::size_t i = 0; i < 3; ++i) {
-        payload.acc[i] += run.accel_noise(run.imu_rng);
-      }
-    }
-    if (run.gyro_noise_std > 0.0) {
-      for (std::size_t i = 0; i < 3; ++i) {
-        payload.gyr[i] += run.gyro_noise(run.imu_rng);
-      }
-    }
-    return payload;
-  }
-
-  void publish_telemetry(ActiveRun& run, const ipc::ImuRawPayload& imu) {
+  void publish_telemetry(ActiveRun& run, const SimulatorTimelineRow& row) {
     ipc::SystemTelemetryPayload payload{};
-    const auto& state = run.sim.state();
-    const auto& diag = run.sim.diagnostics();
-    const auto& telemetry = run.pipeline.services.observer.latest_telemetry;
-
     payload.run_id = run.run_id;
-    const double sim_time_s = static_cast<double>(run.sim_time_us) / 1e6;
-    payload.t_sec = run.pipeline.services.observer.have_telemetry ? telemetry.t_sec : sim_time_s;
-    payload.age_ms = run.pipeline.services.observer.have_telemetry ? telemetry.age_ms : 0.0;
-    payload.pitch_deg = run.pipeline.services.observer.have_telemetry ? telemetry.pitch_deg
-                                                                      : (state.pitch * 180.0 / kPi);
-    payload.pitch_rate_dps = run.pipeline.services.observer.have_telemetry
-                                 ? telemetry.pitch_rate_dps
-                                 : (state.pitch_rate * 180.0 / kPi);
-    payload.raw_acc_pitch_deg = accel_pitch_deg(imu.acc);
-    payload.fused_pitch_deg = run.pipeline.services.observer.have_telemetry
-                                  ? telemetry.fused_pitch_deg
-                                  : payload.pitch_deg;
-    payload.gyro_pitch_rate_dps = imu.gyr[1] * 180.0 / kPi;
-    payload.filtered_pitch_rate_dps = run.pipeline.services.observer.have_telemetry
-                                          ? telemetry.filtered_pitch_rate_dps
-                                          : (imu.gyr[1] * 180.0 / kPi);
-    payload.u_sps = run.pipeline.services.observer.have_telemetry ? telemetry.u_sps : 0.0;
-    payload.vel_error = run.pipeline.services.observer.have_telemetry ? telemetry.vel_error : 0.0;
-    payload.measured_vel_sps =
-        run.pipeline.services.observer.have_telemetry ? telemetry.measured_vel_sps : 0.0;
-    payload.vel_p_term = run.pipeline.services.observer.have_telemetry ? telemetry.vel_p_term : 0.0;
-    payload.pitch_ref_from_vel_deg =
-        run.pipeline.services.observer.have_telemetry ? telemetry.pitch_ref_from_vel_deg : 0.0;
-    payload.pitch_sp_deg =
-        run.pipeline.services.observer.have_telemetry ? telemetry.pitch_sp_deg : 0.0;
-    payload.pitch_error_deg = run.pipeline.services.observer.have_telemetry
-                                  ? telemetry.pitch_error_deg
-                                  : (payload.pitch_sp_deg - payload.pitch_deg);
-    payload.pitch_trim_deg =
-        run.pipeline.services.observer.have_telemetry ? telemetry.pitch_trim_deg : 0.0;
-    payload.trim_active =
-        run.pipeline.services.observer.have_telemetry ? telemetry.trim_active : 0.0;
-    payload.left_applied_sps = run.last_left_applied_sps;
-    payload.right_applied_sps = run.last_right_applied_sps;
-    payload.left_actual_steps =
-        run.pipeline.services.observer.have_motor_feedback
-            ? run.pipeline.services.observer.latest_motor_feedback.left_actual_steps
-            : 0;
-    payload.right_actual_steps =
-        run.pipeline.services.observer.have_motor_feedback
-            ? run.pipeline.services.observer.latest_motor_feedback.right_actual_steps
-            : 0;
-    payload.plant_pitch_deg = state.pitch * 180.0 / kPi;
-    payload.plant_pitch_rate_dps = state.pitch_rate * 180.0 / kPi;
-    payload.plant_position_m = state.position;
-    payload.plant_velocity_mps = state.velocity;
-    payload.target_wheel_velocity = diag.target_wheel_velocity;
-    payload.actual_wheel_velocity = diag.actual_wheel_velocity;
-    payload.plant_velocity_error = diag.velocity_error;
-    payload.f_cmd = diag.f_cmd;
-    payload.f_app = diag.f_app;
-    payload.external_force_n = diag.external_force_n;
-    payload.external_com_bias_rad = diag.external_com_bias_rad;
-    payload.x_ddot = diag.x_ddot;
-    payload.theta_ddot = diag.theta_ddot;
-    payload.force_saturated = diag.command_saturated ? 1.0 : 0.0;
+    payload.seed = row.seed;
+    payload.controller_fault_flags = row.controller_fault_flags;
+    payload.controller_saturation_flags = row.controller_saturation_flags;
+    payload.imu_timestamp_us = row.imu_timestamp_us;
+    payload.t_sec = row.sim_time_s;
+    payload.pitch_deg = row.pitch_deg;
+    payload.pitch_rate_dps = row.pitch_rate_dps;
+    payload.raw_acc_pitch_deg = row.raw_acc_pitch_deg;
+    payload.fused_pitch_deg = row.fused_pitch_deg;
+    payload.gyro_pitch_rate_dps = row.gyro_pitch_rate_dps;
+    payload.filtered_pitch_rate_dps = row.filtered_pitch_rate_dps;
+    payload.u_sps = row.u_sps;
+    payload.turn_sps = row.turn_sps;
+    payload.target_velocity_sps = row.target_velocity_sps;
+    payload.vel_error = row.vel_error;
+    payload.measured_vel_sps = row.measured_vel_sps;
+    payload.velocity_p_term_deg = row.velocity_p_term_deg;
+    payload.velocity_i_term_deg = row.velocity_i_term_deg;
+    payload.pitch_error_deg = row.pitch_error_deg;
+    payload.pitch_sp_deg = row.pitch_sp_deg;
+    payload.rate_setpoint_dps = row.rate_setpoint_dps;
+    payload.rate_error_dps = row.rate_error_dps;
+    payload.command_saturated = row.command_saturated;
+    payload.actuator_fault = row.actuator_fault;
+    payload.left_target_sps = row.left_sps;
+    payload.right_target_sps = row.right_sps;
+    payload.left_applied_sps = row.left_applied_sps;
+    payload.right_applied_sps = row.right_applied_sps;
+    payload.motor_update_dt_ms = row.motor_update_dt_ms;
+    payload.motor_feedback_age_ms = row.motor_feedback_age_ms;
+    payload.left_actual_steps = static_cast<int64_t>(row.left_actual_steps);
+    payload.right_actual_steps = static_cast<int64_t>(row.right_actual_steps);
+    payload.plant_pitch_deg = row.plant_pitch_deg;
+    payload.plant_pitch_rate_dps = row.plant_pitch_rate_dps;
+    payload.plant_position_m = row.plant_position;
+    payload.plant_velocity_mps = row.plant_velocity;
+    payload.target_wheel_velocity = row.target_wheel_velocity;
+    payload.actual_wheel_velocity = row.actual_wheel_velocity;
+    payload.plant_velocity_error = row.velocity_error;
+    payload.f_cmd = row.f_cmd;
+    payload.f_app = row.f_app;
+    payload.external_force_n = row.external_force_n;
+    payload.external_com_bias_rad = row.external_com_bias_rad;
+    payload.x_ddot = row.x_ddot;
+    payload.theta_ddot = row.theta_ddot;
+    payload.force_saturated = row.force_saturated;
+    payload.phase_error_steps = row.phase_error_steps;
+    payload.missed_steps = row.missed_steps;
+    payload.traction_limit_n = row.traction_limit_n;
+    payload.motor_force_limit_n = row.motor_force_limit_n;
+    payload.mass_scale = row.mass_scale;
+    payload.com_height_scale = row.com_height_scale;
+    payload.inertia_scale = row.inertia_scale;
+    const auto& physics = run.engine.simulator().physics();
+    payload.motor_max_force_n = physics.max_force_n;
+    payload.motor_no_load_speed_mps = physics.no_load_speed_mps;
+    payload.motor_velocity_damping = physics.motor_velocity_damping;
+    payload.motor_tau_s = physics.motor_tau_s;
+    payload.traction_coefficient = physics.traction_coefficient;
+    payload.pitch_damping = physics.pitch_damping;
+    payload.cart_damping = physics.cart_damping;
+    payload.phase_error_limit_steps = physics.phase_error_limit_steps;
+    payload.tire_stiffness_n_per_m = physics.tire_stiffness_n_per_m;
+    payload.tire_damping_n_s_per_m = physics.tire_damping_n_s_per_m;
+    payload.wheel_equivalent_mass_kg = physics.wheel_equivalent_mass_kg;
     endpoint_.send(active_peer_, MsgId::SystemTelemetry, payload);
-
-    run.tail_samples.push_back(TailSample{
-        .pitch_deg = payload.plant_pitch_deg,
-        .velocity_mps = payload.plant_velocity_mps,
-        .force_saturated = payload.force_saturated,
-    });
-    while (run.tail_samples.size() > kTailWindowSamples) {
-      run.tail_samples.pop_front();
-    }
   }
 
   RunSummary summarize(const ActiveRun& run) const {
     RunSummary out{};
     out.sample_count = static_cast<uint32_t>(run.steps_done);
-    out.final_pitch_deg = run.sim.get_pitch() * 180.0 / kPi;
+    out.final_pitch_deg = run.engine.simulator().get_pitch() * 180.0 / kPi;
     out.max_abs_pitch_deg = run.max_abs_pitch_deg;
     out.max_abs_position_m = run.max_abs_position_m;
 
@@ -664,6 +645,23 @@ class SimulatorService {
     }
 
     const RunSummary summary = summarize(*run_);
+    if (reason_code == kDoneCompleted && run_->transfer_validation) {
+      SimulatorRunResult result;
+      result.scenario = run_->scenario;
+      result.physics = run_->engine.physics();
+      result.rows = run_->transfer_rows;
+      result.final_pitch_deg = summary.final_pitch_deg;
+      result.max_abs_pitch_deg = summary.max_abs_pitch_deg;
+      result.tail_rms_pitch_deg = summary.tail_rms_pitch_deg;
+      result.max_continuous_saturation_s = run_->max_continuous_saturation_s;
+      result.actuator_fault_count = run_->actuator_fault_count;
+      result.controller_fault_flags = run_->controller_fault_flags;
+      result.timeline_hash = run_->timeline_hash;
+      result.fell = summary.max_abs_pitch_deg > kFallPitchDeg;
+      if (!evaluate_transfer_scenario(result).accepted) {
+        reason_code = kDoneAcceptanceFailed;
+      }
+    }
     ipc::SimRunDonePayload done{};
     done.run_id = run_->run_id;
     done.reason_code = reason_code;
@@ -676,6 +674,10 @@ class SimulatorService {
     done.tail_mean_abs_pitch_deg = summary.tail_mean_abs_pitch_deg;
     done.max_abs_position_m = summary.max_abs_position_m;
     done.tail_mean_abs_velocity_mps = summary.tail_mean_abs_velocity_mps;
+    done.max_continuous_saturation_s = run_->max_continuous_saturation_s;
+    done.actuator_fault_count = run_->actuator_fault_count;
+    done.controller_fault_flags = run_->controller_fault_flags;
+    done.timeline_hash = run_->timeline_hash;
     endpoint_.send(active_peer_, MsgId::SimRunDone, done);
     run_.reset();
   }
@@ -694,6 +696,69 @@ class SimulatorService {
   std::optional<ActiveRun> run_;
 };
 
+void print_transfer_catalog_json() {
+  const auto scenarios = transfer_scenario_set();
+  std::cout << std::setprecision(17) << '[';
+  for (size_t index = 0; index < scenarios.size(); ++index) {
+    const auto& scenario = scenarios[index];
+    const auto physics = scenario.physics_override.value_or(
+        BalancerSimulator::physics_for_profile(scenario.physics_profile));
+    if (index != 0) std::cout << ',';
+    std::cout << "{\"name\":\"" << scenario.name << "\""
+              << ",\"duration_s\":" << scenario.duration_s
+              << ",\"initial_pitch_deg\":" << scenario.initial_pitch_deg
+              << ",\"com_angle_offset_rad\":" << scenario.com_angle_offset_rad
+              << ",\"mass_scale\":" << scenario.mass_scale
+              << ",\"com_height_scale\":" << scenario.com_height_scale
+              << ",\"inertia_scale\":" << scenario.inertia_scale
+              << ",\"imu_pitch_lag_s\":" << scenario.imu_pitch_lag_s
+              << ",\"imu_noise_seed\":" << scenario.imu_noise_seed
+              << ",\"accel_noise_std_mps2\":" << scenario.accel_noise_std_mps2
+              << ",\"gyro_noise_std_rad_s\":" << scenario.gyro_noise_std_rad_s
+              << ",\"imu_timestamp_jitter_us\":" << scenario.imu_timestamp_jitter_us
+              << ",\"imu_sample_loss_rate\":" << scenario.imu_sample_loss_rate
+              << ",\"accel_bias_mps2\":[" << scenario.accel_bias_mps2[0] << ','
+              << scenario.accel_bias_mps2[1] << ',' << scenario.accel_bias_mps2[2] << ']'
+              << ",\"gyro_bias_rad_s\":[" << scenario.gyro_bias_rad_s[0] << ','
+              << scenario.gyro_bias_rad_s[1] << ',' << scenario.gyro_bias_rad_s[2] << ']'
+              << ",\"physics\":{\"motor_max_force_n\":" << physics.max_force_n
+              << ",\"motor_no_load_speed_mps\":" << physics.no_load_speed_mps
+              << ",\"motor_velocity_damping\":" << physics.motor_velocity_damping
+              << ",\"motor_tau_s\":" << physics.motor_tau_s
+              << ",\"traction_coefficient\":" << physics.traction_coefficient
+              << ",\"pitch_damping\":" << physics.pitch_damping
+              << ",\"cart_damping\":" << physics.cart_damping
+              << ",\"phase_error_limit_steps\":" << physics.phase_error_limit_steps
+              << ",\"tire_stiffness_n_per_m\":" << physics.tire_stiffness_n_per_m
+              << ",\"tire_damping_n_s_per_m\":" << physics.tire_damping_n_s_per_m
+              << ",\"wheel_equivalent_mass_kg\":" << physics.wheel_equivalent_mass_kg
+              << "},\"disturbances\":[";
+    for (size_t disturbance_index = 0; disturbance_index < scenario.disturbances.size();
+         ++disturbance_index) {
+      const auto& disturbance = scenario.disturbances[disturbance_index];
+      if (disturbance_index != 0) std::cout << ',';
+      std::cout << "{\"kind\":" << static_cast<int>(disturbance.kind)
+                << ",\"start_s\":" << disturbance.start_s
+                << ",\"duration_s\":" << disturbance.duration_s
+                << ",\"force_n\":" << disturbance.force_n
+                << ",\"com_bias_rad\":" << disturbance.com_bias_rad
+                << ",\"force_n_end\":" << disturbance.force_n_end
+                << ",\"com_bias_rad_end\":" << disturbance.com_bias_rad_end << '}';
+    }
+    std::cout << "],\"joy_segments\":[";
+    for (size_t joy_index = 0; joy_index < scenario.joy_segments.size(); ++joy_index) {
+      const auto& joy = scenario.joy_segments[joy_index];
+      if (joy_index != 0) std::cout << ',';
+      std::cout << "{\"start_s\":" << joy.start_s << ",\"duration_s\":" << joy.duration_s
+                << ",\"forward\":" << joy.forward << ",\"turn\":" << joy.turn
+                << ",\"forward_end\":" << joy.forward_end << ",\"turn_end\":" << joy.turn_end
+                << '}';
+    }
+    std::cout << "]}";
+  }
+  std::cout << "]\n";
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -702,6 +767,8 @@ int main(int argc, char** argv) {
 
   uint16_t port = 9001;
   std::string pid_config_path = ConfigPid::resolve_path("pid_sim.conf");
+  std::optional<size_t> direct_summary_index;
+  bool catalog_json = false;
 
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
@@ -709,8 +776,13 @@ int main(int argc, char** argv) {
       port = static_cast<uint16_t>(std::stoul(argv[++i]));
     } else if (arg == "--pid-config" && (i + 1) < argc) {
       pid_config_path = argv[++i];
+    } else if (arg == "--direct-summary" && (i + 1) < argc) {
+      direct_summary_index = std::stoul(argv[++i]);
+    } else if (arg == "--catalog-json") {
+      catalog_json = true;
     } else if (arg == "--help") {
-      std::cout << "Usage: balancer_simulator [--port <udp-port>] [--pid-config <path>]\n";
+      std::cout << "Usage: balancer_simulator [--port <udp-port>] [--pid-config <path>] "
+                   "[--direct-summary <transfer-index>] [--catalog-json]\n";
       return 0;
     } else {
       std::cerr << "Unknown argument: " << arg << std::endl;
@@ -719,6 +791,27 @@ int main(int argc, char** argv) {
   }
 
   try {
+    if (catalog_json) {
+      print_transfer_catalog_json();
+      return 0;
+    }
+    if (direct_summary_index.has_value()) {
+      const auto scenarios = transfer_scenario_set();
+      if (*direct_summary_index >= scenarios.size()) {
+        throw std::runtime_error("invalid transfer scenario index");
+      }
+      const auto result = run_simulator_scenario(scenarios[*direct_summary_index], pid_config_path);
+      std::cout << std::setprecision(17) << "{\"sample_count\":" << result.rows.size()
+                << ",\"elapsed_s\":" << scenarios[*direct_summary_index].duration_s
+                << ",\"final_pitch_deg\":" << result.final_pitch_deg
+                << ",\"max_abs_pitch_deg\":" << result.max_abs_pitch_deg
+                << ",\"tail_rms_pitch_deg\":" << result.tail_rms_pitch_deg
+                << ",\"max_continuous_saturation_s\":" << result.max_continuous_saturation_s
+                << ",\"actuator_fault_count\":" << result.actuator_fault_count
+                << ",\"controller_fault_flags\":" << result.controller_fault_flags
+                << ",\"timeline_hash\":" << result.timeline_hash << "}\n";
+      return 0;
+    }
     SimulatorService service(port, pid_config_path);
     service.run();
     return 0;

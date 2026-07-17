@@ -1,13 +1,14 @@
 #pragma once
 
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 #include <algorithm>
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
-#include <fcntl.h>
 #include <string>
-#include <sys/stat.h>
-#include <unistd.h>
 #include <type_traits>
 #include <vector>
 
@@ -60,7 +61,7 @@ inline bool read_binary_file(const char* path, std::vector<uint8_t>& out) {
 template <typename T>
 inline void copy_prefix(const std::vector<uint8_t>& bytes, T& out) {
   static_assert(std::is_trivially_copyable_v<T>);
-  std::memset(&out, 0, sizeof(T));
+  out = T{};
   if (!bytes.empty()) {
     std::memcpy(&out, bytes.data(), std::min(bytes.size(), sizeof(T)));
   }

@@ -14,6 +14,7 @@ from tests.fuzz.registry import corpus_root, iter_fuzz_targets
 _REPO_ROOT = Path(__file__).parent
 _BUILD_DIR = _REPO_ROOT / "build"
 _AFL_BUILD_DIR = _REPO_ROOT / "build-afl"
+_FUZZ_SMOKE_BUILD_DIR = _REPO_ROOT / "build-fuzz-smoke"
 
 
 def pytest_addoption(parser):
@@ -35,6 +36,12 @@ def pytest_addoption(parser):
         default=False,
         help="Run an AFL++ build in build-afl/ and validate the registered fuzz harness corpora.",
     )
+    parser.addoption(
+        "--fuzz-smoke",
+        action="store_true",
+        default=False,
+        help="Build fuzz harnesses with the host compiler and run every registered seed.",
+    )
 
 
 def pytest_sessionstart(session):
@@ -43,6 +50,7 @@ def pytest_sessionstart(session):
         config.getoption("--build")
         or config.getoption("--build-only")
         or config.getoption("--fuzz")
+        or config.getoption("--fuzz-smoke")
     )
     if not wants_build:
         return
@@ -51,14 +59,16 @@ def pytest_sessionstart(session):
         _run_standard_build()
         if config.getoption("--fuzz"):
             _run_afl_validation()
+        if config.getoption("--fuzz-smoke"):
+            _run_host_fuzz_smoke()
     except subprocess.CalledProcessError as exc:
         pytest.exit(f"Build, CTest, or AFL validation failed (rc={exc.returncode})", returncode=1)
     except RuntimeError as exc:
         pytest.exit(str(exc), returncode=1)
 
     if config.getoption("--build-only"):
-        if config.getoption("--fuzz"):
-            pytest.exit("C++ build/CTest and AFL validation successful. Exiting.", returncode=0)
+        if config.getoption("--fuzz") or config.getoption("--fuzz-smoke"):
+            pytest.exit("C++ build/CTest and fuzz validation successful. Exiting.", returncode=0)
         pytest.exit("C++ build/CTest successful. Exiting.", returncode=0)
 
 
@@ -70,14 +80,31 @@ def _run_standard_build() -> None:
         "-B",
         str(_BUILD_DIR),
         "-DBUILD_TESTS=ON",
+        "-DBUILD_REFLECTION_ARTIFACTS=ON",
     ]
-    build_cmd = ["cmake", "--build", str(_BUILD_DIR), "-j8"]
-    bindings_cmd = ["cmake", "--build", str(_BUILD_DIR), "--target", "balancer_bindings"]
+    build_cmd = [
+        "cmake",
+        "--build",
+        str(_BUILD_DIR),
+        "--target",
+        "balancer_tests",
+        "balancer_simulator",
+        "sil_app",
+        "balancer_reflection",
+        "-j8",
+    ]
     ctest_cmd = ["ctest", "--test-dir", str(_BUILD_DIR), "--output-on-failure", "-j8"]
 
-    subprocess.run(configure_cmd, check=True, cwd=_REPO_ROOT)
+    cache_path = _BUILD_DIR / "CMakeCache.txt"
+    cache = cache_path.read_text(encoding="utf-8", errors="replace") if cache_path.exists() else ""
+    configured_for_gate = (
+        "BUILD_TESTS:BOOL=ON" in cache and "BUILD_REFLECTION_ARTIFACTS:BOOL=ON" in cache
+    )
+    # The build tool re-runs CMake automatically when CMake inputs change. Avoiding an
+    # unconditional no-op configure saves roughly ten seconds in this environment.
+    if not configured_for_gate:
+        subprocess.run(configure_cmd, check=True, cwd=_REPO_ROOT)
     subprocess.run(build_cmd, check=True, cwd=_REPO_ROOT)
-    subprocess.run(bindings_cmd, check=True, cwd=_REPO_ROOT)
     subprocess.run(ctest_cmd, check=True, cwd=_REPO_ROOT)
 
 
@@ -85,6 +112,39 @@ def _afl_runtime_env() -> dict[str, str]:
     env = os.environ.copy()
     env.setdefault("ASAN_OPTIONS", "abort_on_error=1:detect_leaks=0:symbolize=0")
     return env
+
+
+def _run_host_fuzz_smoke() -> None:
+    configure_cmd = [
+        "cmake",
+        "-S",
+        str(_REPO_ROOT),
+        "-B",
+        str(_FUZZ_SMOKE_BUILD_DIR),
+        "-DBUILD_TESTS=ON",
+        "-DBUILD_AFL_TARGETS=ON",
+        "-DBUILD_REFLECTION_ARTIFACTS=OFF",
+        "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
+    ]
+    build_cmd = [
+        "cmake",
+        "--build",
+        str(_FUZZ_SMOKE_BUILD_DIR),
+        "--target",
+        "balancer_fuzz_targets",
+        "-j8",
+    ]
+    subprocess.run(configure_cmd, check=True, cwd=_REPO_ROOT)
+    subprocess.run(build_cmd, check=True, cwd=_REPO_ROOT)
+    write_corpora(corpus_root(_FUZZ_SMOKE_BUILD_DIR))
+    for target in iter_fuzz_targets():
+        for seed in target.seed_files(_FUZZ_SMOKE_BUILD_DIR):
+            subprocess.run(
+                target.command(_FUZZ_SMOKE_BUILD_DIR, seed),
+                check=True,
+                cwd=_REPO_ROOT,
+                timeout=max(1.0, target.timeout_ms / 1000.0),
+            )
 
 
 def _run_afl_validation() -> None:

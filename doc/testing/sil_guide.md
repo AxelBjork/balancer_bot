@@ -68,7 +68,9 @@ pytest --build
 ## Important Boundaries
 
 - `sil_app` is a smoke/integration path, not the main stability benchmark
-- the primary balance/stability gate is the direct simulator and its scenario ladder
+- the primary balance/stability gate is the in-process twenty-scenario transfer matrix
+- focused UDP coverage verifies exact all-tick equivalence with the direct engine and terminal
+  summary independence from telemetry stride
 - when no hardware motor feedback exists, `ControlService` falls back to commanded-speed proxy feedback
 
 For the broader testing model, read [Testing Strategy](strategy.md). For payloads and wire layout, read [IPC Protocol](../ipc/protocol.md).

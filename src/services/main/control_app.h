@@ -80,7 +80,7 @@ inline void app_dispatcher(void* ctx, MsgId id, const void* payload) {
             "ap=%6.0f%s  trn=%6.0f\n",
             p.t_sec, p.pitch_deg, p.pitch_rate_dps, p.u_sps,
             (std::abs(p.u_sps) >= 0.99 * kMaxSps) ? "*" : "", p.pitch_sp_deg,
-            p.pitch_ref_from_vel_deg, p.pitch_trim_deg, p.pitch_error_deg, p.vel_error,
+            p.velocity_p_term_deg, p.velocity_i_term_deg, p.pitch_error_deg, p.vel_error,
             p.measured_vel_sps, applied_avg_sps, motor_dt_warning ? "  MOTOR_DT!" : "", p.turn_sps);
       }
     }
@@ -100,7 +100,7 @@ class ControlApp {
     Stepper right(_ctx.handle(), rightPins, Config::invert_right, /*energize_now=*/true);
 
     // Coordinator at 1 kHz
-    MotorRunner motors(left, right, Config::control_hz, 250000.0);
+    MotorRunner motors(left, right, Config::control_hz, Config::motor_slew_sps_per_s);
 
     // Start MessageBus and Services
     BusContainer app_bus(&motors, app_dispatcher);

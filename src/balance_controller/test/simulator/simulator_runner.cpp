@@ -1,16 +1,13 @@
 #include "simulator/simulator_runner.h"
 
 #include <algorithm>
-#include <array>
-#include <chrono>
+#include <bit>
 #include <cmath>
-#include <random>
 #include <stdexcept>
 #include <string>
 
-#include "services/main/config.h"
-#include "services/imu/pitch_lpf.h"
 #include "messages/types.h"
+#include "services/main/config.h"
 
 namespace {
 
@@ -18,135 +15,8 @@ constexpr double kPi = 3.14159265358979323846;
 constexpr double kFallPitchDeg = 75.0;
 constexpr double kTickDtS = 1.0 / 400.0;
 
-struct DisturbanceSample {
-  double force_n = 0.0;
-  double com_bias_rad = 0.0;
-};
-
-DisturbanceSample disturbance_sample(const SimulatorDisturbance& disturbance, double sim_time_s) {
-  if (sim_time_s < disturbance.start_s) {
-    return {};
-  }
-
-  switch (disturbance.kind) {
-    case SimulatorDisturbanceKind::Step: {
-      if (disturbance.duration_s > 0.0 &&
-          sim_time_s < (disturbance.start_s + disturbance.duration_s)) {
-        return DisturbanceSample{
-            .force_n = disturbance.force_n,
-            .com_bias_rad = disturbance.com_bias_rad,
-        };
-      }
-      break;
-    }
-    case SimulatorDisturbanceKind::Ramp: {
-      if (disturbance.duration_s > 0.0 &&
-          sim_time_s < (disturbance.start_s + disturbance.duration_s)) {
-        const double progress =
-            std::clamp((sim_time_s - disturbance.start_s) / disturbance.duration_s, 0.0, 1.0);
-        return DisturbanceSample{
-            .force_n =
-                disturbance.force_n + (disturbance.force_n_end - disturbance.force_n) * progress,
-            .com_bias_rad = disturbance.com_bias_rad +
-                            (disturbance.com_bias_rad_end - disturbance.com_bias_rad) * progress,
-        };
-      }
-      break;
-    }
-    case SimulatorDisturbanceKind::HoldBias: {
-      const bool active = disturbance.duration_s <= 0.0 ||
-                          sim_time_s < (disturbance.start_s + disturbance.duration_s);
-      if (active) {
-        return DisturbanceSample{
-            .force_n = disturbance.force_n,
-            .com_bias_rad = disturbance.com_bias_rad,
-        };
-      }
-      break;
-    }
-  }
-
-  return {};
-}
-
-DisturbanceSample scenario_disturbance_for_time(const SimulatorScenario& scenario, double sim_time_s) {
-  DisturbanceSample total{};
-  for (const auto& disturbance : scenario.disturbances) {
-    const DisturbanceSample sample = disturbance_sample(disturbance, sim_time_s);
-    total.force_n += sample.force_n;
-    total.com_bias_rad += sample.com_bias_rad;
-  }
-  return total;
-}
-
-JoyCmd scenario_joy_for_time(const SimulatorScenario& scenario, double sim_time_s) {
-  JoyCmd joy{0.0f, 0.0f};
-  for (const auto& segment : scenario.joy_segments) {
-    if (sim_time_s < segment.start_s) {
-      continue;
-    }
-
-    const bool active = segment.duration_s <= 0.0 ||
-                        sim_time_s < (segment.start_s + segment.duration_s);
-    if (!active) {
-      continue;
-    }
-
-    double forward = segment.forward;
-    double turn = segment.turn;
-    if (segment.duration_s > 0.0) {
-      const double progress =
-          std::clamp((sim_time_s - segment.start_s) / segment.duration_s, 0.0, 1.0);
-      forward += (segment.forward_end - segment.forward) * progress;
-      turn += (segment.turn_end - segment.turn) * progress;
-    }
-
-    joy.forward = static_cast<float>(std::clamp(forward, -1.0, 1.0));
-    joy.turn = static_cast<float>(std::clamp(turn, -1.0, 1.0));
-  }
-  return joy;
-}
-
-double raw_acc_pitch_deg(const std::array<double, 3>& acc) {
-  return std::atan2(-acc[0], std::sqrt(acc[1] * acc[1] + acc[2] * acc[2])) * 180.0 / kPi;
-}
-
-class SimImuPipeline {
- public:
-  explicit SimImuPipeline(const SimulatorScenario& scenario):
-        rng_(scenario.imu_noise_seed),
-        accel_noise_std_(scenario.accel_noise_std_mps2),
-        gyro_noise_std_(scenario.gyro_noise_std_rad_s),
-        accel_noise_(0.0, scenario.accel_noise_std_mps2 > 0.0 ? scenario.accel_noise_std_mps2 : 1.0),
-        gyro_noise_(0.0, scenario.gyro_noise_std_rad_s > 0.0 ? scenario.gyro_noise_std_rad_s : 1.0) {}
-
-  ipc::ImuSamplePayload sample(const BalancerSimulator& sim, uint64_t sim_time_us) {
-    auto payload = sim.make_imu_payload(sim_time_us);
-    if (accel_noise_std_ > 0.0) {
-      for (int i = 0; i < 3; ++i) {
-        payload.acc[i] += accel_noise_(rng_);
-      }
-    }
-    if (gyro_noise_std_ > 0.0) {
-      for (int i = 0; i < 3; ++i) {
-        payload.gyr[i] += gyro_noise_(rng_);
-      }
-    }
-    return payload;
-  }
-
- private:
-  std::mt19937 rng_;
-  double accel_noise_std_;
-  double gyro_noise_std_;
-  std::normal_distribution<double> accel_noise_;
-  std::normal_distribution<double> gyro_noise_;
-};
-
-SimulatorScenario make_scenario(std::string name,
-                                double initial_pitch_deg,
-                                double com_angle_offset_rad,
-                                PhysicsProfile physics_profile) {
+SimulatorScenario make_scenario(std::string name, double initial_pitch_deg,
+                                double com_angle_offset_rad, PhysicsProfile physics_profile) {
   SimulatorScenario scenario;
   scenario.name = std::move(name);
   scenario.initial_pitch_deg = initial_pitch_deg;
@@ -158,126 +28,69 @@ SimulatorScenario make_scenario(std::string name,
 }  // namespace
 
 SimulatorRunResult run_simulator_scenario_with_loaded_pid(const SimulatorScenario& scenario) {
-  BalancerSimulator::Config sim_cfg;
-  sim_cfg.com_angle_offset_rad = scenario.com_angle_offset_rad;
-  sim_cfg.initial_pitch_deg = scenario.initial_pitch_deg;
-  sim_cfg.physics_profile = scenario.physics_profile;
-  sim_cfg.physics_override = scenario.physics_override;
-  sim_cfg.wheel_slip_factor = scenario.wheel_slip_factor;
-  sim_cfg.velocity_feedback_scale = scenario.velocity_feedback_scale;
-  sim_cfg.velocity_feedback_tau_s = scenario.velocity_feedback_tau_s;
-  sim_cfg.imu_pitch_lag_s = scenario.imu_pitch_lag_s;
-  sim_cfg.imu_noise_seed = scenario.imu_noise_seed;
-  sim_cfg.accel_noise_std_mps2 = scenario.accel_noise_std_mps2;
-  sim_cfg.gyro_noise_std_rad_s = scenario.gyro_noise_std_rad_s;
-  sim_cfg.accel_bias_mps2 = scenario.accel_bias_mps2;
-  sim_cfg.gyro_bias_rad_s = scenario.gyro_bias_rad_s;
-
-  BalancerSimulator sim(sim_cfg);
-  SimImuPipeline imu_pipeline(scenario);
-  RateControllerCore core;
-
-  double left_sps = 0.0;
-  double right_sps = 0.0;
-  double left_actual_steps = 0.0;
-  double right_actual_steps = 0.0;
-  Telemetry latest_telemetry{};
-  bool have_telemetry = false;
-
-  core.setMotorOutputs([&](double left, double right) {
-    left_sps = left;
-    right_sps = right;
-    sim.set_motor_targets(left, right);
-  });
-  core.setJoystick(JoyCmd{0.0f, 0.0f});
-  core.setTelemetrySink([&](const Telemetry& t) {
-    latest_telemetry = t;
-    have_telemetry = true;
-  });
-
+  SimulatorEngine engine(scenario);
   SimulatorRunResult result;
   result.scenario = scenario;
-  result.physics = sim.physics();
+  result.physics = engine.physics();
   result.rows.reserve(static_cast<size_t>(scenario.duration_s * Config::control_hz));
 
   const int steps = std::max(1, static_cast<int>(std::llround(scenario.duration_s / kTickDtS)));
-  uint64_t sim_time_us = 0;
-  result.max_abs_pitch_deg = std::abs(sim.get_pitch()) * 180.0 / kPi;
+  result.max_abs_pitch_deg = std::abs(engine.simulator().get_pitch()) * 180.0 / kPi;
+  double continuous_saturation_s = 0.0;
 
   for (int i = 0; i < steps; ++i) {
-    const double sim_time_s = static_cast<double>(sim_time_us) / 1e6;
-    const DisturbanceSample disturbance = scenario_disturbance_for_time(scenario, sim_time_s);
-    sim.set_external_force_n(disturbance.force_n);
-    sim.set_external_com_bias_rad(disturbance.com_bias_rad);
-    core.setJoystick(scenario_joy_for_time(scenario, sim_time_s));
-
-    sim.step(kTickDtS);
-    sim_time_us += static_cast<uint64_t>(kTickDtS * 1e6);
-    const auto imu = imu_pipeline.sample(sim, sim_time_us);
-
-    ImuSample sample{};
-    sample.angle_rad = imu.pitch_rad;
-    sample.gyro_rad_s = imu.pitch_rate_rad_s;
-    sample.pitch_accel_rad_s2 = imu.pitch_accel_rad_s2;
-    sample.yaw_rate_z = imu.gyr[2];
-    sample.t = std::chrono::steady_clock::time_point(std::chrono::microseconds(imu.timestamp_us));
-
-    core.pushImu(sample);
-    core.updateOuterLoop(sim.get_actual_speed_sps(), kTickDtS);
-    core.step(kTickDtS, sample.t);
-    left_actual_steps += left_sps * kTickDtS;
-    right_actual_steps += right_sps * kTickDtS;
-
-    const auto& diag = sim.diagnostics();
-    SimulatorTimelineRow row{};
-    row.sim_time_s = static_cast<double>(sim_time_us) / 1e6;
-    row.left_sps = left_sps;
-    row.right_sps = right_sps;
-    row.plant_pitch_deg = sim.get_pitch() * 180.0 / kPi;
-    row.plant_pitch_rate_dps = sim.state().pitch_rate * 180.0 / kPi;
-    row.plant_position = sim.state().position;
-    row.plant_velocity = sim.state().velocity;
-    row.target_wheel_velocity = diag.target_wheel_velocity;
-    row.actual_wheel_velocity = diag.actual_wheel_velocity;
-    row.velocity_error = diag.velocity_error;
-    row.f_cmd = diag.f_cmd;
-    row.f_app = diag.f_app;
-    row.x_ddot = diag.x_ddot;
-    row.theta_ddot = diag.theta_ddot;
-    row.command_saturated = (std::abs(left_sps) >= (0.99 * kMaxSps) ||
-                             std::abs(right_sps) >= (0.99 * kMaxSps))
-                                ? 1.0
-                                : 0.0;
-    row.force_saturated = diag.command_saturated ? 1.0 : 0.0;
-    if (have_telemetry) {
-      row.pitch_deg = latest_telemetry.pitch_deg;
-      row.pitch_rate_dps = latest_telemetry.pitch_rate_dps;
-      row.filtered_pitch_rate_dps = latest_telemetry.filtered_pitch_rate_dps;
-      row.raw_acc_pitch_deg = raw_acc_pitch_deg(imu.acc);
-      row.fused_pitch_deg = imu.pitch_rad * 180.0 / kPi;
-      row.gyro_pitch_rate_dps = imu.gyr[1] * 180.0 / kPi;
-      row.pitch_sp_deg = latest_telemetry.pitch_sp_deg;
-      row.u_sps = latest_telemetry.u_sps;
-      row.vel_error = latest_telemetry.vel_error;
-      row.vel_p_term = latest_telemetry.vel_p_term;
-      row.pitch_ref_from_vel_deg = latest_telemetry.pitch_ref_from_vel_deg;
-      row.pitch_trim_deg = latest_telemetry.pitch_trim_deg;
-      row.trim_active = latest_telemetry.trim_active;
-    }
-    row.left_applied_sps = left_sps;
-    row.right_applied_sps = right_sps;
-    row.left_actual_steps = left_actual_steps;
-    row.right_actual_steps = right_actual_steps;
-    row.external_force_n = diag.external_force_n;
-    row.external_com_bias_rad = diag.external_com_bias_rad;
+    const SimulatorTimelineRow row = engine.step();
     result.rows.push_back(row);
-
+    result.timeline_hash = update_simulator_timeline_hash(result.timeline_hash, row);
     result.max_abs_pitch_deg = std::max(result.max_abs_pitch_deg, std::abs(row.plant_pitch_deg));
+    result.controller_fault_flags |= row.controller_fault_flags;
+    if (row.actuator_fault > 0.5) ++result.actuator_fault_count;
+    if (row.command_saturated > 0.5) {
+      continuous_saturation_s += kTickDtS;
+      result.max_continuous_saturation_s =
+          std::max(result.max_continuous_saturation_s, continuous_saturation_s);
+    } else {
+      continuous_saturation_s = 0.0;
+    }
   }
 
-  result.final_pitch_deg = sim.get_pitch() * 180.0 / kPi;
+  result.final_pitch_deg = engine.simulator().get_pitch() * 180.0 / kPi;
   result.fell = result.max_abs_pitch_deg > kFallPitchDeg;
+  double tail_squared = 0.0;
+  const size_t tail_count = std::min(result.rows.size(), static_cast<size_t>(2.0 / kTickDtS));
+  const size_t tail_begin = result.rows.size() - tail_count;
+  for (size_t index = tail_begin; index < result.rows.size(); ++index) {
+    tail_squared += result.rows[index].plant_pitch_deg * result.rows[index].plant_pitch_deg;
+  }
+  if (tail_count > 0) {
+    result.tail_rms_pitch_deg = std::sqrt(tail_squared / static_cast<double>(tail_count));
+  }
   return result;
+}
+
+uint64_t update_simulator_timeline_hash(uint64_t hash, const SimulatorTimelineRow& row) {
+  const auto add_u64 = [&hash](uint64_t value) {
+    for (int shift = 0; shift < 64; shift += 8) {
+      hash ^= (value >> shift) & 0xffU;
+      hash *= 1099511628211ULL;
+    }
+  };
+  const auto add_double = [&add_u64](double value) { add_u64(std::bit_cast<uint64_t>(value)); };
+  add_double(row.sim_time_s);
+  add_u64(row.imu_timestamp_us);
+  add_double(row.plant_pitch_deg);
+  add_double(row.plant_pitch_rate_dps);
+  add_double(row.plant_position);
+  add_double(row.plant_velocity);
+  add_double(row.u_sps);
+  add_double(row.turn_sps);
+  add_double(row.left_sps);
+  add_double(row.right_sps);
+  add_double(row.left_actual_steps);
+  add_double(row.right_actual_steps);
+  add_u64(row.controller_fault_flags);
+  add_u64(row.controller_saturation_flags);
+  return hash;
 }
 
 SimulatorRunResult run_simulator_scenario(const SimulatorScenario& scenario,
@@ -354,8 +167,6 @@ std::optional<SimulatorScenario> simulator_named_scenario(std::string_view name,
   if (name == "slow_push_runaway") {
     auto scenario = make_scenario("slow_push_runaway", 0.0, 0.0, physics_profile);
     scenario.duration_s = 40.0;
-    scenario.velocity_feedback_scale = 0.85;
-    scenario.velocity_feedback_tau_s = 0.10;
     scenario.imu_pitch_lag_s = 0.01;
     scenario.disturbances = {
         SimulatorDisturbance{
@@ -380,8 +191,6 @@ std::optional<SimulatorScenario> simulator_named_scenario(std::string_view name,
   if (name == "hold_bias_long_horizon") {
     auto scenario = make_scenario("hold_bias_long_horizon", 0.0, 0.0, physics_profile);
     scenario.duration_s = 40.0;
-    scenario.velocity_feedback_scale = 0.85;
-    scenario.velocity_feedback_tau_s = 0.10;
     scenario.imu_pitch_lag_s = 0.01;
     scenario.disturbances.push_back(SimulatorDisturbance{
         .kind = SimulatorDisturbanceKind::HoldBias,
@@ -398,18 +207,11 @@ std::optional<SimulatorScenario> simulator_named_scenario(std::string_view name,
 std::vector<SimulatorScenario> simulator_scenario_set(std::string_view set_name,
                                                       PhysicsProfile physics_profile) {
   static constexpr std::array<std::string_view, 5> kRequired = {
-      "neutral_hold",
-      "pitch_bias_pos",
-      "pitch_bias_neg",
-      "com_offset_pos",
-      "com_offset_neg",
+      "neutral_hold", "pitch_bias_pos", "pitch_bias_neg", "com_offset_pos", "com_offset_neg",
   };
   static constexpr std::array<std::string_view, 5> kCapability = {
-      "combined_bias_pos",
-      "combined_bias_neg",
-      "recovery_large_pitch_pos",
-      "recovery_large_pitch_neg",
-      "disturbance_pulse",
+      "combined_bias_pos",        "combined_bias_neg", "recovery_large_pitch_pos",
+      "recovery_large_pitch_neg", "disturbance_pulse",
   };
   static constexpr std::array<std::string_view, 3> kSlowPush = {
       "slow_push_recover",
@@ -448,4 +250,123 @@ std::vector<SimulatorScenario> simulator_scenario_set(std::string_view set_name,
   }
 
   throw std::runtime_error("Unknown simulator scenario set: " + std::string(set_name));
+}
+
+std::vector<SimulatorScenario> transfer_scenario_set() {
+  auto push_scenario = [](std::string name) {
+    SimulatorScenario scenario;
+    scenario.name = std::move(name);
+    scenario.physics_profile = PhysicsProfile::Realistic;
+    scenario.duration_s = 20.0;
+    scenario.disturbances.push_back(SimulatorDisturbance{
+        .kind = SimulatorDisturbanceKind::Step,
+        .start_s = 1.0,
+        .duration_s = 0.1,
+        .force_n = 3.0,
+    });
+    return scenario;
+  };
+
+  std::vector<SimulatorScenario> scenarios;
+  SimulatorScenario neutral;
+  neutral.name = "nominal_neutral";
+  neutral.physics_profile = PhysicsProfile::Realistic;
+  neutral.duration_s = 20.0;
+  scenarios.push_back(neutral);
+
+  scenarios.push_back(push_scenario("nominal_push"));
+  auto noisy = push_scenario("nominal_noisy_push");
+  noisy.imu_noise_seed = 2026;
+  noisy.accel_noise_std_mps2 = 0.20;
+  noisy.gyro_noise_std_rad_s = 0.015;
+  noisy.imu_pitch_lag_s = 0.01;
+  scenarios.push_back(noisy);
+
+  SimulatorScenario drive;
+  drive.name = "nominal_drive_800_sps";
+  drive.physics_profile = PhysicsProfile::Realistic;
+  drive.duration_s = 12.0;
+  const double forward = 0.05 + 0.95 * (800.0 / 1200.0);
+  drive.joy_segments.push_back(SimulatorJoySegment{
+      .start_s = 1.0, .duration_s = 4.0, .forward = 0.0, .forward_end = forward});
+  drive.joy_segments.push_back(SimulatorJoySegment{
+      .start_s = 5.0, .duration_s = 4.0, .forward = forward, .forward_end = forward});
+  scenarios.push_back(drive);
+
+  auto add_scaled = [&](std::string name, const auto& mutate) {
+    auto scenario = push_scenario("margin_" + name);
+    scenario.physics_override = BalancerSimulator::physics_for_profile(PhysicsProfile::Realistic);
+    mutate(scenario);
+    scenarios.push_back(std::move(scenario));
+  };
+  add_scaled("mass_low", [](auto& value) { value.mass_scale = 0.90; });
+  add_scaled("mass_high", [](auto& value) { value.mass_scale = 1.10; });
+  add_scaled("com_low", [](auto& value) { value.com_height_scale = 0.85; });
+  add_scaled("com_high", [](auto& value) { value.com_height_scale = 1.15; });
+  add_scaled("inertia_low", [](auto& value) { value.inertia_scale = 0.80; });
+  add_scaled("inertia_high", [](auto& value) { value.inertia_scale = 1.20; });
+  add_scaled("motor_low", [](auto& value) { value.physics_override->max_force_n *= 0.70; });
+  add_scaled("motor_high", [](auto& value) { value.physics_override->max_force_n *= 1.20; });
+  add_scaled("lag_low", [](auto& value) { value.physics_override->motor_tau_s = 0.004; });
+  add_scaled("lag_high", [](auto& value) { value.physics_override->motor_tau_s = 0.020; });
+  add_scaled("traction_low",
+             [](auto& value) { value.physics_override->traction_coefficient = 0.60; });
+  add_scaled("traction_high",
+             [](auto& value) { value.physics_override->traction_coefficient = 1.20; });
+  add_scaled("pitch_damping_low", [](auto& value) { value.physics_override->pitch_damping = 0.0; });
+  add_scaled("pitch_damping_high",
+             [](auto& value) { value.physics_override->pitch_damping = 0.04; });
+  add_scaled("cart_drag_low", [](auto& value) { value.physics_override->cart_damping = 0.30; });
+  add_scaled("cart_drag_high", [](auto& value) { value.physics_override->cart_damping = 2.0; });
+  return scenarios;
+}
+
+TransferAcceptance evaluate_transfer_scenario(const SimulatorRunResult& result) {
+  TransferAcceptance acceptance;
+  const bool margin = result.scenario.name.rfind("margin_", 0) == 0;
+  const auto reject = [&](bool condition, std::string reason) {
+    if (condition) acceptance.failures.push_back(std::move(reason));
+  };
+  reject(result.fell, "fell");
+  reject(result.max_abs_pitch_deg >= 15.0, "peak_pitch");
+  reject(result.actuator_fault_count != 0, "actuator_fault");
+  const uint32_t invalid_timing_or_runtime_faults =
+      result.controller_fault_flags & ~static_cast<uint32_t>(ControllerFaultNoImu);
+  reject(invalid_timing_or_runtime_faults != ControllerFaultNone, "controller_fault");
+  reject(result.tail_rms_pitch_deg >= (margin ? 1.25 : 1.0), "tail_rms");
+  reject(result.max_continuous_saturation_s >= (margin ? 0.3125 : 0.250), "continuous_saturation");
+
+  if (result.scenario.name == "nominal_neutral") {
+    double max_position = 0.0;
+    for (const auto& row : result.rows) {
+      max_position = std::max(max_position, std::abs(row.plant_position));
+    }
+    reject(max_position >= 0.35, "neutral_travel");
+  } else if (result.scenario.name == "nominal_push") {
+    const bool recovered = std::any_of(result.rows.begin(), result.rows.end(), [](const auto& row) {
+      return row.sim_time_s >= 1.1 && row.sim_time_s <= 3.1 && std::abs(row.plant_pitch_deg) < 2.0;
+    });
+    reject(!recovered, "push_recovery");
+  } else if (result.scenario.name == "nominal_drive_800_sps") {
+    double drive_sum = 0.0;
+    size_t drive_count = 0;
+    double stopped_max = 0.0;
+    for (const auto& row : result.rows) {
+      if (row.sim_time_s >= 8.0 && row.sim_time_s <= 9.0) {
+        drive_sum += row.plant_velocity;
+        ++drive_count;
+      }
+      if (row.sim_time_s >= 11.0 && row.sim_time_s <= 12.0) {
+        stopped_max = std::max(stopped_max, std::abs(row.plant_velocity));
+      }
+    }
+    const double target_mps = 800.0 * BalancerSimulator::HardwareNominal::meters_per_step;
+    const double mean_speed = drive_count > 0 ? drive_sum / static_cast<double>(drive_count) : 0.0;
+    reject(drive_count == 0 || std::abs(mean_speed - target_mps) > 0.30 * target_mps,
+           "drive_speed");
+    reject(stopped_max >= 0.05, "stop_speed");
+  }
+
+  acceptance.accepted = acceptance.failures.empty();
+  return acceptance;
 }
