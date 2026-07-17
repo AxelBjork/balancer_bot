@@ -1,21 +1,23 @@
 # Testing Strategy
 
-The project uses three complementary test layers:
+The project uses four complementary test layers:
 
 - C++ unit and integration tests
 - Python SIL tests over UDP
-- deterministic direct-simulator scenario tests
+- deterministic unified-engine acceptance tests
+- host/AFL fuzz-harness validation
 
 ## C++ Test Layer
 
 `balancer_tests` covers the low-level behavior that is easiest to verify in-process:
 
 - `motor_runner_test.cpp`
-  motor rate slewing, step accumulation, and feedback snapshots
+  time-based motor slew, pulse-frame scheduling, completed-step accumulation, reversal, and faults
 - `control_loop_test.cpp`
-  control-core behavior including velocity feedback, trim, and position hold
+  controller v2 equations, signs, cadence, saturation, reset paths, and completed-pulse feedback
 - `simulator_runner_test.cpp`
-  sign conventions and simulator/controller invariants
+  sign conventions, engine equivalence, all twenty transfer scenarios, plant/IMU parameter A/B
+  coverage, and physical invariants
 - `time_service_test.cpp`
   exact tick publication and runtime monotonicity
 - `latency_test.cpp`
@@ -51,6 +53,16 @@ That keeps the normal `build/` flow unchanged, then configures a separate `build
 tree, builds the registered AFL++ harnesses, generates a deterministic seed corpus under
 `build-afl/fuzz-corpus/`, and runs `afl-showmap` over those generated seeds.
 
+The compiler-independent smoke gate is available even when AFL++ is not installed:
+
+```bash
+pytest --fuzz-smoke --build-only -q
+```
+
+It builds all three harnesses in `build-fuzz-smoke/`, regenerates the registered corpus, and runs
+all fourteen seeds. The seed formats can select and mutate cases from the canonical transfer
+catalog. AFL++ remains the instrumentation/coverage gate when its tools are available.
+
 Key files:
 
 - `tests/python/conftest.py`
@@ -63,15 +75,39 @@ Key files:
 - `tests/python/test_sil_loop.py`
   verifies the `sil_app` control path with injected tick/IMU traffic
 - `tests/python/test_sim_scenarios.py`
-  runs the direct simulator scenario ladder
+  checks representative downsampled UDP runs and complete physics overrides
 - `tests/python/test_simulator_main_artifacts.py`
-  checks simulator artifact generation
+  checks protocol behavior, stride-invariant summaries, and exact direct-versus-real-UDP timeline
+  hashes
 - `tests/python/test_run_artifacts.py`
   checks artifact summarization and hardware-log parsing
 
-## Direct Simulator Scenarios
+## Transfer Acceptance and Artifacts
 
-The direct simulator is the main software stability gate. It runs the controller against the plant model without UDP or service scheduling overhead.
+The full four-nominal-plus-sixteen-margin matrix runs in-process in `balancer_tests`. Direct tests,
+the UDP simulator, tuner, and fuzz harnesses obtain scenarios from `transfer_scenario_set()`; direct
+tests, the tuner, and UDP transfer runs use `evaluate_transfer_scenario()` for the hard acceptance
+decision. This keeps the normal gate fast while retaining focused real-UDP protocol coverage.
+
+To regenerate full-rate evidence and the stable report:
+
+```bash
+python3 tools/run_transfer_validation.py --include-build-gates
+```
+
+Each invocation writes a new directory under `build/sim/transfer/` and updates
+`build/sim/transfer_summary.md`. Use `--telemetry-stride N` for investigative runs; the release
+evidence uses stride `1`.
+
+Run the staged tuner with:
+
+```bash
+./build/balancer_simulator_tuner --stage all --base pid_sim.conf \
+  --output build/sim/tuning --top-k 20
+```
+
+It persists the grid, ranked results, selection, and PID for the inner, outer, and joint stages,
+then admits a final candidate only after the complete transfer matrix passes.
 
 Artifacts are written under:
 
@@ -113,9 +149,10 @@ They are not treated as golden replay traces for the simulator.
 
 ## What Each Layer Proves
 
-- C++ tests prove the local math, contracts, and service glue.
+- C++ tests prove the local math, contracts, service glue, and complete transfer matrix.
 - `sil_app` tests prove the UDP-facing message-bus runtime is alive and coherent.
-- direct simulator tests prove the current controller and plant model stay upright across a representative scenario ladder.
+- focused UDP tests prove wire behavior, artifact generation, telemetry downsampling, and exact
+  timeline equivalence with the direct engine.
 - AFL++ harness validation proves the fuzz targets still build, execute, and produce coverage on their seed corpora without changing the normal pytest gate.
 
 For the deeper simulator and control notes, read [Control and Simulator Notes](../notes/control_and_simulator.md). For the SIL-specific transport path, read [SIL Guide](sil_guide.md).

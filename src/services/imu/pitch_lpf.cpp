@@ -54,7 +54,9 @@ void PitchComplementaryFilter::push_sample(const Acc3& acc, const Gyr3& gyrv, Ti
 
   // 4) Compute accel pitch + decide whether to trust it
   const double ap = acc_pitch(acc_f_);  // [-pi, pi]
-  const bool accel_ok = accel_reliable(acc_f_, pred);
+  const bool accel_ok = accel_reliable(acc_f_, pred) &&
+                        std::abs(rad2deg(wrap_pi(ap - pred))) <=
+                            Config::accel_correction_max_innovation_deg;
 
   // 5) Complementary blend (accel correction only when reliable)
   if (accel_ok) {

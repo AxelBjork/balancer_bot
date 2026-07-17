@@ -8,10 +8,10 @@
 #include "afl_compat.h"
 #include "fuzz_support.h"
 #include "messages/balancer_msgs.h"
+#include "messages/types.h"
 #include "publisher.h"
 #include "services/control/control_service.h"
 #include "services/imu/imu_service.h"
-#include "messages/types.h"
 #include "udp_bridge.h"
 
 namespace {
@@ -39,13 +39,18 @@ struct ServiceHarness {
   std::uint64_t messages_processed = 0;
   std::uint64_t motor_targets_seen = 0;
   std::uint64_t telemetry_seen = 0;
-  float last_left_sps = 0.0f;
-  float last_right_sps = 0.0f;
-  float last_u_sps = 0.0f;
+  double last_left_sps = 0.0;
+  double last_right_sps = 0.0;
+  double last_u_sps = 0.0;
 
-  ServiceHarness() : bus(this, &ServiceHarness::dispatch), control(bus), imu(bus, false), ingress(bus) { control.start(); }
+  ServiceHarness()
+      : bus(this, &ServiceHarness::dispatch), control(bus), imu(bus, false), ingress(bus) {
+    control.start();
+  }
 
-  ~ServiceHarness() { control.stop(); }
+  ~ServiceHarness() {
+    control.stop();
+  }
 
   static void dispatch(void* ctx, MsgId id, const void* payload) {
     auto* self = static_cast<ServiceHarness*>(ctx);
@@ -55,11 +60,13 @@ struct ServiceHarness {
         ++self->messages_processed;
         break;
       case MsgId::ImuData:
-        self->control.on_message<MsgId::ImuData>(*static_cast<const ipc::ImuSamplePayload*>(payload));
+        self->control.on_message<MsgId::ImuData>(
+            *static_cast<const ipc::ImuSamplePayload*>(payload));
         ++self->messages_processed;
         break;
       case MsgId::PhysicsTick:
-        self->control.on_message<MsgId::PhysicsTick>(*static_cast<const PhysicsTickPayload*>(payload));
+        self->control.on_message<MsgId::PhysicsTick>(
+            *static_cast<const PhysicsTickPayload*>(payload));
         ++self->messages_processed;
         break;
       case MsgId::JoystickCommand:
@@ -112,12 +119,12 @@ void run_sequence(const std::vector<uint8_t>& input) {
     offset += payload_size;
   }
 
-  g_udp_sink ^= harness.messages_processed;
-  g_udp_sink += harness.motor_targets_seen * 3;
-  g_udp_sink += harness.telemetry_seen * 5;
-  g_udp_sink +=
-      static_cast<std::uint64_t>(std::llround(std::abs(harness.last_left_sps + harness.last_right_sps)));
-  g_udp_sink += static_cast<std::uint64_t>(std::llround(std::abs(harness.last_u_sps)));
+  g_udp_sink = g_udp_sink ^ harness.messages_processed;
+  g_udp_sink = g_udp_sink + harness.motor_targets_seen * 3;
+  g_udp_sink = g_udp_sink + harness.telemetry_seen * 5;
+  g_udp_sink = g_udp_sink + static_cast<std::uint64_t>(std::llround(
+                                std::abs(harness.last_left_sps + harness.last_right_sps)));
+  g_udp_sink = g_udp_sink + static_cast<std::uint64_t>(std::llround(std::abs(harness.last_u_sps)));
 }
 
 }  // namespace

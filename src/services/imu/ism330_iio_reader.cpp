@@ -17,6 +17,7 @@
 #include <unistd.h>
 
 #include "services/main/config.h" // for Config::sampling_hz, accel_cfg, gyro_cfg
+#include "services/imu/imu_sample_synchronizer.h"
 
 namespace fs = std::filesystem;
 
@@ -77,14 +78,8 @@ inline int64_t rd64le_s(const uint8_t* p) {
   return v;
 }
 
-inline Ism330IioReader::TimePoint iio_realtime_ns_to_steady(int64_t ts_ns) {
-  using sc  = std::chrono::steady_clock;
-  using sys = std::chrono::system_clock;
-  const auto sys_now    = sys::now();
-  const auto steady_now = sc::now();
-  const auto sys_to_steady = steady_now.time_since_epoch() - sys_now.time_since_epoch();
-  const auto sys_tp = sys::time_point(std::chrono::nanoseconds{ts_ns});
-  return sc::time_point(sys_tp.time_since_epoch() + sys_to_steady);
+inline Ism330IioReader::TimePoint iio_monotonic_ns_to_steady(int64_t ts_ns) {
+  return Ism330IioReader::TimePoint(std::chrono::nanoseconds{ts_ns});
 }
 
 inline std::string devCharFromSysfs(const fs::path& sys) {
@@ -209,10 +204,15 @@ struct Ism330IioReader::Impl {
     alignas(8) uint8_t bufA[kStride * 512];
     alignas(8) uint8_t bufG[kStride * 512];
 
-    struct Acc { double ax, ay, az; int64_t ts; bool updated; } lastA{0,0,0,0,false};
-    struct Gyr { double gx, gy, gz; int64_t ts; bool updated; } lastG{0,0,0,0,false};
-    int64_t tsA_emitted = 0;
-    int64_t tsG_emitted = 0;
+    ImuSampleSynchronizer synchronizer;
+
+    const auto emit_pair = [this](const ImuSynchronizedPair& pair) {
+      const double pitch = std::atan2(-pair.accel.value[0], pair.accel.value[2]);
+      if (cfg.on_sample) {
+        cfg.on_sample(pitch, pair.accel.value, pair.gyro.value,
+                      iio_monotonic_ns_to_steady(pair.timestamp_ns()));
+      }
+    };
 
     std::printf("Polling for IMU data...\n");
     while (alive.load(std::memory_order_relaxed)) {
@@ -226,36 +226,28 @@ struct Ism330IioReader::Impl {
         ssize_t n = ::read(fd_accel, bufA, sizeof(bufA));
         for (size_t off = 0; n > 0 && off + kStride <= static_cast<size_t>(n); off += kStride) {
           const uint8_t* p = bufA + off;
-          lastA.ax = static_cast<double>(static_cast<int16_t>(rd16le(p + kOffX))) * kAccelScale;
-          lastA.ay = static_cast<double>(static_cast<int16_t>(rd16le(p + kOffY))) * kAccelScale;
-          lastA.az = static_cast<double>(static_cast<int16_t>(rd16le(p + kOffZ))) * kAccelScale;
-          lastA.ts = rd64le_s(p + kOffTS);
-          lastA.updated = true;
+          const std::array<double, 3> raw{
+              static_cast<double>(static_cast<int16_t>(rd16le(p + kOffX))) * kAccelScale,
+              static_cast<double>(static_cast<int16_t>(rd16le(p + kOffY))) * kAccelScale,
+              static_cast<double>(static_cast<int16_t>(rd16le(p + kOffZ))) * kAccelScale};
+          if (const auto pair = synchronizer.push_accel(
+                  ImuTimedVector{applyAxisMap(Config::accel_cfg, raw), rd64le_s(p + kOffTS)})) {
+            emit_pair(*pair);
+          }
         }
       }
       if (pfds[1].revents & POLLIN) {
         ssize_t n = ::read(fd_gyro, bufG, sizeof(bufG));
         for (size_t off = 0; n > 0 && off + kStride <= static_cast<size_t>(n); off += kStride) {
           const uint8_t* p = bufG + off;
-          lastG.gx = static_cast<double>(static_cast<int16_t>(rd16le(p + kOffX))) * kGyroScale;
-          lastG.gy = static_cast<double>(static_cast<int16_t>(rd16le(p + kOffY))) * kGyroScale;
-          lastG.gz = static_cast<double>(static_cast<int16_t>(rd16le(p + kOffZ))) * kGyroScale;
-          lastG.ts = rd64le_s(p + kOffTS);
-          lastG.updated = true;
-        }
-      }
-
-      if (lastA.updated && lastG.updated) {
-        if (lastA.ts != tsA_emitted || lastG.ts != tsG_emitted) {
-          const std::array<double,3> acc = applyAxisMap(Config::accel_cfg, {lastA.ax,lastA.ay,lastA.az});
-          const std::array<double,3> gyr = applyAxisMap(Config::gyro_cfg,  {lastG.gx,lastG.gy,lastG.gz});
-          const double pitch = std::atan2(-acc[0], acc[2]);
-
-          const int64_t ts_pair = (lastA.ts > lastG.ts) ? lastA.ts : lastG.ts;
-          if (cfg.on_sample) cfg.on_sample(pitch, acc, gyr, iio_realtime_ns_to_steady(ts_pair));
-
-          tsA_emitted = lastA.ts; lastA.updated = false;
-          tsG_emitted = lastG.ts; lastG.updated = false;
+          const std::array<double, 3> raw{
+              static_cast<double>(static_cast<int16_t>(rd16le(p + kOffX))) * kGyroScale,
+              static_cast<double>(static_cast<int16_t>(rd16le(p + kOffY))) * kGyroScale,
+              static_cast<double>(static_cast<int16_t>(rd16le(p + kOffZ))) * kGyroScale};
+          if (const auto pair = synchronizer.push_gyro(
+                  ImuTimedVector{applyAxisMap(Config::gyro_cfg, raw), rd64le_s(p + kOffTS)})) {
+            emit_pair(*pair);
+          }
         }
       }
     }

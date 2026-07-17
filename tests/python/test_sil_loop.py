@@ -27,7 +27,7 @@ def test_joystick_to_motor_targets(udp):
         sim_time_us = base_time_us + (_ + 1) * 2_500
         imu = make_imu_sample(sim_time_us)
         udp.send(BalancerMsgId.ImuRawData, imu.pack())
-        udp.send(BalancerMsgId.PhysicsTick, PhysicsTickPayload(dt_s=0.0025, sim_time_us=sim_time_us).pack())
+        udp.send(BalancerMsgId.PhysicsTick, PhysicsTickPayload(dt_s=0.0025, timestamp_us=sim_time_us).pack())
 
     start_time = time.time()
     found = False
@@ -53,7 +53,7 @@ def test_tick_driven_telemetry_stream(udp):
     for _ in range(24):
         sim_time_us = base_time_us + (_ + 1) * 2_500
         udp.send(BalancerMsgId.ImuRawData, make_imu_sample(sim_time_us).pack())
-        udp.send(BalancerMsgId.PhysicsTick, PhysicsTickPayload(dt_s=0.0025, sim_time_us=sim_time_us).pack())
+        udp.send(BalancerMsgId.PhysicsTick, PhysicsTickPayload(dt_s=0.0025, timestamp_us=sim_time_us).pack())
 
     deadline = time.time() + 2.0
     while time.time() < deadline:

@@ -5,8 +5,49 @@
 
 #include <chrono>
 #include <thread>
+#include <vector>
+
+#include "services/motor/motor_service.h"
 
 extern "C" void pigpio_stub_reset();
+
+namespace {
+
+class RecordingWaveBackend final : public WaveFrameBackend {
+ public:
+  struct Frame {
+    unsigned left_pulses;
+    unsigned right_pulses;
+    bool synchronous;
+  };
+
+  int queueFrame(unsigned left_pulses, unsigned right_pulses, bool synchronous) override {
+    if (fail_next) {
+      fail_next = false;
+      return -1;
+    }
+    frames.push_back({left_pulses, right_pulses, synchronous});
+    return next_id++;
+  }
+
+  void deleteFrame(int) override {
+    ++deleted_frames;
+  }
+
+  void stop() override {
+    ++stop_calls;
+  }
+
+  std::vector<Frame> frames;
+  bool fail_next{false};
+  int deleted_frames{0};
+  int stop_calls{0};
+
+ private:
+  int next_id{1};
+};
+
+}  // namespace
 
 class MotorRunnerTest : public ::testing::Test {
  protected:
@@ -86,15 +127,16 @@ TEST_F(MotorRunnerTest, StepTrackingAccumulation) {
   Stepper right(1, Stepper::Pins{7, 8, 14});
   MotorRunner runner(left, right, 1000.0);
 
-  // Run at 1000 sps for 25ms total
-  RunFor(runner, 1000.0, 1000.0, std::chrono::milliseconds(25));
+  // The completed-pulse count includes the configured slew and queued-frame latency.
+  RunFor(runner, 1000.0, 1000.0, std::chrono::milliseconds(50));
 
-  // Expected: ~25 steps total (1000 sps * 0.025s)
+  // It must report completed frames, not the ideal 50 requested steps.
   int64_t leftSteps = runner.getLeftSteps();
   int64_t rightSteps = runner.getRightSteps();
 
-  EXPECT_NEAR(static_cast<double>(leftSteps), 25.0, 8.0) << "Left steps should accumulate to ~25";
-  EXPECT_NEAR(static_cast<double>(rightSteps), 25.0, 8.0) << "Right steps should accumulate to ~25";
+  EXPECT_GT(leftSteps, 20);
+  EXPECT_LT(leftSteps, 50);
+  EXPECT_EQ(rightSteps, leftSteps);
 }
 
 TEST_F(MotorRunnerTest, StepTrackingZeroRate) {
@@ -128,9 +170,9 @@ TEST_F(MotorRunnerTest, VelocityEstimation) {
   EXPECT_NEAR(v, 400.0, 150.0) << "Velocity should be approx 1000 sps";
 
   // Differential (spin)
-  RunFor(runner, 400.0, -400.0, std::chrono::milliseconds(50));
+  RunFor(runner, 400.0, -400.0, std::chrono::milliseconds(80));
   v = runner.getActualSpeedSps();
-  EXPECT_NEAR(v, 0.0, 50.0) << "Average velocity should be 0 for pure spin";
+  EXPECT_NEAR(v, 0.0, 25.0) << "Average velocity should be 0 after the pulse window flushes";
 }
 
 TEST_F(MotorRunnerTest, VelocityEstimationResolvesBelowOnePulsePerFrame) {
@@ -174,7 +216,7 @@ TEST_F(MotorRunnerTest, VelocityEstimationAveragesSubFrameSigmaDeltaSteps) {
   EXPECT_NEAR(static_cast<double>(feedback.right_actual_steps), 31.0, 2.0);
 }
 
-TEST_F(MotorRunnerTest, AppliedFeedbackResolvesSubTwoHundredSpsCommands) {
+TEST_F(MotorRunnerTest, AppliedFeedbackReportsQuantizedFrameAndAccurateWindowAverage) {
   Stepper left(1, Stepper::Pins{5, 6, 13});
   Stepper right(1, Stepper::Pins{7, 8, 14});
   MotorRunner runner(left, right, 400.0, 50000.0);
@@ -184,8 +226,160 @@ TEST_F(MotorRunnerTest, AppliedFeedbackResolvesSubTwoHundredSpsCommands) {
   const auto feedback = runner.getFeedbackSample();
   EXPECT_GT(feedback.left_applied_sps, 0.0);
   EXPECT_GT(feedback.right_applied_sps, 0.0);
-  EXPECT_LT(feedback.left_applied_sps, 200.0);
-  EXPECT_LT(feedback.right_applied_sps, 200.0);
+  EXPECT_LE(feedback.left_applied_sps, 200.0);
+  EXPECT_LE(feedback.right_applied_sps, 200.0);
+  EXPECT_NEAR(feedback.measured_avg_sps, 125.0, 35.0);
+}
+
+TEST_F(MotorRunnerTest, CountsOnlyCompletedFrames) {
+  Stepper left(1, Stepper::Pins{5, 6, 13});
+  Stepper right(1, Stepper::Pins{7, 8, 14});
+  RecordingWaveBackend backend;
+  MotorRunner runner(left, right, 400.0, 1e9, &backend);
+
+  runner.setTargets(1000.0, 1000.0, 1000);
+  EXPECT_EQ(runner.getActualLeftSteps(), 0);
+  ASSERT_EQ(backend.frames.size(), 2U);
+  EXPECT_EQ(backend.frames[0].left_pulses, 5U);
+  EXPECT_FALSE(backend.frames[0].synchronous);
+  EXPECT_TRUE(backend.frames[1].synchronous);
+
+  runner.setTargets(1000.0, 1000.0, 5999);
+  EXPECT_EQ(runner.getActualLeftSteps(), 0);
+  runner.setTargets(1000.0, 1000.0, 6000);
+  EXPECT_EQ(runner.getActualLeftSteps(), 5);
+  EXPECT_EQ(runner.getActualRightSteps(), 5);
+}
+
+TEST_F(MotorRunnerTest, PhysicalPulsePositionAdvancesInsideFrameButFeedbackWaitsForCompletion) {
+  Stepper left(1, Stepper::Pins{5, 6, 13});
+  Stepper right(1, Stepper::Pins{7, 8, 14});
+  RecordingWaveBackend backend;
+  MotorRunner runner(left, right, 400.0, 1e9, &backend);
+
+  runner.setTargets(1000.0, 1000.0, 1000);
+  EXPECT_EQ(runner.getFeedbackSample().left_actual_steps, 0);
+  EXPECT_DOUBLE_EQ(runner.getScheduledStepPosition(1001).left_steps, 0.0);
+  EXPECT_DOUBLE_EQ(runner.getScheduledStepPosition(2600).left_steps, 2.0);
+  EXPECT_EQ(runner.getFeedbackSample().left_actual_steps, 0);
+  EXPECT_DOUBLE_EQ(runner.getScheduledStepPosition(5600).left_steps, 5.0);
+
+  runner.setTargets(1000.0, 1000.0, 6000);
+  EXPECT_EQ(runner.getFeedbackSample().left_actual_steps, 5);
+}
+
+TEST_F(MotorRunnerTest, FractionalPhaseProducesCorrectLowRatePulseCount) {
+  Stepper left(1, Stepper::Pins{5, 6, 13});
+  Stepper right(1, Stepper::Pins{7, 8, 14});
+  RecordingWaveBackend backend;
+  MotorRunner runner(left, right, 400.0, 1e9, &backend);
+
+  uint64_t now_us = 1000;
+  RunDeterministic(runner, 125.0, 125.0, now_us, 405);
+
+  const auto feedback = runner.getFeedbackSample();
+  EXPECT_NEAR(static_cast<double>(feedback.left_actual_steps), 125.0, 2.0);
+  EXPECT_NEAR(feedback.measured_avg_sps, 125.0, 25.0);
+  ASSERT_GT(backend.frames.size(), 100U);
+  for (const auto& frame : backend.frames) {
+    EXPECT_LE(frame.left_pulses, 1U);
+    EXPECT_LE(frame.right_pulses, 1U);
+  }
+}
+
+TEST_F(MotorRunnerTest, SupportsOneAndTwelveThousandSps) {
+  Stepper left(1, Stepper::Pins{5, 6, 13});
+  Stepper right(1, Stepper::Pins{7, 8, 14});
+  RecordingWaveBackend backend;
+  MotorRunner runner(left, right, 400.0, 1e9, &backend);
+
+  uint64_t now_us = 1000;
+  RunDeterministic(runner, 1.0, 1.0, now_us, 805);
+  EXPECT_NEAR(static_cast<double>(runner.getActualLeftSteps()), 2.0, 1.0);
+
+  runner.stop();
+  backend.frames.clear();
+  RunDeterministic(runner, 12000.0, 12000.0, now_us, 8);
+  ASSERT_FALSE(backend.frames.empty());
+  EXPECT_EQ(backend.frames.front().left_pulses, 60U);
+  EXPECT_EQ(backend.frames.front().right_pulses, 60U);
+}
+
+TEST_F(MotorRunnerTest, WaveFailureLatchesActuatorFaultAndZeroFeedback) {
+  Stepper left(1, Stepper::Pins{5, 6, 13});
+  Stepper right(1, Stepper::Pins{7, 8, 14});
+  RecordingWaveBackend backend;
+  backend.fail_next = true;
+  MotorRunner runner(left, right, 400.0, 1e9, &backend);
+
+  runner.setTargets(500.0, 500.0, 1000);
+  const auto feedback = runner.getFeedbackSample();
+  EXPECT_TRUE(feedback.actuator_fault);
+  EXPECT_DOUBLE_EQ(feedback.left_applied_sps, 0.0);
+  EXPECT_DOUBLE_EQ(feedback.right_applied_sps, 0.0);
+  EXPECT_GT(backend.stop_calls, 0);
+}
+
+TEST_F(MotorRunnerTest, ReversalStopsQueuedFramesBeforeChangingDirection) {
+  Stepper left(1, Stepper::Pins{5, 6, 13});
+  Stepper right(1, Stepper::Pins{7, 8, 14});
+  RecordingWaveBackend backend;
+  MotorRunner runner(left, right, 400.0, 1e9, &backend);
+
+  runner.setTargets(500.0, 500.0, 1000);
+  ASSERT_EQ(backend.frames.size(), 2U);
+  runner.setTargets(-500.0, -500.0, 2000);
+
+  EXPECT_GT(backend.stop_calls, 0);
+  EXPECT_FALSE(left.dirForward());
+  EXPECT_FALSE(right.dirForward());
+  EXPECT_EQ(runner.getActualLeftSteps(), 0);
+
+  runner.setTargets(-500.0, -500.0, 7000);
+  EXPECT_LT(runner.getActualLeftSteps(), 0);
+  EXPECT_LT(runner.getActualRightSteps(), 0);
+}
+
+TEST_F(MotorRunnerTest, ReversalAccountsForPulsesAlreadyEmittedInStoppedFrame) {
+  Stepper left(1, Stepper::Pins{5, 6, 13});
+  Stepper right(1, Stepper::Pins{7, 8, 14});
+  RecordingWaveBackend backend;
+  MotorRunner runner(left, right, 400.0, 1e9, &backend);
+
+  runner.setTargets(12000.0, 12000.0, 1000);
+  EXPECT_DOUBLE_EQ(runner.getScheduledStepPosition(3500).left_steps, 30.0);
+  runner.setTargets(-12000.0, -12000.0, 3500);
+
+  EXPECT_EQ(runner.getActualLeftSteps(), 30);
+  EXPECT_EQ(runner.getActualRightSteps(), 30);
+  EXPECT_DOUBLE_EQ(runner.getScheduledStepPosition(3500).left_steps, 30.0);
+}
+
+TEST_F(MotorRunnerTest, MotorServicePublishesActuatorFault) {
+  struct FeedbackSink {
+    std::vector<ipc::MotorFeedbackPayload> samples;
+    static void dispatch(void* ctx, MsgId id, const void* payload) {
+      if (id == MsgId::MotorFeedback) {
+        static_cast<FeedbackSink*>(ctx)->samples.push_back(
+            unpack_payload<MsgId::MotorFeedback>(payload));
+      }
+    }
+  } sink;
+
+  Stepper left(1, Stepper::Pins{5, 6, 13});
+  Stepper right(1, Stepper::Pins{7, 8, 14});
+  RecordingWaveBackend backend;
+  backend.fail_next = true;
+  MotorRunner runner(left, right, 400.0, 1e9, &backend);
+  ipc::MessageBus bus(&sink, FeedbackSink::dispatch);
+  sil::MotorService service(bus, &runner);
+
+  service.on_message<MsgId::PhysicsTick>(PhysicsTickPayload{0.0025, 1000});
+  service.on_message<MsgId::MotorTargets>(ipc::MotorTargetsPayload{500.0, 500.0});
+
+  ASSERT_EQ(sink.samples.size(), 1U);
+  EXPECT_EQ(sink.samples.back().actuator_fault, 1U);
+  EXPECT_DOUBLE_EQ(sink.samples.back().left_applied_sps, 0.0);
 }
 
 TEST_F(MotorRunnerTest, FeedbackReportsUpdateTiming) {

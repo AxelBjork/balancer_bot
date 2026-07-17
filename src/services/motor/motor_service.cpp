@@ -18,12 +18,13 @@ void MotorService::handle_motor_targets(const ipc::MotorTargetsPayload& p) {
   payload.feedback_age_ms = feedback.feedback_age_ms;
   payload.left_actual_steps = feedback.left_actual_steps;
   payload.right_actual_steps = feedback.right_actual_steps;
+  payload.actuator_fault = feedback.actuator_fault ? 1u : 0u;
   bus_.publish<MsgId::MotorFeedback>(payload);
 }
 
 template <>
 void MotorService::on_message<MsgId::PhysicsTick>(const PhysicsTickPayload& p) {
-  current_tick_us_ = p.sim_time_us;
+  current_tick_us_ = p.timestamp_us;
 }
 
 template <>

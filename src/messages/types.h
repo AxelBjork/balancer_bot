@@ -1,5 +1,6 @@
 #pragma once
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <string>
 
@@ -19,30 +20,54 @@ struct JoyCmd {
   double turn;     // + left faster, right slower (CCW yaw)
 };
 
+enum ControllerFaultFlag : uint32_t {
+  ControllerFaultNone = 0,
+  ControllerFaultNoImu = 1u << 0,
+  ControllerFaultStaleImu = 1u << 1,
+  ControllerFaultFutureImu = 1u << 2,
+  ControllerFaultFallover = 1u << 3,
+  ControllerFaultActuator = 1u << 4,
+};
+
+enum ControllerSaturationFlag : uint32_t {
+  ControllerSaturationNone = 0,
+  ControllerSaturationPitch = 1u << 0,
+  ControllerSaturationRate = 1u << 1,
+  ControllerSaturationBalance = 1u << 2,
+  ControllerSaturationTurn = 1u << 3,
+};
+
 // ---- Telemetry (controller diagnostics) ----
 struct Telemetry {
-  double t_sec;
-  double age_ms;
-  double pitch_deg;
-  double pitch_rate_dps;
-  double filtered_pitch_rate_dps;
-  double u_sps;        // wheel command [steps/s]
-  double turn_sps;     // differential steering command [steps/s]
+  double t_sec{};
+  double age_ms{};
+  double pitch_deg{};
+  double pitch_rate_dps{};
+  double filtered_pitch_rate_dps{};
+  double u_sps{};     // wheel command [steps/s]
+  double turn_sps{};  // differential steering command [steps/s]
   // Translational outer-loop diagnostics
-  double vel_error;
-  double vel_p_term;
-  double measured_vel_sps;
-  double pitch_ref_from_vel_deg;
-  double pitch_error_deg;
-  double pitch_sp_deg;
-  double pitch_trim_deg;
-  double trim_active;
+  double target_vel_sps{};
+  double vel_error{};
+  double vel_p_term_deg{};
+  double vel_i_term_deg{};
+  double measured_vel_sps{};
+  double pitch_error_deg{};
+  double pitch_sp_deg{};
+  double rate_sp_dps{};
+  double rate_error_dps{};
+  double command_saturated{};
+  double actuator_fault{};
+  uint32_t controller_fault_flags{};
+  uint32_t controller_saturation_flags{};
 };
 
 // ---- PID Configuration ----
 // Runtime-configurable PID gains loaded from pid.conf
 // Default values are set here, can be overridden at runtime by load()
 struct ConfigPid {
+  inline static constexpr int config_version = 2;
+
   // PX4 Rate PID (inner loop, pitch axis only)
   inline static double rate_P = 0.25;
   inline static double rate_I = 0.0;
@@ -50,14 +75,18 @@ struct ConfigPid {
   inline static double rate_I_lim = 0.15;
   inline static double rate_FF = 0.0;
 
-  // Physics-based outer loop:
-  // pitch_ref = vel_P * velocity_error + internal trim_bias
-  // rate_sp   = pitch_P * (pitch_ref - pitch) - pitch_D * pitch_rate
-  inline static double vel_P = 0.00015;
-  inline static double lean_trim_I = 0.60;
-  inline static double lean_trim_max_deg = 4.0;
-  inline static double pitch_P = 12.0;
-  inline static double pitch_D = 0.25;
+  // Velocity PI (50 Hz), angle-to-rate, and actuator allocation.
+  // Velocity gains produce degrees from an error expressed in steps/s.
+  inline static double velocity_P = 0.0020;
+  inline static double velocity_I = 0.0010;
+  inline static double velocity_I_limit_deg = 4.0;
+  inline static double angle_P = 12.0;
+  inline static double angle_D = 0.25;
+  inline static double drive_max_sps = 1200.0;
+  inline static double turn_max_sps = 1600.0;
+  inline static double pitch_max_deg = 10.0;
+  inline static double balance_max_sps = 12000.0;
+  inline static double output_scale_sps = 3200.0;
 
   static std::string resolve_path(const std::string& default_path) {
     if (const char* env = std::getenv("BALANCER_PID_CONF")) {

@@ -49,6 +49,10 @@ struct DOC_DESC(
     "Detailed controller telemetry streamed out over UDP and used for runtime logging/visibility.")
     SystemTelemetryPayload {
   uint32_t run_id;
+  uint32_t seed;
+  uint32_t controller_fault_flags;
+  uint32_t controller_saturation_flags;
+  uint64_t imu_timestamp_us;
   double t_sec;
   double age_ms;
   double pitch_deg;
@@ -59,14 +63,19 @@ struct DOC_DESC(
   double filtered_pitch_rate_dps;
   double u_sps;
   double turn_sps;
+  double target_velocity_sps;
   double vel_error;
   double measured_vel_sps;
-  double vel_p_term;
-  double pitch_ref_from_vel_deg;
+  double velocity_p_term_deg;
+  double velocity_i_term_deg;
   double pitch_error_deg;
   double pitch_sp_deg;
-  double pitch_trim_deg;
-  double trim_active;
+  double rate_setpoint_dps;
+  double rate_error_dps;
+  double command_saturated;
+  double actuator_fault;
+  double left_target_sps;
+  double right_target_sps;
   double left_applied_sps;
   double right_applied_sps;
   double motor_update_dt_ms;
@@ -87,6 +96,24 @@ struct DOC_DESC(
   double x_ddot;
   double theta_ddot;
   double force_saturated;
+  double phase_error_steps;
+  double missed_steps;
+  double traction_limit_n;
+  double motor_force_limit_n;
+  double mass_scale;
+  double com_height_scale;
+  double inertia_scale;
+  double motor_max_force_n;
+  double motor_no_load_speed_mps;
+  double motor_velocity_damping;
+  double motor_tau_s;
+  double traction_coefficient;
+  double pitch_damping;
+  double cart_damping;
+  double phase_error_limit_steps;
+  double tire_stiffness_n_per_m;
+  double tire_damping_n_s_per_m;
+  double wheel_equivalent_mass_kg;
 };
 
 struct DOC_DESC(
@@ -100,13 +127,23 @@ struct DOC_DESC(
   double feedback_age_ms;
   int64_t left_actual_steps;
   int64_t right_actual_steps;
+  uint8_t actuator_fault;
 };
 
 constexpr uint8_t kSimDisturbanceStep = 0;
 constexpr uint8_t kSimDisturbanceRamp = 1;
 constexpr uint8_t kSimDisturbanceHoldBias = 2;
-constexpr uint8_t kSimImuModeDirectFused = 0;
-constexpr uint8_t kSimImuModeHardwareLpf = 1;
+inline constexpr size_t kMaxSimJoySegments = 4;
+
+struct DOC_DESC("One deterministic joystick segment scheduled on the simulator timeline.")
+    SimJoySegmentPayload {
+  double start_s;
+  double duration_s;
+  double forward;
+  double turn;
+  double forward_end;
+  double turn_end;
+};
 
 struct DOC_DESC(
     "One scheduled simulator plant disturbance segment. Step disturbances apply a constant "
@@ -130,21 +167,37 @@ struct DOC_DESC(
     SimStartRunPayload {
   uint32_t run_id;
   uint8_t physics_profile;
-  uint8_t reserved0;
+  uint8_t has_physics_override;
+  uint16_t telemetry_stride;
+  uint16_t transfer_scenario_index;
   uint16_t reserved1;
   double duration_s;
   double initial_pitch_deg;
   double com_angle_offset_rad;
-  double wheel_slip_factor;
-  double velocity_feedback_scale;
-  double velocity_feedback_tau_s;
+  double mass_scale;
+  double com_height_scale;
+  double inertia_scale;
+  double motor_max_force_n;
+  double motor_no_load_speed_mps;
+  double motor_velocity_damping;
+  double motor_tau_s;
+  double traction_coefficient;
+  double pitch_damping;
+  double cart_damping;
+  double phase_error_limit_steps;
+  double tire_stiffness_n_per_m;
+  double tire_damping_n_s_per_m;
+  double wheel_equivalent_mass_kg;
   double imu_pitch_lag_s;
   uint32_t imu_noise_seed;
   double accel_noise_std_mps2;
   double gyro_noise_std_rad_s;
+  double imu_timestamp_jitter_us;
+  double imu_sample_loss_rate;
   std::array<double, 3> accel_bias_mps2;
   std::array<double, 3> gyro_bias_rad_s;
   std::array<ipc::SimDisturbancePayload, kMaxSimDisturbances> disturbances;
+  std::array<ipc::SimJoySegmentPayload, kMaxSimJoySegments> joy_segments;
   std::array<char, 128> pid_config_path;
 };
 
@@ -175,6 +228,10 @@ struct DOC_DESC("Terminal simulator status emitted once per accepted run.") SimR
   double tail_mean_abs_pitch_deg;
   double max_abs_position_m;
   double tail_mean_abs_velocity_mps;
+  double max_continuous_saturation_s;
+  uint32_t actuator_fault_count;
+  uint32_t controller_fault_flags;
+  uint64_t timeline_hash;
 };
 
 }  // namespace ipc

@@ -6,7 +6,6 @@ from pathlib import Path
 
 from generated_balancer import (
     BalancerMsgId,
-    JoystickCommandPayload,
     SimRunDonePayload,
     SimStartAckPayload,
     SimStartRunPayload,
@@ -27,10 +26,40 @@ DONE_COMPLETED = 0
 DONE_STOPPED_BY_CLIENT = 1
 DONE_FELL = 2
 DONE_INTERNAL_ERROR = 3
+DONE_ACCEPTANCE_FAILED = 4
 
 DISTURBANCE_STEP = 0
 DISTURBANCE_RAMP = 1
 DISTURBANCE_HOLD_BIAS = 2
+
+_PHYSICS_DEFAULTS = {
+    PHYSICS_SIMPLIFIED: {
+        "motor_max_force_n": 8.0,
+        "motor_no_load_speed_mps": 1.6,
+        "traction_coefficient": 1.2,
+        "motor_velocity_damping": 30.0,
+        "cart_damping": 0.4,
+        "pitch_damping": 0.04,
+        "motor_tau_s": 0.004,
+        "phase_error_limit_steps": 16.0,
+        "tire_stiffness_n_per_m": 2500.0,
+        "tire_damping_n_s_per_m": 30.0,
+        "wheel_equivalent_mass_kg": 0.10,
+    },
+    PHYSICS_REALISTIC: {
+        "motor_max_force_n": 12.0,
+        "motor_no_load_speed_mps": 1.2,
+        "traction_coefficient": 1.0,
+        "motor_velocity_damping": 40.0,
+        "cart_damping": 1.0,
+        "pitch_damping": 0.02,
+        "motor_tau_s": 0.008,
+        "phase_error_limit_steps": 16.0,
+        "tire_stiffness_n_per_m": 3000.0,
+        "tire_damping_n_s_per_m": 35.0,
+        "wheel_equivalent_mass_kg": 0.10,
+    },
+}
 
 
 def _fixed_bytes(value: str, size: int) -> bytes:
@@ -61,23 +90,32 @@ def make_start_payload(
     run_id: int,
     physics_profile: int,
     duration_s: float,
+    telemetry_stride: int = 80,
+    transfer_scenario_index: int = 0xFFFF,
     initial_pitch_deg: float = 0.0,
     com_angle_offset_rad: float = 0.0,
-    wheel_slip_factor: float = 1.0,
-    velocity_feedback_scale: float = 1.0,
-    velocity_feedback_tau_s: float = 0.0,
+    mass_scale: float = 1.0,
+    com_height_scale: float = 1.0,
+    inertia_scale: float = 1.0,
+    physics_override: dict | None = None,
     imu_pitch_lag_s: float = 0.0,
     imu_noise_seed: int = 0,
     accel_noise_std_mps2: float = 0.0,
     gyro_noise_std_rad_s: float = 0.0,
+    imu_timestamp_jitter_us: float = 0.0,
+    imu_sample_loss_rate: float = 0.0,
     accel_bias_mps2: list[float] | None = None,
     gyro_bias_rad_s: list[float] | None = None,
     disturbances: list[dict] | None = None,
+    joy_segments: list[dict] | None = None,
     pid_config_path: str = "",
 ) -> SimStartRunPayload:
     disturbances = list(disturbances or [])
+    joy_segments = list(joy_segments or [])
     if len(disturbances) > 10:
         raise ValueError("SimStartRunPayload supports at most 10 disturbance segments")
+    if len(joy_segments) > 4:
+        raise ValueError("SimStartRunPayload supports at most 4 joystick segments")
     accel_bias_mps2 = list(accel_bias_mps2 or [0.0, 0.0, 0.0])
     gyro_bias_rad_s = list(gyro_bias_rad_s or [0.0, 0.0, 0.0])
     if len(accel_bias_mps2) != 3 or len(gyro_bias_rad_s) != 3:
@@ -112,24 +150,57 @@ def make_start_payload(
             "com_bias_rad_end": float(disturbance.get("com_bias_rad_end", com_bias_rad)),
         }
 
+    wire_joy = [
+        {"start_s": 0.0, "duration_s": 0.0, "forward": 0.0, "turn": 0.0,
+         "forward_end": 0.0, "turn_end": 0.0}
+        for _ in range(4)
+    ]
+    for idx, segment in enumerate(joy_segments):
+        wire_joy[idx] = {
+            "start_s": float(segment.get("start_s", 0.0)),
+            "duration_s": float(segment.get("duration_s", 0.0)),
+            "forward": float(segment.get("forward", 0.0)),
+            "turn": float(segment.get("turn", 0.0)),
+            "forward_end": float(segment.get("forward_end", segment.get("forward", 0.0))),
+            "turn_end": float(segment.get("turn_end", segment.get("turn", 0.0))),
+        }
+    override = dict(_PHYSICS_DEFAULTS[physics_profile])
+    override.update(physics_override or {})
+
     return SimStartRunPayload(
         run_id=run_id,
         physics_profile=physics_profile,
-        reserved0=0,
+        has_physics_override=1 if physics_override is not None else 0,
+        telemetry_stride=telemetry_stride,
+        transfer_scenario_index=transfer_scenario_index,
         reserved1=0,
         duration_s=duration_s,
         initial_pitch_deg=initial_pitch_deg,
         com_angle_offset_rad=com_angle_offset_rad,
-        wheel_slip_factor=wheel_slip_factor,
-        velocity_feedback_scale=velocity_feedback_scale,
-        velocity_feedback_tau_s=velocity_feedback_tau_s,
+        mass_scale=mass_scale,
+        com_height_scale=com_height_scale,
+        inertia_scale=inertia_scale,
+        motor_max_force_n=float(override["motor_max_force_n"]),
+        motor_no_load_speed_mps=float(override["motor_no_load_speed_mps"]),
+        motor_velocity_damping=float(override["motor_velocity_damping"]),
+        motor_tau_s=float(override["motor_tau_s"]),
+        traction_coefficient=float(override["traction_coefficient"]),
+        pitch_damping=float(override["pitch_damping"]),
+        cart_damping=float(override["cart_damping"]),
+        phase_error_limit_steps=float(override["phase_error_limit_steps"]),
+        tire_stiffness_n_per_m=float(override["tire_stiffness_n_per_m"]),
+        tire_damping_n_s_per_m=float(override["tire_damping_n_s_per_m"]),
+        wheel_equivalent_mass_kg=float(override["wheel_equivalent_mass_kg"]),
         imu_pitch_lag_s=imu_pitch_lag_s,
         imu_noise_seed=imu_noise_seed,
         accel_noise_std_mps2=accel_noise_std_mps2,
         gyro_noise_std_rad_s=gyro_noise_std_rad_s,
+        imu_timestamp_jitter_us=imu_timestamp_jitter_us,
+        imu_sample_loss_rate=imu_sample_loss_rate,
         accel_bias_mps2=accel_bias_mps2,
         gyro_bias_rad_s=gyro_bias_rad_s,
         disturbances=wire_disturbances,
+        joy_segments=wire_joy,
         pid_config_path=_fixed_bytes(pid_config_path, 128),
     )
 
@@ -164,27 +235,6 @@ def wait_for_done(udp, run_id: int, timeout: float = 2.0) -> SimRunDonePayload:
     raise AssertionError(f"Timed out waiting for SimRunDone for run_id={run_id}")
 
 
-def _joy_for_time(joy_segments: list[dict], elapsed_s: float) -> tuple[float, float]:
-    forward = 0.0
-    turn = 0.0
-    for segment in joy_segments:
-        start_s = float(segment.get("start_s", 0.0))
-        duration_s = float(segment.get("duration_s", 0.0))
-        if elapsed_s < start_s:
-            continue
-        if duration_s > 0.0 and elapsed_s >= start_s + duration_s:
-            continue
-        forward = float(segment.get("forward", 0.0))
-        turn = float(segment.get("turn", 0.0))
-        if duration_s > 0.0:
-            progress = min(1.0, max(0.0, (elapsed_s - start_s) / duration_s))
-            forward_end = float(segment.get("forward_end", forward))
-            turn_end = float(segment.get("turn_end", turn))
-            forward += (forward_end - forward) * progress
-            turn += (turn_end - turn) * progress
-    return min(1.0, max(-1.0, forward)), min(1.0, max(-1.0, turn))
-
-
 def run_scenario_live(
     udp,
     *,
@@ -192,15 +242,20 @@ def run_scenario_live(
     output_dir: Path,
     physics_profile: int,
     duration_s: float,
+    telemetry_stride: int = 80,
+    transfer_scenario_index: int = 0xFFFF,
     initial_pitch_deg: float = 0.0,
     com_angle_offset_rad: float = 0.0,
-    wheel_slip_factor: float = 1.0,
-    velocity_feedback_scale: float = 1.0,
-    velocity_feedback_tau_s: float = 0.0,
+    mass_scale: float = 1.0,
+    com_height_scale: float = 1.0,
+    inertia_scale: float = 1.0,
+    physics_override: dict | None = None,
     imu_pitch_lag_s: float = 0.0,
     imu_noise_seed: int = 0,
     accel_noise_std_mps2: float = 0.0,
     gyro_noise_std_rad_s: float = 0.0,
+    imu_timestamp_jitter_us: float = 0.0,
+    imu_sample_loss_rate: float = 0.0,
     accel_bias_mps2: list[float] | None = None,
     gyro_bias_rad_s: list[float] | None = None,
     disturbances: list[dict] | None = None,
@@ -218,15 +273,19 @@ def run_scenario_live(
         "physics_profile": "realistic" if physics_profile == PHYSICS_REALISTIC else "simplified",
         "pid_profile": pid_config_path or "pid_sim.conf",
         "duration_s": duration_s,
+        "telemetry_stride": telemetry_stride,
+        "transfer_scenario_index": transfer_scenario_index,
         "initial_pitch_deg": initial_pitch_deg,
         "com_angle_offset_rad": com_angle_offset_rad,
-        "wheel_slip_factor": wheel_slip_factor,
-        "velocity_feedback_scale": velocity_feedback_scale,
-        "velocity_feedback_tau_s": velocity_feedback_tau_s,
+        "mass_scale": mass_scale,
+        "com_height_scale": com_height_scale,
+        "inertia_scale": inertia_scale,
         "imu_pitch_lag_s": imu_pitch_lag_s,
         "imu_noise_seed": imu_noise_seed,
         "accel_noise_std_mps2": accel_noise_std_mps2,
         "gyro_noise_std_rad_s": gyro_noise_std_rad_s,
+        "imu_timestamp_jitter_us": imu_timestamp_jitter_us,
+        "imu_sample_loss_rate": imu_sample_loss_rate,
         "accel_bias_mps2": accel_bias_mps2 or [0.0, 0.0, 0.0],
         "gyro_bias_rad_s": gyro_bias_rad_s or [0.0, 0.0, 0.0],
     }
@@ -234,6 +293,8 @@ def run_scenario_live(
         metadata["disturbances"] = disturbances
     if joy_segments:
         metadata["joy_segments"] = joy_segments
+    if physics_override is not None:
+        metadata["physics_override"] = physics_override
     recorder.begin_run(metadata)
 
     udp.drain()
@@ -241,18 +302,24 @@ def run_scenario_live(
         run_id=run_id,
         physics_profile=physics_profile,
         duration_s=duration_s,
+        telemetry_stride=telemetry_stride,
+        transfer_scenario_index=transfer_scenario_index,
         initial_pitch_deg=initial_pitch_deg,
         com_angle_offset_rad=com_angle_offset_rad,
-        wheel_slip_factor=wheel_slip_factor,
-        velocity_feedback_scale=velocity_feedback_scale,
-        velocity_feedback_tau_s=velocity_feedback_tau_s,
+        mass_scale=mass_scale,
+        com_height_scale=com_height_scale,
+        inertia_scale=inertia_scale,
+        physics_override=physics_override,
         imu_pitch_lag_s=imu_pitch_lag_s,
         imu_noise_seed=imu_noise_seed,
         accel_noise_std_mps2=accel_noise_std_mps2,
         gyro_noise_std_rad_s=gyro_noise_std_rad_s,
+        imu_timestamp_jitter_us=imu_timestamp_jitter_us,
+        imu_sample_loss_rate=imu_sample_loss_rate,
         accel_bias_mps2=accel_bias_mps2,
         gyro_bias_rad_s=gyro_bias_rad_s,
         disturbances=disturbances,
+        joy_segments=joy_segments,
         pid_config_path=pid_config_path,
     )
     udp.send(BalancerMsgId.SimStartRun, start.pack())
@@ -260,17 +327,9 @@ def run_scenario_live(
     if not ack.accepted:
         raise AssertionError(f"Simulator rejected run_id={run_id} with status={ack.status_code}")
 
-    joy_segments = list(joy_segments or [])
     done = None
-    run_start = time.monotonic()
-    next_joy_send = run_start
     deadline = time.monotonic() + done_timeout
     while time.monotonic() < deadline:
-        now = time.monotonic()
-        if joy_segments and now >= next_joy_send:
-            forward, turn = _joy_for_time(joy_segments, now - run_start)
-            udp.send(BalancerMsgId.JoystickCommand, JoystickCommandPayload(forward, turn).pack())
-            next_joy_send = now + 0.02
         try:
             msg_id, payload = udp.recv(timeout=min(0.1, max(0.01, deadline - time.monotonic())))
         except TimeoutError:
@@ -281,6 +340,8 @@ def run_scenario_live(
                 continue
             row = {
                 "sim_time_s": telemetry.t_sec,
+                "controller_fault_flags": telemetry.controller_fault_flags,
+                "controller_saturation_flags": telemetry.controller_saturation_flags,
                 "pitch_deg": telemetry.pitch_deg,
                 "pitch_rate_dps": telemetry.pitch_rate_dps,
                 "filtered_pitch_rate_dps": telemetry.filtered_pitch_rate_dps,
@@ -288,23 +349,19 @@ def run_scenario_live(
                 "fused_pitch_deg": telemetry.fused_pitch_deg,
                 "gyro_pitch_rate_dps": telemetry.gyro_pitch_rate_dps,
                 "pitch_sp_deg": telemetry.pitch_sp_deg,
-                "rate_sp_dps": getattr(telemetry, "rate_sp_dps", 0.0),
+                "rate_setpoint_dps": telemetry.rate_setpoint_dps,
                 "u_sps": telemetry.u_sps,
-                "left_sps": telemetry.left_applied_sps,
-                "right_sps": telemetry.right_applied_sps,
-                "vel_error": telemetry.vel_error,
-                "vel_i_term": getattr(telemetry, "vel_i_term", 0.0),
-                "vel_p_term": telemetry.vel_p_term,
-                "target_vel_sps": getattr(telemetry, "target_vel_sps", 0.0),
-                "measured_vel_sps": getattr(telemetry, "measured_vel_sps", 0.0),
-                "filtered_vel_sps": getattr(telemetry, "filtered_vel_sps", 0.0),
-                "pitch_ref_from_vel_deg": telemetry.pitch_ref_from_vel_deg,
+                "turn_sps": telemetry.turn_sps,
+                "left_sps": telemetry.left_target_sps,
+                "right_sps": telemetry.right_target_sps,
+                "velocity_error_sps": telemetry.vel_error,
+                "velocity_i_term_deg": telemetry.velocity_i_term_deg,
+                "velocity_p_term_deg": telemetry.velocity_p_term_deg,
+                "target_velocity_sps": telemetry.target_velocity_sps,
+                "measured_vel_sps": telemetry.measured_vel_sps,
                 "pitch_error_deg": telemetry.pitch_error_deg,
-                "rate_error_dps": getattr(telemetry, "rate_error_dps", 0.0),
-                "out_norm": getattr(telemetry, "out_norm", 0.0),
-                "effective_pitch_sp_deg": getattr(telemetry, "effective_pitch_sp_deg", 0.0),
-                "pitch_trim_deg": telemetry.pitch_trim_deg,
-                "trim_active": telemetry.trim_active,
+                "rate_error_dps": telemetry.rate_error_dps,
+                "actuator_fault": telemetry.actuator_fault,
                 "left_applied_sps": telemetry.left_applied_sps,
                 "right_applied_sps": telemetry.right_applied_sps,
                 "left_actual_steps": telemetry.left_actual_steps,
@@ -322,8 +379,30 @@ def run_scenario_live(
                 "external_com_bias_rad": telemetry.external_com_bias_rad,
                 "x_ddot": telemetry.x_ddot,
                 "theta_ddot": telemetry.theta_ddot,
-                "command_saturated": getattr(telemetry, "command_saturated", 0.0),
+                "command_saturated": telemetry.command_saturated,
                 "force_saturated": telemetry.force_saturated,
+                "phase_error_steps": telemetry.phase_error_steps,
+                "missed_steps": telemetry.missed_steps,
+                "traction_limit_n": telemetry.traction_limit_n,
+                "motor_force_limit_n": telemetry.motor_force_limit_n,
+                "imu_timestamp_us": telemetry.imu_timestamp_us,
+                "motor_update_dt_ms": telemetry.motor_update_dt_ms,
+                "motor_feedback_age_ms": telemetry.motor_feedback_age_ms,
+                "seed": telemetry.seed,
+                "mass_scale": telemetry.mass_scale,
+                "com_height_scale": telemetry.com_height_scale,
+                "inertia_scale": telemetry.inertia_scale,
+                "motor_max_force_n": telemetry.motor_max_force_n,
+                "motor_no_load_speed_mps": telemetry.motor_no_load_speed_mps,
+                "motor_velocity_damping": telemetry.motor_velocity_damping,
+                "motor_tau_s": telemetry.motor_tau_s,
+                "traction_coefficient": telemetry.traction_coefficient,
+                "pitch_damping": telemetry.pitch_damping,
+                "cart_damping": telemetry.cart_damping,
+                "phase_error_limit_steps": telemetry.phase_error_limit_steps,
+                "tire_stiffness_n_per_m": telemetry.tire_stiffness_n_per_m,
+                "tire_damping_n_s_per_m": telemetry.tire_damping_n_s_per_m,
+                "wheel_equivalent_mass_kg": telemetry.wheel_equivalent_mass_kg,
             }
             recorder.record_step(row)
             if abs(telemetry.plant_pitch_deg) > fail_fast_pitch_deg:
@@ -351,6 +430,10 @@ def run_scenario_live(
                 "tail_mean_abs_pitch_deg": done.tail_mean_abs_pitch_deg,
                 "max_abs_position_m": done.max_abs_position_m,
                 "tail_mean_abs_velocity_mps": done.tail_mean_abs_velocity_mps,
+                "max_continuous_saturation_s": done.max_continuous_saturation_s,
+                "actuator_fault_count": done.actuator_fault_count,
+                "controller_fault_flags": done.controller_fault_flags,
+                "timeline_hash": done.timeline_hash,
             },
             indent=2,
         ),

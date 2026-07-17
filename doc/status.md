@@ -4,18 +4,24 @@ This page is the short, candid status snapshot for the project. The rest of the 
 
 ## What Is in Good Shape
 
-- the host build, C++ tests, Python tests, and Pi cross-build are expected to be green in the current tree
+- the verified host gate passes 76 C++ and 15 Python tests with no skips or xfails
+- the full-rate transfer report passes all twenty scenarios; host fuzz smoke passes all fourteen
+  seeds; the Pi cross-build succeeds
 - the runtime is tick-driven and the service split is wired through the message bus
 - generated bindings and generated IPC docs are part of the normal host build flow
 - hardware control uses real `MotorFeedback` from `MotorRunner`, not just last-command estimates
 - simulator runs produce structured artifacts and plots under `build/sim`
+- controller safety states and plant parameters are observable in telemetry, and terminal run
+  metrics remain exact under telemetry downsampling
 
 ## Important Caveats
 
 - the physical robot has not been fully revalidated on hardware after the message-bus refactor
-- `sil_app` is useful for service-level integration, but it is not the main stability benchmark
-- `pid_sim.conf` is intentionally not the same as `pid.conf`
-- the realistic simulator profile still has a harder frontier case tracked as `xfail`
+- simulation validation does not make the current gains hardware-proven
+- `pid_sim.conf` and `pid.conf` currently match but remain separate for later hardware adjustment
+- motor authority, tire coupling, damping, and missed-step limits remain uncertain until measured
+- the transfer report identifies a dirty working tree until these changes are committed; the
+  run-specific manifest and PID digest provide the remaining configuration provenance
 
 ## Practical Confidence Model
 
@@ -25,7 +31,9 @@ This page is the short, candid status snapshot for the project. The rest of the 
 - reflection-generated docs and bindings
 - message-bus service integration
 - simulator artifact generation
-- representative simulator stability ladder
+- nominal and one-at-a-time-margin simulator acceptance ladder
+- exact direct-versus-UDP all-tick equivalence and stride-invariant terminal summaries
+- warning-clean host compilation/execution of all registered fuzz seeds
 
 ### Moderate Confidence
 

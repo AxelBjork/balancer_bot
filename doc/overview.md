@@ -59,7 +59,10 @@ The C++ unit and integration test binary. It covers the motor runner, control co
 
 ### Direct Simulator
 
-`balancer_simulator` bypasses UDP and the service wrappers. It drives the controller against a deterministic plant model, produces run artifacts, and is what the longer scenario tests rely on.
+`balancer_simulator` can drive the shared deterministic engine directly or expose it through its
+UDP wrapper. The engine includes the production IMU filter, control/motor services, pulse
+scheduler, and physical plant model. The complete twenty-scenario gate runs in-process; focused
+Python tests cover the real UDP boundary and artifact generation.
 
 ## PID Config Files
 

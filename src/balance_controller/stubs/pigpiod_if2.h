@@ -9,6 +9,10 @@ extern "C" {
 
 #define PI_INPUT 0
 #define PI_OUTPUT 1
+#define PI_WAVE_MODE_ONE_SHOT 0
+#define PI_WAVE_MODE_REPEAT 1
+#define PI_WAVE_MODE_ONE_SHOT_SYNC 2
+#define PI_WAVE_MODE_REPEAT_SYNC 3
 
 typedef struct {
   uint32_t gpioOn;
@@ -25,11 +29,17 @@ void time_sleep(double seconds);
 int pigpio_start(const char* addr, const char* port);
 void pigpio_stop(int pi);
 
-typedef struct {
-  uint32_t gpioOn;
-  uint32_t gpioOff;
-  uint32_t usDelay;
-} gpioPulse_t;
+int wave_clear(int pi);
+int wave_add_new(int pi);
+int wave_add_generic(int pi, unsigned numPulses, gpioPulse_t* pulses);
+int wave_create(int pi);
+int wave_delete(int pi, int wave_id);
+int wave_send_once(int pi, unsigned wave_id);
+int wave_send_repeat(int pi, int wave_id);
+int wave_send_using_mode(int pi, unsigned wave_id, unsigned mode);
+int wave_tx_busy(int pi);
+int wave_tx_at(int pi);
+int wave_tx_stop(int pi);
 
 #else
 // ---- Declarations for test stubs (implemented in pigpiod_stub.cpp) ----
@@ -42,10 +52,15 @@ void pigpio_stop(int pi);
 
 // Wave stubs
 int wave_clear(int pi);
+int wave_add_new(int pi);
 int wave_add_generic(int pi, unsigned numPulses, gpioPulse_t* pulses);
 int wave_create(int pi);
 int wave_delete(int pi, int wave_id);
+int wave_send_once(int pi, unsigned wave_id);
 int wave_send_repeat(int pi, int wave_id);
+int wave_send_using_mode(int pi, unsigned wave_id, unsigned mode);
+int wave_tx_busy(int pi);
+int wave_tx_at(int pi);
 int wave_tx_stop(int pi);
 
 // Helper to reset stub state (not part of pigpio API)

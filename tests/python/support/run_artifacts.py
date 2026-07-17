@@ -14,6 +14,8 @@ from typing import Any
 
 _DEFAULT_COLUMNS = [
     "sim_time_s",
+    "controller_fault_flags",
+    "controller_saturation_flags",
     "pitch_deg",
     "pitch_rate_dps",
     "filtered_pitch_rate_dps",
@@ -21,23 +23,18 @@ _DEFAULT_COLUMNS = [
     "fused_pitch_deg",
     "gyro_pitch_rate_dps",
     "pitch_sp_deg",
-    "rate_sp_dps",
+    "rate_setpoint_dps",
     "u_sps",
+    "turn_sps",
     "left_sps",
     "right_sps",
-    "vel_error",
-    "vel_i_term",
-    "vel_p_term",
-    "target_vel_sps",
+    "velocity_error_sps",
+    "velocity_i_term_deg",
+    "velocity_p_term_deg",
+    "target_velocity_sps",
     "measured_vel_sps",
-    "filtered_vel_sps",
-    "pitch_ref_from_vel_deg",
     "pitch_error_deg",
     "rate_error_dps",
-    "out_norm",
-    "effective_pitch_sp_deg",
-    "pitch_trim_deg",
-    "trim_active",
     "left_applied_sps",
     "right_applied_sps",
     "left_actual_steps",
@@ -57,6 +54,29 @@ _DEFAULT_COLUMNS = [
     "theta_ddot",
     "command_saturated",
     "force_saturated",
+    "actuator_fault",
+    "phase_error_steps",
+    "missed_steps",
+    "traction_limit_n",
+    "motor_force_limit_n",
+    "imu_timestamp_us",
+    "motor_update_dt_ms",
+    "motor_feedback_age_ms",
+    "seed",
+    "mass_scale",
+    "com_height_scale",
+    "inertia_scale",
+    "motor_max_force_n",
+    "motor_no_load_speed_mps",
+    "motor_velocity_damping",
+    "motor_tau_s",
+    "traction_coefficient",
+    "pitch_damping",
+    "cart_damping",
+    "phase_error_limit_steps",
+    "tire_stiffness_n_per_m",
+    "tire_damping_n_s_per_m",
+    "wheel_equivalent_mass_kg",
 ]
 
 _KV_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=([-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)")
@@ -421,11 +441,33 @@ def summarize_rows(rows: list[dict[str, Any]], metadata: dict[str, Any] | None =
         summary["dt_median_s"] = None
         summary["dt_max_s"] = None
 
-    for key in ("pitch_deg", "pitch_rate_dps", "u_sps", "vel_error", "rate_sp_dps", "f_cmd", "f_app"):
+    for key in ("pitch_deg", "pitch_rate_dps", "u_sps", "velocity_error_sps",
+                "rate_setpoint_dps", "f_cmd", "f_app"):
         vals = _series(rows, key)
         if vals:
             summary[f"{key}_min"] = min(vals)
             summary[f"{key}_max"] = max(vals)
+
+    for key in (
+        "seed",
+        "mass_scale",
+        "com_height_scale",
+        "inertia_scale",
+        "motor_max_force_n",
+        "motor_no_load_speed_mps",
+        "motor_velocity_damping",
+        "motor_tau_s",
+        "traction_coefficient",
+        "pitch_damping",
+        "cart_damping",
+        "phase_error_limit_steps",
+        "tire_stiffness_n_per_m",
+        "tire_damping_n_s_per_m",
+        "wheel_equivalent_mass_kg",
+    ):
+        vals = _series(rows, key)
+        if vals:
+            summary[key] = vals[-1]
 
     return summary
 

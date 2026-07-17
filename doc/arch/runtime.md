@@ -12,13 +12,18 @@ The runtime is built around a small synchronous `MessageBus` plus a handful of e
 - `MotorService`
 - `UdpBridge`
 
-The bus itself does not do discovery, scheduling, or queueing. It forwards a typed payload pointer into a manually written dispatcher owned by the application entrypoint.
+The bus itself does not do discovery, scheduling, or queueing. It serializes dispatch with a
+recursive mutex, then forwards a typed payload pointer into a manually written dispatcher owned by
+the application entrypoint. Nested synchronous publications remain atomic with respect to other
+producer threads.
 
 ## Service Responsibilities
 
 ### `TimeService`
 
-Publishes `PhysicsTick`. In production it owns the wall-clock worker thread that emits the 400 Hz control heartbeat. In tests it can also be advanced explicitly.
+Publishes `PhysicsTick`. In production it owns the wall-clock worker thread that emits the 400 Hz
+control heartbeat using absolute steady-clock timestamps and measured elapsed `dt`. In tests and
+the deterministic simulator it advances a zero-based timeline explicitly.
 
 ### `ImuService`
 
@@ -60,9 +65,9 @@ Bridges the internal bus to UDP:
 
 The important hardware detail is that the controller now closes the loop on real motor feedback from `MotorRunner`, not just the last commanded target.
 
-## SIL Path
+## SIL Paths
 
-`sil_app` intentionally uses a narrower runtime:
+`sil_app` remains a narrower message/service smoke runtime:
 
 - no `TimeService`
 - no hardware IMU reader
@@ -71,10 +76,16 @@ The important hardware detail is that the controller now closes the loop on real
 Instead, Python drives the system by sending:
 
 - `PhysicsTick`
-- `ImuData`
+- `ImuRawData`
 - `JoystickCommand`
 
-The service graph is still the same controller path, which is why `sil_app` is a useful service-integration smoke test even though it is not the main stability benchmark.
+The controller/plant acceptance path is `balancer_simulator`. Its direct runner, UDP wrapper,
+tuner, tests, and fuzz targets all instantiate the same deterministic `SimulatorEngine`, including
+the production IMU filter, control service, motor service, and pulse scheduler. The UDP wrapper
+transports scenario configuration and telemetry; it does not implement a second simulation.
+
+On every controller tick, missing/stale/future IMU input, fallover, or an actuator fault produces a
+zero motor target, resets controller state, and remains observable through telemetry fault flags.
 
 ## Tick Ownership
 

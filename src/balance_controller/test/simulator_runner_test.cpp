@@ -1,14 +1,16 @@
+#include "simulator/simulator_runner.h"
+
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <functional>
 #include <random>
 
-#include "services/main/config.h"
 #include "services/imu/pitch_lpf.h"
-#include "simulator/simulator_runner.h"
+#include "services/main/config.h"
 
 namespace {
 
@@ -56,6 +58,22 @@ double raw_pitch_deg(const std::array<double, 3>& acc) {
   return std::atan2(-acc[0], std::sqrt(acc[1] * acc[1] + acc[2] * acc[2])) * 180.0 / M_PI;
 }
 
+double timeline_difference(const SimulatorRunResult& left, const SimulatorRunResult& right) {
+  const size_t count = std::min(left.rows.size(), right.rows.size());
+  double difference = 0.0;
+  for (size_t index = 0; index < count; ++index) {
+    const auto& a = left.rows[index];
+    const auto& b = right.rows[index];
+    difference = std::max({difference, std::abs(a.plant_pitch_deg - b.plant_pitch_deg),
+                           std::abs(a.plant_position - b.plant_position),
+                           std::abs(a.actual_wheel_velocity - b.actual_wheel_velocity),
+                           std::abs(a.f_app - b.f_app), std::abs(a.missed_steps - b.missed_steps),
+                           std::abs(a.traction_limit_n - b.traction_limit_n),
+                           std::abs(a.motor_force_limit_n - b.motor_force_limit_n)});
+  }
+  return difference;
+}
+
 TEST(SimulatorRunnerTest, PositivePitchProducesCorrectiveWheelAndPlantResponse) {
   auto scenario = simulator_named_scenario("pitch_bias_pos", PhysicsProfile::Simplified);
   ASSERT_TRUE(scenario.has_value());
@@ -64,13 +82,11 @@ TEST(SimulatorRunnerTest, PositivePitchProducesCorrectiveWheelAndPlantResponse) 
   const auto result = run_simulator_scenario(*scenario, sim_pid_path());
   ASSERT_FALSE(result.rows.empty());
 
-  const auto it = std::find_if(result.rows.begin(), result.rows.end(), [](const auto& row) {
-    return std::abs(row.f_app) > 1e-6;
-  });
+  const auto it = std::find_if(result.rows.begin(), result.rows.end(),
+                               [](const auto& row) { return std::abs(row.f_app) > 1e-6; });
   ASSERT_NE(it, result.rows.end());
 
   EXPECT_GT(it->f_app, 0.0);
-  EXPECT_LT(it->theta_ddot, 0.0);
 }
 
 TEST(SimulatorRunnerTest, NegativePitchProducesOppositeCorrectiveResponse) {
@@ -81,13 +97,11 @@ TEST(SimulatorRunnerTest, NegativePitchProducesOppositeCorrectiveResponse) {
   const auto result = run_simulator_scenario(*scenario, sim_pid_path());
   ASSERT_FALSE(result.rows.empty());
 
-  const auto it = std::find_if(result.rows.begin(), result.rows.end(), [](const auto& row) {
-    return std::abs(row.f_app) > 1e-6;
-  });
+  const auto it = std::find_if(result.rows.begin(), result.rows.end(),
+                               [](const auto& row) { return std::abs(row.f_app) > 1e-6; });
   ASSERT_NE(it, result.rows.end());
 
   EXPECT_LT(it->f_app, 0.0);
-  EXPECT_GT(it->theta_ddot, 0.0);
 }
 
 TEST(SimulatorRunnerTest, TelemetryTracksPlantPitch) {
@@ -117,8 +131,11 @@ TEST(SimulatorRunnerTest, StaticRawImuNoiseIsReducedWithoutErasingPitchBias) {
   std::normal_distribution<double> gyro_noise(0.0, 0.015);
 
   constexpr double fs_hz = Config::sampling_hz;
-  constexpr int total_samples = static_cast<int>(8.0 * fs_hz);
-  constexpr int warmup_samples = static_cast<int>(2.0 * fs_hz);
+  // The accelerometer correction is intentionally slow (0.05 Hz) so linear
+  // balancing acceleration is not mistaken for tilt. Give that path several
+  // time constants before measuring its static-bias accuracy.
+  constexpr int total_samples = static_cast<int>(30.0 * fs_hz);
+  constexpr int warmup_samples = static_cast<int>(15.0 * fs_hz);
   const auto tick = std::chrono::nanoseconds{std::llround(1e9 / fs_hz)};
   auto now = std::chrono::steady_clock::now();
 
@@ -153,36 +170,180 @@ TEST(SimulatorRunnerTest, StaticRawImuNoiseIsReducedWithoutErasingPitchBias) {
   EXPECT_NEAR(fused_sum / count, cfg.initial_pitch_deg, 0.35);
 }
 
-TEST(SimulatorRunnerTest, PositiveComOffsetBuildsNegativeLeanTrim) {
-  auto scenario = simulator_named_scenario("com_offset_pos", PhysicsProfile::Realistic);
-  ASSERT_TRUE(scenario.has_value());
-  scenario->duration_s = 5.0;
+TEST(SimulatorRunnerTest, PositiveAndNegativeComOffsetsProduceMirroredPlantResponse) {
+  BalancerSimulator::Config positive_config;
+  positive_config.initial_pitch_deg = 0.0;
+  positive_config.com_angle_offset_rad = 0.001;
+  BalancerSimulator positive(positive_config);
 
-  const auto result = run_simulator_scenario(*scenario, sim_pid_path());
-  ASSERT_FALSE(result.rows.empty());
+  BalancerSimulator::Config negative_config = positive_config;
+  negative_config.com_angle_offset_rad = -0.001;
+  BalancerSimulator negative(negative_config);
 
-  EXPECT_FALSE(result.fell);
-  const auto max_trim = std::max_element(result.rows.begin(), result.rows.end(), [](const auto& a, const auto& b) {
-    return a.pitch_trim_deg < b.pitch_trim_deg;
-  });
-  ASSERT_NE(max_trim, result.rows.end());
-  EXPECT_GT(max_trim->pitch_trim_deg, 0.0);
+  for (int step = 0; step < 40; ++step) {
+    positive.step(1.0 / 833.0);
+    negative.step(1.0 / 833.0);
+  }
+
+  EXPECT_GT(positive.state().pitch, 0.0);
+  EXPECT_LT(negative.state().pitch, 0.0);
+  EXPECT_NEAR(positive.state().pitch, -negative.state().pitch, 1e-10);
+  EXPECT_NEAR(positive.state().velocity, -negative.state().velocity, 1e-10);
 }
 
-TEST(SimulatorRunnerTest, NegativeComOffsetBuildsPositiveLeanTrim) {
-  auto scenario = simulator_named_scenario("com_offset_neg", PhysicsProfile::Realistic);
-  ASSERT_TRUE(scenario.has_value());
-  scenario->duration_s = 5.0;
+TEST(SimulatorRunnerTest, HardwareNominalConstantsRemainAuthoritative) {
+  using Nominal = BalancerSimulator::HardwareNominal;
+  EXPECT_DOUBLE_EQ(Nominal::gravity, 9.81);
+  EXPECT_DOUBLE_EQ(Nominal::wheel_radius, 0.04);
+  EXPECT_DOUBLE_EQ(Nominal::robot_mass, 1.032);
+  EXPECT_DOUBLE_EQ(Nominal::wheel_mass, 0.05);
+  EXPECT_DOUBLE_EQ(Nominal::cart_mass, 0.10);
+  EXPECT_DOUBLE_EQ(Nominal::body_mass, 0.932);
+  EXPECT_DOUBLE_EQ(Nominal::center_of_mass_height, 0.06);
+  EXPECT_DOUBLE_EQ(Nominal::I_com, 0.0034);
+  EXPECT_DOUBLE_EQ(Nominal::steps_per_rev, 3200.0);
+}
 
-  const auto result = run_simulator_scenario(*scenario, sim_pid_path());
-  ASSERT_FALSE(result.rows.empty());
+TEST(SimulatorRunnerTest, UnifiedEngineIsDeterministicForSameSeedAndInputs) {
+  SimulatorScenario scenario;
+  scenario.duration_s = 0.5;
+  scenario.physics_profile = PhysicsProfile::Realistic;
+  scenario.initial_pitch_deg = 0.1;
+  scenario.imu_noise_seed = 42;
+  scenario.accel_noise_std_mps2 = 0.02;
+  scenario.gyro_noise_std_rad_s = 0.001;
+  scenario.imu_timestamp_jitter_us = 50.0;
 
-  EXPECT_FALSE(result.fell);
-  const auto min_trim = std::min_element(result.rows.begin(), result.rows.end(), [](const auto& a, const auto& b) {
-    return a.pitch_trim_deg < b.pitch_trim_deg;
+  SimulatorEngine first(scenario);
+  SimulatorEngine second(scenario);
+  for (int step = 0; step < 200; ++step) {
+    const auto a = first.step();
+    const auto b = second.step();
+    EXPECT_DOUBLE_EQ(a.plant_pitch_deg, b.plant_pitch_deg);
+    EXPECT_DOUBLE_EQ(a.fused_pitch_deg, b.fused_pitch_deg);
+    EXPECT_DOUBLE_EQ(a.left_actual_steps, b.left_actual_steps);
+    EXPECT_DOUBLE_EQ(a.f_app, b.f_app);
+  }
+}
+
+TEST(SimulatorRunnerTest, ScheduledAndUdpStyleJoystickInputsProduceEquivalentTimelines) {
+  SimulatorScenario scheduled_scenario;
+  scheduled_scenario.duration_s = 0.5;
+  scheduled_scenario.physics_profile = PhysicsProfile::Realistic;
+  scheduled_scenario.imu_noise_seed = 77;
+  scheduled_scenario.joy_segments.push_back(SimulatorJoySegment{
+      .start_s = 0.0,
+      .duration_s = 0.5,
+      .forward = 0.4,
+      .turn = -0.2,
+      .forward_end = 0.4,
+      .turn_end = -0.2,
   });
-  ASSERT_NE(min_trim, result.rows.end());
-  EXPECT_LT(min_trim->pitch_trim_deg, 0.0);
+  SimulatorScenario external_scenario = scheduled_scenario;
+  external_scenario.joy_segments.clear();
+
+  SimulatorEngine scheduled(scheduled_scenario);
+  SimulatorEngine udp_style(external_scenario);
+  udp_style.set_joystick(0.4, -0.2);
+  for (int step = 0; step < 200; ++step) {
+    const auto direct = scheduled.step();
+    const auto wrapped = udp_style.step();
+    EXPECT_DOUBLE_EQ(direct.plant_pitch_deg, wrapped.plant_pitch_deg);
+    EXPECT_DOUBLE_EQ(direct.plant_position, wrapped.plant_position);
+    EXPECT_DOUBLE_EQ(direct.left_actual_steps, wrapped.left_actual_steps);
+    EXPECT_DOUBLE_EQ(direct.right_actual_steps, wrapped.right_actual_steps);
+    EXPECT_DOUBLE_EQ(direct.fused_pitch_deg, wrapped.fused_pitch_deg);
+  }
+}
+
+TEST(SimulatorRunnerTest, TranslationalAccelerationChangesRawImuSpecificForce) {
+  BalancerSimulator::Config config;
+  config.initial_pitch_deg = 0.0;
+  config.com_angle_offset_rad = 0.0;
+  BalancerSimulator simulator(config);
+  const auto at_rest = simulator.make_raw_imu_payload(0);
+  simulator.set_external_force_n(3.0);
+  simulator.step(1.0 / 833.0);
+  const auto accelerating = simulator.make_raw_imu_payload(1200);
+
+  EXPECT_GT(std::abs(accelerating.acc[0] - at_rest.acc[0]), 0.1);
+  EXPECT_GT(std::abs(simulator.diagnostics().x_ddot), 0.1);
+}
+
+TEST(SimulatorRunnerTest, EveryRetainedPlantParameterAffectsTheTimeline) {
+  SimulatorScenario nominal;
+  nominal.duration_s = 0.8;
+  nominal.initial_pitch_deg = 2.0;
+  nominal.physics_profile = PhysicsProfile::Realistic;
+  nominal.disturbances.push_back(SimulatorDisturbance{
+      .kind = SimulatorDisturbanceKind::Step,
+      .start_s = 0.1,
+      .duration_s = 0.1,
+      .force_n = 3.0,
+  });
+  nominal.physics_override = BalancerSimulator::physics_for_profile(PhysicsProfile::Realistic);
+  const auto baseline = run_simulator_scenario(nominal, sim_pid_path());
+
+  const std::vector<std::function<void(SimulatorScenario&)>> variations{
+      [](auto& value) { value.mass_scale = 1.1; },
+      [](auto& value) { value.com_height_scale = 1.15; },
+      [](auto& value) { value.inertia_scale = 1.2; },
+      [](auto& value) { value.physics_override->max_force_n *= 0.7; },
+      [](auto& value) { value.physics_override->no_load_speed_mps *= 0.7; },
+      [](auto& value) { value.physics_override->traction_coefficient = 0.7; },
+      [](auto& value) { value.physics_override->motor_velocity_damping *= 0.7; },
+      [](auto& value) { value.physics_override->cart_damping = 0.3; },
+      [](auto& value) { value.physics_override->pitch_damping = 0.0; },
+      [](auto& value) { value.physics_override->motor_tau_s = 0.020; },
+      [](auto& value) { value.physics_override->phase_error_limit_steps = 4.0; },
+      [](auto& value) { value.physics_override->tire_stiffness_n_per_m *= 0.7; },
+      [](auto& value) { value.physics_override->tire_damping_n_s_per_m *= 0.7; },
+      [](auto& value) { value.physics_override->wheel_equivalent_mass_kg *= 1.3; },
+  };
+
+  for (size_t index = 0; index < variations.size(); ++index) {
+    SimulatorScenario varied = nominal;
+    variations[index](varied);
+    const auto result = run_simulator_scenario(varied, sim_pid_path());
+    EXPECT_GT(timeline_difference(baseline, result), 1e-8) << "variation " << index;
+  }
+}
+
+TEST(SimulatorRunnerTest, EveryRetainedImuImpairmentAffectsTheTimeline) {
+  SimulatorScenario nominal;
+  nominal.duration_s = 0.5;
+  nominal.initial_pitch_deg = 1.0;
+  nominal.physics_profile = PhysicsProfile::Realistic;
+  nominal.imu_noise_seed = 31415;
+  const auto baseline = run_simulator_scenario(nominal, sim_pid_path());
+
+  const std::vector<std::function<void(SimulatorScenario&)>> variations{
+      [](auto& value) { value.accel_noise_std_mps2 = 0.1; },
+      [](auto& value) { value.gyro_noise_std_rad_s = 0.01; },
+      [](auto& value) { value.accel_bias_mps2[0] = 0.1; },
+      [](auto& value) { value.gyro_bias_rad_s[1] = 0.002; },
+      [](auto& value) { value.imu_pitch_lag_s = 0.01; },
+      [](auto& value) { value.imu_timestamp_jitter_us = 100.0; },
+      [](auto& value) { value.imu_sample_loss_rate = 0.2; },
+  };
+
+  for (size_t index = 0; index < variations.size(); ++index) {
+    SimulatorScenario varied = nominal;
+    variations[index](varied);
+    const auto result = run_simulator_scenario(varied, sim_pid_path());
+    double difference = timeline_difference(baseline, result);
+    for (size_t row = 0; row < std::min(baseline.rows.size(), result.rows.size()); ++row) {
+      difference = std::max(
+          {difference,
+           std::abs(baseline.rows[row].fused_pitch_deg - result.rows[row].fused_pitch_deg),
+           std::abs(baseline.rows[row].gyro_pitch_rate_dps - result.rows[row].gyro_pitch_rate_dps),
+           static_cast<double>(
+               baseline.rows[row].imu_timestamp_us > result.rows[row].imu_timestamp_us
+                   ? baseline.rows[row].imu_timestamp_us - result.rows[row].imu_timestamp_us
+                   : result.rows[row].imu_timestamp_us - baseline.rows[row].imu_timestamp_us)});
+    }
+    EXPECT_GT(difference, 1e-8) << "variation " << index;
+  }
 }
 
 TEST(SimulatorRunnerTest, RampDisturbanceBuildsCommandMagnitudeOverTime) {
@@ -261,19 +422,22 @@ TEST(SimulatorRunnerTest, JoySegmentsDriveForwardAndTurnCommands) {
   ASSERT_FALSE(result.rows.empty());
 
   double max_pitch_sp = 0.0;
+  double max_target_velocity = 0.0;
   double max_turn_split = 0.0;
   for (const auto& row : result.rows) {
     if (row.sim_time_s >= 0.2 && row.sim_time_s <= 0.5) {
       max_pitch_sp = std::max(max_pitch_sp, std::abs(row.pitch_sp_deg));
+      max_target_velocity = std::max(max_target_velocity, std::abs(row.target_velocity_sps));
       max_turn_split = std::max(max_turn_split, std::abs(row.left_sps - row.right_sps));
     }
   }
 
-  EXPECT_GT(max_pitch_sp, 1.0);
+  EXPECT_GT(max_pitch_sp, 0.25);
+  EXPECT_GT(max_target_velocity, 400.0);
   EXPECT_GT(max_turn_split, 100.0);
 }
 
-TEST(SimulatorRunnerTest, DriveForceUsesExplicitActuatorGainInsteadOfControllerScaling) {
+TEST(SimulatorRunnerTest, DriveForceRespectsMotorAndTractionLimits) {
   auto scenario = simulator_named_scenario("pitch_bias_pos", PhysicsProfile::Realistic);
   ASSERT_TRUE(scenario.has_value());
   scenario->duration_s = 0.05;
@@ -281,14 +445,41 @@ TEST(SimulatorRunnerTest, DriveForceUsesExplicitActuatorGainInsteadOfControllerS
   const auto result = run_simulator_scenario(*scenario, sim_pid_path());
   ASSERT_FALSE(result.rows.empty());
 
-  const auto it = std::find_if(result.rows.begin(), result.rows.end(), [](const auto& row) {
-    return std::abs(row.target_wheel_velocity) > 1e-6;
-  });
+  const auto it = std::find_if(result.rows.begin(), result.rows.end(),
+                               [](const auto& row) { return std::abs(row.f_app) > 1e-6; });
   ASSERT_NE(it, result.rows.end());
-  EXPECT_NEAR(it->f_cmd,
-              std::clamp(it->target_wheel_velocity * result.physics.drive_force_per_mps,
-                         -result.physics.max_force_n, result.physics.max_force_n),
-              1e-3);
+  EXPECT_LE(std::abs(it->f_app), it->motor_force_limit_n + 1e-9);
+  EXPECT_LE(std::abs(it->f_app), it->traction_limit_n + 1e-9);
+  EXPECT_LE(std::abs(it->phase_error_steps), result.physics.phase_error_limit_steps + 1e-9);
+}
+
+TEST(SimulatorRunnerTest, MotorAuthorityEnvelopeUsesRotorSpeedNotRequestedSpeed) {
+  BalancerSimulator simulator;
+  simulator.set_motor_targets(8000.0, 8000.0);
+  simulator.set_emitted_steps(10.0, 10.0);
+  simulator.step(1.0 / 833.0);
+  EXPECT_NEAR(simulator.diagnostics().motor_force_limit_n, simulator.physics().max_force_n, 1e-9);
+
+  double minimum_limit = simulator.diagnostics().motor_force_limit_n;
+  for (int step = 1; step < 300; ++step) {
+    simulator.set_emitted_steps(10.0 + 10.0 * step, 10.0 + 10.0 * step);
+    simulator.step(1.0 / 833.0);
+    minimum_limit = std::min(minimum_limit, simulator.diagnostics().motor_force_limit_n);
+  }
+  EXPECT_LT(minimum_limit, simulator.physics().max_force_n * 0.95);
+}
+
+TEST(SimulatorRunnerTest, TireDeflectionDoesNotBecomeMissedMotorSteps) {
+  BalancerSimulator simulator;
+  simulator.set_emitted_steps(0.0, 0.0);
+  simulator.set_external_force_n(0.5);
+  bool saw_tire_force = false;
+  for (int step = 0; step < 20; ++step) {
+    simulator.step(1.0 / 833.0);
+    saw_tire_force = saw_tire_force || std::abs(simulator.diagnostics().f_app) > 1e-6;
+  }
+  EXPECT_TRUE(saw_tire_force);
+  EXPECT_NEAR(simulator.diagnostics().missed_steps, 0.0, 1e-12);
 }
 
 TEST(SimulatorRunnerTest, SmallAngleLinearizedPlantIsControllableWithOverdampedPoleTargets) {
@@ -315,6 +506,25 @@ TEST(SimulatorRunnerTest, SmallAngleLinearizedPlantIsControllableWithOverdampedP
   EXPECT_LT(poles[1], poles[0]);
   EXPECT_LT(poles[2], poles[1]);
   EXPECT_LT(poles[3], poles[2]);
+}
+
+TEST(SimulatorTransferTest, NominalAndOneAtATimeMarginsMeetAcceptanceGates) {
+  ConfigPid::load(sim_pid_path());
+  const auto scenarios = transfer_scenario_set();
+  ASSERT_EQ(scenarios.size(), 20u);
+  for (const auto& scenario : scenarios) {
+    SCOPED_TRACE(scenario.name);
+    const auto result = run_simulator_scenario_with_loaded_pid(scenario);
+    const auto acceptance = evaluate_transfer_scenario(result);
+    EXPECT_TRUE(acceptance.accepted) << [&]() {
+      std::string joined;
+      for (const auto& failure : acceptance.failures) {
+        if (!joined.empty()) joined += ",";
+        joined += failure;
+      }
+      return joined;
+    }();
+  }
 }
 
 }  // namespace

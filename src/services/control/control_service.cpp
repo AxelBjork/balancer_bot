@@ -18,6 +18,8 @@ ControlService::ControlService(ipc::MessageBus& bus) : bus_(bus) {
   core_.setTelemetrySink([this](const Telemetry& t) {
     ipc::SystemTelemetryPayload p{};
     p.run_id = 0;
+    p.controller_fault_flags = t.controller_fault_flags;
+    p.controller_saturation_flags = t.controller_saturation_flags;
     p.t_sec = t.t_sec;
     p.age_ms = t.age_ms;
     p.pitch_deg = t.pitch_deg;
@@ -28,15 +30,19 @@ ControlService::ControlService(ipc::MessageBus& bus) : bus_(bus) {
     p.filtered_pitch_rate_dps = last_filtered_pitch_rate_dps_;
     p.u_sps = t.u_sps;
     p.turn_sps = t.turn_sps;
+    p.target_velocity_sps = t.target_vel_sps;
     p.vel_error = t.vel_error;
     p.measured_vel_sps = t.measured_vel_sps;
-    p.vel_p_term = t.vel_p_term;
-    p.pitch_ref_from_vel_deg = t.pitch_ref_from_vel_deg;
+    p.velocity_p_term_deg = t.vel_p_term_deg;
+    p.velocity_i_term_deg = t.vel_i_term_deg;
     p.pitch_error_deg = t.pitch_error_deg;
     p.pitch_sp_deg = t.pitch_sp_deg;
-    p.pitch_trim_deg = t.pitch_trim_deg;
-    p.trim_active = t.trim_active;
-    p.left_applied_sps = have_motor_feedback_ ? latest_motor_feedback_.left_applied_sps : last_left_sps_;
+    p.rate_setpoint_dps = t.rate_sp_dps;
+    p.rate_error_dps = t.rate_error_dps;
+    p.command_saturated = t.command_saturated;
+    p.actuator_fault = t.actuator_fault;
+    p.left_applied_sps =
+        have_motor_feedback_ ? latest_motor_feedback_.left_applied_sps : last_left_sps_;
     p.right_applied_sps =
         have_motor_feedback_ ? latest_motor_feedback_.right_applied_sps : last_right_sps_;
     p.motor_update_dt_ms = have_motor_feedback_ ? latest_motor_feedback_.update_dt_ms : 0.0;

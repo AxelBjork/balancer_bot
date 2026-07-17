@@ -42,6 +42,9 @@ class Stepper {
     gpio_write(pi_, pins_.dir, forward ? 1 : 0);
     last_dir_forward_ = forward;
   }
+  void setStepLow() {
+    gpio_write(pi_, pins_.step, 0);
+  }
   bool dirForward() const noexcept {
     return last_dir_forward_;
   }

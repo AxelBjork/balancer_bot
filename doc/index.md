@@ -19,6 +19,7 @@ This is the main handbook for `balancer_bot`. Use it as the human-written guide 
 - [Reflection Quick Reference](reflection/cheat_sheet.md)
 - [SIL Guide](testing/sil_guide.md)
 - [Control and Simulator Notes](notes/control_and_simulator.md)
+- [Simulator-to-Hardware Improvement Plan](notes/simulator_hardware_transfer_plan.md)
 - [Hardware Reference](../hardware/README.md)
 
 ## Generated vs Human-Written Docs
