@@ -210,10 +210,18 @@ connect <controller-mac>
 
 ## First Bring-Up
 
+The examples below use one SSH alias consistently. If your SSH config calls the Pi something else,
+change only `PI_HOST`; the dashboard, `ssh`, and `scp` commands will all use it:
+
+```bash
+PI_HOST=rpi4
+PI_TARGET="pi@${PI_HOST}"
+```
+
 Once the binary and `pid.conf` are on the Pi:
 
 ```bash
-ssh pi@rpi4
+ssh "$PI_TARGET"
 chmod +x ~/balancer_pi
 sudo systemctl enable --now pigpiod
 echo ism330dhcx 0x6a | sudo tee /sys/bus/i2c/devices/i2c-1/new_device
@@ -223,11 +231,37 @@ sudo ./balancer_pi
 If you want a one-shot deploy and run command from the host:
 
 ```bash
-scp build-pi/balancer_pi pid.conf pi@rpi4:~/ && \
-ssh -t pi@rpi4 "echo ism330dhcx 0x6a | sudo tee /sys/bus/i2c/devices/i2c-1/new_device || true && \
+scp build-pi/balancer_pi pid.conf "${PI_TARGET}:~/" && \
+ssh -t "$PI_TARGET" "echo ism330dhcx 0x6a | sudo tee /sys/bus/i2c/devices/i2c-1/new_device || true && \
 chmod +x ~/balancer_pi && \
 sudo ~/balancer_pi"
 ```
+
+### Live Dashboard
+
+Run this on the development laptop after the Pi runtime has started:
+
+```bash
+python3 tools/telemetry_dashboard/server.py --pi "$PI_HOST"
+```
+
+Then open `http://127.0.0.1:8080`. The dashboard expands the SSH alias through
+`~/.ssh/config`, so `rpi4` can map to a changing LAN address without updating another command.
+It receives the existing UDP stream and claims its one external peer slot; stop the dashboard
+before running a SIL client or another UDP observer.
+
+If the dashboard is running on the Windows host where `scp` already works, enable its optional
+file-picker deployment panel with:
+
+```powershell
+py tools/telemetry_dashboard/server.py --pi rpi4
+```
+
+Press **Deploy current build** to copy `build-pi/balancer_pi` and `pid.conf` to the Pi. **Start
+bot** launches the uploaded binary asynchronously, while **Abort bot** sends `SIGTERM` to every
+process whose exact name is `balancer_pi`. This lets the robot disable the motor driver during its
+normal teardown. These buttons use `sudo -n`; configure non-interactive sudo for the Pi user
+first or the page reports the sudo error.
 
 Notes:
 

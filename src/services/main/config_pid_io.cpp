@@ -135,7 +135,7 @@ void ConfigPid::save(const std::string& path) {
     write_param(f, "rate_FF", rate_FF);
     f << "\n";
 
-    f << "# --- Velocity PI (50 Hz) and allocation ---\n";
+    f << "# --- Velocity control / stationary COM trim (50 Hz) and allocation ---\n";
     write_param(f, "velocity_P", velocity_P);
     write_param(f, "velocity_I", velocity_I);
     write_param(f, "velocity_I_limit_deg", velocity_I_limit_deg);

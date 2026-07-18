@@ -4,6 +4,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <utility>
 #include <vector>
 
 #include "services/control/control_service.h"
@@ -19,7 +20,7 @@ std::array<double, 3> accel_for_pitch(double angle_rad) {
   return {
       -9.81 * std::sin(angle_rad),
       0.0,
-      9.81 * std::cos(angle_rad),
+      -9.81 * std::cos(angle_rad),
   };
 }
 
@@ -524,7 +525,7 @@ TEST(RateControllerCoreTest, BalancePriorityTrimsTurnAtRail) {
   EXPECT_NEAR(h.runner().lastRight(), ConfigPid::balance_max_sps, 1e-6);
 }
 
-TEST(RateControllerCoreTest, VelocityPiRunsAtFiftyHertzAndMapsForwardCommand) {
+TEST(RateControllerCoreTest, VelocityOuterLoopRunsAtFiftyHertzAndMapsForwardCommand) {
   ScopedConfigPidRestore restore;
   set_zeroed_gain_audit_config();
   ConfigPid::velocity_P = 0.002;
@@ -535,15 +536,134 @@ TEST(RateControllerCoreTest, VelocityPiRunsAtFiftyHertzAndMapsForwardCommand) {
   h.run_steps(7, 1.0 / 400.0);
   EXPECT_NEAR(h.telemetry().back().target_vel_sps, 0.0, 1e-9);
   h.run_steps(1, 1.0 / 400.0);
+  EXPECT_NEAR(h.telemetry().back().target_vel_sps, 48.0, 1e-9);
+  EXPECT_LT(h.telemetry().back().vel_p_term_deg, 0.0);
+  EXPECT_NEAR(h.telemetry().back().vel_i_term_deg, 0.0, 1e-9);
+  EXPECT_LT(h.telemetry().back().pitch_sp_deg, h.telemetry().back().vel_p_term_deg);
+  EXPECT_NEAR(h.runner().lastLeft(), 48.0, 1e-6);
+  EXPECT_NEAR(h.runner().lastRight(), 48.0, 1e-6);
+
+  h.run_steps(192, 1.0 / 400.0);
   EXPECT_NEAR(h.telemetry().back().target_vel_sps, ConfigPid::drive_max_sps, 1e-9);
-  EXPECT_GT(h.telemetry().back().vel_p_term_deg, 0.0);
-  EXPECT_GT(h.telemetry().back().vel_i_term_deg, 0.0);
-  EXPECT_GT(h.telemetry().back().pitch_sp_deg, 0.0);
   EXPECT_NEAR(h.runner().lastLeft(), ConfigPid::drive_max_sps, 1e-6);
   EXPECT_NEAR(h.runner().lastRight(), ConfigPid::drive_max_sps, 1e-6);
 }
 
-TEST(RateControllerCoreTest, VelocityIntegratorClampsAndPitchAntiWindupHoldsIt) {
+TEST(RateControllerCoreTest, ForwardReferenceBrakesThroughZeroBeforeReversing) {
+  ScopedConfigPidRestore restore;
+  set_zeroed_gain_audit_config();
+
+  RateControllerHarness h;
+  h.setJoystick(1.0, 0.0);
+  h.run_steps(200, 1.0 / 400.0);
+  ASSERT_NEAR(h.telemetry().back().target_vel_sps, ConfigPid::drive_max_sps, 1e-9);
+
+  h.setJoystick(-1.0, 0.0);
+  h.run_steps(112, 1.0 / 400.0);
+  EXPECT_NEAR(h.telemetry().back().target_vel_sps, 0.0, 1e-9);
+  h.run_steps(8, 1.0 / 400.0);
+  EXPECT_NEAR(h.telemetry().back().target_vel_sps, -48.0, 1e-9);
+}
+
+TEST(RateControllerCoreTest, PositiveAndNegativeCommandsKeepSymmetricNonzeroAuthority) {
+  ScopedConfigPidRestore restore;
+  set_zeroed_gain_audit_config();
+  ConfigPid::rate_P = 0.20;
+  ConfigPid::angle_P = 28.0;
+  ConfigPid::angle_D = 0.25;
+  ConfigPid::velocity_P = 0.004;
+
+  const auto run_direction = [](double direction) {
+    RateControllerHarness h;
+    h.setJoystick(direction, 0.0);
+    h.runner().setActualSpeedSps(0.0);
+    h.run_steps(200, 1.0 / 400.0);
+    return std::pair{h.telemetry().back(), h.runner().lastLeft()};
+  };
+
+  const auto [positive_telemetry, positive_output] = run_direction(1.0);
+  const auto [negative_telemetry, negative_output] = run_direction(-1.0);
+  EXPECT_GT(positive_output, positive_telemetry.target_vel_sps);
+  EXPECT_LT(negative_output, negative_telemetry.target_vel_sps);
+  EXPECT_GT(positive_output, 0.0);
+  EXPECT_LT(negative_output, 0.0);
+  EXPECT_NEAR(positive_output, -negative_output, 1e-3);
+  EXPECT_NEAR(positive_telemetry.pitch_sp_deg, -negative_telemetry.pitch_sp_deg, 1e-6);
+}
+
+TEST(RateControllerCoreTest, StationaryComTrimOpposesNeutralDriftAndRemainsBounded) {
+  ScopedConfigPidRestore restore;
+  set_zeroed_gain_audit_config();
+  ConfigPid::velocity_I = 0.01;
+  ConfigPid::velocity_I_limit_deg = 2.0;
+
+  RateControllerHarness h;
+  h.setJoystick(0.0, 0.0);
+  h.runner().setActualSpeedSps(100.0);
+  h.run_steps(800, 1.0 / 400.0);
+  ASSERT_GT(h.telemetry().back().vel_i_term_deg, 0.0);
+  EXPECT_LE(h.telemetry().back().vel_i_term_deg, ConfigPid::velocity_I_limit_deg);
+
+  const double learned_trim_deg = h.telemetry().back().vel_i_term_deg;
+  h.runner().setActualSpeedSps(0.0);
+  h.run_steps(8, 1.0 / 400.0);
+  EXPECT_NEAR(h.telemetry().back().vel_i_term_deg, learned_trim_deg, 1e-9);
+}
+
+TEST(RateControllerCoreTest, StationaryComTrimRejectsMotionAndRequiresSettledDwell) {
+  ScopedConfigPidRestore restore;
+  set_zeroed_gain_audit_config();
+  ConfigPid::velocity_I = 0.01;
+  ConfigPid::velocity_I_limit_deg = 4.0;
+
+  RateControllerHarness h;
+  h.setJoystick(0.0, 0.0);
+
+  // A speed below the old 800 SPS threshold is still obvious vehicle motion
+  // and must not be learned as a physical COM offset.
+  h.runner().setActualSpeedSps(700.0);
+  h.run_steps(800, 1.0 / 400.0);
+  EXPECT_NEAR(h.telemetry().back().vel_i_term_deg, 0.0, 1e-9);
+
+  // A large attitude estimate is not a settled COM-learning condition even
+  // if wheel speed and gyro rate happen to be small.
+  h.runner().setActualSpeedSps(100.0);
+  h.run_steps(800, 1.0 / 400.0, 6.0 * M_PI / 180.0, 0.0);
+  EXPECT_NEAR(h.telemetry().back().vel_i_term_deg, 0.0, 1e-9);
+
+  // Passing briefly through low speed during rocking/handling must not open
+  // the learner either.
+  h.run_steps(300, 1.0 / 400.0, 0.0, 20.0 * M_PI / 180.0);
+  EXPECT_NEAR(h.telemetry().back().vel_i_term_deg, 0.0, 1e-9);
+
+  // A short quiet crossing is insufficient; learning starts only after the
+  // settled dwell has elapsed.
+  h.run_steps(200, 1.0 / 400.0);
+  EXPECT_NEAR(h.telemetry().back().vel_i_term_deg, 0.0, 1e-9);
+  h.run_steps(400, 1.0 / 400.0);
+  EXPECT_GT(h.telemetry().back().vel_i_term_deg, 0.0);
+}
+
+TEST(RateControllerCoreTest, StationaryComTrimFreezesDuringCommand) {
+  ScopedConfigPidRestore restore;
+  set_zeroed_gain_audit_config();
+  ConfigPid::velocity_I = 0.01;
+  ConfigPid::velocity_I_limit_deg = 4.0;
+
+  RateControllerHarness h;
+  h.setJoystick(0.0, 0.0);
+  h.runner().setActualSpeedSps(100.0);
+  h.run_steps(800, 1.0 / 400.0);
+  const double learned_trim_deg = h.telemetry().back().vel_i_term_deg;
+  ASSERT_GT(learned_trim_deg, 0.1);
+
+  h.setJoystick(1.0, 0.0);
+  h.runner().setActualSpeedSps(0.0);
+  h.run_steps(400, 1.0 / 400.0);
+  EXPECT_NEAR(h.telemetry().back().vel_i_term_deg, learned_trim_deg, 1e-9);
+}
+
+TEST(RateControllerCoreTest, CommandPitchClampsWithoutWindingComTrim) {
   ScopedConfigPidRestore restore;
   set_zeroed_gain_audit_config();
   ConfigPid::velocity_P = 1.0;
@@ -554,11 +674,11 @@ TEST(RateControllerCoreTest, VelocityIntegratorClampsAndPitchAntiWindupHoldsIt) 
   RateControllerHarness h;
   h.setJoystick(1.0, 0.0);
   h.run_steps(400, 1.0 / 400.0);
-  EXPECT_NEAR(h.telemetry().back().pitch_sp_deg, ConfigPid::pitch_max_deg, 1e-6);
+  EXPECT_NEAR(h.telemetry().back().pitch_sp_deg, -ConfigPid::pitch_max_deg, 1e-6);
   EXPECT_NEAR(h.telemetry().back().vel_i_term_deg, 0.0, 1e-6);
 }
 
-TEST(RateControllerCoreTest, StaleImuCommandsZeroAndClearsVelocityIntegral) {
+TEST(RateControllerCoreTest, StaleImuCommandsZeroAndPreservesComTrim) {
   ScopedConfigPidRestore restore;
   set_zeroed_gain_audit_config();
   ConfigPid::rate_P = 1.0;
@@ -566,19 +686,45 @@ TEST(RateControllerCoreTest, StaleImuCommandsZeroAndClearsVelocityIntegral) {
   ConfigPid::velocity_I = 0.01;
 
   RateControllerHarness h;
-  h.setJoystick(1.0, 0.0);
-  h.run_steps(16, 1.0 / 400.0);
-  ASSERT_GT(h.telemetry().back().vel_i_term_deg, 0.0);
-  h.tick(1.0 / 400.0, 100000);
+  h.setJoystick(0.0, 0.0);
+  h.runner().setActualSpeedSps(100.0);
+  h.run_steps(800, 1.0 / 400.0);
+  const double learned_trim_deg = h.telemetry().back().vel_i_term_deg;
+  ASSERT_GT(learned_trim_deg, 0.0);
+  h.tick(1.0 / 400.0, 3'000'000);
 
   EXPECT_NEAR(h.runner().lastLeft(), 0.0, 1e-6);
   EXPECT_NEAR(h.runner().lastRight(), 0.0, 1e-6);
   ASSERT_FALSE(h.telemetry().empty());
   EXPECT_NE(h.telemetry().back().controller_fault_flags & ControllerFaultStaleImu, 0u);
   h.setJoystick(0.0, 0.0);
-  h.setImu(0.0, 0.0, 102500);
-  h.tick(1.0 / 400.0, 102500);
-  EXPECT_NEAR(h.telemetry().back().vel_i_term_deg, 0.0, 1e-6);
+  h.setImu(0.0, 0.0, 3'002'500);
+  h.tick(1.0 / 400.0, 3'002'500);
+  EXPECT_NEAR(h.telemetry().back().vel_i_term_deg, learned_trim_deg, 1e-6);
+}
+
+TEST(RateControllerCoreTest, FalloverResetPreservesComTrimUntilRearm) {
+  ScopedConfigPidRestore restore;
+  set_zeroed_gain_audit_config();
+  ConfigPid::velocity_I = 0.01;
+
+  RateControllerHarness h;
+  h.setJoystick(0.0, 0.0);
+  h.runner().setActualSpeedSps(100.0);
+  h.run_steps(800, 1.0 / 400.0);
+  const double learned_trim_deg = h.telemetry().back().vel_i_term_deg;
+  ASSERT_GT(learned_trim_deg, 0.0);
+
+  h.setImu(26.0 * M_PI / 180.0, 0.0, 2'002'500);
+  h.tick(1.0 / 400.0, 2'002'500);
+  EXPECT_NE(h.telemetry().back().controller_fault_flags & ControllerFaultFallover, 0u);
+  EXPECT_NEAR(h.telemetry().back().vel_i_term_deg, learned_trim_deg, 1e-6);
+
+  h.runner().setActualSpeedSps(0.0);
+  h.setImu(0.0, 0.0, 2'005'000);
+  h.tick(1.0 / 400.0, 2'005'000);
+  EXPECT_EQ(h.telemetry().back().controller_fault_flags & ControllerFaultFallover, 0u);
+  EXPECT_NEAR(h.telemetry().back().vel_i_term_deg, learned_trim_deg, 1e-6);
 }
 
 TEST(RateControllerCoreTest, FutureImuBeyondClockToleranceCommandsZero) {
@@ -611,15 +757,32 @@ TEST(RateControllerCoreTest, FalloverAndActuatorFaultCommandZero) {
   h.setImu(1.0 * M_PI / 180.0, 0.0, 2500);
   h.tick(1.0 / 400.0, 2500);
   ASSERT_GT(std::abs(h.runner().lastLeft()), 1.0);
-  h.setImu(16.0 * M_PI / 180.0, 0.0, 5000);
+  h.setImu(24.0 * M_PI / 180.0, 0.0, 5000);
   h.tick(1.0 / 400.0, 5000);
+  EXPECT_EQ(h.telemetry().back().controller_fault_flags & ControllerFaultFallover, 0u);
+
+  h.setImu(26.0 * M_PI / 180.0, 0.0, 7500);
+  h.tick(1.0 / 400.0, 7500);
   EXPECT_NEAR(h.runner().lastLeft(), 0.0, 1e-6);
   EXPECT_NE(h.telemetry().back().controller_fault_flags & ControllerFaultFallover, 0u);
   EXPECT_EQ(h.telemetry().back().controller_saturation_flags, ControllerSaturationNone);
 
-  h.setImu(1.0 * M_PI / 180.0, 0.0, 7500);
+  h.setImu(-24.0 * M_PI / 180.0, 0.0, 10'000);
+  h.tick(1.0 / 400.0, 10'000);
+  EXPECT_NEAR(h.runner().lastLeft(), 0.0, 1e-6);
+  EXPECT_NE(h.telemetry().back().controller_fault_flags & ControllerFaultFallover, 0u);
+
+  h.setImu(1.0 * M_PI / 180.0, 40.0 * M_PI / 180.0, 12'500);
+  h.tick(1.0 / 400.0, 12'500);
+  EXPECT_NEAR(h.runner().lastLeft(), 0.0, 1e-6);
+  EXPECT_NE(h.telemetry().back().controller_fault_flags & ControllerFaultFallover, 0u);
+
+  h.setImu(1.0 * M_PI / 180.0, 0.0, 15'000);
+  h.tick(1.0 / 400.0, 15'000);
+  EXPECT_EQ(h.telemetry().back().controller_fault_flags & ControllerFaultFallover, 0u);
+
   h.setActuatorFault(true);
-  h.tick(1.0 / 400.0, 7500);
+  h.tick(1.0 / 400.0, 17'500);
   EXPECT_NEAR(h.runner().lastLeft(), 0.0, 1e-6);
   EXPECT_NE(h.telemetry().back().controller_fault_flags & ControllerFaultActuator, 0u);
 }
@@ -643,7 +806,7 @@ TEST(RateControllerCoreTest, SmallResidualVelocityProducesOnlySmallCorrectivePit
 
   ASSERT_FALSE(h.telemetry().empty());
   EXPECT_LT(h.telemetry().back().vel_error, 0.0);
-  EXPECT_LT(h.telemetry().back().vel_p_term_deg, 0.0);
+  EXPECT_GT(h.telemetry().back().vel_p_term_deg, 0.0);
   EXPECT_LT(std::abs(h.telemetry().back().pitch_sp_deg), 1.0);
 }
 
@@ -657,12 +820,12 @@ TEST(RateControllerCoreTest, LargeResidualVelocityIsBrakedWithoutCommand) {
 
   ASSERT_FALSE(h.telemetry().empty());
   EXPECT_LT(h.telemetry().back().vel_error, 0.0);
-  EXPECT_LT(h.telemetry().back().vel_p_term_deg, 0.0);
+  EXPECT_GT(h.telemetry().back().vel_p_term_deg, 0.0);
   EXPECT_GT(std::abs(h.telemetry().back().pitch_sp_deg), 1e-3);
   EXPECT_LE(std::abs(h.telemetry().back().pitch_sp_deg), ConfigPid::pitch_max_deg + 0.1);
 }
 
-TEST(RateControllerCoreTest, NegativeResidualVelocityProducesPositiveCorrectivePitchRef) {
+TEST(RateControllerCoreTest, NegativeResidualVelocityProducesNegativeCorrectivePitchRef) {
   RateControllerHarness h;
   h.setJoystick(0.0, 0.0);
   h.run_steps(40, 1.0 / 400.0);
@@ -672,7 +835,7 @@ TEST(RateControllerCoreTest, NegativeResidualVelocityProducesPositiveCorrectiveP
 
   ASSERT_FALSE(h.telemetry().empty());
   EXPECT_GT(h.telemetry().back().vel_error, 0.0);
-  EXPECT_GT(h.telemetry().back().vel_p_term_deg, 0.0);
+  EXPECT_LT(h.telemetry().back().vel_p_term_deg, 0.0);
 }
 
 TEST(RateControllerCoreTest, VelocityFeedbackAffectsTelemetryWhenCommanded) {
@@ -742,7 +905,7 @@ TEST(ControlServiceTest, UsesMotorFeedbackForVelocityTelemetry) {
   EXPECT_NEAR(h.telemetry().back().measured_vel_sps, 123.0, 5.0);
   EXPECT_NEAR(h.telemetry().back().vel_error, h.telemetry().back().target_velocity_sps - 123.0,
               5.0);
-  EXPECT_GT(h.telemetry().back().velocity_p_term_deg, 0.0);
+  EXPECT_LT(h.telemetry().back().velocity_p_term_deg, 0.0);
   EXPECT_NEAR(h.telemetry().back().left_applied_sps, 200.0, 1e-3);
   EXPECT_NEAR(h.telemetry().back().right_applied_sps, 46.0, 1e-3);
   EXPECT_EQ(h.telemetry().back().left_actual_steps, 0);
@@ -812,8 +975,8 @@ TEST(ControlServiceTest, TelemetryCarriesOuterLoopBreakdownAndMotorFeedback) {
   ASSERT_FALSE(h.telemetry().empty());
   const auto& t = h.telemetry().back();
   EXPECT_GT(t.target_velocity_sps, 0.0);
-  EXPECT_GT(t.velocity_p_term_deg, 0.0);
-  EXPECT_NE(t.velocity_i_term_deg, 0.0);
+  EXPECT_LT(t.velocity_p_term_deg, 0.0);
+  EXPECT_NEAR(t.velocity_i_term_deg, 0.0, 1e-9);
   EXPECT_NE(t.rate_setpoint_dps, 0.0);
   EXPECT_NE(t.pitch_error_deg, 0.0);
   EXPECT_NEAR(t.left_applied_sps, 140.0, 1e-3);

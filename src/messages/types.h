@@ -75,8 +75,9 @@ struct ConfigPid {
   inline static double rate_I_lim = 0.15;
   inline static double rate_FF = 0.0;
 
-  // Velocity PI (50 Hz), angle-to-rate, and actuator allocation.
-  // Velocity gains produce degrees from an error expressed in steps/s.
+  // Velocity feedback / stationary COM trim (50 Hz), angle-to-rate, and allocation.
+  // Velocity gains produce degrees from an error expressed in steps/s; velocity_I
+  // is learned only at a stationary command and remains the COM trim limit.
   inline static double velocity_P = 0.0020;
   inline static double velocity_I = 0.0010;
   inline static double velocity_I_limit_deg = 4.0;

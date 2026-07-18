@@ -7,9 +7,11 @@
 #include <thread>
 #include <vector>
 
+#include "services/main/config.h"
 #include "services/motor/motor_service.h"
 
 extern "C" void pigpio_stub_reset();
+int pigpio_stub_get_gpio_level(int pin);
 
 namespace {
 
@@ -106,6 +108,52 @@ TEST_F(MotorRunnerTest, StepTrackingReverseDirection) {
 
   EXPECT_NEAR(static_cast<double>(leftSteps), -10.0, 3.0) << "Left steps should be ~-10";
   EXPECT_NEAR(static_cast<double>(rightSteps), -10.0, 3.0) << "Right steps should be ~-10";
+}
+
+TEST_F(MotorRunnerTest, InvertedMotorWritesPhysicalDirectionForBothCommandPolarities) {
+  constexpr int kLeftDirPin = 13;
+  constexpr int kRightDirPin = 14;
+  Stepper left(1, Stepper::Pins{5, 6, kLeftDirPin});
+  Stepper right(1, Stepper::Pins{7, 8, kRightDirPin}, true);
+  RecordingWaveBackend backend;
+  MotorRunner runner(left, right, 400.0, 1e9, &backend);
+
+  // Logical forward uses opposite physical DIR levels for the mirrored motors.
+  EXPECT_TRUE(left.dirForward());
+  EXPECT_TRUE(right.dirForward());
+  EXPECT_EQ(pigpio_stub_get_gpio_level(kLeftDirPin), 1);
+  EXPECT_EQ(pigpio_stub_get_gpio_level(kRightDirPin), 0);
+
+  // A first command in reverse must update both physical pins, including the
+  // inverted right motor whose startup level previously remained stale.
+  runner.setTargets(-500.0, -500.0, 1000);
+  EXPECT_FALSE(left.dirForward());
+  EXPECT_FALSE(right.dirForward());
+  EXPECT_EQ(pigpio_stub_get_gpio_level(kLeftDirPin), 0);
+  EXPECT_EQ(pigpio_stub_get_gpio_level(kRightDirPin), 1);
+
+  runner.setTargets(500.0, 500.0, 2000);
+  EXPECT_TRUE(left.dirForward());
+  EXPECT_TRUE(right.dirForward());
+  EXPECT_EQ(pigpio_stub_get_gpio_level(kLeftDirPin), 1);
+  EXPECT_EQ(pigpio_stub_get_gpio_level(kRightDirPin), 0);
+}
+
+TEST_F(MotorRunnerTest, HardwareConfigMapsRobotForwardToCalibratedDirLevels) {
+  constexpr int kLeftDirPin = 13;
+  constexpr int kRightDirPin = 24;
+  Stepper left(1, Stepper::Pins{12, 19, kLeftDirPin}, Config::invert_left);
+  Stepper right(1, Stepper::Pins{4, 18, kRightDirPin}, Config::invert_right);
+  RecordingWaveBackend backend;
+  MotorRunner runner(left, right, 400.0, 1e9, &backend);
+
+  runner.setTargets(500.0, 500.0, 1000);
+  EXPECT_EQ(pigpio_stub_get_gpio_level(kLeftDirPin), 0);
+  EXPECT_EQ(pigpio_stub_get_gpio_level(kRightDirPin), 1);
+
+  runner.setTargets(-500.0, -500.0, 2000);
+  EXPECT_EQ(pigpio_stub_get_gpio_level(kLeftDirPin), 1);
+  EXPECT_EQ(pigpio_stub_get_gpio_level(kRightDirPin), 0);
 }
 
 TEST_F(MotorRunnerTest, StepTrackingDifferentialSteering) {

@@ -12,7 +12,7 @@ from generated_balancer import (
 
 def make_imu_sample(timestamp_us: int) -> ImuRawPayload:
     return ImuRawPayload(
-        acc=[0.0, 0.0, 9.81],
+        acc=[0.0, 0.0, -9.81],
         gyr=[0.0, 0.0, 0.0],
         timestamp_us=timestamp_us,
     )

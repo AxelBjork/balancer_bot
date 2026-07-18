@@ -17,11 +17,9 @@ class Stepper {
     set_mode(pi_, pins_.step, PI_OUTPUT);
     set_mode(pi_, pins_.dir, PI_OUTPUT);
 
-    // Initialize DIR to logical "forward"
-    const bool forward = true;
-    const bool level = invert_ ? 0 : 1;
-    gpio_write(pi_, pins_.dir, level);
-    last_dir_forward_ = forward;
+    // Keep the cached state in logical motor coordinates. Pin inversion is a
+    // hardware-boundary detail applied only when the GPIO level is written.
+    setDirNoWait(true);
 
     if (energize_now) {
       gpio_write(pi_, pins_.ena, 1);
@@ -35,11 +33,11 @@ class Stepper {
 
   // ---- helpers used by MotorRunner ----
   bool forwardFromSps(double sps) const noexcept {
-    bool fwd = (sps >= 0.0);
-    return invert_ ? !fwd : fwd;
+    return sps >= 0.0;
   }
   void setDirNoWait(bool forward) {
-    gpio_write(pi_, pins_.dir, forward ? 1 : 0);
+    const bool level = invert_ ? !forward : forward;
+    gpio_write(pi_, pins_.dir, level ? 1u : 0u);
     last_dir_forward_ = forward;
   }
   void setStepLow() {

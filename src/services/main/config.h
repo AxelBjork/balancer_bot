@@ -31,16 +31,11 @@ struct Config {
   // Velocity estimator (fast)
   static constexpr double fc_velocity_hz = 50.0;
   static constexpr double g0 = 9.81;
-  static constexpr double g_band_rel = 0.12;         // accept |a| in [g*(1-..), g*(1+..)]
-  static constexpr double max_use_pitch_deg = 75.0;  // ignore accel when near ±90°
-  // Horizontal specific force is indistinguishable from tilt. Reject accel
-  // corrections whose innovation is implausible for the already gyro-tracked
-  // attitude instead of steering the estimator into wheel acceleration.
+  static constexpr double g_band_rel = 0.12;  // accept |a| in [g*(1-..), g*(1+..)]
+  // Horizontal specific force is indistinguishable from tilt. Bound each
+  // correction so gravity remains a continuous reference without allowing a
+  // dynamic acceleration to abruptly steer the estimate.
   static constexpr double accel_correction_max_innovation_deg = 3.0;
-  // Stationary detector for gyro bias learning
-  static constexpr double still_max_rate_dps = 2.0;  // |gyro| < this
-  static constexpr double still_max_err_deg = 3.0;   // |acc_pitch - est| < this
-  static constexpr double fc_gyro_bias_hz = 0.2;     // very slow bias update (~10 s τ)
   static constexpr double fc_acc_prefilt_hz = 30.0;  // prefilter on accel (10–20 Hz)
 
   // ========= Controller rates & limits =========
@@ -49,13 +44,17 @@ struct Config {
   // error/missed-step plant supplies the physical acceleration limit.
   static constexpr double motor_slew_sps_per_s = 100000.0;
 
-  static constexpr double max_tilt_rad = 15.0 * (M_PI / 180.0);
+  static constexpr double max_tilt_rad = 25.0 * (M_PI / 180.0);
 
   static constexpr int command_hz = 100;
   static constexpr int kPrintEvery = 100;
   static constexpr double deadzone = 0.05;
-  static constexpr bool invert_left = false;
-  static constexpr bool invert_right = true;
+  // Public motion commands use robot-forward as positive. These electrical
+  // inversions preserve the calibrated physical wheel polarity for the
+  // mirrored motor installation; inversion remains confined to the hardware
+  // boundary so controller, simulator, joystick, and telemetry signs agree.
+  static constexpr bool invert_left = true;
+  static constexpr bool invert_right = false;
 
   // ========= Time Budget =========
   static constexpr double pitch_rise_ms = 7000.0;

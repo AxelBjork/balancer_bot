@@ -15,7 +15,14 @@ Publishing a message is just:
 2. `MessageBus::dispatch(Id, &payload)`
 3. the application dispatcher routes the payload to the relevant services
 
-That means delivery is synchronous and happens in the publishing thread. The bus itself does not create threads or store queued messages.
+That means delivery is synchronous and begins in the publishing thread. The bus itself does not
+create threads or store queued messages, but it serializes top-level dispatch with a recursive
+mutex. A nested `publish()` therefore runs immediately in the same dispatch chain, while a
+different producer thread waits until that entire chain completes.
+
+The bus is the callback-synchronization boundary: service handlers invoked through it may assume
+serialized entry and should not add another lock solely for bus delivery. Components whose public
+APIs are also called outside bus dispatch must synchronize those APIs independently.
 
 ## Authorization Model
 

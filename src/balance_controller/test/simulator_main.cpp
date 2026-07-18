@@ -523,7 +523,10 @@ class SimulatorService {
     });
     while (run.tail_samples.size() > kTailWindowSamples) run.tail_samples.pop_front();
 
-    if (run.max_abs_pitch_deg > kFallPitchDeg) {
+    // Transfer scenarios must run to their requested duration so the UDP path
+    // remains exactly comparable with run_simulator_scenario(), which records
+    // the complete timeline even after the simulated plant has fallen.
+    if (run.max_abs_pitch_deg > kFallPitchDeg && !run.transfer_validation) {
       finish_active_run(kDoneFell);
       return;
     }
@@ -534,8 +537,7 @@ class SimulatorService {
   }
 
   static float accel_pitch_deg(const std::array<double, 3>& acc) {
-    return static_cast<float>(std::atan2(-acc[0], std::sqrt(acc[1] * acc[1] + acc[2] * acc[2])) *
-                              (180.0 / kPi));
+    return static_cast<float>(std::atan2(-acc[0], -acc[2]) * (180.0 / kPi));
   }
 
   void publish_telemetry(ActiveRun& run, const SimulatorTimelineRow& row) {

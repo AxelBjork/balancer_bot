@@ -33,9 +33,12 @@ class PitchComplementaryFilter {
   double pitch_{0.0};      // fused estimate (rad, +forward)
   double gyro_lpf_{0.0};   // rad/s (pitch axis)
   double gyro_accel_lpf_{0.0};  // rad/s^2 (pitch axis)
-  double gyro_bias_{0.0};  // rad/s
   bool have_prev_gyro_lpf_{false};
   double prev_gyro_lpf_{0.0};
+  bool have_gravity_error_lpf_{false};
+  double gravity_error_lpf_{0.0};
+  double gravity_recovery_elapsed_s_{0.0};
+  bool gravity_recovery_active_{false};
 
   // lock-free publish
   mutable std::atomic<uint64_t> seq_{0};
@@ -43,11 +46,10 @@ class PitchComplementaryFilter {
 
   // helpers (declared; defined in .cpp)
   static double exp_coeff(double fc_hz, double dt);
-  static double rad2deg(double x);
   static double wrap_pi(double x);
   static double norm(const Acc3& v);
   static double acc_pitch(const Acc3& a);
-  bool accel_reliable(const Acc3& a, double pitch_pred) const;
+  static bool accel_reliable(const Acc3& a);
   double compute_dt(TimePoint ts);
   void publish(double pitch, double gyro_pitch, double gyro_pitch_accel, double yaw_rate_z,
                TimePoint ts);

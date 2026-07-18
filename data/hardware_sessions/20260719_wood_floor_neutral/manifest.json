@@ -1,0 +1,123 @@
+{
+  "purpose": "steady-state hardware behavior and frequency-domain evidence",
+  "controller_fitting_allowed": false,
+  "source": {
+    "file": "raw_400hz.csv",
+    "bytes": 13859034,
+    "sha256": "19af7bda3e42a38701e11acc6e0c8e108086ec270aff18645722a05eaab34383",
+    "rows": 24954,
+    "start_t_sec": 0.024999,
+    "end_t_sec": 62.457492
+  },
+  "steady_state": {
+    "start_t_sec": 10.002494,
+    "end_t_sec": 62.457492,
+    "rows": 20963,
+    "sample_rate_hz": 399.61873604494275,
+    "pitch_deg": {
+      "mean": -0.004748680441374853,
+      "rms": 0.3877684724835997,
+      "p95_abs": 0.6546409358488068,
+      "min": -0.9637960720021148,
+      "max": 0.8796509515520786
+    },
+    "pitch_rate_dps": {
+      "mean": 0.0967058465732124,
+      "rms": 8.80117093089059,
+      "p95_abs": 17.827686141260422,
+      "min": -49.94419071681795,
+      "max": 31.667537759684507
+    },
+    "balance_command_sps": {
+      "mean": -0.44183543971407,
+      "rms": 208.05636529424567,
+      "p95_abs": 378.842933177948,
+      "min": -603.9852142333984,
+      "max": 637.147045135498
+    },
+    "measured_velocity_sps": {
+      "mean": -0.4515954634720392,
+      "rms": 180.1886602042672,
+      "p95_abs": 299.8106520306404,
+      "min": -399.8696692293074,
+      "max": 435.00211931912384
+    },
+    "left_step_delta": -37,
+    "right_step_delta": -37,
+    "controller_fault_union": 0,
+    "controller_saturation_rows": 0
+  },
+  "spectrum": {
+    "method": "linear interpolation to a uniform grid, linear detrend, Hann window, single-sided amplitude spectrum",
+    "analysis_rate_hz": 100.0,
+    "uniform_samples": 5246,
+    "bin_width_hz": 0.019062142584826535,
+    "maximum_frequency_hz": 20.0,
+    "pitch_peaks": [
+      {
+        "frequency_hz": 2.306519252764011,
+        "amplitude": 0.4668243668364216
+      },
+      {
+        "frequency_hz": 1.9443385436523066,
+        "amplitude": 0.03491827935740963
+      },
+      {
+        "frequency_hz": 2.8021349599695005,
+        "amplitude": 0.028712489480812432
+      },
+      {
+        "frequency_hz": 3.1452535264963783,
+        "amplitude": 0.024296915473682994
+      },
+      {
+        "frequency_hz": 4.613038505528022,
+        "amplitude": 0.023693980424275733
+      }
+    ],
+    "command_peaks": [
+      {
+        "frequency_hz": 2.306519252764011,
+        "amplitude": 225.82472342813062
+      },
+      {
+        "frequency_hz": 1.9443385436523066,
+        "amplitude": 16.801255482284766
+      },
+      {
+        "frequency_hz": 19.996187571483034,
+        "amplitude": 13.786397077663075
+      },
+      {
+        "frequency_hz": 2.8021349599695005,
+        "amplitude": 13.030675872184279
+      },
+      {
+        "frequency_hz": 18.776210446054137,
+        "amplitude": 10.840011478993858
+      }
+    ]
+  },
+  "artifacts": [
+    {
+      "file": "steady_state_10s_400hz.csv",
+      "bytes": 1140472,
+      "sha256": "8d669b8db4b8e9ec7ee77815df495e761e6d548f4b43bbabf2281634ec301cd1"
+    },
+    {
+      "file": "steady_state_100hz.csv",
+      "bytes": 1497368,
+      "sha256": "d4b8f450d2fd63a5734780f161fc2eb8d943fe0392d5b5c655b5d50f8f77a0f8"
+    },
+    {
+      "file": "steady_state_spectrum.csv",
+      "bytes": 103457,
+      "sha256": "ae75b7fcf6bd1309db286fc69b8b73794ee326287fa30350bed6de9c27073be8"
+    },
+    {
+      "file": "steady_state_spectrum.svg",
+      "bytes": 18557,
+      "sha256": "ea7eb37d4d4063e83314c78a592e43ef974ab454fcbed91a9f434a00fbb2f561"
+    }
+  ]
+}

@@ -60,6 +60,43 @@ The seed corpus is generated on demand under `build-afl/fuzz-corpus/`; it is not
 python3 tools/analyze_timeline.py build/sim/realistic_neutral_hold_40s/timeline.csv --summary-json
 ```
 
+### Live Raspberry Pi Telemetry Dashboard
+
+Start the local dashboard on a laptop on the same network. It can start before the Pi is
+available; set or test the Pi target from the page and it will retry telemetry registration.
+
+```bash
+python3 tools/telemetry_dashboard/server.py --pi rpi4
+```
+
+To start without selecting a Pi, omit `--pi`. Existing dashboard logs and simulator `timeline.csv`
+files can be chosen with the page's **Choose CSV** button; uploads are temporary and discarded when
+another source is selected or the server exits. `--csv` remains available as a startup shortcut:
+
+```bash
+python3 tools/telemetry_dashboard/server.py --csv build/sim/example/timeline.csv
+```
+
+Open `http://127.0.0.1:8080`. The dashboard is read-only, uses the existing UDP telemetry
+stream, and intentionally claims the bridge's one active UDP peer; do not run it alongside a
+SIL client or another UDP observer. Add `--listen-lan` only when the laptop's network is trusted.
+`rpi4` may be the same SSH `Host` alias used by `ssh` and `scp`; the dashboard expands it through
+your `~/.ssh/config` before sending UDP. Drag any chart to pan all plots together, wheel to zoom,
+and use **Follow latest** to resume the live window.
+
+On Windows CMD, use the Python launcher. If port `8080` is reserved, choose another local port:
+
+```cmd
+py tools\telemetry_dashboard\server.py --pi rpi4 --port 8081
+```
+
+When running the dashboard on the host that already has working `scp` and non-interactive `sudo`
+access on the Pi, the page can deploy `build-pi/balancer_pi` plus `pid.conf`, start the bot, or
+abort the process it launched. Build the binary first with `./build_cmake OFF`.
+
+Every valid telemetry packet is logged automatically with a fixed CSV schema under `data/server/`.
+The dashboard keeps the ten newest files and rotates an active file at 128 MiB.
+
 ### Raspberry Pi Cross-Build
 
 ```bash

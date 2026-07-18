@@ -1,6 +1,7 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <random>
@@ -17,15 +18,15 @@ static inline double rad2deg(double r) {
   return r * 180.0 / M_PI;
 }
 
-// Build accel consistent with your acc_pitch() = atan2(-ax, az).
-// For a desired pitch angle (rad), choose ax = -sin(pitch), az = cos(pitch).
+// Build accel consistent with acc_pitch() = atan2(-ax, -az).
+// For a desired pitch angle, mounted gravity is ax=-sin(pitch), az=-cos(pitch).
 static inline std::array<double, 3> accel_for_pitch_g(double pitch_rad) {
   const double s = std::sin(pitch_rad), c = std::cos(pitch_rad);
-  return {-s * Config::g0, 0.0, c * Config::g0};
+  return {-s * Config::g0, 0.0, -c * Config::g0};
 }
 
 static inline double raw_pitch_from_acc_rad(const std::array<double, 3>& acc) {
-  return std::atan2(-acc[0], std::sqrt(acc[1] * acc[1] + acc[2] * acc[2]));
+  return std::atan2(-acc[0], -acc[2]);
 }
 
 static inline double wrap_pi(double x) {
@@ -140,7 +141,7 @@ TEST(DataPathSanity, ComplementaryFilterTracksRotationAndRejectsAccelOnlyJump) {
 
   auto accel_for_pitch_g = [](double pitch_rad) {
     const double s = std::sin(pitch_rad), c = std::cos(pitch_rad);
-    return std::array<double, 3>{-s * Config::g0, 0.0, c * Config::g0};  // atan2(-ax, az)
+    return std::array<double, 3>{-s * Config::g0, 0.0, -c * Config::g0};
   };
 
   PitchComplementaryFilter filt;
@@ -174,6 +175,139 @@ TEST(DataPathSanity, ComplementaryFilterTracksRotationAndRejectsAccelOnlyJump) {
   EXPECT_NEAR(filt.read_latest().angle_rad, target_rad, deg2rad(1.0));
 }
 
+TEST(DataPathSanity, ComplementaryFilterCorrectsLargeGravityErrorGradually) {
+  using clock = std::chrono::steady_clock;
+
+  constexpr double fs_hz = Config::sampling_hz;
+  const auto tick = std::chrono::nanoseconds{std::llround(1e9 / fs_hz)};
+  auto now = clock::now();
+  PitchComplementaryFilter filt;
+
+  now += tick;
+  filt.push_sample(accel_for_pitch_g(deg2rad(40.0)), {0.0, 0.0, 0.0}, now);
+  for (int i = 0; i < static_cast<int>(0.4 * fs_hz); ++i) {
+    now += tick;
+    filt.push_sample(accel_for_pitch_g(0.0), {0.0, 0.0, 0.0}, now);
+  }
+  const double after_short_correction_deg = rad2deg(filt.read_latest().angle_rad);
+  EXPECT_GT(after_short_correction_deg, 35.0);
+  EXPECT_LT(after_short_correction_deg, 40.0);
+
+  // A persistent, low-rate gravity disagreement is an estimator recovery,
+  // not ordinary dynamic accelerometer feedback. It must converge smoothly
+  // on a hardware-useful time scale instead of retaining a false lean for
+  // tens of seconds.
+  for (int i = 0; i < static_cast<int>(5.0 * fs_hz); ++i) {
+    now += tick;
+    filt.push_sample(accel_for_pitch_g(0.0), {0.0, 0.0, 0.0}, now);
+  }
+  EXPECT_NEAR(rad2deg(filt.read_latest().angle_rad), 0.0, 1.0);
+}
+
+TEST(DataPathSanity, ComplementaryFilterReacquiresMeanGravityThroughDynamicAccelPitch) {
+  using clock = std::chrono::steady_clock;
+
+  constexpr double fs_hz = Config::sampling_hz;
+  const auto tick = std::chrono::nanoseconds{std::llround(1e9 / fs_hz)};
+  auto now = clock::now();
+  PitchComplementaryFilter filt;
+
+  now += tick;
+  filt.push_sample(accel_for_pitch_g(deg2rad(15.0)), {0.0, 0.0, 0.0}, now);
+
+  // Approximate the large raw accelerometer-pitch variation seen while the
+  // wheels are active. Its mean still points upright, so the persistent
+  // gravity reference should recover the estimator without following every
+  // apparent tilt cycle.
+  constexpr double apparent_pitch_frequency_hz = 6.0;
+  constexpr double duration_s = 4.0;
+  for (int i = 1; i <= static_cast<int>(duration_s * fs_hz); ++i) {
+    const double t_s = static_cast<double>(i) / fs_hz;
+    const double apparent_pitch_rad =
+        deg2rad(15.0) * std::sin(2.0 * M_PI * apparent_pitch_frequency_hz * t_s);
+    now += tick;
+    filt.push_sample(accel_for_pitch_g(apparent_pitch_rad), {0.0, 0.0, 0.0}, now);
+  }
+
+  EXPECT_NEAR(rad2deg(filt.read_latest().angle_rad), 0.0, 2.0);
+}
+
+TEST(DataPathSanity, ComplementaryFilterTracksRepeatedRotationsWithoutDeadReckoning) {
+  using clock = std::chrono::steady_clock;
+
+  constexpr double fs_hz = Config::sampling_hz;
+  const auto tick = std::chrono::nanoseconds{std::llround(1e9 / fs_hz)};
+  auto now = clock::now();
+  PitchComplementaryFilter filt;
+
+  now += tick;
+  filt.push_sample(accel_for_pitch_g(0.0), {0.0, 0.0, 0.0}, now);
+
+  constexpr double rotation_count = 4.0;
+  constexpr double rotation_duration_s = 4.0;
+  const double rate_rad_s = rotation_count * 2.0 * M_PI / rotation_duration_s;
+  const int rotation_samples = static_cast<int>(rotation_duration_s * fs_hz);
+  double max_wrapped_error_deg = 0.0;
+  for (int i = 1; i <= rotation_samples; ++i) {
+    const double physical_pitch = rate_rad_s * static_cast<double>(i) / fs_hz;
+    now += tick;
+    filt.push_sample(accel_for_pitch_g(physical_pitch), {0.0, rate_rad_s, 0.0}, now);
+    const double estimated = filt.read_latest().angle_rad;
+    EXPECT_GE(estimated, -M_PI);
+    EXPECT_LE(estimated, M_PI);
+    max_wrapped_error_deg =
+        std::max(max_wrapped_error_deg, std::abs(rad2deg(wrap_pi(estimated - physical_pitch))));
+  }
+  EXPECT_LT(max_wrapped_error_deg, 8.0);
+
+  for (int i = 0; i < static_cast<int>(3.0 * fs_hz); ++i) {
+    now += tick;
+    filt.push_sample(accel_for_pitch_g(0.0), {0.0, 0.0, 0.0}, now);
+  }
+  EXPECT_NEAR(rad2deg(filt.read_latest().angle_rad), 0.0, 3.0);
+}
+
+TEST(DataPathSanity, ComplementaryFilterUsesSignedGravityAcrossFullPitchRange) {
+  using clock = std::chrono::steady_clock;
+  const auto tick = std::chrono::nanoseconds{std::llround(1e9 / Config::sampling_hz)};
+
+  for (const double pitch_deg : {0.0, 90.0, -90.0, 135.0, -135.0, 180.0}) {
+    PitchComplementaryFilter filt;
+    const auto now = clock::now() + tick;
+    filt.push_sample(accel_for_pitch_g(deg2rad(pitch_deg)), {0.0, 0.0, 0.0}, now);
+    const double error = wrap_pi(filt.read_latest().angle_rad - deg2rad(pitch_deg));
+    EXPECT_NEAR(rad2deg(error), 0.0, 1e-6) << pitch_deg;
+  }
+}
+
+TEST(DataPathSanity, ComplementaryFilterCrossesWrappedBoundaryAndIgnoresUnreliableAccel) {
+  using clock = std::chrono::steady_clock;
+  constexpr double fs_hz = Config::sampling_hz;
+  const auto tick = std::chrono::nanoseconds{std::llround(1e9 / fs_hz)};
+  auto now = clock::now();
+  PitchComplementaryFilter filt;
+
+  now += tick;
+  filt.push_sample(accel_for_pitch_g(deg2rad(179.0)), {0.0, 0.0, 0.0}, now);
+  const double rate_rad_s = deg2rad(8.0);
+  for (int i = 1; i <= static_cast<int>(0.5 * fs_hz); ++i) {
+    const double physical_pitch = deg2rad(179.0) + rate_rad_s * static_cast<double>(i) / fs_hz;
+    now += tick;
+    filt.push_sample(accel_for_pitch_g(physical_pitch), {0.0, rate_rad_s, 0.0}, now);
+  }
+  const double crossed_pitch = filt.read_latest().angle_rad;
+  EXPECT_GE(crossed_pitch, -M_PI);
+  EXPECT_LE(crossed_pitch, M_PI);
+  EXPECT_NEAR(rad2deg(wrap_pi(crossed_pitch - deg2rad(183.0))), 0.0, 1.0);
+
+  const auto held_pitch = filt.read_latest().angle_rad;
+  for (int i = 0; i < static_cast<int>(2.0 * fs_hz); ++i) {
+    now += tick;
+    filt.push_sample({3.0 * Config::g0, 0.0, 0.0}, {0.0, 0.0, 0.0}, now);
+  }
+  EXPECT_NEAR(rad2deg(wrap_pi(filt.read_latest().angle_rad - held_pitch)), 0.0, 0.1);
+}
+
 TEST(DataPathSanity, ComplementaryFilter_GyroLPF_RiseTime_RateStep) {
   using clock = std::chrono::steady_clock;
 
@@ -193,7 +327,7 @@ TEST(DataPathSanity, ComplementaryFilter_GyroLPF_RiseTime_RateStep) {
 
   auto accel_for_pitch_g = [](double pitch_rad) {
     const double s = std::sin(pitch_rad), c = std::cos(pitch_rad);
-    return std::array<double, 3>{-s * Config::g0, 0.0, c * Config::g0};
+    return std::array<double, 3>{-s * Config::g0, 0.0, -c * Config::g0};
   };
 
   PitchComplementaryFilter filt;
@@ -312,7 +446,7 @@ TEST(DataPathSanity, ComplementaryFilter_ReducesRawAccelPitchNoise) {
   EXPECT_LT(fused_rms_deg, raw_rms_deg * 0.55);
 }
 
-TEST(DataPathSanity, ComplementaryFilter_GyroBiasDoesNotEraseStaticPitchBias) {
+TEST(DataPathSanity, ComplementaryFilter_GravityBoundsAFixedGyroBias) {
   using clock = std::chrono::steady_clock;
 
   constexpr double fs_hz = Config::sampling_hz;
@@ -346,5 +480,5 @@ TEST(DataPathSanity, ComplementaryFilter_GyroBiasDoesNotEraseStaticPitchBias) {
   }
 
   ASSERT_GT(tail_count, 0);
-  EXPECT_NEAR(rad2deg(tail_sum_rad / tail_count), 5.0, 0.5);
+  EXPECT_NEAR(rad2deg(tail_sum_rad / tail_count), 5.0, 2.5);
 }
