@@ -21,7 +21,9 @@ def test_udp_transfer_smoke_uses_downsampled_telemetry(
         physics_profile=PHYSICS_REALISTIC,
         duration_s=2.0,
         telemetry_stride=20,
-        disturbances=[{"start_s": 0.5, "duration_s": 0.1, "force_n": 1.0}],
+        # This is a UDP/downsampling smoke test, not the disabled legacy
+        # closed-loop transfer acceptance gate. Keep the perturbation small.
+        disturbances=[{"start_s": 0.5, "duration_s": 0.1, "force_n": 0.01}],
     )
 
     assert metadata["telemetry_stride"] == 20

@@ -55,13 +55,13 @@ The architecture is divided into three logical areas:
 
 > Owns the balancing control pipeline that converts `PhysicsTick`, `ImuData`, and `JoystickCommand`, and `MotorFeedback` inputs into wheel-speed targets and streaming controller telemetry.
 >
-> This service is intentionally thin: it caches the latest bus inputs, translates them into the `RateControllerCore` API, and republishes the core's outputs as reflected IPC payloads. The control law itself is a physics-shaped outer loop wrapped around the PX4 pitch-rate controller. A joystick forward command produces a target wheel velocity in steps per second. A 50 Hz velocity PI produces the pitch reference, and the PX4 `RateControl` block tracks a damped pitch-rate setpoint:
+> A ramped joystick command supplies a governed wheel-speed reference. At 50 Hz, velocity error and target acceleration form the pitch reference, while a bounded integral term learns only the stationary center-of-mass trim:
 >
-> $$ \theta_{sp} = k_{vp}(v_{ref} - v) + \int k_{vi}(v_{ref} - v)dt $$
+> $$ \theta_{sp} = -k_{vp}(v_{ref} - v) - \operatorname{atan2}(a_{ref}s_m,g) + \theta_{COM} $$
 >
 > $$ \omega_{sp} = k_{pitch}(\theta_{sp} - \theta) - k_{pitch\_rate}\dot{\theta} $$
 >
-> The target wheel speed is fed forward at the velocity-command actuator boundary. The normalized pitch-axis effort is scaled into a balance correction, clamped to the configured ceiling, and split int
+> The governed speed is fed forward and the unchanged pitch-rate controller adds its balance correction before balance-priority turn allocation. Completed motor pulses provide velocity feedback. Faults reset dynamic state but preserve bounded COM trim. Existing telemetry reports the pitch-reference terms, commands, feedback, saturation, and faults.
 
 - Publishes: `MotorTargets`, `SystemTelemetry`
 - Subscribes: `PhysicsTick`, `ImuData`, `JoystickCommand`, `MotorFeedback`

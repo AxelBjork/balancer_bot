@@ -23,7 +23,7 @@ def test_udp_bridge_accepts_raw_imu_data_for_control_telemetry(fresh_udp):
             acc=[
                 -9.81 * math.sin(sample_pitch_rad),
                 0.0,
-                9.81 * math.cos(sample_pitch_rad),
+                    -9.81 * math.cos(sample_pitch_rad),
             ],
             gyr=[0.0, pitch_rate_rad_s, 0.0],
             timestamp_us=timestamp_us,

@@ -1,0 +1,229 @@
+{
+  "source_file": "data/server/telemetry_20260718-182506_00.csv",
+  "source_available": false,
+  "source_sha256": "45bba39e0ece6e337665f9ea631adf4965a54dd3a6ba22ea508d021a353b8eeb",
+  "source_rows": 38943,
+  "source_start_t_sec": 1.437479,
+  "source_end_t_sec": 98.84498,
+  "fixture_rate_hz": 50.0,
+  "purpose": "noise, scheduler, saturation, and response-delay evidence only",
+  "controller_fitting_allowed": false,
+  "segments": {
+    "quiet_operation": {
+      "description": "temporarily stable neutral balance",
+      "start_t_sec": 60.0,
+      "end_t_sec": 64.0,
+      "fixture": "quiet_operation.csv",
+      "statistics": {
+        "samples": 1600,
+        "duration_s": 3.9975019999999972,
+        "sample_rate_hz": 399.99979987502223,
+        "pitch_deg": {
+          "mean": 0.0021036992039776123,
+          "rms": 0.18361678280684848,
+          "p95_abs": 0.3492182324485928,
+          "min": -0.3864809863508059,
+          "max": 0.4368756300608363
+        },
+        "pitch_rate_dps": {
+          "mean": -0.003507475838556999,
+          "rms": 5.877268834487754,
+          "p95_abs": 12.350407364171462,
+          "min": -16.064141408285145,
+          "max": 23.977047786386226
+        },
+        "balance_command_sps": {
+          "mean": -5.052436138266785,
+          "rms": 108.79297037296958,
+          "p95_abs": 217.67139792442316,
+          "min": -370.1650619506836,
+          "max": 323.3442783355713
+        },
+        "completed_velocity_sps": {
+          "mean": -4.530656718174155,
+          "rms": 78.09346486728063,
+          "p95_abs": 150.7584306953222,
+          "min": -238.21835060830304,
+          "max": 198.7258375085221,
+          "linear_slope_sps_per_s": 3.76659844872194
+        },
+        "saturation_fraction": 0.0,
+        "controller_fault_union": 0,
+        "motor_feedback_age_ms": {
+          "median": 2.5,
+          "p95": 5.0,
+          "max": 12.496
+        },
+        "motor_update_dt_ms": {
+          "median": 2.5,
+          "p95": 2.509,
+          "max": 2.71
+        },
+        "left_step_delta": -18,
+        "right_step_delta": -18
+      }
+    },
+    "runaway_onset": {
+      "description": "slow velocity growth before intervention",
+      "start_t_sec": 74.0,
+      "end_t_sec": 77.0,
+      "fixture": "runaway_onset.csv",
+      "statistics": {
+        "samples": 1200,
+        "duration_s": 2.9975029999999947,
+        "sample_rate_hz": 399.99959966679,
+        "pitch_deg": {
+          "mean": 0.5598297657941215,
+          "rms": 0.9913438207782289,
+          "p95_abs": 2.147593018308113,
+          "min": -1.3489234727074215,
+          "max": 3.3924953068912695
+        },
+        "pitch_rate_dps": {
+          "mean": 0.49663125388025225,
+          "rms": 29.980607007409507,
+          "p95_abs": 65.80380655496366,
+          "min": -114.66852821575381,
+          "max": 120.41422334686695
+        },
+        "balance_command_sps": {
+          "mean": -985.2542477142609,
+          "rms": 1295.9201145979803,
+          "p95_abs": 2538.760414123535,
+          "min": -3386.2777709960938,
+          "max": 311.99262142181396
+        },
+        "completed_velocity_sps": {
+          "mean": -958.5770134949884,
+          "rms": 1245.7240920385805,
+          "p95_abs": 2360.7150785685453,
+          "min": -2893.8634199682806,
+          "max": 69.28619864285083,
+          "linear_slope_sps_per_s": -868.0022534821672
+        },
+        "saturation_fraction": 0.055,
+        "controller_fault_union": 0,
+        "motor_feedback_age_ms": {
+          "median": 2.499,
+          "p95": 4.999,
+          "max": 12.486
+        },
+        "motor_update_dt_ms": {
+          "median": 2.5,
+          "p95": 2.51305,
+          "max": 2.879
+        },
+        "left_step_delta": -2929,
+        "right_step_delta": -2929
+      }
+    },
+    "manual_intervention": {
+      "description": "operator correction; exclude from fitting",
+      "start_t_sec": 81.5,
+      "end_t_sec": 84.55,
+      "fixture": "manual_intervention.csv",
+      "statistics": {
+        "samples": 1220,
+        "duration_s": 3.047499000000002,
+        "sample_rate_hz": 400.00013125516995,
+        "pitch_deg": {
+          "mean": 22.25868344321303,
+          "rms": 33.61123791731798,
+          "p95_abs": 63.280452548073576,
+          "min": -0.49777548528750715,
+          "max": 66.27719966984684
+        },
+        "pitch_rate_dps": {
+          "mean": 4.542461463255515,
+          "rms": 91.08515956649381,
+          "p95_abs": 272.0567595960242,
+          "min": -231.29546070152156,
+          "max": 286.6844189016238
+        },
+        "balance_command_sps": {
+          "mean": 453.70032088006616,
+          "rms": 1779.302417729034,
+          "p95_abs": 3066.0449028015137,
+          "min": -2924.70645904541,
+          "max": 3609.7156524658203
+        },
+        "completed_velocity_sps": {
+          "mean": 444.07978089969254,
+          "rms": 1778.870290446123,
+          "p95_abs": 2966.2613391069062,
+          "min": -2558.530610556292,
+          "max": 3232.0925294638155,
+          "linear_slope_sps_per_s": 548.4119676452744
+        },
+        "saturation_fraction": 0.32131147540983607,
+        "controller_fault_union": 8,
+        "motor_feedback_age_ms": {
+          "median": 2.498,
+          "p95": 4.998,
+          "max": 7.5
+        },
+        "motor_update_dt_ms": {
+          "median": 2.5,
+          "p95": 2.509,
+          "max": 2.797
+        },
+        "left_step_delta": 1410,
+        "right_step_delta": 1410
+      }
+    },
+    "locked_runaway": {
+      "description": "sustained one-direction command before shutdown",
+      "start_t_sec": 92.0,
+      "end_t_sec": 96.25,
+      "fixture": "locked_runaway.csv",
+      "statistics": {
+        "samples": 1700,
+        "duration_s": 4.247499999999988,
+        "sample_rate_hz": 400.00000000000114,
+        "pitch_deg": {
+          "mean": 2.8865765626766593,
+          "rms": 3.20764756421808,
+          "p95_abs": 6.549155557175871,
+          "min": 1.315585276260435,
+          "max": 7.828234824765014
+        },
+        "pitch_rate_dps": {
+          "mean": -0.2813678217727821,
+          "rms": 12.853193830193874,
+          "p95_abs": 36.23149807876295,
+          "min": -46.27786694579506,
+          "max": 59.42434485519452
+        },
+        "balance_command_sps": {
+          "mean": 2556.8571250017953,
+          "rms": 2560.882908312589,
+          "p95_abs": 2885.512590408325,
+          "min": 2043.0713653564453,
+          "max": 3223.7762451171875
+        },
+        "completed_velocity_sps": {
+          "mean": 2560.1902583790534,
+          "rms": 2564.081451823434,
+          "p95_abs": 2897.5367591465165,
+          "min": 2084.1814162819987,
+          "max": 3119.514489096885,
+          "linear_slope_sps_per_s": -6.190447978341722
+        },
+        "saturation_fraction": 1.0,
+        "controller_fault_union": 0,
+        "motor_feedback_age_ms": {
+          "median": 2.5,
+          "p95": 4.999,
+          "max": 4.999
+        },
+        "motor_update_dt_ms": {
+          "median": 2.5,
+          "p95": 2.5100000000000002,
+          "max": 2.581
+        },
+        "left_step_delta": 10857,
+        "right_step_delta": 10857
+      }
+    }
+  }
+}

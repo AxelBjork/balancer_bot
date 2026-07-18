@@ -80,7 +80,7 @@ ipc::JoystickCommandPayload joystickAt(const SimulatorScenario& scenario, double
 }
 
 double rawPitchDeg(const std::array<double, 3>& acc) {
-  return std::atan2(-acc[0], std::sqrt(acc[1] * acc[1] + acc[2] * acc[2])) * 180.0 / kPi;
+  return std::atan2(-acc[0], -acc[2]) * 180.0 / kPi;
 }
 
 class SimulationWaveBackend final : public WaveFrameBackend {

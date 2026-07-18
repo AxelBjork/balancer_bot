@@ -60,6 +60,14 @@ inline std::string readOneLineStrict(const fs::path& p) {
   return s;
 }
 
+inline void writeOneLineStrict(const fs::path& p, const std::string& value) {
+  std::ofstream f(p);
+  if (!f) throw std::runtime_error("open failed: " + p.string());
+  f << value;
+  f.close();
+  if (!f) throw std::runtime_error("write failed: " + p.string());
+}
+
 inline std::array<double,3> applyAxisMap(const AxisCfg& c,
                                          const std::array<double,3>& src) {
   std::array<double,3> out;
@@ -153,6 +161,24 @@ struct Ism330IioReader::Impl {
     std::printf("Trigger '%s' sampling_frequency now=%s\n", kTriggerName, tb.c_str());
   }
 
+  void setTimestampClock(const fs::path& dev) {
+    // The controller's PhysicsTick timestamps use std::chrono::steady_clock,
+    // which is CLOCK_MONOTONIC on the Linux target. IIO lets each device choose
+    // a different timestamp clock and commonly retains that choice across
+    // process restarts. Treating a CLOCK_REALTIME sample as steady time makes
+    // it appear decades in the future, so select and verify the clock before
+    // enabling either buffer rather than relying on the device default.
+    tryWrite(dev / "buffer" / "enable", "0");
+    const fs::path clock = dev / "current_timestamp_clock";
+    writeOneLineStrict(clock, "monotonic");
+    const std::string configured = readOneLineStrict(clock);
+    if (configured != "monotonic") {
+      throw std::runtime_error(dev.string() + ": failed to select monotonic timestamp clock (got '" +
+                               configured + "')");
+    }
+    std::printf("%s timestamp clock now=%s\n", dev.filename().c_str(), configured.c_str());
+  }
+
   void setupBuffer(const fs::path& dev, bool is_accel) {
     tryWrite(dev / "buffer" / "enable", "0");
     const fs::path scan = dev / "scan_elements";
@@ -207,7 +233,7 @@ struct Ism330IioReader::Impl {
     ImuSampleSynchronizer synchronizer;
 
     const auto emit_pair = [this](const ImuSynchronizedPair& pair) {
-      const double pitch = std::atan2(-pair.accel.value[0], pair.accel.value[2]);
+      const double pitch = std::atan2(-pair.accel.value[0], -pair.accel.value[2]);
       if (cfg.on_sample) {
         cfg.on_sample(pitch, pair.accel.value, pair.gyro.value,
                       iio_monotonic_ns_to_steady(pair.timestamp_ns()));
@@ -259,6 +285,8 @@ Ism330IioReader::Ism330IioReader(IMUConfig cfg) : p_(std::make_unique<Impl>()) {
     throw std::runtime_error("Ism330IioReader: on_sample callback is required");
   p_->cfg = std::move(cfg);
   p_->discoverSplitDevices();
+  p_->setTimestampClock(p_->accel_sysfs);
+  p_->setTimestampClock(p_->gyro_sysfs);
   p_->setSamplingHz();
   p_->setupBuffer(p_->accel_sysfs, true);
   p_->setupBuffer(p_->gyro_sysfs,  false);

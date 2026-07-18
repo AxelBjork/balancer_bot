@@ -15,24 +15,16 @@ inline constexpr char kControlServiceDoc[] =
     "`JoystickCommand`, and `MotorFeedback` inputs into wheel-speed targets and streaming "
     "controller "
     "telemetry.\n\n"
-    "This service is intentionally thin: it caches the latest bus inputs, translates them into the "
-    "`RateControllerCore` API, and republishes the core's outputs as reflected IPC payloads. The "
-    "control law itself is a physics-shaped outer loop wrapped around the PX4 pitch-rate "
-    "controller. A joystick forward command produces a target wheel velocity in steps per second. "
-    "A 50 Hz velocity PI produces the pitch reference, and the PX4 `RateControl` block "
-    "tracks a damped pitch-rate setpoint:\n\n"
-    "$$ \\theta_{sp} = k_{vp}(v_{ref} - v) + \\int k_{vi}(v_{ref} - v)dt $$\n\n"
+    "A ramped joystick command supplies a governed wheel-speed reference. At 50 Hz, velocity "
+    "error and target acceleration form the pitch reference, while a bounded integral term learns "
+    "only the stationary center-of-mass trim:\n\n"
+    "$$ \\theta_{sp} = -k_{vp}(v_{ref} - v) "
+    "- \\operatorname{atan2}(a_{ref}s_m,g) + \\theta_{COM} $$\n\n"
     "$$ \\omega_{sp} = k_{pitch}(\\theta_{sp} - \\theta) - k_{pitch\\_rate}\\dot{\\theta} $$\n\n"
-    "The target wheel speed is fed forward at the velocity-command actuator boundary. The "
-    "normalized pitch-axis effort is scaled into a balance correction, clamped to the configured "
-    "ceiling, and split into left/right wheel targets with balance-priority turn allocation.\n\n"
-    "The service also exposes several practical adaptations that matter for balancing behavior: it "
-    "uses completed-pulse feedback from `MotorService`. It resets both controller integrators on "
-    "fallover, stale IMU data, or an actuator fault. Every control step also publishes "
-    "`SystemTelemetry`, including fused pitch, filtered pitch rate, raw IMU diagnostics, "
-    "pitch-reference decomposition, rate setpoint, controller output, wheel-speed command, "
-    "per-wheel applied feedback, saturation, and actuator-fault state so the SIL harness can inspect controller "
-    "internals without attaching directly to the core.";
+    "The governed speed is fed forward and the unchanged pitch-rate controller adds its balance "
+    "correction before balance-priority turn allocation. Completed motor pulses provide velocity "
+    "feedback. Faults reset dynamic state but preserve bounded COM trim. Existing telemetry "
+    "reports the pitch-reference terms, commands, feedback, saturation, and faults.";
 
 class DOC_DESC(kControlServiceDoc) ControlService {
  public:
@@ -86,9 +78,8 @@ inline void ControlService::on_message<MsgId::ImuData>(const ipc::ImuSamplePaylo
   s.yaw_rate_z = p.gyr[2];
   s.t = std::chrono::steady_clock::time_point(std::chrono::microseconds(p.timestamp_us));
   const double ax = p.acc[0];
-  const double ay = p.acc[1];
   const double az = p.acc[2];
-  last_raw_acc_pitch_deg_ = std::atan2(-ax, std::sqrt(ay * ay + az * az)) * (180.0 / M_PI);
+  last_raw_acc_pitch_deg_ = std::atan2(-ax, -az) * (180.0 / M_PI);
   last_fused_pitch_deg_ = p.pitch_rad * (180.0 / M_PI);
   last_gyro_pitch_rate_dps_ = p.gyr[1] * (180.0 / M_PI);
   last_filtered_pitch_rate_dps_ = p.pitch_rate_rad_s * (180.0 / M_PI);

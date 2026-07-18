@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Balancer telemetry</title>
+  <link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+  <header>
+    <div><h1>Balancer telemetry</h1><span id="connection" class="offline">Waiting for Pi</span></div>
+    <div class="controls">
+      <button id="pause">Pause</button><button id="clear">Clear</button><button id="reset">Reset zoom</button>
+    </div>
+  </header>
+  <section class="status-grid">
+    <div>Pi <strong id="pi">—</strong></div><div>UDP <strong id="raw-rate">0 Hz</strong></div><div>Display <strong id="display-rate">0 Hz</strong></div>
+    <div>Last packet <strong id="last-packet">—</strong></div><div>Malformed <strong id="malformed">0</strong></div><div>Samples <strong id="samples">0</strong></div>
+  </section>
+  <section class="flags"><span>Controller <strong id="controller-flag">0x0</strong></span><span>Saturation <strong id="saturation-flag">0x0</strong></span><span>Actuator <strong id="actuator-flag">0x0</strong></span></section>
+  <section id="values" class="values"></section>
+  <section id="deploy-panel" class="deploy-panel" hidden>
+    <h2>Pi controls</h2>
+    <p>Deploys this host's <code>build-pi/balancer_pi</code> and <code>pid.conf</code>.</p>
+    <button id="deploy-current" type="button">Deploy current build</button><button id="start-bot" type="button">Start bot</button><button id="abort-bot" type="button">Abort bot</button><output id="deploy-result"></output>
+  </section>
+  <main id="plots"></main>
+  <template id="plot-template"><article class="plot-card"><div class="plot-heading"><h2></h2><span class="cursor"></span></div><div class="series"></div><canvas></canvas></article></template>
+  <script src="dashboard.js"></script>
+</body>
+</html>
