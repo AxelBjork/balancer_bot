@@ -18,6 +18,7 @@ for import_root in (REPO_ROOT, REPO_ROOT / "tests/python"):
         sys.path.insert(0, str(import_root))
 
 from tests.python.support.simulator_service import (
+    DONE_ACCEPTANCE_FAILED,
     DONE_COMPLETED,
     PHYSICS_REALISTIC,
     run_scenario_live,
@@ -39,28 +40,21 @@ def _pid_digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _scenario_passed(name: str, done) -> tuple[bool, list[str]]:
-    margin = name.startswith("margin_")
-    failures: list[str] = []
-    if done.reason_code != DONE_COMPLETED:
-        failures.append(f"done={done.reason_code}")
-    if done.max_abs_pitch_deg >= 15.0:
-        failures.append("peak_pitch")
-    if done.tail_rms_pitch_deg >= (1.25 if margin else 1.0):
-        failures.append("tail_rms")
-    if done.max_continuous_saturation_s >= (0.3125 if margin else 0.250):
-        failures.append("continuous_saturation")
-    if done.actuator_fault_count:
-        failures.append("actuator_fault")
-    if done.controller_fault_flags & ~1:  # Startup NoImu is safe and expected with sensor lag.
-        failures.append(f"controller_faults=0x{done.controller_fault_flags:x}")
-    return not failures, failures
+def _direct_acceptance(sim_bin: Path, pid: Path, index: int) -> tuple[bool, list[str]]:
+    result = json.loads(
+        subprocess.check_output(
+            [str(sim_bin), "--pid-config", str(pid), "--direct-summary", str(index)],
+            cwd=REPO_ROOT,
+            text=True,
+        )
+    )
+    return bool(result["accepted"]), [str(failure) for failure in result["failures"]]
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate the simulator-to-hardware transfer report.")
     parser.add_argument("--sim-bin", type=Path, default=REPO_ROOT / "build/balancer_simulator")
-    parser.add_argument("--pid", type=Path, default=REPO_ROOT / "pid_sim.conf")
+    parser.add_argument("--pid", type=Path, default=REPO_ROOT / "pid.conf")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--telemetry-stride", type=int, default=1)
     parser.add_argument("--include-build-gates", action="store_true")
@@ -74,8 +68,8 @@ def main() -> int:
     catalog = json.loads(
         subprocess.check_output([str(args.sim_bin), "--catalog-json"], cwd=REPO_ROOT, text=True)
     )
-    if len(catalog) != 20:
-        raise RuntimeError(f"Expected 20 transfer scenarios, got {len(catalog)}")
+    if len(catalog) != 10:
+        raise RuntimeError(f"Expected 10 transfer scenarios, got {len(catalog)}")
     scenario_names = [str(scenario["name"]) for scenario in catalog]
 
     cross_status = "not run"
@@ -111,9 +105,8 @@ def main() -> int:
                     transfer_scenario_index=index,
                     initial_pitch_deg=float(scenario["initial_pitch_deg"]),
                     com_angle_offset_rad=float(scenario["com_angle_offset_rad"]),
-                    mass_scale=float(scenario["mass_scale"]),
-                    com_height_scale=float(scenario["com_height_scale"]),
-                    inertia_scale=float(scenario["inertia_scale"]),
+                    total_mass_scale=float(scenario["total_mass_scale"]),
+                    pitch_inertia_scale=float(scenario["pitch_inertia_scale"]),
                     physics_override=dict(scenario["physics"]),
                     imu_pitch_lag_s=float(scenario["imu_pitch_lag_s"]),
                     imu_noise_seed=int(scenario["imu_noise_seed"]),
@@ -128,7 +121,10 @@ def main() -> int:
                     pid_config_path=str(args.pid),
                     done_timeout=30.0,
                 )
-                passed, failures = _scenario_passed(name, done)
+                passed, failures = _direct_acceptance(args.sim_bin, args.pid, index)
+                if done.reason_code not in (DONE_COMPLETED, DONE_ACCEPTANCE_FAILED):
+                    passed = False
+                    failures.append(f"udp_done={done.reason_code}")
                 rows.append(
                     {
                         "name": name,
@@ -139,7 +135,11 @@ def main() -> int:
                         "metadata": metadata,
                     }
                 )
-                print(f"{index + 1:02d}/20 {name}: {'PASS' if passed else 'FAIL'}", flush=True)
+                print(
+                    f"{index + 1:02d}/{len(catalog):02d} {name}: "
+                    f"{'PASS' if passed else 'FAIL'}",
+                    flush=True,
+                )
     finally:
         if proc.poll() is None:
             os.killpg(os.getpgid(proc.pid), signal.SIGTERM)

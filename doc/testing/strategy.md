@@ -7,6 +7,18 @@ The project uses four complementary test layers:
 - deterministic unified-engine acceptance tests
 - host/AFL fuzz-harness validation
 
+## Component Coverage
+
+| Component | Unit tests | Simulator | Hardware |
+| --- | --- | --- | --- |
+| IMU | Axis mapping, circular fusion, wrap, reliability, and timing | Production sampling path with noise, bias, loss, and lag | Restrained orientation, axle rotations, and upright return |
+| Motor feedback | Pulse scheduling, completed steps, reversal, saturation, and faults | Quantized completed-step feedback through actuator/tire dynamics | Restrained direction, step polarity, and missed-step checks |
+| Balance control | Equation signs, cadence, limits, reset, and COM-trim state | Release and symmetric-push recovery across nominal and corner plants | Thirty-second neutral balance and restrained fallover |
+| Joystick/velocity control | Ramp, reversal, command symmetry, stopping, and trim freeze | Bidirectional 800 SPS command and stop scenarios | Equal positive/negative command response and stopping |
+| Plant physics | Nonlinear/linear small-angle signs and parameter influence | Nonlinear cart-pole, actuator lag, traction, tire, and measured geometry | Parameters come from measured hardware; mismatches become simulator defects |
+| Safety | Fallover, stale IMU, saturation, and actuator-fault paths | Fault-free finite state, pitch margin, and saturation-duration gates | Restrained fallover followed by cautious unrestrained validation |
+| Runtime/telemetry | Message bus, timestamps, schema, and artifact parsing | Production message/control path plus direct/UDP timeline equivalence | Telemetry-server capture used for transfer diagnosis |
+
 ## C++ Test Layer
 
 `balancer_tests` covers the low-level behavior that is easiest to verify in-process:
@@ -16,7 +28,7 @@ The project uses four complementary test layers:
 - `control_loop_test.cpp`
   controller v2 equations, signs, cadence, saturation, reset paths, and completed-pulse feedback
 - `simulator_runner_test.cpp`
-  sign conventions, engine equivalence, all twenty transfer scenarios, plant/IMU parameter A/B
+  sign conventions, engine equivalence, all ten transfer scenarios, plant/IMU parameter A/B
   coverage, and physical invariants
 - `time_service_test.cpp`
   exact tick publication and runtime monotonicity
@@ -84,7 +96,7 @@ Key files:
 
 ## Transfer Acceptance and Artifacts
 
-The full four-nominal-plus-sixteen-margin matrix runs in-process in `balancer_tests`. Direct tests,
+The focused four-nominal-plus-six-conservative matrix runs in-process in `balancer_tests`. Direct tests,
 the UDP simulator, tuner, and fuzz harnesses obtain scenarios from `transfer_scenario_set()`; direct
 tests, the tuner, and UDP transfer runs use `evaluate_transfer_scenario()` for the hard acceptance
 decision. This keeps the normal gate fast while retaining focused real-UDP protocol coverage.
@@ -102,12 +114,13 @@ evidence uses stride `1`.
 Run the staged tuner with:
 
 ```bash
-./build/balancer_simulator_tuner --stage all --base pid_sim.conf \
-  --output build/sim/tuning --top-k 20
+./build/balancer_simulator_tuner --stage all --base pid.conf \
+  --output build/sim/tuning --top-k 420
 ```
 
 It persists the grid, ranked results, selection, and PID for the inner, outer, and joint stages,
-then admits a final candidate only after the complete transfer matrix passes.
+then admits a final candidate only after the complete transfer matrix and independent ±10% gain
+neighborhood pass. A stage with no safe candidate exits nonzero and does not write a selected PID.
 
 Artifacts are written under:
 

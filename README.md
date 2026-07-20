@@ -154,7 +154,7 @@ The generated flow graph above is the best quick picture of the system:
   physical build assets, frame files, and hardware reference notes
 - `doc/`
   handbook pages plus generated IPC docs
-- `pid.conf` and `pid_sim.conf`
+- `pid.conf`
   default hardware and simulator PID profiles
 
 ## Learn More

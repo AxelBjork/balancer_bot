@@ -1,7 +1,5 @@
 #include "services/control/control_service.h"
 
-#include <algorithm>
-
 namespace sil {
 
 ControlService::ControlService(ipc::MessageBus& bus) : bus_(bus) {

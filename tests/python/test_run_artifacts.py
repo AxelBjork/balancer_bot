@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 from pathlib import Path
 
 from tests.python.support.run_artifacts import (
@@ -57,6 +58,14 @@ def test_run_recorder_writes_summary_and_flags_fall(tmp_path):
     assert not (tmp_path / "command_plot.svg").exists()
     assert not (tmp_path / "wheel_plot.svg").exists()
     assert not (tmp_path / "force_plot.svg").exists()
+    with (tmp_path / "timeline.csv").open(newline="", encoding="utf-8") as stream:
+        header = next(csv.reader(stream))
+    assert "t_sec" in header
+    assert "plant_position_m" in header
+    assert "plant_velocity_mps" in header
+    assert "sim_time_s" not in header
+    assert "plant_position" not in header
+    assert "plant_velocity" not in header
 
 
 def test_reference_parser_handles_clean_csv():
@@ -185,7 +194,7 @@ def test_analyze_timeline_rows_reports_estimator_and_drive_sections():
         )
 
     analysis = analyze_timeline_rows(rows)
-    assert analysis["time_key"] == "sim_time_s"
+    assert analysis["time_key"] == "t_sec"
     assert analysis["estimator_pitch"]["lag_steps"] == 2
     assert analysis["estimator_pitch_rate"]["lag_steps"] == 1
     assert analysis["drive_command_to_measured_velocity"]["lag_steps"] == 4

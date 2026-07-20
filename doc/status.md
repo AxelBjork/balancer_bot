@@ -18,7 +18,7 @@ This page is the short, candid status snapshot for the project. The rest of the 
 
 - the physical robot has not been fully revalidated on hardware after the message-bus refactor
 - simulation validation does not make the current gains hardware-proven
-- `pid_sim.conf` and `pid.conf` currently match but remain separate for later hardware adjustment
+- `pid.conf` is shared, but exact physical charateriscts are only modeled after hardware adjustment
 - motor authority, tire coupling, damping, and missed-step limits remain uncertain until measured
 - the transfer report identifies a dirty working tree until these changes are committed; the
   run-specific manifest and PID digest provide the remaining configuration provenance

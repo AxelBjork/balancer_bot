@@ -217,9 +217,8 @@ struct SimulatorEngine::Impl {
     config.initial_pitch_deg = input.initial_pitch_deg;
     config.physics_profile = input.physics_profile;
     config.physics_override = input.physics_override;
-    config.mass_scale = input.mass_scale;
-    config.com_height_scale = input.com_height_scale;
-    config.inertia_scale = input.inertia_scale;
+    config.total_mass_scale = input.total_mass_scale;
+    config.pitch_inertia_scale = input.pitch_inertia_scale;
     return config;
   }
 
@@ -332,9 +331,8 @@ struct SimulatorEngine::Impl {
     row.traction_limit_n = diagnostics.traction_limit_n;
     row.motor_force_limit_n = diagnostics.motor_force_limit_n;
     row.seed = scenario.imu_noise_seed;
-    row.mass_scale = scenario.mass_scale;
-    row.com_height_scale = scenario.com_height_scale;
-    row.inertia_scale = scenario.inertia_scale;
+    row.total_mass_scale = scenario.total_mass_scale;
+    row.pitch_inertia_scale = scenario.pitch_inertia_scale;
     row.imu_timestamp_us = latest_raw.timestamp_us;
     row.raw_acc_pitch_deg = rawPitchDeg(latest_raw.acc);
     row.gyro_pitch_rate_dps = latest_raw.gyr[1] * 180.0 / kPi;

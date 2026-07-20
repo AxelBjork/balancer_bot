@@ -44,9 +44,8 @@ struct SimulatorScenario {
   std::optional<SimulatorPhysics> physics_override;
   std::vector<SimulatorDisturbance> disturbances;
   std::vector<SimulatorJoySegment> joy_segments;
-  double mass_scale = 1.0;
-  double com_height_scale = 1.0;
-  double inertia_scale = 1.0;
+  double total_mass_scale = 1.0;
+  double pitch_inertia_scale = 1.0;
   double imu_pitch_lag_s = 0.0;
   uint32_t imu_noise_seed = 0;
   double accel_noise_std_mps2 = 0.0;
@@ -108,9 +107,8 @@ struct SimulatorTimelineRow {
   double traction_limit_n = 0.0;
   double motor_force_limit_n = 0.0;
   uint32_t seed = 0;
-  double mass_scale = 1.0;
-  double com_height_scale = 1.0;
-  double inertia_scale = 1.0;
+  double total_mass_scale = 1.0;
+  double pitch_inertia_scale = 1.0;
 };
 
 struct SimulatorRunResult {

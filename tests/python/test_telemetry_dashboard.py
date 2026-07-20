@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import dataclasses
 import json
+import logging
 import re
 import socket
 import struct
@@ -10,14 +11,19 @@ import threading
 import time
 import urllib.request
 from http.server import ThreadingHTTPServer
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 from generated_balancer import SystemTelemetryPayload
 from tools.telemetry_dashboard.server import (
+    DISPLAY_HISTORY_POINTS,
+    DISPLAY_HISTORY_SECONDS,
+    DISPLAY_HZ,
     SYSTEM_TELEMETRY_ID,
     DeploymentManager,
     CsvLogger,
     CsvPlayback,
+    DIAGNOSTIC_LOGGER,
+    PiHeartbeat,
     SseHub,
     TelemetryState,
     UdpReceiver,
@@ -27,6 +33,7 @@ from tools.telemetry_dashboard.server import (
     resolve_ssh_alias,
     resolve_udp_host,
     SourceController,
+    configure_diagnostic_logging,
 )
 
 
@@ -58,7 +65,8 @@ def test_dashboard_decodes_generated_payload_and_latches_flags():
 def test_csv_logger_writes_every_raw_field_with_fixed_header(tmp_path):
     logger = CsvLogger(tmp_path, max_bytes=1024 * 1024, retain_count=2)
     state = TelemetryState("pi.local", logger)
-    assert state.accept(telemetry_packet(pitch_deg=-1.25), received_at=10.0)
+    for index in range(400):
+        assert state.accept(telemetry_packet(pitch_deg=-1.25 + index), received_at=10.0 + index / 400.0)
     logger.close()
     log_path = next(tmp_path.glob("telemetry_*.csv"))
     with log_path.open(newline="", encoding="utf-8") as handle:
@@ -66,13 +74,17 @@ def test_csv_logger_writes_every_raw_field_with_fixed_header(tmp_path):
     assert "received_at_unix_s" in rows[0]
     assert "wheel_equivalent_mass_kg" in rows[0]
     assert float(rows[0]["pitch_deg"]) == -1.25
+    assert len(rows) == 400
+    assert float(rows[-1]["pitch_deg"]) == 397.75
 
 
 def test_dashboard_rejects_wrong_id_and_wrong_size():
     state = TelemetryState("pi.local")
     assert not state.accept(b"\x00\x00")
-    assert not state.accept(struct.pack("<H", 3002) + bytes(512))
-    assert not state.accept(struct.pack("<H", SYSTEM_TELEMETRY_ID) + bytes(511))
+    assert not state.accept(struct.pack("<H", 3002) + bytes(SystemTelemetryPayload.WIRE_SIZE))
+    assert not state.accept(
+        struct.pack("<H", SYSTEM_TELEMETRY_ID) + bytes(SystemTelemetryPayload.WIRE_SIZE - 1)
+    )
     _, status = state.snapshot(display_rate_hz=0.0)
     assert status["malformed_packets"] == 3
 
@@ -89,7 +101,7 @@ def test_sse_hub_coalesces_fast_input_and_preserves_short_fault():
     hub.stop()
     assert version >= 1
     assert telemetry is not None and telemetry["sequence"] == 20
-    assert status["display_rate_hz"] <= 25.0
+    assert status["display_rate_hz"] == DISPLAY_HZ
     assert status["latched_flags"]["controller"] == 1
 
 
@@ -118,6 +130,73 @@ def test_history_exposes_clamped_timeline_bounds_and_display_runs():
     assert hub.history(seconds=30.0, end=999.0) == [first, second]
     assert state.reset_display_run() == 1
     assert state.snapshot(0.0)[1]["display_run"] == 1
+
+
+def test_live_display_history_is_exactly_one_two_minute_50_hz_run():
+    state = TelemetryState("pi.local")
+    hub = SseHub(state)
+    for sequence in range(1, DISPLAY_HISTORY_POINTS + 101):
+        hub._append_history({"sequence": sequence, "received_at": sequence / DISPLAY_HZ})
+    history, decimated = hub.history_window(DISPLAY_HISTORY_SECONDS, DISPLAY_HISTORY_POINTS)
+    assert len(history) == DISPLAY_HISTORY_POINTS
+    assert not decimated
+    assert history[-1]["sequence"] == DISPLAY_HISTORY_POINTS + 100
+
+    csv_history = [{"sequence": sequence, "received_at": sequence / 100.0} for sequence in range(7000)]
+    hub.set_static_history(csv_history)
+    reduced, decimated = hub.history_window(120.0, DISPLAY_HISTORY_POINTS)
+    assert decimated
+    assert len(reduced) <= DISPLAY_HISTORY_POINTS
+    assert reduced[-1] is csv_history[-1]
+
+
+def test_start_boundary_clears_display_history_but_accepts_next_packet():
+    state = TelemetryState("pi.local")
+    hub = SseHub(state)
+    state.accept(telemetry_packet(pitch_deg=1.0), received_at=10.0)
+    first, _ = state.snapshot(DISPLAY_HZ)
+    assert first is not None
+    hub._append_history(first)
+    state.reset_display_run()
+    hub.begin_display_run()
+    hub._append_history(first)
+    assert hub.history() == []
+    state.accept(telemetry_packet(pitch_deg=2.0), received_at=10.02)
+    second, _ = state.snapshot(DISPLAY_HZ)
+    assert second is not None
+    hub._append_history(second)
+    assert [sample["attitude"]["pitch_deg"] for sample in hub.history()] == [2.0]
+
+
+def test_udp_telemetry_rate_is_measured_from_accepted_packets():
+    state = TelemetryState("pi.local")
+    base = time.monotonic()
+    for index in range(400):
+        assert state.accept(telemetry_packet(), received_at=base + index / 400.0)
+    _, status = state.snapshot(DISPLAY_HZ)
+    assert status["raw_packet_rate_hz"] == 400
+    assert status["display_rate_hz"] == 50.0
+    assert state.source_info()["run_limit_s"] == 120.0
+
+
+def test_receive_and_controller_gaps_are_counted_and_written_as_jsonl(tmp_path):
+    listener = configure_diagnostic_logging(tmp_path)
+    try:
+        state = TelemetryState("pi.local")
+        assert state.accept(telemetry_packet(t_sec=1.0), received_at=10.0)
+        assert state.accept(telemetry_packet(t_sec=1.0025), received_at=10.25)
+        assert state.accept(telemetry_packet(t_sec=1.5), received_at=10.251)
+        _, status = state.snapshot(50.0)
+        assert status["telemetry_gap_count"] == 2
+        assert status["last_telemetry_gap"]["event"] == "telemetry_packet_gap"
+    finally:
+        listener.stop()
+        DIAGNOSTIC_LOGGER.handlers = [logging.NullHandler()]
+        DIAGNOSTIC_LOGGER.propagate = True
+    events = [json.loads(line) for line in (tmp_path / "dashboard_events.jsonl").read_text().splitlines()]
+    assert [event["event"] for event in events] == ["udp_receive_pause", "telemetry_packet_gap"]
+    assert events[0]["receive_gap_s"] == 0.25
+    assert events[1]["controller_gap_s"] == 0.49750000000000005
 
 
 def test_playback_csv_normalizes_simulator_rows_without_relogging(tmp_path):
@@ -188,6 +267,20 @@ def test_receiver_registers_and_accepts_fake_pi_telemetry():
     assert telemetry["attitude"]["pitch_deg"] == 4.5
 
 
+def test_pi_heartbeat_reports_ssh_port_reachability_without_authentication():
+    state = TelemetryState("rpi4")
+    receiver = Mock()
+    receiver.current_target.return_value = "rpi4"
+    heartbeat = PiHeartbeat(state, receiver)
+    with patch("tools.telemetry_dashboard.server.resolve_udp_host", return_value="192.168.1.44"), patch(
+        "tools.telemetry_dashboard.server.socket.create_connection", return_value=MagicMock()
+    ) as connect:
+        assert heartbeat.probe()
+    connect.assert_called_once_with(("192.168.1.44", 22), timeout=1.5)
+    with patch("tools.telemetry_dashboard.server.resolve_udp_host", side_effect=RuntimeError("offline")):
+        assert not heartbeat.probe()
+
+
 def test_ssh_alias_uses_ssh_config_hostname_and_accepts_user_prefix():
     completed = Mock(stdout="host rpi4\nhostname 192.168.1.44\nuser pi\n")
     with patch("tools.telemetry_dashboard.server.subprocess.run", return_value=completed) as run:
@@ -234,6 +327,10 @@ def test_start_and_abort_use_short_lived_ssh_commands():
     assert "status" in commands[1][2]
 
 
+def test_deployer_normalizes_plain_pi_hostname_to_pi_user():
+    assert DeploymentManager("rpi4").info()["target"] == "pi@rpi4"
+
+
 def test_dashboard_serves_assets_and_sse_to_multiple_clients():
     state = TelemetryState("pi.local")
     hub = SseHub(state)
@@ -251,11 +348,17 @@ def test_dashboard_serves_assets_and_sse_to_multiple_clients():
         script = urllib.request.urlopen(base + script_path.group(1).decode(), timeout=1).read()
         assert b"EventSource" in script
         assert b"setData" in script
+        logo = urllib.request.urlopen(base + "/balancer-mark.svg", timeout=1)
+        assert logo.headers.get_content_type() == "image/svg+xml"
         history = json.load(urllib.request.urlopen(base + "/api/history?seconds=30", timeout=1))
         assert history["history_seconds"] == 30.0
         assert history["samples"] == []
+        assert history["run_limit_s"] == 120.0
+        assert history["display_sample_hz"] == 50.0
+        assert history["decimated"] is False
         source = json.load(urllib.request.urlopen(base + "/api/source", timeout=1))
         assert source["mode"] == "live"
+        assert source["display_sample_hz"] == 50.0
         first = urllib.request.urlopen(base + "/api/stream", timeout=1)
         second = urllib.request.urlopen(base + "/api/stream", timeout=1)
         state.accept(telemetry_packet(pitch_deg=2.0))

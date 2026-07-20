@@ -28,7 +28,8 @@ struct Config {
   // indistinguishable from tilt in a two-wheel balancing robot. Gyro carries
   // the dynamic attitude estimate; accel only removes long-term drift.
   static constexpr double fc_acc_corr_hz = 0.05;
-  // Velocity estimator (fast)
+  // Completed motor steps are a balance-state input and retain enough
+  // bandwidth to catch the pole. The governed target is fed forward directly.
   static constexpr double fc_velocity_hz = 50.0;
   static constexpr double g0 = 9.81;
   static constexpr double g_band_rel = 0.12;  // accept |a| in [g*(1-..), g*(1+..)]

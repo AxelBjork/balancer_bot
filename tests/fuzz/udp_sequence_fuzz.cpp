@@ -134,7 +134,7 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  ConfigPid::load(fuzz::repo_path("pid_sim.conf"));
+  ConfigPid::load(fuzz::repo_path("pid.conf"));
 
   while (__AFL_LOOP(1000)) {
     std::vector<uint8_t> input;

@@ -173,11 +173,9 @@ RUN groupadd --gid $USER_GID $USERNAME \
     && chmod 0440 /etc/sudoers.d/$USERNAME \
     && usermod -aG dialout $USERNAME
 
-# Python Dependencies
-# Note: requirements.txt was not found in the workspace, so skipping explicit pip install.
-# If you have a requirements.txt, uncomment the following lines and ensure the file exists.
-# COPY requirements.txt /tmp/requirements.txt
-# RUN pip3 install --break-system-packages -r /tmp/requirements.txt
+# Python analysis and artifact dependencies
+COPY requirements-dev.txt /tmp/requirements-dev.txt
+RUN pip3 install --no-cache-dir -r /tmp/requirements-dev.txt
 
 # Set temporary workspace
 WORKDIR /workspace

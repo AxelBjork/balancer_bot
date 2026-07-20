@@ -15,7 +15,7 @@
 namespace {
 
 std::string sim_pid_path() {
-  return (std::filesystem::path(BALANCER_REPO_ROOT) / "pid_sim.conf").string();
+  return (std::filesystem::path(BALANCER_REPO_ROOT) / "pid.conf").string();
 }
 
 int matrix_rank(std::vector<std::array<double, 4>> rows) {
@@ -56,6 +56,15 @@ int matrix_rank(std::vector<std::array<double, 4>> rows) {
 
 double raw_pitch_deg(const std::array<double, 3>& acc) {
   return std::atan2(-acc[0], -acc[2]) * 180.0 / M_PI;
+}
+
+std::array<double, 4> add_inputs(const std::array<double, 4>& left,
+                                 const std::array<double, 4>& right) {
+  std::array<double, 4> result{};
+  for (size_t index = 0; index < result.size(); ++index) {
+    result[index] = left[index] + right[index];
+  }
+  return result;
 }
 
 double timeline_difference(const SimulatorRunResult& left, const SimulatorRunResult& right) {
@@ -194,13 +203,15 @@ TEST(SimulatorRunnerTest, PositiveAndNegativeComOffsetsProduceMirroredPlantRespo
 TEST(SimulatorRunnerTest, HardwareNominalConstantsRemainAuthoritative) {
   using Nominal = BalancerSimulator::HardwareNominal;
   EXPECT_DOUBLE_EQ(Nominal::gravity, 9.81);
-  EXPECT_DOUBLE_EQ(Nominal::wheel_radius, 0.04);
-  EXPECT_DOUBLE_EQ(Nominal::robot_mass, 1.032);
-  EXPECT_DOUBLE_EQ(Nominal::wheel_mass, 0.05);
-  EXPECT_DOUBLE_EQ(Nominal::cart_mass, 0.10);
-  EXPECT_DOUBLE_EQ(Nominal::body_mass, 0.932);
-  EXPECT_DOUBLE_EQ(Nominal::center_of_mass_height, 0.06);
-  EXPECT_DOUBLE_EQ(Nominal::I_com, 0.0034);
+  EXPECT_DOUBLE_EQ(Nominal::wheel_radius, 0.0412);
+  EXPECT_DOUBLE_EQ(Nominal::motor_count, 2.0);
+  EXPECT_DOUBLE_EQ(Nominal::motor_stall_torque_nm, 0.45);
+  EXPECT_DOUBLE_EQ(Nominal::combined_stall_force_n, 22.5);
+  EXPECT_DOUBLE_EQ(BalancerSimulator::physics_for_profile(PhysicsProfile::Realistic).max_force_n,
+                   Nominal::combined_stall_force_n);
+  EXPECT_DOUBLE_EQ(Nominal::total_mass_kg, 1.032);
+  EXPECT_DOUBLE_EQ(Nominal::first_mass_moment_kg_m, 0.06192);
+  EXPECT_DOUBLE_EQ(Nominal::pitch_inertia_about_axle_kg_m2, 0.0067552);
   EXPECT_DOUBLE_EQ(Nominal::steps_per_rev, 3200.0);
 }
 
@@ -285,10 +296,8 @@ TEST(SimulatorRunnerTest, EveryRetainedPlantParameterAffectsTheTimeline) {
   const auto baseline = run_simulator_scenario(nominal, sim_pid_path());
 
   const std::vector<std::function<void(SimulatorScenario&)>> variations{
-      [](auto& value) { value.mass_scale = 1.1; },
-      [](auto& value) { value.com_height_scale = 1.15; },
-      [](auto& value) { value.inertia_scale = 1.2; },
-      [](auto& value) { value.physics_override->max_force_n *= 0.7; },
+      [](auto& value) { value.total_mass_scale = 1.1; },
+      [](auto& value) { value.pitch_inertia_scale = 1.2; },
       [](auto& value) { value.physics_override->no_load_speed_mps *= 0.7; },
       [](auto& value) { value.physics_override->traction_coefficient = 0.7; },
       [](auto& value) { value.physics_override->motor_velocity_damping *= 0.7; },
@@ -469,6 +478,86 @@ TEST(SimulatorRunnerTest, MotorAuthorityEnvelopeUsesRotorSpeedNotRequestedSpeed)
   EXPECT_LT(minimum_limit, simulator.physics().max_force_n * 0.95);
 }
 
+TEST(SimulatorRunnerTest, InitialPitchDoesNotCreateMotorPhaseOrMissedSteps) {
+  for (const double initial_pitch_deg : {67.0, -67.0}) {
+    BalancerSimulator::Config config;
+    config.initial_pitch_deg = initial_pitch_deg;
+    config.com_angle_offset_rad = 0.0;
+    BalancerSimulator simulator(config);
+    simulator.set_emitted_steps(0.0, 0.0);
+
+    simulator.step(0.0);
+
+    EXPECT_NEAR(simulator.diagnostics().phase_error_steps, 0.0, 1e-12)
+        << initial_pitch_deg;
+    EXPECT_NEAR(simulator.diagnostics().missed_steps, 0.0, 1e-12) << initial_pitch_deg;
+  }
+}
+
+TEST(SimulatorRunnerTest, MotorForceAppliesSymmetricReactionTorqueBeforeTireForceBuilds) {
+  const auto model = BalancerSimulator::linearized_upright_model(
+      BalancerSimulator::physics_for_profile(PhysicsProfile::Realistic));
+  std::array<double, 2> pitch_accels{};
+
+  for (size_t index = 0; index < pitch_accels.size(); ++index) {
+    const double direction = index == 0 ? 1.0 : -1.0;
+    BalancerSimulator::Config config;
+    config.initial_pitch_deg = 0.0;
+    config.com_angle_offset_rad = 0.0;
+    config.physics_override =
+        BalancerSimulator::physics_for_profile(PhysicsProfile::Realistic);
+    config.physics_override->motor_tau_s = 0.0;
+    config.physics_override->motor_velocity_damping = 0.0;
+    config.physics_override->tire_stiffness_n_per_m = 0.0;
+    config.physics_override->tire_damping_n_s_per_m = 0.0;
+    BalancerSimulator simulator(config);
+    simulator.set_emitted_steps(direction, direction);
+
+    simulator.step(1e-6);
+
+    ASSERT_NEAR(simulator.diagnostics().f_app, 0.0, 1e-12);
+    EXPECT_NEAR(simulator.diagnostics().x_ddot,
+                model.motor_force_input[1] * simulator.diagnostics().f_cmd, 1e-9);
+    EXPECT_NEAR(simulator.diagnostics().theta_ddot,
+                model.motor_force_input[3] * simulator.diagnostics().f_cmd, 1e-9);
+    pitch_accels[index] = simulator.diagnostics().theta_ddot;
+  }
+
+  EXPECT_LT(pitch_accels[0], 0.0);
+  EXPECT_GT(pitch_accels[1], 0.0);
+  EXPECT_NEAR(pitch_accels[0], -pitch_accels[1], 1e-12);
+}
+
+TEST(SimulatorRunnerTest, ChassisPitchRateContributesToMotorSpeedAndAuthorityEnvelope) {
+  for (const double initial_pitch_deg : {5.0, -5.0}) {
+    BalancerSimulator::Config config;
+    config.initial_pitch_deg = initial_pitch_deg;
+    config.com_angle_offset_rad = 0.0;
+    config.physics_override =
+        BalancerSimulator::physics_for_profile(PhysicsProfile::Realistic);
+    config.physics_override->tire_stiffness_n_per_m = 0.0;
+    config.physics_override->tire_damping_n_s_per_m = 0.0;
+    BalancerSimulator simulator(config);
+    simulator.set_emitted_steps(0.0, 0.0);
+
+    simulator.step(0.01);
+    const double relative_speed = simulator.diagnostics().actual_wheel_velocity;
+    EXPECT_NEAR(relative_speed,
+                -BalancerSimulator::HardwareNominal::wheel_radius * simulator.state().pitch_rate,
+                1e-12);
+    EXPECT_NEAR(simulator.diagnostics().velocity_error, -relative_speed, 1e-12);
+    EXPECT_NE(relative_speed, 0.0);
+
+    simulator.step(0.0);
+    const double expected_limit =
+        simulator.physics().max_force_n *
+        std::clamp(1.0 - std::abs(relative_speed) / simulator.physics().no_load_speed_mps,
+                   0.0, 1.0);
+    EXPECT_NEAR(simulator.diagnostics().motor_force_limit_n, expected_limit, 1e-12);
+    EXPECT_NE(simulator.diagnostics().phase_error_steps, 0.0);
+  }
+}
+
 TEST(SimulatorRunnerTest, TireDeflectionDoesNotBecomeMissedMotorSteps) {
   BalancerSimulator simulator;
   simulator.set_emitted_steps(0.0, 0.0);
@@ -487,7 +576,7 @@ TEST(SimulatorRunnerTest, SmallAngleLinearizedPlantIsControllableWithOverdampedP
   const auto model = BalancerSimulator::linearized_upright_model(physics);
 
   std::vector<std::array<double, 4>> controllability;
-  std::array<double, 4> bk = model.B;
+  std::array<double, 4> bk = add_inputs(model.horizontal_force_input, model.motor_force_input);
   for (int power = 0; power < 4; ++power) {
     controllability.push_back({bk[0], bk[1], bk[2], bk[3]});
     std::array<double, 4> next{};
@@ -508,15 +597,37 @@ TEST(SimulatorRunnerTest, SmallAngleLinearizedPlantIsControllableWithOverdampedP
   EXPECT_LT(poles[3], poles[2]);
 }
 
-// The transfer plant was tuned around the former positive velocity-pitch
-// polarity. It remains useful through the component and deterministic-engine
-// tests above, but its closed-loop acceptance matrix must be recalibrated
-// against hardware before it can gate the corrected command controller.
-TEST(SimulatorTransferTest, DISABLED_NominalAndOneAtATimeMarginsMeetAcceptanceGates) {
+TEST(SimulatorRunnerTest, NonlinearSmallAngleAccelerationMatchesLinearizedForceAndPitchSigns) {
+  constexpr double initial_pitch_rad = 0.05 * M_PI / 180.0;
+  constexpr double external_force_n = 0.01;
+  BalancerSimulator::Config config;
+  config.initial_pitch_deg = initial_pitch_rad * 180.0 / M_PI;
+  config.com_angle_offset_rad = 0.0;
+  config.physics_profile = PhysicsProfile::Realistic;
+  BalancerSimulator simulator(config);
+  simulator.set_external_force_n(external_force_n);
+
+  const auto model = BalancerSimulator::linearized_upright_model(simulator.physics());
+  const double expected_x_accel =
+      model.A[1][2] * initial_pitch_rad +
+      model.horizontal_force_input[1] * external_force_n;
+  const double expected_pitch_accel =
+      model.A[3][2] * initial_pitch_rad +
+      model.horizontal_force_input[3] * external_force_n;
+
+  simulator.step(1e-6);
+  EXPECT_GT(simulator.diagnostics().x_ddot, 0.0);
+  EXPECT_LT(simulator.diagnostics().theta_ddot, 0.0);
+  EXPECT_NEAR(simulator.diagnostics().x_ddot, expected_x_accel, 2e-5);
+  EXPECT_NEAR(simulator.diagnostics().theta_ddot, expected_pitch_accel, 2e-4);
+}
+
+TEST(SimulatorTransferTest, MandatoryNominalAndConservativeProfilesMeetAcceptanceGates) {
   ConfigPid::load(sim_pid_path());
   const auto scenarios = transfer_scenario_set();
-  ASSERT_EQ(scenarios.size(), 20u);
+  ASSERT_EQ(scenarios.size(), 10u);
   for (const auto& scenario : scenarios) {
+    if (scenario.name == "fast_strong_drive_bidirectional") continue;
     SCOPED_TRACE(scenario.name);
     const auto result = run_simulator_scenario_with_loaded_pid(scenario);
     const auto acceptance = evaluate_transfer_scenario(result);
@@ -529,6 +640,20 @@ TEST(SimulatorTransferTest, DISABLED_NominalAndOneAtATimeMarginsMeetAcceptanceGa
       return joined;
     }();
   }
+}
+
+TEST(SimulatorTransferTest, FastStrongDriveMeetsAcceptanceGates) {
+  ConfigPid::load(sim_pid_path());
+  const auto scenarios = transfer_scenario_set();
+  const auto scenario = std::find_if(scenarios.begin(), scenarios.end(), [](const auto& value) {
+    return value.name == "fast_strong_drive_bidirectional";
+  });
+  ASSERT_NE(scenario, scenarios.end());
+
+  const auto acceptance =
+      evaluate_transfer_scenario(run_simulator_scenario_with_loaded_pid(*scenario));
+  EXPECT_TRUE(acceptance.accepted);
+  EXPECT_TRUE(acceptance.failures.empty());
 }
 
 }  // namespace

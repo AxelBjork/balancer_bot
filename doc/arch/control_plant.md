@@ -1,5 +1,19 @@
 # Two-Wheel Balancer — Compact Laplace Cheat Sheet
 
+## Aggregate Simulator Parameters
+
+The nonlinear simulator uses aggregate rigid-body parameters rather than an arbitrary split between
+cart and body mass: total translating mass `T`, first mass moment `H` about the axle, and pitch
+inertia `J` about the axle. Its mass matrix is
+
+> $$
+> \begin{bmatrix}T&H\cos\theta\\H\cos\theta&J\end{bmatrix}.
+> $$
+
+The current nominal values are `T = 1.032 kg`, `H = 0.06192 kg m`, and provisional
+`J = 0.0067552 kg m²`. The value of `J` is retained from the previous model only until it is
+measured with the physical-pendulum procedure documented in the Pi runtime guide.
+
 ## Variables
 
 - `x`: forward position of the wheel axle
@@ -213,6 +227,22 @@ Notes:
   torque-speed limit, actuator lag, missed-step estimate, and traction-limited tire coupling produce
   force on the nonlinear cart-pole
 
+### Simulator wheel and motor coordinates
+
+The nonlinear simulator keeps the wheel coordinate `u = r psi` as absolute circumferential wheel
+motion. Tire deformation and tire speed therefore remain `u - x` and `u_dot - x_dot`. Motor steps,
+however, measure rotor motion relative to the chassis. With the configured initial pitch as the
+zero-step reference, the motor coordinates are
+
+> $$
+> q = u-r(\theta-\theta_0), \qquad \dot q = \dot u-r\dot\theta.
+> $$
+
+The phase-error controller and torque-speed limit use `q` and `q_dot`. A motor force `F_m` applies
+`+F_m` to the wheel and the equal-and-opposite torque `-r F_m` to the chassis. The tire/contact force
+and motor force are consequently distinct inputs to the linearized audit model; adding their input
+vectors is only the quasi-static, no-wheel-acceleration approximation where `F_t = F_m`.
+
 ## Audit Command
 
 To inspect the current linearized upright model used by the simulator profiles:
@@ -224,6 +254,6 @@ To inspect the current linearized upright model used by the simulator profiles:
 That prints, for each simulator profile:
 
 - the plant parameters actually used
-- the linearized `A` and `B` matrices
+- the linearized `A` matrix and separate horizontal-force and motor-force input vectors
 - the controllability rank
 - the current candidate overdamped pole set
