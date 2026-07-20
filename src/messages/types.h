@@ -88,6 +88,8 @@ struct ConfigPid {
   inline static double pitch_max_deg = 10.0;
   inline static double balance_max_sps = 12000.0;
   inline static double output_scale_sps = 3200.0;
+  // Optional safety mode for passive IMU/telemetry measurements.
+  inline static bool controller_enabled = true;
 
   static std::string resolve_path(const std::string& default_path) {
     if (const char* env = std::getenv("BALANCER_PID_CONF")) {

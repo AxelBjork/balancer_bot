@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdio>
 #include <iostream>
+#include <optional>
 #include <thread>
 
 #include "messages/balancer_msgs.h"
@@ -96,14 +97,19 @@ class ControlApp {
     Stepper::Pins leftPins{12, 19, 13};  // ENA, STEP(PWM1), DIR
     Stepper::Pins rightPins{4, 18, 24};  // ENB, STEP(PWM0), DIR
 
-    Stepper left(_ctx.handle(), leftPins, Config::invert_left, /*energize_now=*/true);
-    Stepper right(_ctx.handle(), rightPins, Config::invert_right, /*energize_now=*/true);
+    Stepper left(_ctx.handle(), leftPins, Config::invert_left,
+                 /*energize_now=*/ConfigPid::controller_enabled);
+    Stepper right(_ctx.handle(), rightPins, Config::invert_right,
+                  /*energize_now=*/ConfigPid::controller_enabled);
 
     // Coordinator at 1 kHz
-    MotorRunner motors(left, right, Config::control_hz, Config::motor_slew_sps_per_s);
+    std::optional<MotorRunner> motors;
+    if (ConfigPid::controller_enabled) {
+      motors.emplace(left, right, Config::control_hz, Config::motor_slew_sps_per_s);
+    }
 
     // Start MessageBus and Services
-    BusContainer app_bus(&motors, app_dispatcher);
+    BusContainer app_bus(motors ? &*motors : nullptr, app_dispatcher);
     app_bus.services.cs.start();
     app_bus.services.ms.start();
     app_bus.services.is.start();

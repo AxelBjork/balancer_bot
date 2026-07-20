@@ -13,7 +13,6 @@ The standard cross-build command is:
 That configures CMake with `cmake/toolchain-rpi4.cmake` and builds:
 
 - `build-pi/balancer_pi`
-- `build-pi/imu_demo`
 
 ## Pi Base Setup
 
@@ -44,6 +43,15 @@ scp build-pi/balancer_pi pid.conf pi@rpi4:~/
 ```
 
 If you want to keep the PID config elsewhere on the Pi, use the `BALANCER_PID_CONF` environment variable for simulator-oriented flows. The normal hardware path expects `pid.conf` to be present next to the launched process or in the current working directory.
+
+## Passive Pitch-Inertia Measurement
+
+Copy `pid.conf` to a measurement-specific file and set `controller_enabled = 0`. This keeps IMU
+and UDP telemetry active while both steppers remain de-energized and no actuator commands reach
+the motors. Support the robot on a low-friction pivot through the wheel-axis line in its stable
+hanging orientation, use small oscillations, time 10–20 periods, and calculate
+`J = g H (P / 2π)^2` using the simulator's measured `H`. Restore the normal configuration before
+any balancing attempt.
 
 ## Runtime Prerequisites
 

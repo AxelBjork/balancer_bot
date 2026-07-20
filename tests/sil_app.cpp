@@ -50,7 +50,7 @@ int main() {
   std::signal(SIGTERM, signal_handler);
 
   std::cout << "Starting sil_app (SIL Mode)..." << std::endl;
-  ConfigPid::load(ConfigPid::resolve_path("pid_sim.conf"));
+  ConfigPid::load(ConfigPid::resolve_path("pid.conf"));
 
   BusContainer container;
 

@@ -62,7 +62,7 @@ lcov --remove "${BUILD_DIR}/scenario_merged.info" \
   '*/_deps/*' \
   '/usr/*' \
   '*/tests/*' \
-  '*/src/balance_controller/test/*' \
+  '*/tests/*' \
   --output-file "${BUILD_DIR}/scenario_src.info"
 
 genhtml "${BUILD_DIR}/scenario_src.info" --output-directory "${HTML_DIR}"

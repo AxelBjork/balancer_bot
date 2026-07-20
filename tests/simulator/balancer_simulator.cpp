@@ -34,7 +34,7 @@ SimulatorPhysics BalancerSimulator::physics_for_profile(PhysicsProfile profile) 
     case PhysicsProfile::Realistic:
     default:
       return SimulatorPhysics{
-          .max_force_n = 12.0,
+          .max_force_n = HardwareNominal::combined_stall_force_n,
           .no_load_speed_mps = 1.2,
           .traction_coefficient = 1.0,
           .motor_velocity_damping = 40.0,
@@ -91,30 +91,37 @@ void BalancerSimulator::step(double dt_s) {
     emitted_steps_avg_ += avg_steps_per_sec * dt_s;
   }
   const double emitted_position_m = emitted_steps_avg_ * Nominal::meters_per_step;
+  const double initial_pitch_rad = cfg_.initial_pitch_deg * kPi / 180.0;
+  const double relative_wheel_position_m =
+      wheel_position_m_ - Nominal::wheel_radius * (state_.pitch - initial_pitch_rad);
+  const double relative_wheel_velocity_mps =
+      wheel_velocity_mps_ - Nominal::wheel_radius * state_.pitch_rate;
   const double speed_fraction = physics_.no_load_speed_mps > 0.0
-                                    ? std::abs(wheel_velocity_mps_) / physics_.no_load_speed_mps
+                                    ? std::abs(relative_wheel_velocity_mps) /
+                                          physics_.no_load_speed_mps
                                     : 1.0;
   const double motor_force_limit =
       physics_.max_force_n * std::clamp(1.0 - speed_fraction, 0.0, 1.0);
-  const double scaled_robot_mass = Nominal::robot_mass * std::max(0.1, cfg_.mass_scale);
+  const double scaled_robot_mass = Nominal::total_mass_kg * std::max(0.1, cfg_.total_mass_scale);
   const double traction_limit =
       std::max(0.0, physics_.traction_coefficient) * scaled_robot_mass * Nominal::gravity;
 
   double effective_command_position_m = emitted_position_m - missed_distance_m_;
-  double phase_error_m = effective_command_position_m - wheel_position_m_;
+  double phase_error_m = effective_command_position_m - relative_wheel_position_m;
   const double phase_limit_m =
       std::max(1.0, physics_.phase_error_limit_steps) * Nominal::meters_per_step;
   if (std::abs(phase_error_m) > phase_limit_m) {
     const double clamped_error = std::clamp(phase_error_m, -phase_limit_m, phase_limit_m);
     missed_distance_m_ += phase_error_m - clamped_error;
     effective_command_position_m = emitted_position_m - missed_distance_m_;
-    phase_error_m = effective_command_position_m - wheel_position_m_;
+    phase_error_m = effective_command_position_m - relative_wheel_position_m;
   }
 
   const double phase_stiffness = physics_.max_force_n / phase_limit_m;
   const double desired_force =
       phase_stiffness * phase_error_m +
-      physics_.motor_velocity_damping * (target_wheel_velocity - wheel_velocity_mps_);
+      physics_.motor_velocity_damping *
+          (target_wheel_velocity - relative_wheel_velocity_mps);
   const double limited_motor_force =
       std::clamp(desired_force, -motor_force_limit, motor_force_limit);
 
@@ -135,19 +142,21 @@ void BalancerSimulator::step(double dt_s) {
   const double sQ = std::sin(Q);
   const double cQ = std::cos(Q);
 
-  const double M = Nominal::cart_mass * std::max(0.1, cfg_.mass_scale);
-  const double m = Nominal::body_mass * std::max(0.1, cfg_.mass_scale);
-  const double l = Nominal::center_of_mass_height * std::max(0.1, cfg_.com_height_scale);
-  const double I = Nominal::I_com * std::max(0.1, cfg_.inertia_scale);
+  const double T = Nominal::total_mass_kg * std::max(0.1, cfg_.total_mass_scale);
+  const double H = Nominal::first_mass_moment_kg_m;
+  const double J = Nominal::pitch_inertia_about_axle_kg_m2 *
+                   std::max(0.1, cfg_.pitch_inertia_scale);
 
-  const double d11 = M + m;
-  const double d12 = m * l * cQ;
-  const double d21 = m * l * cQ;
-  const double d22 = I + m * l * l;
+  const double d11 = T;
+  const double d12 = H * cQ;
+  const double d21 = H * cQ;
+  const double d22 = J;
 
   const double rhs1 =
-      total_force + m * l * Q_dot * Q_dot * sQ - physics_.cart_damping * state_.velocity;
-  const double rhs2 = m * Nominal::gravity * l * sQ - physics_.pitch_damping * state_.pitch_rate;
+      total_force + H * Q_dot * Q_dot * sQ - physics_.cart_damping * state_.velocity;
+  const double motor_reaction_torque = applied_drive_force_ * Nominal::wheel_radius;
+  const double rhs2 = Nominal::gravity * H * sQ -
+                      physics_.pitch_damping * state_.pitch_rate - motor_reaction_torque;
 
   const double det = d11 * d22 - d12 * d21;
   const double x_ddot = (d22 * rhs1 - d12 * rhs2) / det;
@@ -162,7 +171,8 @@ void BalancerSimulator::step(double dt_s) {
   const double wheel_accel = (applied_drive_force_ - tire_force) / wheel_mass;
   wheel_velocity_mps_ += wheel_accel * dt_s;
   wheel_position_m_ += wheel_velocity_mps_ * dt_s;
-  actual_wheel_velocity_ = wheel_velocity_mps_;
+  actual_wheel_velocity_ =
+      wheel_velocity_mps_ - Nominal::wheel_radius * state_.pitch_rate;
 
   if (std::abs(state_.pitch) > kPi / 2.0) {
     state_.pitch = state_.pitch > 0 ? kPi / 2.0 : -kPi / 2.0;
@@ -172,7 +182,7 @@ void BalancerSimulator::step(double dt_s) {
 
   diagnostics_.target_wheel_velocity = target_wheel_velocity;
   diagnostics_.actual_wheel_velocity = actual_wheel_velocity_;
-  diagnostics_.velocity_error = target_wheel_velocity - wheel_velocity_mps_;
+  diagnostics_.velocity_error = target_wheel_velocity - actual_wheel_velocity_;
   diagnostics_.f_cmd = F_cmd;
   diagnostics_.f_app = F_app;
   diagnostics_.external_force_n = external_force_n_;
@@ -223,26 +233,27 @@ BalancerSimulator::LinearizedUprightModel BalancerSimulator::linearized_upright_
   (void)physics;
   LinearizedUprightModel model{};
 
-  const double M = HardwareNominal::cart_mass;
-  const double m = HardwareNominal::body_mass;
-  const double l = HardwareNominal::center_of_mass_height;
-  const double I = HardwareNominal::I_com;
+  const double T = HardwareNominal::total_mass_kg;
+  const double H = HardwareNominal::first_mass_moment_kg_m;
+  const double J = HardwareNominal::pitch_inertia_about_axle_kg_m2;
 
-  const double d11 = M + m;
-  const double d12 = m * l;
-  const double d21 = m * l;
-  const double d22 = I + m * l * l;
+  const double d11 = T;
+  const double d12 = H;
+  const double d21 = H;
+  const double d22 = J;
   const double det = d11 * d22 - d12 * d21;
 
   const double v_coeff = -(d22 * physics.cart_damping) / det;
-  const double theta_coeff = -(d12 * m * HardwareNominal::gravity * l) / det;
+  const double theta_coeff = -(d12 * HardwareNominal::gravity * H) / det;
   const double theta_dot_coeff = (d12 * physics.pitch_damping) / det;
-  const double force_to_x_ddot = d22 / det;
+  const double horizontal_force_to_x_ddot = d22 / det;
+  const double motor_force_to_x_ddot = d12 * HardwareNominal::wheel_radius / det;
 
   const double q_v_coeff = (d21 * physics.cart_damping) / det;
-  const double q_theta_coeff = (d11 * m * HardwareNominal::gravity * l) / det;
+  const double q_theta_coeff = (d11 * HardwareNominal::gravity * H) / det;
   const double q_theta_dot_coeff = -(d11 * physics.pitch_damping) / det;
-  const double force_to_q_ddot = -d21 / det;
+  const double horizontal_force_to_q_ddot = -d21 / det;
+  const double motor_force_to_q_ddot = -d11 * HardwareNominal::wheel_radius / det;
 
   model.A = {{
       {{0.0, 1.0, 0.0, 0.0}},
@@ -250,7 +261,10 @@ BalancerSimulator::LinearizedUprightModel BalancerSimulator::linearized_upright_
       {{0.0, 0.0, 0.0, 1.0}},
       {{0.0, q_v_coeff, q_theta_coeff, q_theta_dot_coeff}},
   }};
-  model.B = {{0.0, force_to_x_ddot, 0.0, force_to_q_ddot}};
+  model.horizontal_force_input =
+      {{0.0, horizontal_force_to_x_ddot, 0.0, horizontal_force_to_q_ddot}};
+  model.motor_force_input =
+      {{0.0, motor_force_to_x_ddot, 0.0, motor_force_to_q_ddot}};
   return model;
 }
 

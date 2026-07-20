@@ -85,7 +85,7 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  const std::string pid_path = fuzz::repo_path("pid_sim.conf");
+  const std::string pid_path = fuzz::repo_path("pid.conf");
   ConfigPid::load(pid_path);
   while (__AFL_LOOP(1000)) {
     std::vector<uint8_t> input;

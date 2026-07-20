@@ -24,10 +24,6 @@ constexpr double kVelocityLoopPeriodS = 1.0 / 50.0;
 constexpr double kDriveAccelerationSps2 = 2400.0;
 constexpr double kDriveDecelerationSps2 = 3600.0;
 constexpr double kMaxAccelerationPitchRad = 3.0 * M_PI / 180.0;
-constexpr double kComTrimLearningMaxVelocitySps = 150.0;
-constexpr double kComTrimLearningMaxPitchRad = 5.0 * M_PI / 180.0;
-constexpr double kComTrimLearningMaxPitchRateRadS = 5.0 * M_PI / 180.0;
-constexpr double kComTrimSettledDwellS = 1.0;
 
 double joystick_to_sps(double command) {
   const double magnitude = std::abs(command);
@@ -64,13 +60,12 @@ struct RateControllerCore::Impl {
   double measured_velocity_sps{0.0};
   double vel_error_sps{0.0};
   double velocity_p_rad{0.0};
-  double velocity_i_rad{0.0};
+  double com_trim_rad{0.0};
   double pitch_setpoint_rad{0.0};
   double rate_setpoint_rad_s{0.0};
   double turn_sps{0.0};
   double last_u_sps{0.0};
   double outer_elapsed_s{0.0};
-  double com_trim_settled_s{0.0};
   bool command_saturated{false};
   bool balance_saturated_positive{false};
   bool balance_saturated_negative{false};
@@ -116,14 +111,13 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
     p_->acceleration_pitch_rad = 0.0;
     p_->vel_error_sps = 0.0;
     p_->velocity_p_rad = 0.0;
-    // velocity_i_rad is the bounded physical COM trim. Preserve it across a
+    // com_trim_rad is the bounded physical COM trim. Preserve it across a
     // transient fault/fallover; only dynamic command and balance state reset.
     p_->pitch_setpoint_rad = 0.0;
     p_->rate_setpoint_rad_s = 0.0;
     p_->turn_sps = 0.0;
     p_->last_u_sps = 0.0;
     p_->outer_elapsed_s = 0.0;
-    p_->com_trim_settled_s = 0.0;
     p_->command_saturated = false;
     p_->balance_saturated_positive = false;
     p_->balance_saturated_negative = false;
@@ -144,7 +138,7 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
     t.target_vel_sps = p_->target_velocity_sps;
     t.vel_error = p_->vel_error_sps;
     t.vel_p_term_deg = p_->velocity_p_rad * 180.0 / M_PI;
-    t.vel_i_term_deg = p_->velocity_i_rad * 180.0 / M_PI;
+    t.vel_i_term_deg = p_->com_trim_rad * 180.0 / M_PI;
     t.measured_vel_sps = p_->measured_velocity_sps;
     t.pitch_error_deg = (p_->pitch_setpoint_rad - pitch_rad) * 180.0 / M_PI;
     t.pitch_sp_deg = p_->pitch_setpoint_rad * 180.0 / M_PI;
@@ -172,14 +166,21 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
   const double pitch_limit_rad = ConfigPid::pitch_max_deg * M_PI / 180.0;
   const double fallover_limit_rad =
       std::max(Config::max_tilt_rad, pitch_limit_rad + kFalloverMarginRad);
+  const JoyCmd joy = p_->latest_joy;
+  const double requested_velocity_sps =
+      std::isfinite(joy.forward) ? joystick_to_sps(joy.forward) : 0.0;
+  const bool fallover_recovery_requested = requested_velocity_sps != 0.0;
 
   uint32_t fault_flags = ControllerFaultNone;
   if (imu_age_s > kMaxImuAgeS) fault_flags |= ControllerFaultStaleImu;
   if (imu_age_s < -kMaxImuFutureS) fault_flags |= ControllerFaultFutureImu;
-  if (p_->balance_armed && std::abs(pitch_rad) > fallover_limit_rad) {
+  if (p_->balance_armed && !fallover_recovery_requested &&
+      std::abs(pitch_rad) > fallover_limit_rad) {
     p_->balance_armed = false;
   }
-  if (!p_->balance_armed && std::abs(pitch_rad) <= kFalloverRearmPitchRad &&
+  const bool rearm_attitude_allowed =
+      fallover_recovery_requested || std::abs(pitch_rad) <= kFalloverRearmPitchRad;
+  if (!p_->balance_armed && rearm_attitude_allowed &&
       std::abs(pitch_rate_rad_s) <= kFalloverRearmRateRadS) {
     p_->balance_armed = true;
   }
@@ -198,18 +199,6 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
       p_->command_saturated || p_->controller_saturation_flags != ControllerSaturationNone;
   p_->controller_saturation_flags = ControllerSaturationNone;
 
-  const JoyCmd joy = p_->latest_joy;
-  const double requested_velocity_sps = joystick_to_sps(joy.forward);
-  const bool com_trim_settled =
-      requested_velocity_sps == 0.0 && p_->target_velocity_sps == 0.0 &&
-      std::abs(p_->measured_velocity_sps) <= kComTrimLearningMaxVelocitySps &&
-      std::abs(pitch_rad) <= kComTrimLearningMaxPitchRad &&
-      std::abs(pitch_rate_rad_s) <= kComTrimLearningMaxPitchRateRadS &&
-      !controller_was_saturated;
-  p_->com_trim_settled_s =
-      com_trim_settled ? std::min(p_->com_trim_settled_s + dt, kComTrimSettledDwellS)
-                       : 0.0;
-
   p_->outer_elapsed_s += dt;
   if (p_->outer_elapsed_s + 1e-12 >= kVelocityLoopPeriodS) {
     const double outer_dt = p_->outer_elapsed_s;
@@ -224,21 +213,23 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
     p_->target_acceleration_sps2 =
         (p_->target_velocity_sps - previous_target_velocity_sps) / outer_dt;
     p_->vel_error_sps = p_->target_velocity_sps - p_->measured_velocity_sps;
-    // Wheel rate is the actuator input. A positive velocity error therefore
-    // needs a negative pitch reference so the balance correction reinforces
-    // the requested wheel motion instead of cancelling it.
-    p_->velocity_p_rad = -ConfigPid::velocity_P * p_->vel_error_sps * M_PI / 180.0;
+    p_->velocity_p_rad = ConfigPid::velocity_P * p_->vel_error_sps * M_PI / 180.0;
 
+    // This integral is only the stationary physical COM trim. At neutral it
+    // must remain active while correcting drift: qualifying it on already-low
+    // speed, pitch, or pitch rate creates a self-sustaining moving equilibrium.
+    // Command tracking has no integral state, so motion cannot become delayed
+    // stored pitch.
+    const bool com_trim_learning = requested_velocity_sps == 0.0 &&
+                                   p_->target_velocity_sps == 0.0 &&
+                                   !controller_was_saturated;
     const double integral_limit_rad = ConfigPid::velocity_I_limit_deg * M_PI / 180.0;
-    // This is only the stationary physical COM trim. Command tracking has no
-    // integral state, so motion cannot become delayed stored pitch.
-    const bool com_trim_learning = p_->com_trim_settled_s >= kComTrimSettledDwellS;
     const double integral_delta =
         com_trim_learning
-            ? -ConfigPid::velocity_I * p_->vel_error_sps * outer_dt * M_PI / 180.0
+            ? ConfigPid::velocity_I * p_->vel_error_sps * outer_dt * M_PI / 180.0
             : 0.0;
     const double candidate_i =
-        std::clamp(p_->velocity_i_rad + integral_delta, -integral_limit_rad, integral_limit_rad);
+        std::clamp(p_->com_trim_rad + integral_delta, -integral_limit_rad, integral_limit_rad);
     p_->acceleration_pitch_rad = std::clamp(
         -std::atan2(p_->target_acceleration_sps2 * Config::meters_per_step, Config::g0),
         -kMaxAccelerationPitchRad, kMaxAccelerationPitchRad);
@@ -246,13 +237,13 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
         p_->acceleration_pitch_rad + p_->velocity_p_rad + candidate_i;
     const bool pitch_would_saturate = std::abs(candidate_pitch) > pitch_limit_rad;
     if (com_trim_learning && !pitch_would_saturate) {
-      p_->velocity_i_rad = candidate_i;
+      p_->com_trim_rad = candidate_i;
     }
     p_->pitch_setpoint_rad = std::clamp(
-        p_->acceleration_pitch_rad + p_->velocity_p_rad + p_->velocity_i_rad,
+        p_->acceleration_pitch_rad + p_->velocity_p_rad + p_->com_trim_rad,
         -pitch_limit_rad, pitch_limit_rad);
   }
-  if (std::abs(p_->acceleration_pitch_rad + p_->velocity_p_rad + p_->velocity_i_rad) >
+  if (std::abs(p_->acceleration_pitch_rad + p_->velocity_p_rad + p_->com_trim_rad) >
       pitch_limit_rad) {
     p_->controller_saturation_flags |= ControllerSaturationPitch;
   }

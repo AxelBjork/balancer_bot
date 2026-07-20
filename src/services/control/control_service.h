@@ -18,7 +18,7 @@ inline constexpr char kControlServiceDoc[] =
     "A ramped joystick command supplies a governed wheel-speed reference. At 50 Hz, velocity "
     "error and target acceleration form the pitch reference, while a bounded integral term learns "
     "only the stationary center-of-mass trim:\n\n"
-    "$$ \\theta_{sp} = -k_{vp}(v_{ref} - v) "
+    "$$ \\theta_{sp} = k_{vp}(v_{ref} - v) "
     "- \\operatorname{atan2}(a_{ref}s_m,g) + \\theta_{COM} $$\n\n"
     "$$ \\omega_{sp} = k_{pitch}(\\theta_{sp} - \\theta) - k_{pitch\\_rate}\\dot{\\theta} $$\n\n"
     "The governed speed is fed forward and the unchanged pitch-rate controller adds its balance "

@@ -39,7 +39,6 @@ function(add_balancer_common_target)
   set(oneValueArgs SDL_LIBS PIGPIOD_LIB)
   cmake_parse_arguments(BAL "${options}" "${oneValueArgs}" "" ${ARGN})
 
-  set(src_dir ${CMAKE_SOURCE_DIR}/src/balance_controller)
   set(control_dir ${CMAKE_SOURCE_DIR}/src/services/control)
   set(imu_dir ${CMAKE_SOURCE_DIR}/src/services/imu)
   set(input_dir ${CMAKE_SOURCE_DIR}/src/services/input)
@@ -61,7 +60,6 @@ function(add_balancer_common_target)
 
   target_include_directories(balancer_common PUBLIC
     ${CMAKE_SOURCE_DIR}/src
-    ${src_dir}
     ${control_dir}
     ${imu_dir}
     ${input_dir}
@@ -81,7 +79,7 @@ function(add_balancer_common_target)
 
   if (BAL_USE_PIGPIO_STUB)
     target_include_directories(balancer_common PUBLIC
-      ${src_dir}/stubs
+      ${CMAKE_SOURCE_DIR}/tests/stubs
       ${CMAKE_SOURCE_DIR}/PX4-Autopilot/src/lib/rate_control
       ${CMAKE_SOURCE_DIR}/PX4-Autopilot/src/lib/matrix
       ${CMAKE_SOURCE_DIR}/PX4-Autopilot/src/lib

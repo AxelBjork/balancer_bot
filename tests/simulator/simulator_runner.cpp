@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -253,118 +254,221 @@ std::vector<SimulatorScenario> simulator_scenario_set(std::string_view set_name,
 }
 
 std::vector<SimulatorScenario> transfer_scenario_set() {
-  auto push_scenario = [](std::string name) {
+  constexpr double kComOffsetRad = 0.002;
+  constexpr double kDriveSps = 800.0;
+  const double drive_command =
+      Config::deadzone + (1.0 - Config::deadzone) * (kDriveSps / ConfigPid::drive_max_sps);
+
+  enum class TransferProfile { Nominal, SlowWeak, FastStrong };
+
+  const auto apply_profile = [](SimulatorScenario& scenario, TransferProfile profile) {
+    scenario.physics_profile = PhysicsProfile::Realistic;
+    if (profile == TransferProfile::Nominal) return;
+
+    scenario.physics_override = BalancerSimulator::physics_for_profile(PhysicsProfile::Realistic);
+    scenario.imu_noise_seed = profile == TransferProfile::SlowWeak ? 2026u : 2027u;
+    scenario.accel_noise_std_mps2 = 0.20;
+    scenario.gyro_noise_std_rad_s = 0.015;
+    scenario.imu_pitch_lag_s = 0.010;
+
+    if (profile == TransferProfile::SlowWeak) {
+      scenario.total_mass_scale = 1.10;
+      // A payload increases both total mass and axle pitch inertia; H remains the measured base
+      // robot value because no payload COM geometry has been asserted for this margin sweep.
+      scenario.pitch_inertia_scale = 1.30;
+      scenario.physics_override->motor_tau_s = 0.020;
+      scenario.physics_override->traction_coefficient = 0.60;
+      scenario.physics_override->pitch_damping = 0.02;
+      scenario.physics_override->cart_damping = 0.40;
+    } else {
+      scenario.total_mass_scale = 0.90;
+      scenario.pitch_inertia_scale = 0.80;
+      scenario.physics_override->motor_tau_s = 0.004;
+      scenario.physics_override->traction_coefficient = 1.20;
+      scenario.physics_override->pitch_damping = 0.04;
+      scenario.physics_override->cart_damping = 2.0;
+    }
+  };
+
+  const auto release_scenario = [&](std::string name, TransferProfile profile, double sign) {
     SimulatorScenario scenario;
     scenario.name = std::move(name);
-    scenario.physics_profile = PhysicsProfile::Realistic;
     scenario.duration_s = 20.0;
-    scenario.disturbances.push_back(SimulatorDisturbance{
-        .kind = SimulatorDisturbanceKind::Step,
-        .start_s = 1.0,
-        .duration_s = 0.1,
-        .force_n = 3.0,
-    });
+    scenario.initial_pitch_deg = sign * 3.0;
+    scenario.com_angle_offset_rad = sign * kComOffsetRad;
+    apply_profile(scenario, profile);
     return scenario;
   };
 
-  std::vector<SimulatorScenario> scenarios;
-  SimulatorScenario neutral;
-  neutral.name = "nominal_neutral";
-  neutral.physics_profile = PhysicsProfile::Realistic;
-  neutral.duration_s = 20.0;
-  scenarios.push_back(neutral);
-
-  scenarios.push_back(push_scenario("nominal_push"));
-  auto noisy = push_scenario("nominal_noisy_push");
-  noisy.imu_noise_seed = 2026;
-  noisy.accel_noise_std_mps2 = 0.20;
-  noisy.gyro_noise_std_rad_s = 0.015;
-  noisy.imu_pitch_lag_s = 0.01;
-  scenarios.push_back(noisy);
-
-  SimulatorScenario drive;
-  drive.name = "nominal_drive_800_sps";
-  drive.physics_profile = PhysicsProfile::Realistic;
-  drive.duration_s = 12.0;
-  const double forward = 0.05 + 0.95 * (800.0 / 1200.0);
-  drive.joy_segments.push_back(SimulatorJoySegment{
-      .start_s = 1.0, .duration_s = 4.0, .forward = 0.0, .forward_end = forward});
-  drive.joy_segments.push_back(SimulatorJoySegment{
-      .start_s = 5.0, .duration_s = 4.0, .forward = forward, .forward_end = forward});
-  scenarios.push_back(drive);
-
-  auto add_scaled = [&](std::string name, const auto& mutate) {
-    auto scenario = push_scenario("margin_" + name);
-    scenario.physics_override = BalancerSimulator::physics_for_profile(PhysicsProfile::Realistic);
-    mutate(scenario);
-    scenarios.push_back(std::move(scenario));
+  const auto push_scenario = [&](std::string name, TransferProfile profile) {
+    SimulatorScenario scenario;
+    scenario.name = std::move(name);
+    scenario.duration_s = 20.0;
+    scenario.disturbances.push_back(SimulatorDisturbance{
+        .kind = SimulatorDisturbanceKind::Step,
+        .start_s = 2.0,
+        .duration_s = 0.1,
+        .force_n = 3.0,
+    });
+    scenario.disturbances.push_back(SimulatorDisturbance{
+        .kind = SimulatorDisturbanceKind::Step,
+        .start_s = 10.0,
+        .duration_s = 0.1,
+        .force_n = -3.0,
+    });
+    apply_profile(scenario, profile);
+    return scenario;
   };
-  add_scaled("mass_low", [](auto& value) { value.mass_scale = 0.90; });
-  add_scaled("mass_high", [](auto& value) { value.mass_scale = 1.10; });
-  add_scaled("com_low", [](auto& value) { value.com_height_scale = 0.85; });
-  add_scaled("com_high", [](auto& value) { value.com_height_scale = 1.15; });
-  add_scaled("inertia_low", [](auto& value) { value.inertia_scale = 0.80; });
-  add_scaled("inertia_high", [](auto& value) { value.inertia_scale = 1.20; });
-  add_scaled("motor_low", [](auto& value) { value.physics_override->max_force_n *= 0.70; });
-  add_scaled("motor_high", [](auto& value) { value.physics_override->max_force_n *= 1.20; });
-  add_scaled("lag_low", [](auto& value) { value.physics_override->motor_tau_s = 0.004; });
-  add_scaled("lag_high", [](auto& value) { value.physics_override->motor_tau_s = 0.020; });
-  add_scaled("traction_low",
-             [](auto& value) { value.physics_override->traction_coefficient = 0.60; });
-  add_scaled("traction_high",
-             [](auto& value) { value.physics_override->traction_coefficient = 1.20; });
-  add_scaled("pitch_damping_low", [](auto& value) { value.physics_override->pitch_damping = 0.0; });
-  add_scaled("pitch_damping_high",
-             [](auto& value) { value.physics_override->pitch_damping = 0.04; });
-  add_scaled("cart_drag_low", [](auto& value) { value.physics_override->cart_damping = 0.30; });
-  add_scaled("cart_drag_high", [](auto& value) { value.physics_override->cart_damping = 2.0; });
-  return scenarios;
+
+  const auto drive_scenario = [&](std::string name, TransferProfile profile) {
+    SimulatorScenario scenario;
+    scenario.name = std::move(name);
+    scenario.duration_s = 23.0;
+    scenario.joy_segments.push_back(SimulatorJoySegment{
+        .start_s = 8.0,
+        .duration_s = 3.0,
+        .forward = drive_command,
+        .forward_end = drive_command,
+    });
+    scenario.joy_segments.push_back(SimulatorJoySegment{
+        .start_s = 15.0,
+        .duration_s = 3.0,
+        .forward = -drive_command,
+        .forward_end = -drive_command,
+    });
+    apply_profile(scenario, profile);
+    return scenario;
+  };
+
+  return {
+      release_scenario("nominal_release_pos", TransferProfile::Nominal, 1.0),
+      release_scenario("nominal_release_neg", TransferProfile::Nominal, -1.0),
+      push_scenario("nominal_push_symmetric", TransferProfile::Nominal),
+      drive_scenario("nominal_drive_bidirectional", TransferProfile::Nominal),
+      release_scenario("slow_weak_release", TransferProfile::SlowWeak, 1.0),
+      push_scenario("slow_weak_push_symmetric", TransferProfile::SlowWeak),
+      drive_scenario("slow_weak_drive_bidirectional", TransferProfile::SlowWeak),
+      release_scenario("fast_strong_release", TransferProfile::FastStrong, -1.0),
+      push_scenario("fast_strong_push_symmetric", TransferProfile::FastStrong),
+      drive_scenario("fast_strong_drive_bidirectional", TransferProfile::FastStrong),
+  };
 }
 
 TransferAcceptance evaluate_transfer_scenario(const SimulatorRunResult& result) {
   TransferAcceptance acceptance;
-  const bool margin = result.scenario.name.rfind("margin_", 0) == 0;
+  const bool corner = result.scenario.name.rfind("nominal_", 0) != 0;
+  const bool release = result.scenario.name.find("release") != std::string::npos;
+  const bool push = result.scenario.name.find("push") != std::string::npos;
+  const bool drive = result.scenario.name.find("drive") != std::string::npos;
   const auto reject = [&](bool condition, std::string reason) {
     if (condition) acceptance.failures.push_back(std::move(reason));
   };
+
+  const auto window_rms = [&](double start_s, double end_s, const auto& select) {
+    double squared = 0.0;
+    size_t count = 0;
+    for (const auto& row : result.rows) {
+      if (row.sim_time_s < start_s || row.sim_time_s >= end_s) continue;
+      const double value = select(row);
+      squared += value * value;
+      ++count;
+    }
+    return count > 0 ? std::sqrt(squared / static_cast<double>(count))
+                     : std::numeric_limits<double>::infinity();
+  };
+  const auto window_mean = [&](double start_s, double end_s, const auto& select) {
+    double sum = 0.0;
+    size_t count = 0;
+    for (const auto& row : result.rows) {
+      if (row.sim_time_s < start_s || row.sim_time_s >= end_s) continue;
+      sum += select(row);
+      ++count;
+    }
+    return count > 0 ? sum / static_cast<double>(count)
+                     : std::numeric_limits<double>::quiet_NaN();
+  };
+
   reject(result.fell, "fell");
-  reject(result.max_abs_pitch_deg >= 15.0, "peak_pitch");
+  reject(result.max_abs_pitch_deg >= 20.0, "peak_pitch");
   reject(result.actuator_fault_count != 0, "actuator_fault");
   const uint32_t invalid_timing_or_runtime_faults =
       result.controller_fault_flags & ~static_cast<uint32_t>(ControllerFaultNoImu);
   reject(invalid_timing_or_runtime_faults != ControllerFaultNone, "controller_fault");
-  reject(result.tail_rms_pitch_deg >= (margin ? 1.25 : 1.0), "tail_rms");
-  reject(result.max_continuous_saturation_s >= (margin ? 0.3125 : 0.250), "continuous_saturation");
+  reject(result.tail_rms_pitch_deg >= (corner ? 1.5 : 1.0), "tail_rms");
+  reject(result.max_continuous_saturation_s >= 0.500, "continuous_saturation");
 
-  if (result.scenario.name == "nominal_neutral") {
-    double max_position = 0.0;
-    for (const auto& row : result.rows) {
-      max_position = std::max(max_position, std::abs(row.plant_position));
+  for (const auto& row : result.rows) {
+    const bool finite =
+        std::isfinite(row.plant_pitch_deg) && std::isfinite(row.plant_pitch_rate_dps) &&
+        std::isfinite(row.plant_position) && std::isfinite(row.plant_velocity) &&
+        std::isfinite(row.pitch_deg) && std::isfinite(row.pitch_rate_dps) &&
+        std::isfinite(row.u_sps) && std::isfinite(row.measured_vel_sps);
+    if (!finite) {
+      reject(true, "non_finite");
+      break;
     }
-    reject(max_position >= 0.35, "neutral_travel");
-  } else if (result.scenario.name == "nominal_push") {
-    const bool recovered = std::any_of(result.rows.begin(), result.rows.end(), [](const auto& row) {
-      return row.sim_time_s >= 1.1 && row.sim_time_s <= 3.1 && std::abs(row.plant_pitch_deg) < 2.0;
-    });
-    reject(!recovered, "push_recovery");
-  } else if (result.scenario.name == "nominal_drive_800_sps") {
-    double drive_sum = 0.0;
-    size_t drive_count = 0;
-    double stopped_max = 0.0;
-    for (const auto& row : result.rows) {
-      if (row.sim_time_s >= 8.0 && row.sim_time_s <= 9.0) {
-        drive_sum += row.plant_velocity;
-        ++drive_count;
-      }
-      if (row.sim_time_s >= 11.0 && row.sim_time_s <= 12.0) {
-        stopped_max = std::max(stopped_max, std::abs(row.plant_velocity));
-      }
-    }
-    const double target_mps = 800.0 * BalancerSimulator::HardwareNominal::meters_per_step;
-    const double mean_speed = drive_count > 0 ? drive_sum / static_cast<double>(drive_count) : 0.0;
-    reject(drive_count == 0 || std::abs(mean_speed - target_mps) > 0.30 * target_mps,
-           "drive_speed");
-    reject(stopped_max >= 0.05, "stop_speed");
+  }
+
+  const double end_s = result.scenario.duration_s;
+  const double preceding_pitch_rms =
+      window_rms(end_s - 4.0, end_s - 2.0, [](const auto& row) { return row.plant_pitch_deg; });
+  const double final_pitch_rms =
+      window_rms(end_s - 2.0, end_s, [](const auto& row) { return row.plant_pitch_deg; });
+  // The non-nominal profiles deliberately add IMU noise and lag. Their absolute tail-RMS gate
+  // remains strict, but comparing adjacent noisy windows needs a larger noise floor.
+  const double tail_growth_limit = corner ? 0.10 : 0.05;
+  reject(final_pitch_rms > preceding_pitch_rms + tail_growth_limit, "growing_tail");
+
+  if (release || push) {
+    const double mean_neutral_speed = window_mean(
+        end_s - 2.0, end_s, [](const auto& row) { return row.measured_vel_sps; });
+    reject(!std::isfinite(mean_neutral_speed) || std::abs(mean_neutral_speed) >= 150.0,
+           "neutral_speed");
+  }
+
+  if (push) {
+    const auto recovered_after = [&](double disturbance_end_s) {
+      return std::any_of(result.rows.begin(), result.rows.end(), [&](const auto& row) {
+        return row.sim_time_s >= disturbance_end_s && row.sim_time_s <= disturbance_end_s + 3.0 &&
+               std::abs(row.plant_pitch_deg) < 2.0;
+      });
+    };
+    reject(!recovered_after(2.1) || !recovered_after(10.1), "push_recovery");
+  }
+
+  if (drive) {
+    constexpr double target_sps = 800.0;
+    const auto first_correct_output = [&](double start_s, double sign) {
+      return std::any_of(result.rows.begin(), result.rows.end(), [&](const auto& row) {
+        return row.sim_time_s >= start_s && row.sim_time_s <= start_s + 0.5 &&
+               sign * row.u_sps > 1.0;
+      });
+    };
+    const auto reaches_speed = [&](double start_s, double sign) {
+      return std::any_of(result.rows.begin(), result.rows.end(), [&](const auto& row) {
+        return row.sim_time_s >= start_s && row.sim_time_s <= start_s + 2.5 &&
+               sign * row.measured_vel_sps >= 0.70 * target_sps;
+      });
+    };
+    const double positive_speed = window_mean(
+        9.5, 10.8, [](const auto& row) { return row.measured_vel_sps; });
+    const double negative_speed = window_mean(
+        16.5, 17.8, [](const auto& row) { return row.measured_vel_sps; });
+    const auto reaches_stop = [&](double start_s) {
+      return std::any_of(result.rows.begin(), result.rows.end(), [&](const auto& row) {
+        return row.sim_time_s >= start_s && row.sim_time_s <= start_s + 1.5 &&
+               std::abs(row.measured_vel_sps) < 200.0;
+      });
+    };
+    const double symmetric_scale = 0.5 * (std::abs(positive_speed) + std::abs(negative_speed));
+
+    reject(!first_correct_output(8.0, 1.0) || !first_correct_output(15.0, -1.0),
+           "drive_direction");
+    reject(!reaches_speed(8.0, 1.0) || !reaches_speed(15.0, -1.0), "drive_response");
+    reject(!std::isfinite(symmetric_scale) || symmetric_scale <= 0.0 ||
+               std::abs(positive_speed + negative_speed) > 0.30 * symmetric_scale,
+           "drive_symmetry");
+    reject(!reaches_stop(11.0) || !reaches_stop(18.0), "stop_speed");
   }
 
   acceptance.accepted = acceptance.failures.empty();

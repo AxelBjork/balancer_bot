@@ -113,8 +113,6 @@ else()
     endif()
   endif()
 endif()
-set(SRC_DIR ${CMAKE_SOURCE_DIR}/src/balance_controller)
-
 # ================================================================
 #                       Tests (default ON)
 # ================================================================
@@ -142,7 +140,7 @@ if (BUILD_TESTS)
     SDL_LIBS "${SDL2_LIBS}"
   )
 
-  set(TEST_DIR ${CMAKE_SOURCE_DIR}/src/balance_controller/test)
+  set(TEST_DIR ${CMAKE_SOURCE_DIR}/tests)
   add_library(balancer_sim_support STATIC
     ${TEST_DIR}/simulator/balancer_simulator.cpp
     ${TEST_DIR}/simulator/simulator_engine.cpp
@@ -163,7 +161,7 @@ if (BUILD_TESTS)
     ${TEST_DIR}/time_service_test.cpp
     ${TEST_DIR}/runtime_correctness_test.cpp
     ${TEST_DIR}/latency_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/balance_controller/stubs/pigpiod_stub.cpp
+    ${TEST_DIR}/stubs/pigpiod_stub.cpp
   )
 
   target_compile_definitions(balancer_tests PRIVATE
@@ -183,8 +181,8 @@ if (BUILD_TESTS)
 
   # 4) balancer_simulator (standalone sim)
   add_executable(balancer_simulator
-    ${CMAKE_SOURCE_DIR}/src/balance_controller/test/simulator_main.cpp
-    ${CMAKE_SOURCE_DIR}/src/balance_controller/stubs/pigpiod_stub.cpp
+    ${TEST_DIR}/simulator_main.cpp
+    ${TEST_DIR}/stubs/pigpiod_stub.cpp
   )
   target_compile_definitions(balancer_simulator PRIVATE
     BALANCER_REPO_ROOT="${CMAKE_SOURCE_DIR}"
@@ -192,20 +190,20 @@ if (BUILD_TESTS)
   target_link_libraries(balancer_simulator PRIVATE balancer_common balancer_sim_support)
 
   add_executable(balancer_plant_audit
-    ${CMAKE_SOURCE_DIR}/src/balance_controller/test/plant_audit_main.cpp
+    ${TEST_DIR}/plant_audit_main.cpp
   )
   target_link_libraries(balancer_plant_audit PRIVATE balancer_common balancer_sim_support)
 
   add_executable(balancer_simulator_tuner
-    ${CMAKE_SOURCE_DIR}/src/balance_controller/test/simulator_tuner_main.cpp
-    ${CMAKE_SOURCE_DIR}/src/balance_controller/stubs/pigpiod_stub.cpp
+    ${TEST_DIR}/simulator_tuner_main.cpp
+    ${TEST_DIR}/stubs/pigpiod_stub.cpp
   )
   target_link_libraries(balancer_simulator_tuner PRIVATE balancer_common balancer_sim_support)
 
   # 5) sil_app (Hardware-in-the-loop simulation/testing)
   add_executable(sil_app
-    ${CMAKE_SOURCE_DIR}/src/balance_controller/extras/sil_app.cpp
-    ${CMAKE_SOURCE_DIR}/src/balance_controller/stubs/pigpiod_stub.cpp # Stub pigpiod for SIL
+    ${TEST_DIR}/sil_app.cpp
+    ${TEST_DIR}/stubs/pigpiod_stub.cpp # Stub pigpiod for SIL
   )
   target_link_libraries(sil_app PRIVATE balancer_common)
   target_include_directories(sil_app PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -222,7 +220,7 @@ if (BUILD_TESTS)
 
     add_executable(balancer_fuzz_simulator_scenario EXCLUDE_FROM_ALL
       ${CMAKE_SOURCE_DIR}/tests/fuzz/simulator_scenario_fuzz.cpp
-      ${CMAKE_SOURCE_DIR}/src/balance_controller/stubs/pigpiod_stub.cpp
+      ${TEST_DIR}/stubs/pigpiod_stub.cpp
     )
     target_compile_definitions(balancer_fuzz_simulator_scenario PRIVATE
       BALANCER_REPO_ROOT="${CMAKE_SOURCE_DIR}"
@@ -235,7 +233,7 @@ if (BUILD_TESTS)
 
     add_executable(balancer_fuzz_simulator_stability EXCLUDE_FROM_ALL
       ${CMAKE_SOURCE_DIR}/tests/fuzz/simulator_stability_fuzz.cpp
-      ${CMAKE_SOURCE_DIR}/src/balance_controller/stubs/pigpiod_stub.cpp
+      ${TEST_DIR}/stubs/pigpiod_stub.cpp
     )
     target_compile_definitions(balancer_fuzz_simulator_stability PRIVATE
       BALANCER_REPO_ROOT="${CMAKE_SOURCE_DIR}"
@@ -276,14 +274,6 @@ else()
     PIGPIOD_LIB "${PIGPIOD_LIB}"
   )
 
-  add_executable(imu_demo
-    ${CMAKE_SOURCE_DIR}/src/balance_controller/extras/imu_demo.cpp
-  )
-
-  target_link_libraries(imu_demo
-  PRIVATE balancer_common
-  )
-
 endif()
 
 # ============================================================
@@ -307,7 +297,6 @@ if(NOT BUILD_TESTS)
   enable_pi_optimization(balancer_pi)
   
   target_include_directories(balancer_pi PRIVATE
-    ${CMAKE_SOURCE_DIR}/src/balance_controller
     ${SDL2_INCS}
   )
   

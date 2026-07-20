@@ -11,7 +11,9 @@ enum class PhysicsProfile {
 };
 
 struct SimulatorPhysics {
-  double max_force_n = 12.0;
+  // Aggregate zero-speed tangential force from both motors at the wheel rim.
+  // The torque-speed envelope reduces this ideal stall-force value with speed.
+  double max_force_n = 22.5;
   double no_load_speed_mps = 1.2;
   double traction_coefficient = 1.0;
   double motor_velocity_damping = 8.0;
@@ -29,9 +31,8 @@ struct SimulatorConfig {
   double initial_pitch_deg = 2.0;
   PhysicsProfile physics_profile = PhysicsProfile::Realistic;
   std::optional<SimulatorPhysics> physics_override;
-  double mass_scale = 1.0;
-  double com_height_scale = 1.0;
-  double inertia_scale = 1.0;
+  double total_mass_scale = 1.0;
+  double pitch_inertia_scale = 1.0;
   double imu_height_m = 0.06;
 };
 
@@ -65,7 +66,8 @@ class BalancerSimulator {
 
   struct LinearizedUprightModel {
     std::array<std::array<double, 4>, 4> A{};
-    std::array<double, 4> B{};
+    std::array<double, 4> horizontal_force_input{};
+    std::array<double, 4> motor_force_input{};
   };
 
   explicit BalancerSimulator(const Config& cfg = Config());
@@ -121,13 +123,16 @@ class BalancerSimulator {
  public:
   struct HardwareNominal {
     static constexpr double gravity = 9.81;
-    static constexpr double wheel_radius = 0.080 / 2.0;
-    static constexpr double robot_mass = 1.032;
-    static constexpr double wheel_mass = 0.050;
-    static constexpr double cart_mass = 2.0 * wheel_mass;
-    static constexpr double body_mass = robot_mass - cart_mass;
-    static constexpr double center_of_mass_height = 0.06;
-    static constexpr double I_com = 0.0034;
+    static constexpr double wheel_radius = 0.0824 / 2.0;
+    static constexpr double motor_count = 2.0;
+    static constexpr double motor_stall_torque_nm = 0.45;
+    static constexpr double combined_stall_force_n =
+        motor_count * motor_stall_torque_nm / wheel_radius;
+    static constexpr double total_mass_kg = 1.032;
+    // Measured complete-robot COM height is 60 mm above the axle: H = T * z_c.
+    static constexpr double first_mass_moment_kg_m = 0.06192;
+    // Provisional legacy-derived value; replace after the physical-pendulum measurement.
+    static constexpr double pitch_inertia_about_axle_kg_m2 = 0.0067552;
     static constexpr double steps_per_rev = 200.0 * 16.0;
     static constexpr double meters_per_step =
         2.0 * 3.14159265358979323846 * wheel_radius / steps_per_rev;

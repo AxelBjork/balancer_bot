@@ -74,7 +74,6 @@ add_custom_command(
         -std=c++26 -freflection -DREFLECT_DOCS
         -I${CMAKE_SOURCE_DIR}/src/messages
         -I${CMAKE_SOURCE_DIR}/src
-        -I${CMAKE_SOURCE_DIR}/src/balance_controller
         -I${CMAKE_SOURCE_DIR}/src/ipc
         -L/usr/local/gcc-16.1.0/lib64
         -Wl,-rpath,/usr/local/gcc-16.1.0/lib64

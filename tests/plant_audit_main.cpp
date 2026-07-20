@@ -24,9 +24,17 @@ Vec4 mat_vec(const Mat4& a, const Vec4& x) {
   return out;
 }
 
+Vec4 add(const Vec4& left, const Vec4& right) {
+  Vec4 out{};
+  for (std::size_t i = 0; i < out.size(); ++i) {
+    out[i] = left[i] + right[i];
+  }
+  return out;
+}
+
 int controllability_rank(const BalancerSimulator::LinearizedUprightModel& model) {
   std::array<Vec4, 4> columns{};
-  columns[0] = model.B;
+  columns[0] = add(model.horizontal_force_input, model.motor_force_input);
   for (std::size_t i = 1; i < columns.size(); ++i) {
     columns[i] = mat_vec(model.A, columns[i - 1]);
   }
@@ -106,8 +114,12 @@ void print_profile_audit(PhysicsProfile profile) {
   for (const auto& row : model.A) {
     print_row(row);
   }
-  std::cout << "Linearized B:\n";
-  print_row(model.B);
+  std::cout << "Linearized horizontal-force input:\n";
+  print_row(model.horizontal_force_input);
+  std::cout << "Linearized motor-force input:\n";
+  print_row(model.motor_force_input);
+  std::cout << "Quasi-static combined drive-force input:\n";
+  print_row(add(model.horizontal_force_input, model.motor_force_input));
   std::cout << "Controllability rank: " << rank << "/4\n";
   std::cout << "Candidate overdamped poles:\n";
   std::cout << "  [";

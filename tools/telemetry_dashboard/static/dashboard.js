@@ -1,33 +1,344 @@
 "use strict";
-const HISTORY_SECONDS = 15;
+
 const COLORS = ["#59b4ff", "#ffca58", "#8ee38e", "#ff8383", "#d795ff", "#74d7cf"];
-const groups = [
-  {id:"attitude", title:"Attitude (deg)", series:[
-    ["pitch", "Pitch", "attitude.pitch_deg"], ["fused", "Fused pitch", "attitude.fused_pitch_deg"], ["raw", "Raw accel pitch", "attitude.raw_acc_pitch_deg"], ["pitchSp", "Pitch setpoint", "attitude.pitch_setpoint_deg"]]},
-  {id:"rate", title:"Pitch rate (deg/s)", series:[
-    ["rate", "Measured", "rate.pitch_rate_dps"], ["filtered", "Filtered", "rate.filtered_pitch_rate_dps"], ["gyro", "Gyro", "rate.gyro_pitch_rate_dps"], ["rateSp", "Rate setpoint", "rate.rate_setpoint_dps"]]},
-  {id:"motion", title:"Velocity and motor speed (steps/s)", series:[
-    ["targetVel", "Target velocity", "motion.target_velocity_sps"], ["measuredVel", "Measured velocity", "motion.measured_velocity_sps"], ["leftTarget", "Left target", "motion.left_target_sps"], ["rightTarget", "Right target", "motion.right_target_sps"], ["leftApplied", "Left applied", "motion.left_applied_sps"], ["rightApplied", "Right applied", "motion.right_applied_sps"]]},
-  {id:"command", title:"Command and velocity error (steps/s)", series:[
-    ["command", "Command", "controller.command_sps"], ["velError", "Velocity error", "controller.velocity_error"]]},
-  {id:"controller", title:"Pitch and velocity-loop terms (deg)", series:[
-    ["pitchError", "Pitch error", "controller.pitch_error_deg"], ["velP", "Velocity P", "controller.velocity_p_term_deg"], ["velI", "Velocity I", "controller.velocity_i_term_deg"]]}
-];
-const state = {samples: [], paused:false, zoom:null, visible:JSON.parse(localStorage.getItem("balancer-visible") || "{}"), cards:null};
-function get(obj, path) { return path.split(".").reduce((v, k) => v == null ? undefined : v[k], obj); }
-function visible(group, name) { return state.visible[`${group.id}.${name}`] !== false; }
-function setVisible(group, name, value) { state.visible[`${group.id}.${name}`] = value; localStorage.setItem("balancer-visible", JSON.stringify(state.visible)); }
-function buildPlots() { const root = document.querySelector("#plots"), template = document.querySelector("#plot-template"); root.textContent = ""; groups.forEach(group => { const node = template.content.firstElementChild.cloneNode(true); node.dataset.group=group.id; node.querySelector("h2").textContent=group.title; const controls=node.querySelector(".series"); group.series.forEach(([id,label]) => { const check=document.createElement("input"); check.type="checkbox"; check.checked=visible(group,id); check.addEventListener("change",()=>{setVisible(group,id,check.checked); drawAll();}); const wrap=document.createElement("label"); wrap.style.color=COLORS[group.series.findIndex(x=>x[0]===id)%COLORS.length]; wrap.append(check, " "+label); controls.append(wrap); }); const canvas=node.querySelector("canvas"); canvas.addEventListener("wheel", event=>zoom(event)); canvas.addEventListener("mousemove", event=>inspect(event, group)); canvas.addEventListener("mousedown", event=>{canvas.dataset.dragX=event.offsetX;}); canvas.addEventListener("mouseup", event=>dragZoom(event)); canvas.addEventListener("mouseleave",()=>{node.querySelector(".cursor").textContent=""; delete canvas.dataset.dragX;}); root.append(node); }); }
-function range() { if (!state.samples.length) return [0, HISTORY_SECONDS]; const end=state.samples[state.samples.length-1].received_at, start=state.samples[0].received_at; return state.zoom || [Math.max(start,end-HISTORY_SECONDS),end]; }
-function draw(group) { const card=document.querySelector(`[data-group=${group.id}]`), canvas=card.querySelector("canvas"), ctx=canvas.getContext("2d"), rect=canvas.getBoundingClientRect(), dpr=devicePixelRatio||1; canvas.width=rect.width*dpr; canvas.height=rect.height*dpr; ctx.scale(dpr,dpr); const w=rect.width,h=rect.height, [start,end]=range(), data=state.samples.filter(s=>s.received_at>=start&&s.received_at<=end); ctx.clearRect(0,0,w,h); ctx.strokeStyle="#334555"; ctx.lineWidth=1; for(let i=1;i<5;i++){let y=i*h/5;ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke();} const active=group.series.filter(s=>visible(group,s[0])); let values=data.flatMap(sample=>active.map(s=>get(sample,s[2]))).filter(Number.isFinite); let min=values.length?Math.min(...values):-1,max=values.length?Math.max(...values):1; if(min===max){min-=1;max+=1;} const pad=(max-min)*.08;min-=pad;max+=pad; ctx.fillStyle="#9eabb9";ctx.font="11px system-ui";ctx.fillText(max.toFixed(2),3,12);ctx.fillText(min.toFixed(2),3,h-4); active.forEach((series,index)=>{ctx.strokeStyle=COLORS[index%COLORS.length];ctx.lineWidth=1.5;ctx.beginPath();let started=false;data.forEach(sample=>{const value=get(sample,series[2]);if(!Number.isFinite(value))return;const x=(sample.received_at-start)/(end-start||1)*w,y=h-(value-min)/(max-min)*h;if(!started){ctx.moveTo(x,y);started=true;}else ctx.lineTo(x,y);});ctx.stroke();}); }
-function drawAll(){groups.forEach(draw); document.querySelector("#samples").textContent=state.samples.length;}
-function zoom(event){event.preventDefault(); const [start,end]=range(), scale=event.deltaY<0?.75:1.35, mid=start+(end-start)*(event.offsetX/event.currentTarget.clientWidth), duration=Math.min(HISTORY_SECONDS,Math.max(.2,(end-start)*scale)); state.zoom=[mid-duration/2,mid+duration/2]; drawAll();}
-function dragZoom(event){const canvas=event.currentTarget,startX=Number(canvas.dataset.dragX);delete canvas.dataset.dragX;if(!Number.isFinite(startX)||Math.abs(event.offsetX-startX)<8)return;const [start,end]=range(), width=canvas.clientWidth;state.zoom=[start+(end-start)*Math.min(startX,event.offsetX)/width,start+(end-start)*Math.max(startX,event.offsetX)/width];drawAll();}
-function inspect(event, group){const [start,end]=range(), target=start+(end-start)*(event.offsetX/event.currentTarget.clientWidth), sample=state.samples.reduce((best,current)=>!best||Math.abs(current.received_at-target)<Math.abs(best.received_at-target)?current:best,null); if(!sample)return; event.currentTarget.closest(".plot-card").querySelector(".cursor").textContent=`t ${sample.t_sec.toFixed(3)}s`;}
-function updateCards(sample){const fields=[["Pitch",sample.attitude.pitch_deg,"deg"],["Rate",sample.rate.filtered_pitch_rate_dps,"dps"],["Command",sample.controller.command_sps,"sps"],["Velocity",sample.motion.measured_velocity_sps,"sps"],["IMU age",sample.timing.imu_age_ms,"ms"],["Feedback age",sample.timing.feedback_age_ms,"ms"]]; document.querySelector("#values").innerHTML=fields.map(([n,v,u])=>`<div>${n}<br><strong>${Number(v).toFixed(2)} ${u}</strong></div>`).join("");}
-function receive(sample){if(state.paused)return; state.samples.push(sample); const cutoff=sample.received_at-HISTORY_SECONDS;while(state.samples.length&&state.samples[0].received_at<cutoff)state.samples.shift(); updateCards(sample);drawAll();}
-function status(s){if(state.paused)return;const connected=document.querySelector("#connection");connected.textContent=s.connected?"Connected":"Disconnected";connected.className=s.connected?"online":"offline"; document.querySelector("#pi").textContent=s.pi;document.querySelector("#raw-rate").textContent=`${s.raw_packet_rate_hz} Hz`;document.querySelector("#display-rate").textContent=`${s.display_rate_hz} Hz`;document.querySelector("#last-packet").textContent=s.last_packet_age_ms==null?"—":`${s.last_packet_age_ms.toFixed(0)} ms`;document.querySelector("#malformed").textContent=s.malformed_packets; for(const [key,id] of [["controller","controller-flag"],["saturation","saturation-flag"],["actuator","actuator-flag"]])document.querySelector("#"+id).textContent="0x"+s.latched_flags[key].toString(16);}
-document.querySelector("#pause").onclick=event=>{state.paused=!state.paused;event.target.textContent=state.paused?"Resume":"Pause";};document.querySelector("#clear").onclick=()=>{state.samples=[];fetch("/api/clear-flags");drawAll();};document.querySelector("#reset").onclick=()=>{state.zoom=null;drawAll();};buildPlots();
-async function setupDeploy(){const info=await (await fetch("/api/deploy-info")).json();const panel=document.querySelector("#deploy-panel"),result=document.querySelector("#deploy-result");panel.hidden=false;const action=(path,label)=>async()=>{result.textContent=label+"…";const response=await fetch(path,{method:"POST"}),body=await response.json();result.textContent=body.ok?body.message:`Failed: ${body.error}`;};document.querySelector("#deploy-current").onclick=action("/api/deploy","Deploying");document.querySelector("#start-bot").onclick=action("/api/start","Starting");document.querySelector("#abort-bot").onclick=action("/api/abort","Aborting");if(!info.binary_exists)result.textContent=`Build missing: ${info.binary}`;}
-setupDeploy().catch(()=>{});
-const events=new EventSource("/api/stream");events.addEventListener("telemetry",e=>receive(JSON.parse(e.data)));events.addEventListener("status",e=>status(JSON.parse(e.data)));
+const LIVE_WINDOW_SECONDS = 30;
+const state = {
+  catalog: null,
+  charts: new Map(),
+  samples: [],
+  historySeconds: 600,
+  paused: false,
+  hidden: document.hidden,
+  events: null,
+  pending: null,
+  renderPending: false,
+  liveFollow: true,
+  rangeSeconds: LIVE_WINDOW_SECONDS,
+  xRange: null,
+  visible: JSON.parse(localStorage.getItem("balancer-visible") || "{}"),
+  syncing: false,
+};
+
+function get(obj, path) {
+  return path.split(".").reduce((value, key) => value == null ? undefined : value[key], obj);
+}
+
+function visible(group, id) {
+  return state.visible[`${group.id}.${id}`] !== false;
+}
+
+function setVisible(group, id, value) {
+  state.visible[`${group.id}.${id}`] = value;
+  localStorage.setItem("balancer-visible", JSON.stringify(state.visible));
+}
+
+function format(value) {
+  return Number.isFinite(value) ? Number(value).toFixed(2) : "—";
+}
+
+function retainedRange() {
+  if (!state.samples.length) return [0, LIVE_WINDOW_SECONDS];
+  return [state.samples[0].received_at, state.samples[state.samples.length - 1].received_at];
+}
+
+function currentRange() {
+  const [first, last] = retainedRange();
+  if (state.liveFollow) return [Math.max(first, last - state.rangeSeconds), last];
+  return state.xRange || [Math.max(first, last - state.rangeSeconds), last];
+}
+
+function clampRange(min, max) {
+  const [first, last] = retainedRange();
+  const available = Math.max(0.001, last - first);
+  const width = Math.min(available, Math.max(0.05, max - min));
+  const start = Math.max(first, Math.min(last - width, min));
+  return [start, start + width];
+}
+
+function chartData(group) {
+  const xs = state.samples.map(sample => sample.received_at);
+  return [xs, ...group.series.map(series => state.samples.map(sample => {
+    const value = get(sample, series[2]);
+    return Number.isFinite(value) ? value : null;
+  }))];
+}
+
+function updateViewState() {
+  const label = state.paused ? "Paused" : state.liveFollow ? "Live" : "Exploring history";
+  document.querySelector("#view-state").textContent = label;
+  document.querySelector("#pause").textContent = state.paused ? "Resume" : "Pause";
+  document.querySelectorAll("[data-range]").forEach(button => {
+    button.classList.toggle("active", state.liveFollow && Number(button.dataset.range) === state.rangeSeconds);
+  });
+}
+
+function renderLegend(group, chart) {
+  const card = chart.root.closest(".plot-card");
+  const index = chart.cursor.idx;
+  if (index == null || !state.samples[index]) {
+    card.querySelector(".cursor").textContent = "";
+    card.querySelector(".legend").textContent = "";
+    return;
+  }
+  const sample = state.samples[index];
+  card.querySelector(".cursor").textContent = `t ${format(sample.t_sec)} s`;
+  card.querySelector(".legend").textContent = group.series
+    .filter(series => visible(group, series[0]))
+    .map(series => `${series[1]} ${format(get(sample, series[2]))} ${group.unit}`)
+    .join(" · ");
+}
+
+function applyRange(min, max, {manual = true} = {}) {
+  const range = clampRange(min, max);
+  if (manual) {
+    state.liveFollow = false;
+    state.xRange = range;
+  }
+  state.syncing = true;
+  state.charts.forEach(({chart}) => chart.setScale("x", {min: range[0], max: range[1]}));
+  state.syncing = false;
+  updateViewState();
+}
+
+function updateCharts() {
+  const [start, end] = currentRange();
+  state.syncing = true;
+  state.charts.forEach(({group, chart}) => {
+    chart.setData(chartData(group));
+    chart.setScale("x", {min: start, max: end});
+  });
+  state.syncing = false;
+  document.querySelector("#samples").textContent = state.samples.length;
+}
+
+function scheduleRender() {
+  if (state.renderPending || state.hidden || state.paused) return;
+  state.renderPending = true;
+  requestAnimationFrame(() => {
+    state.renderPending = false;
+    updateCharts();
+  });
+}
+
+function queueSample(sample) {
+  state.pending = sample;
+  if (state.renderPending || state.hidden || state.paused) return;
+  state.renderPending = true;
+  requestAnimationFrame(() => {
+    state.renderPending = false;
+    const latest = state.pending;
+    state.pending = null;
+    if (latest) appendSample(latest);
+  });
+}
+
+function appendSample(sample) {
+  const previous = state.samples[state.samples.length - 1];
+  if (previous && sample.sequence <= previous.sequence) return;
+  state.samples.push(sample);
+  const cutoff = sample.received_at - state.historySeconds;
+  while (state.samples.length && state.samples[0].received_at < cutoff) state.samples.shift();
+  updateCards(sample);
+  updateCharts();
+}
+
+function updateCards(sample) {
+  const fields = [
+    ["Pitch", sample.attitude.pitch_deg, "deg"], ["Rate", sample.rate.filtered_pitch_rate_dps, "dps"],
+    ["Command", sample.controller.command_sps, "sps"], ["Velocity", sample.motion.measured_velocity_sps, "sps"],
+    ["IMU age", sample.timing.imu_age_ms, "ms"], ["Feedback age", sample.timing.feedback_age_ms, "ms"],
+  ];
+  document.querySelector("#values").innerHTML = fields
+    .map(([name, value, unit]) => `<div>${name}<br><strong>${format(value)} ${unit}</strong></div>`).join("");
+}
+
+function updateStatus(status) {
+  const connected = document.querySelector("#connection");
+  connected.textContent = status.connected ? "Connected" : "Disconnected";
+  connected.className = status.connected ? "online" : "offline";
+  document.querySelector("#pi").textContent = status.pi;
+  document.querySelector("#raw-rate").textContent = `${status.raw_packet_rate_hz} Hz`;
+  document.querySelector("#display-rate").textContent = `${status.display_rate_hz} Hz`;
+  document.querySelector("#last-packet").textContent = status.last_packet_age_ms == null ? "—" : `${status.last_packet_age_ms.toFixed(0)} ms`;
+  document.querySelector("#malformed").textContent = status.malformed_packets;
+  for (const [key, id] of [["controller", "controller-flag"], ["saturation", "saturation-flag"], ["actuator", "actuator-flag"]]) {
+    document.querySelector(`#${id}`).textContent = `0x${status.latched_flags[key].toString(16)}`;
+  }
+}
+
+function attachNavigation(chart) {
+  chart.root.addEventListener("wheel", event => {
+    event.preventDefault();
+    const [start, end] = currentRange();
+    const rect = chart.root.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+    const pivot = start + (end - start) * ratio;
+    const width = (end - start) * (event.deltaY < 0 ? 0.75 : 1.35);
+    applyRange(pivot - width * ratio, pivot + width * (1 - ratio));
+  }, {passive: false});
+
+  let pan = null;
+  chart.root.addEventListener("pointerdown", event => {
+    if (event.button !== 1 && !event.shiftKey) return;
+    event.preventDefault();
+    chart.root.setPointerCapture(event.pointerId);
+    pan = {x: event.clientX, range: currentRange()};
+  });
+  chart.root.addEventListener("pointermove", event => {
+    if (!pan) return;
+    const width = chart.root.getBoundingClientRect().width || 1;
+    const shift = (event.clientX - pan.x) / width * (pan.range[1] - pan.range[0]);
+    applyRange(pan.range[0] - shift, pan.range[1] - shift);
+  });
+  chart.root.addEventListener("pointerup", () => { pan = null; });
+  chart.root.addEventListener("dblclick", () => setLiveFollow());
+}
+
+function buildPlots() {
+  const root = document.querySelector("#plots");
+  const template = document.querySelector("#plot-template");
+  root.textContent = "";
+  state.catalog.groups.forEach(group => {
+    const node = template.content.firstElementChild.cloneNode(true);
+    node.dataset.group = group.id;
+    node.querySelector("h2").textContent = `${group.title} (${group.unit})`;
+    const controls = node.querySelector(".series");
+    group.series.forEach(([id, label], index) => {
+      const check = document.createElement("input");
+      check.type = "checkbox";
+      check.checked = visible(group, id);
+      const wrap = document.createElement("label");
+      wrap.style.color = COLORS[index % COLORS.length];
+      wrap.append(check, ` ${label}`);
+      check.addEventListener("change", () => {
+        setVisible(group, id, check.checked);
+        state.charts.get(group.id).chart.setSeries(index + 1, {show: check.checked});
+      });
+      controls.append(wrap);
+    });
+    root.append(node);
+    const chart = new uPlot({
+      width: node.querySelector(".chart").clientWidth || 420,
+      height: 260,
+      scales: {x: {time: false}, y: {auto: true}},
+      axes: [
+        {stroke: "#9eabb9", grid: {stroke: "#263342"}, values: (_u, values) => {
+          const origin = state.samples[0] ? state.samples[0].received_at : 0;
+          return values.map(value => `+${(value - origin).toFixed(1)} s`);
+        }},
+        {stroke: "#9eabb9", grid: {stroke: "#263342"}, label: group.unit},
+      ],
+      series: [
+        {}, ...group.series.map((series, index) => ({label: series[1], stroke: COLORS[index % COLORS.length], width: 1.5, show: visible(group, series[0])})),
+      ],
+      cursor: {sync: {key: "balancer-telemetry", setScale: false}, drag: {x: true, y: false, setScale: true}},
+      hooks: {
+        setCursor: [plot => renderLegend(group, plot)],
+        setScale: [plot => {
+          if (!state.syncing && plot.scales.x.min != null) applyRange(plot.scales.x.min, plot.scales.x.max);
+        }],
+      },
+    }, chartData(group), node.querySelector(".chart"));
+    attachNavigation(chart);
+    state.charts.set(group.id, {group, chart});
+  });
+  window.addEventListener("resize", () => state.charts.forEach(({chart}) => chart.setSize({width: chart.root.parentElement.clientWidth, height: 260})));
+}
+
+async function loadHistory(seconds = state.rangeSeconds) {
+  const history = await (await fetch(`/api/history?seconds=${encodeURIComponent(seconds)}`)).json();
+  state.historySeconds = history.history_seconds;
+  state.samples = history.samples;
+  if (state.samples.length) updateCards(state.samples[state.samples.length - 1]);
+  if (!state.hidden && !state.paused) updateCharts();
+}
+
+function closeStream() {
+  if (state.events) state.events.close();
+  state.events = null;
+}
+
+function openStream() {
+  if (state.events || state.paused || state.hidden) return;
+  state.events = new EventSource("/api/stream");
+  state.events.addEventListener("telemetry", event => queueSample(JSON.parse(event.data)));
+  state.events.addEventListener("status", event => updateStatus(JSON.parse(event.data)));
+}
+
+async function setPaused(paused) {
+  state.paused = paused;
+  if (paused) closeStream();
+  else {
+    await loadHistory(state.rangeSeconds);
+    setLiveFollow();
+    openStream();
+  }
+  updateViewState();
+}
+
+function setLiveFollow(seconds = state.rangeSeconds) {
+  state.rangeSeconds = seconds;
+  state.liveFollow = true;
+  state.xRange = null;
+  updateCharts();
+  updateViewState();
+}
+
+async function selectRange(seconds) {
+  state.rangeSeconds = seconds;
+  await loadHistory(seconds);
+  setLiveFollow(seconds);
+}
+
+async function setupDeploy() {
+  const info = await (await fetch("/api/deploy-info")).json();
+  const panel = document.querySelector("#deploy-panel");
+  const result = document.querySelector("#deploy-result");
+  if (!info.enabled) {
+    panel.hidden = true;
+    return;
+  }
+  panel.hidden = false;
+  const action = (path, label, afterSuccess) => async () => {
+    result.textContent = `${label}…`;
+    const response = await fetch(path, {method: "POST"});
+    const body = await response.json();
+    result.textContent = body.ok ? body.message : `Failed: ${body.error}`;
+    if (body.ok && afterSuccess) await afterSuccess();
+  };
+  document.querySelector("#deploy-current").onclick = action("/api/deploy", "Deploying");
+  document.querySelector("#start-bot").onclick = action("/api/start", "Starting", () => setPaused(false));
+  document.querySelector("#abort-bot").onclick = action("/api/abort", "Aborting", () => setPaused(true));
+  if (!info.binary_exists) result.textContent = `Build missing: ${info.binary}`;
+}
+
+async function initialize() {
+  state.catalog = await (await fetch("signal_catalog.json")).json();
+  buildPlots();
+  await loadHistory(LIVE_WINDOW_SECONDS);
+  updateViewState();
+  openStream();
+  document.querySelector("#pause").onclick = () => setPaused(!state.paused);
+  document.querySelector("#clear").onclick = () => {
+    state.samples = [];
+    fetch("/api/clear-flags");
+    updateCharts();
+  };
+  document.querySelector("#reset").onclick = () => setLiveFollow();
+  document.querySelectorAll("[data-range]").forEach(button => {
+    button.onclick = () => selectRange(Number(button.dataset.range));
+  });
+  document.addEventListener("visibilitychange", async () => {
+    state.hidden = document.hidden;
+    if (state.hidden) closeStream();
+    else if (!state.paused) {
+      await loadHistory(state.rangeSeconds);
+      openStream();
+    }
+  });
+  setupDeploy().catch(() => {});
+}
+
+initialize().catch(error => {
+  document.querySelector("#connection").textContent = `Dashboard failed: ${error.message}`;
+});

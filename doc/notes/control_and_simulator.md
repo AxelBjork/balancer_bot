@@ -49,14 +49,21 @@ The deterministic simulator consists of:
 - `balancer_simulator`
   the CLI/front-end for manual runs and artifact generation
 
-The plant model exposes two named profiles and one hardware-nominal geometry/inertia definition:
+The plant model exposes two named profiles and aggregate hardware-nominal parameters:
 
 - `simplified`
   tuned to be a fast sanity/stability baseline
 - `realistic`
   closer to the current hardware-oriented assumptions and used for the main representative ladder
 
-`I_com` is kept fixed at the hardware-oriented value in the simulator. Stability work has focused on controller structure, profile tuning, and explicit scenario coverage rather than hiding problems by changing that inertia constant.
+The plant equations use total translating mass `T`, first mass moment about the axle `H`, and
+pitch inertia about the axle `J`. The nominal values are `T = 1.032 kg`, `H = 0.06192 kg m`, and
+provisional `J = 0.0067552 kg m²`. Scenario margin sweeps expose `total_mass_scale` and
+`pitch_inertia_scale`; `H` remains the measured complete-robot value.
+
+`J` must be replaced after a physical-pendulum measurement: support the de-energized robot on the
+wheel-axis line in its stable hanging orientation, measure a small-angle period `P`, then use
+`J = g H (P / 2π)²`.
 
 The actuator model advances requested motor position from scheduled pulses, tracks a separate
 rotor/wheel state, limits motor force with a torque-speed envelope, estimates missed steps from
@@ -125,7 +132,7 @@ contains a second plant or wall-clock joystick path.
 
 ### The simulator and hardware keep separate PID files with the same current winner
 
-`pid.conf` and `pid_sim.conf` both use strict `config_version = 2` and currently contain the same
+`pid.conf` and use strict `config_version = 2` and currently contain the same
 conservative simulation winner. They remain separate so later restrained hardware validation can
 adjust the hardware profile without changing the simulation baseline.
 
@@ -140,7 +147,6 @@ The rewritten simulator/controller path no longer treats "did not fall" as the m
 ## What to Watch During Future Tuning
 
 - avoid claiming simulator success from SIL smoke tests alone
-- keep `pid.conf` and `pid_sim.conf` separate even while their current values match
 - score nominal plus one-at-a-time margins and reject any candidate with a hard safety failure
 - preserve artifact generation whenever changing controller or plant behavior
 

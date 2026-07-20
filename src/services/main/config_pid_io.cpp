@@ -30,7 +30,8 @@ void ConfigPid::load(const std::string& path) {
       "config_version", "rate_P", "rate_I", "rate_D", "rate_I_lim", "rate_FF",
       "velocity_P", "velocity_I", "velocity_I_limit_deg", "angle_P", "angle_D",
       "drive_max_sps", "turn_max_sps", "pitch_max_deg", "balance_max_sps",
-      "output_scale_sps"};
+      "output_scale_sps", "controller_enabled"};
+  controller_enabled = true;
   std::string line;
   size_t line_number = 0;
   while (std::getline(f, line)) {
@@ -78,12 +79,17 @@ void ConfigPid::load(const std::string& path) {
   }
 
   for (const auto& key : allowed) {
+    if (key == "controller_enabled") continue;
     if (!values.contains(key)) {
       throw std::runtime_error("Missing PID configuration key: " + key);
     }
   }
   if (values.at("config_version") != static_cast<double>(config_version)) {
     throw std::runtime_error("PID configuration requires config_version = 2");
+  }
+  if (values.contains("controller_enabled") && values.at("controller_enabled") != 0.0 &&
+      values.at("controller_enabled") != 1.0) {
+    throw std::runtime_error("controller_enabled must be 0 or 1");
   }
 
   const auto nonnegative = [&](const char* key) {
@@ -118,6 +124,7 @@ void ConfigPid::load(const std::string& path) {
   pitch_max_deg = values.at("pitch_max_deg");
   balance_max_sps = values.at("balance_max_sps");
   output_scale_sps = values.at("output_scale_sps");
+  controller_enabled = !values.contains("controller_enabled") || values.at("controller_enabled") == 1.0;
 }
 
 void ConfigPid::save(const std::string& path) {
@@ -146,6 +153,7 @@ void ConfigPid::save(const std::string& path) {
     write_param(f, "pitch_max_deg", pitch_max_deg);
     write_param(f, "balance_max_sps", balance_max_sps);
     write_param(f, "output_scale_sps", output_scale_sps);
+    write_param(f, "controller_enabled", controller_enabled ? 1.0 : 0.0);
     f << "\n";
   } else {
     throw std::runtime_error("PID configuration cannot be written: " + path);

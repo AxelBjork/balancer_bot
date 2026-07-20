@@ -21,7 +21,7 @@ This binary is built with `BUILD_TESTS=OFF`.
 
 The UDP-driven software-in-the-loop runtime. It:
 
-- loads `pid_sim.conf`
+- loads `pid.conf`
 - disables the hardware IMU reader
 - does not create a real motor backend
 - receives `PhysicsTick`, `ImuRawData`, and `JoystickCommand` over UDP
@@ -48,6 +48,10 @@ The C++ unit and integration test binary. It covers the motor runner, control co
 - `ControlService` steps `RateControllerCore` on each tick
 - `MotorService` forwards commands to `MotorRunner` and republishes real motor feedback
 
+For passive IMU/physical-pendulum measurements, set `controller_enabled = 0` in a copied
+`pid.conf`. The runtime continues controller and telemetry processing, but starts both steppers
+de-energized and does not create a motor runner.
+
 ### SIL Runtime
 
 `sil_app` is the service-level integration path:
@@ -66,8 +70,7 @@ Python tests cover the real UDP boundary and artifact generation.
 
 ## PID Config Files
 
-- `pid.conf` is the default hardware profile used by `balancer_pi`.
-- `pid_sim.conf` is the default simulator and SIL profile used by `sil_app` and `balancer_simulator`.
+- `pid.conf` is the default hardware profile used by `balancer_pi` and simulator.
 - `BALANCER_PID_CONF` overrides the default path in simulator-oriented code paths and tests.
 
 The two files are intentionally separate. Simulator tuning is allowed to diverge from hardware tuning as long as the difference is documented and understood.
@@ -88,6 +91,5 @@ Builds:
 Builds:
 
 - `balancer_pi`
-- `imu_demo`
 
 Use [Running on Pi](Running_on_Pi.md) for the deployment path and [Testing Strategy](testing/strategy.md) for host-side verification.

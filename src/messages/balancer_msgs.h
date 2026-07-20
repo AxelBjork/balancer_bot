@@ -100,9 +100,8 @@ struct DOC_DESC(
   double missed_steps;
   double traction_limit_n;
   double motor_force_limit_n;
-  double mass_scale;
-  double com_height_scale;
-  double inertia_scale;
+  double total_mass_scale;
+  double pitch_inertia_scale;
   double motor_max_force_n;
   double motor_no_load_speed_mps;
   double motor_velocity_damping;
@@ -174,9 +173,8 @@ struct DOC_DESC(
   double duration_s;
   double initial_pitch_deg;
   double com_angle_offset_rad;
-  double mass_scale;
-  double com_height_scale;
-  double inertia_scale;
+  double total_mass_scale;
+  double pitch_inertia_scale;
   double motor_max_force_n;
   double motor_no_load_speed_mps;
   double motor_velocity_damping;

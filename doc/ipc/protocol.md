@@ -12,7 +12,7 @@ It describes the reflected runtime message bus used by the balancer services, in
 messages consumed by the SIL harness and the internal-only messages exchanged between services.
 
 - Documented balancer message count: `11`
-- Protocol hash: `5037e7e9ac1acf7d`
+- Protocol hash: `09915846710265fe`
 - UDP ingress/egress gateway: `UdpBridge`
 
 ## System Architecture
@@ -57,7 +57,7 @@ The architecture is divided into three logical areas:
 >
 > A ramped joystick command supplies a governed wheel-speed reference. At 50 Hz, velocity error and target acceleration form the pitch reference, while a bounded integral term learns only the stationary center-of-mass trim:
 >
-> $$ \theta_{sp} = -k_{vp}(v_{ref} - v) - \operatorname{atan2}(a_{ref}s_m,g) + \theta_{COM} $$
+> $$ \theta_{sp} = k_{vp}(v_{ref} - v) - \operatorname{atan2}(a_{ref}s_m,g) + \theta_{COM} $$
 >
 > $$ \omega_{sp} = k_{pitch}(\theta_{sp} - \theta) - k_{pitch\_rate}\dot{\theta} $$
 >
@@ -175,7 +175,7 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 - Numeric ID: `3003`
 - Payload type: `SystemTelemetryPayload`
 - Python type: `SystemTelemetryPayload`
-- Wire size: `512` bytes
+- Wire size: `504` bytes
 - Published by: `ControlService`
 - Consumed by: `UdpBridge`
 
@@ -233,20 +233,19 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 | `missed_steps` | `double` | `float` | 8 | 376 |  |
 | `traction_limit_n` | `double` | `float` | 8 | 384 |  |
 | `motor_force_limit_n` | `double` | `float` | 8 | 392 |  |
-| `mass_scale` | `double` | `float` | 8 | 400 |  |
-| `com_height_scale` | `double` | `float` | 8 | 408 |  |
-| `inertia_scale` | `double` | `float` | 8 | 416 |  |
-| `motor_max_force_n` | `double` | `float` | 8 | 424 |  |
-| `motor_no_load_speed_mps` | `double` | `float` | 8 | 432 |  |
-| `motor_velocity_damping` | `double` | `float` | 8 | 440 |  |
-| `motor_tau_s` | `double` | `float` | 8 | 448 |  |
-| `traction_coefficient` | `double` | `float` | 8 | 456 |  |
-| `pitch_damping` | `double` | `float` | 8 | 464 |  |
-| `cart_damping` | `double` | `float` | 8 | 472 |  |
-| `phase_error_limit_steps` | `double` | `float` | 8 | 480 |  |
-| `tire_stiffness_n_per_m` | `double` | `float` | 8 | 488 |  |
-| `tire_damping_n_s_per_m` | `double` | `float` | 8 | 496 |  |
-| `wheel_equivalent_mass_kg` | `double` | `float` | 8 | 504 |  |
+| `total_mass_scale` | `double` | `float` | 8 | 400 |  |
+| `pitch_inertia_scale` | `double` | `float` | 8 | 408 |  |
+| `motor_max_force_n` | `double` | `float` | 8 | 416 |  |
+| `motor_no_load_speed_mps` | `double` | `float` | 8 | 424 |  |
+| `motor_velocity_damping` | `double` | `float` | 8 | 432 |  |
+| `motor_tau_s` | `double` | `float` | 8 | 440 |  |
+| `traction_coefficient` | `double` | `float` | 8 | 448 |  |
+| `pitch_damping` | `double` | `float` | 8 | 456 |  |
+| `cart_damping` | `double` | `float` | 8 | 464 |  |
+| `phase_error_limit_steps` | `double` | `float` | 8 | 472 |  |
+| `tire_stiffness_n_per_m` | `double` | `float` | 8 | 480 |  |
+| `tire_damping_n_s_per_m` | `double` | `float` | 8 | 488 |  |
+| `wheel_equivalent_mass_kg` | `double` | `float` | 8 | 496 |  |
 
 ### `MsgId::MotorFeedback`
 
@@ -273,7 +272,7 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 - Numeric ID: `3005`
 - Payload type: `SimStartRunPayload`
 - Python type: `SimStartRunPayload`
-- Wire size: `1128` bytes
+- Wire size: `1120` bytes
 - Published by: `UdpBridge`
 - Consumed by: _None_
 
@@ -288,31 +287,30 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 | `duration_s` | `double` | `float` | 8 | 16 |  |
 | `initial_pitch_deg` | `double` | `float` | 8 | 24 |  |
 | `com_angle_offset_rad` | `double` | `float` | 8 | 32 |  |
-| `mass_scale` | `double` | `float` | 8 | 40 |  |
-| `com_height_scale` | `double` | `float` | 8 | 48 |  |
-| `inertia_scale` | `double` | `float` | 8 | 56 |  |
-| `motor_max_force_n` | `double` | `float` | 8 | 64 |  |
-| `motor_no_load_speed_mps` | `double` | `float` | 8 | 72 |  |
-| `motor_velocity_damping` | `double` | `float` | 8 | 80 |  |
-| `motor_tau_s` | `double` | `float` | 8 | 88 |  |
-| `traction_coefficient` | `double` | `float` | 8 | 96 |  |
-| `pitch_damping` | `double` | `float` | 8 | 104 |  |
-| `cart_damping` | `double` | `float` | 8 | 112 |  |
-| `phase_error_limit_steps` | `double` | `float` | 8 | 120 |  |
-| `tire_stiffness_n_per_m` | `double` | `float` | 8 | 128 |  |
-| `tire_damping_n_s_per_m` | `double` | `float` | 8 | 136 |  |
-| `wheel_equivalent_mass_kg` | `double` | `float` | 8 | 144 |  |
-| `imu_pitch_lag_s` | `double` | `float` | 8 | 152 |  |
-| `imu_noise_seed` | `uint32_t` | `int` | 4 | 160 |  |
-| `accel_noise_std_mps2` | `double` | `float` | 8 | 168 |  |
-| `gyro_noise_std_rad_s` | `double` | `float` | 8 | 176 |  |
-| `imu_timestamp_jitter_us` | `double` | `float` | 8 | 184 |  |
-| `imu_sample_loss_rate` | `double` | `float` | 8 | 192 |  |
-| `accel_bias_mps2` | `std::array<double, 3>` | `list[float]` | 24 | 200 |  |
-| `gyro_bias_rad_s` | `std::array<double, 3>` | `list[float]` | 24 | 224 |  |
-| `disturbances` | `std::array<SimDisturbancePayload, 10>` | `list[SimDisturbancePayload]` | 560 | 248 |  |
-| `joy_segments` | `std::array<SimJoySegmentPayload, 4>` | `list[SimJoySegmentPayload]` | 192 | 808 |  |
-| `pid_config_path` | `std::array<char, 128>` | `bytes` | 128 | 1000 |  |
+| `total_mass_scale` | `double` | `float` | 8 | 40 |  |
+| `pitch_inertia_scale` | `double` | `float` | 8 | 48 |  |
+| `motor_max_force_n` | `double` | `float` | 8 | 56 |  |
+| `motor_no_load_speed_mps` | `double` | `float` | 8 | 64 |  |
+| `motor_velocity_damping` | `double` | `float` | 8 | 72 |  |
+| `motor_tau_s` | `double` | `float` | 8 | 80 |  |
+| `traction_coefficient` | `double` | `float` | 8 | 88 |  |
+| `pitch_damping` | `double` | `float` | 8 | 96 |  |
+| `cart_damping` | `double` | `float` | 8 | 104 |  |
+| `phase_error_limit_steps` | `double` | `float` | 8 | 112 |  |
+| `tire_stiffness_n_per_m` | `double` | `float` | 8 | 120 |  |
+| `tire_damping_n_s_per_m` | `double` | `float` | 8 | 128 |  |
+| `wheel_equivalent_mass_kg` | `double` | `float` | 8 | 136 |  |
+| `imu_pitch_lag_s` | `double` | `float` | 8 | 144 |  |
+| `imu_noise_seed` | `uint32_t` | `int` | 4 | 152 |  |
+| `accel_noise_std_mps2` | `double` | `float` | 8 | 160 |  |
+| `gyro_noise_std_rad_s` | `double` | `float` | 8 | 168 |  |
+| `imu_timestamp_jitter_us` | `double` | `float` | 8 | 176 |  |
+| `imu_sample_loss_rate` | `double` | `float` | 8 | 184 |  |
+| `accel_bias_mps2` | `std::array<double, 3>` | `list[float]` | 24 | 192 |  |
+| `gyro_bias_rad_s` | `std::array<double, 3>` | `list[float]` | 24 | 216 |  |
+| `disturbances` | `std::array<SimDisturbancePayload, 10>` | `list[SimDisturbancePayload]` | 560 | 240 |  |
+| `joy_segments` | `std::array<SimJoySegmentPayload, 4>` | `list[SimJoySegmentPayload]` | 192 | 800 |  |
+| `pid_config_path` | `std::array<char, 128>` | `bytes` | 128 | 992 |  |
 
 ### `MsgId::SimStartAck`
 

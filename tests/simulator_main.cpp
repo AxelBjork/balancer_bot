@@ -406,12 +406,10 @@ class SimulatorService {
       scenario.duration_s = request.duration_s;
       scenario.initial_pitch_deg = request.initial_pitch_deg;
       scenario.com_angle_offset_rad = request.com_angle_offset_rad;
-      scenario.mass_scale = request.mass_scale;
-      scenario.com_height_scale = request.com_height_scale;
-      scenario.inertia_scale = request.inertia_scale;
+      scenario.total_mass_scale = request.total_mass_scale;
+      scenario.pitch_inertia_scale = request.pitch_inertia_scale;
       if (request.has_physics_override != 0) {
-        SimulatorPhysics physics;
-        physics.max_force_n = request.motor_max_force_n;
+        SimulatorPhysics physics = BalancerSimulator::physics_for_profile(profile);
         physics.no_load_speed_mps = request.motor_no_load_speed_mps;
         physics.motor_velocity_damping = request.motor_velocity_damping;
         physics.motor_tau_s = request.motor_tau_s;
@@ -593,9 +591,8 @@ class SimulatorService {
     payload.missed_steps = row.missed_steps;
     payload.traction_limit_n = row.traction_limit_n;
     payload.motor_force_limit_n = row.motor_force_limit_n;
-    payload.mass_scale = row.mass_scale;
-    payload.com_height_scale = row.com_height_scale;
-    payload.inertia_scale = row.inertia_scale;
+    payload.total_mass_scale = row.total_mass_scale;
+    payload.pitch_inertia_scale = row.pitch_inertia_scale;
     const auto& physics = run.engine.simulator().physics();
     payload.motor_max_force_n = physics.max_force_n;
     payload.motor_no_load_speed_mps = physics.no_load_speed_mps;
@@ -710,9 +707,8 @@ void print_transfer_catalog_json() {
               << ",\"duration_s\":" << scenario.duration_s
               << ",\"initial_pitch_deg\":" << scenario.initial_pitch_deg
               << ",\"com_angle_offset_rad\":" << scenario.com_angle_offset_rad
-              << ",\"mass_scale\":" << scenario.mass_scale
-              << ",\"com_height_scale\":" << scenario.com_height_scale
-              << ",\"inertia_scale\":" << scenario.inertia_scale
+              << ",\"total_mass_scale\":" << scenario.total_mass_scale
+              << ",\"pitch_inertia_scale\":" << scenario.pitch_inertia_scale
               << ",\"imu_pitch_lag_s\":" << scenario.imu_pitch_lag_s
               << ",\"imu_noise_seed\":" << scenario.imu_noise_seed
               << ",\"accel_noise_std_mps2\":" << scenario.accel_noise_std_mps2
@@ -768,7 +764,7 @@ int main(int argc, char** argv) {
   std::signal(SIGTERM, signal_handler);
 
   uint16_t port = 9001;
-  std::string pid_config_path = ConfigPid::resolve_path("pid_sim.conf");
+  std::string pid_config_path = ConfigPid::resolve_path("pid.conf");
   std::optional<size_t> direct_summary_index;
   bool catalog_json = false;
 
@@ -803,6 +799,7 @@ int main(int argc, char** argv) {
         throw std::runtime_error("invalid transfer scenario index");
       }
       const auto result = run_simulator_scenario(scenarios[*direct_summary_index], pid_config_path);
+      const auto acceptance = evaluate_transfer_scenario(result);
       std::cout << std::setprecision(17) << "{\"sample_count\":" << result.rows.size()
                 << ",\"elapsed_s\":" << scenarios[*direct_summary_index].duration_s
                 << ",\"final_pitch_deg\":" << result.final_pitch_deg
@@ -811,6 +808,13 @@ int main(int argc, char** argv) {
                 << ",\"max_continuous_saturation_s\":" << result.max_continuous_saturation_s
                 << ",\"actuator_fault_count\":" << result.actuator_fault_count
                 << ",\"controller_fault_flags\":" << result.controller_fault_flags
+                << ",\"accepted\":" << (acceptance.accepted ? "true" : "false")
+                << ",\"failures\":[";
+      for (size_t failure_index = 0; failure_index < acceptance.failures.size(); ++failure_index) {
+        if (failure_index != 0) std::cout << ',';
+        std::cout << '\"' << acceptance.failures[failure_index] << '\"';
+      }
+      std::cout << ']'
                 << ",\"timeline_hash\":" << result.timeline_hash << "}\n";
       return 0;
     }
