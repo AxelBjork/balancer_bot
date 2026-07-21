@@ -56,14 +56,9 @@ The plant model exposes two named profiles and aggregate hardware-nominal parame
 - `realistic`
   closer to the current hardware-oriented assumptions and used for the main representative ladder
 
-The plant equations use total translating mass `T`, first mass moment about the axle `H`, and
-pitch inertia about the axle `J`. The nominal values are `T = 1.032 kg`, `H = 0.06192 kg m`, and
-provisional `J = 0.0067552 kg m²`. Scenario margin sweeps expose `total_mass_scale` and
-`pitch_inertia_scale`; `H` remains the measured complete-robot value.
-
-`J` must be replaced after a physical-pendulum measurement: support the de-energized robot on the
-wheel-axis line in its stable hanging orientation, measure a small-angle period `P`, then use
-`J = g H (P / 2π)²`.
+The plant equations use total translating mass `T`, first mass moment about the axle `H`, and pitch
+inertia about the axle `J`. Their authoritative nominal values and supported scenario scales live
+in the simulator code. Use the physical-pendulum procedure in the Pi guide when updating `J`.
 
 The actuator model advances requested motor position from scheduled pulses, tracks a separate
 rotor/wheel state, limits motor force with a torque-speed envelope, estimates missed steps from
@@ -79,11 +74,10 @@ That means a "push" scenario is a plant disturbance, not a synthetic joystick co
 
 ## Scenario Ladder
 
-The canonical acceptance catalog covers nominal neutral hold, a 3 N/100 ms push, the same push with
-IMU noise and lag, an 800 SPS drive/stop command, and all 16 one-at-a-time plant margins. There are
-no remaining simulator `xfail` cases. Direct callers, UDP runs, the tuner, tests, and fuzz harnesses
-all use `SimulatorEngine`; transfer tests, tuning, and UDP validation also share the C++ hard-safety
-evaluator.
+The canonical acceptance catalog is defined alongside the simulator runner. It covers neutral
+balance, disturbance recovery, bidirectional drive/stop behavior, and representative plant and
+sensor margins. Direct callers, UDP runs, tuning, tests, and fuzz harnesses all use
+`SimulatorEngine`; safety acceptance is evaluated by the shared C++ implementation.
 
 ## Artifact Outputs
 
@@ -130,11 +124,10 @@ python3 tools/run_transfer_validation.py --include-build-gates
 The UDP service is a reflected transport wrapper around the deterministic engine. It no longer
 contains a second plant or wall-clock joystick path.
 
-### The simulator and hardware keep separate PID files with the same current winner
+### Simulator and hardware PID configurations remain independent
 
-`pid.conf` and use strict `config_version = 2` and currently contain the same
-conservative simulation winner. They remain separate so later restrained hardware validation can
-adjust the hardware profile without changing the simulation baseline.
+Simulator and hardware PID files use the same validated schema but remain separate so hardware
+validation can adjust its configuration without changing the simulation baseline.
 
 ### Real motor feedback matters on hardware
 

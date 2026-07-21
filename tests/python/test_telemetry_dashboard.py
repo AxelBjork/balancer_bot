@@ -6,12 +6,18 @@ import json
 import logging
 import re
 import socket
+import subprocess
 import struct
+import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
+from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
+
+import pytest
 
 from generated_balancer import SystemTelemetryPayload
 from tools.telemetry_dashboard.server import (
@@ -35,6 +41,29 @@ from tools.telemetry_dashboard.server import (
     SourceController,
     configure_diagnostic_logging,
 )
+
+
+def test_dashboard_live_import_does_not_require_pandas():
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import builtins
+_import = builtins.__import__
+def without_pandas(name, *args, **kwargs):
+    if name == "pandas":
+        raise ModuleNotFoundError("No module named pandas", name="pandas")
+    return _import(name, *args, **kwargs)
+builtins.__import__ = without_pandas
+import tools.telemetry_dashboard.server
+""",
+        ],
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def telemetry_packet(**changes: float | int) -> bytes:
@@ -343,13 +372,25 @@ def test_dashboard_serves_assets_and_sse_to_multiple_clients():
     try:
         assert b"Balancer telemetry" in urllib.request.urlopen(base + "/", timeout=1).read()
         index = urllib.request.urlopen(base + "/", timeout=1).read()
-        script_path = re.search(rb'src="(/assets/[^" ]+\.js)"', index)
-        assert script_path is not None
-        script = urllib.request.urlopen(base + script_path.group(1).decode(), timeout=1).read()
+        assert b'src="vendor/uPlot-1.6.32.iife.min.js"' in index
+        assert b'src="dashboard.js"' in index
+        script = urllib.request.urlopen(base + "/dashboard.js", timeout=1)
+        assert script.headers.get_content_type() == "text/javascript"
+        script = script.read()
         assert b"EventSource" in script
         assert b"setData" in script
+        stylesheet = urllib.request.urlopen(base + "/dashboard.css", timeout=1)
+        assert stylesheet.headers.get_content_type() == "text/css"
+        uplot = urllib.request.urlopen(base + "/vendor/uPlot-1.6.32.iife.min.js", timeout=1)
+        assert uplot.headers.get_content_type() == "text/javascript"
+        assert b"uPlot" in uplot.read()
+        uplot_css = urllib.request.urlopen(base + "/vendor/uPlot-1.6.32.min.css", timeout=1)
+        assert uplot_css.headers.get_content_type() == "text/css"
         logo = urllib.request.urlopen(base + "/balancer-mark.svg", timeout=1)
         assert logo.headers.get_content_type() == "image/svg+xml"
+        with pytest.raises(urllib.error.HTTPError) as missing:
+            urllib.request.urlopen(base + "/%2e%2e/server.py", timeout=1)
+        assert missing.value.code == 404
         history = json.load(urllib.request.urlopen(base + "/api/history?seconds=30", timeout=1))
         assert history["history_seconds"] == 30.0
         assert history["samples"] == []

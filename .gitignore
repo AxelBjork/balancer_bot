@@ -56,9 +56,3 @@ tests/python/support/__pycache__/
 tools/__pycache__/
 build-cov/*
 data/server/
-
-# Telemetry dashboard frontend dependencies and test artifacts. The locked
-# package manifest and generated static_app bundle are intentionally versioned.
-tools/telemetry_dashboard/web/node_modules/
-tools/telemetry_dashboard/web/test-results/
-tools/telemetry_dashboard/web/playwright-report/

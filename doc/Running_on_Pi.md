@@ -46,12 +46,19 @@ If you want to keep the PID config elsewhere on the Pi, use the `BALANCER_PID_CO
 
 ## Passive Pitch-Inertia Measurement
 
-Copy `pid.conf` to a measurement-specific file and set `controller_enabled = 0`. This keeps IMU
-and UDP telemetry active while both steppers remain de-energized and no actuator commands reach
-the motors. Support the robot on a low-friction pivot through the wheel-axis line in its stable
-hanging orientation, use small oscillations, time 10–20 periods, and calculate
-`J = g H (P / 2π)^2` using the simulator's measured `H`. Restore the normal configuration before
-any balancing attempt.
+Disable the controller so IMU telemetry remains active while the motors are de-energized. Support
+the robot on a low-friction pivot through the wheel axis and record a few small free oscillations.
+Use the IMU pitch data to estimate the period `P`, then calculate the pitch inertia about the axle:
+
+> $$
+> J = g H \left(\frac{P}{2\pi}\right)^2
+> $$
+
+Here, `H` is the robot's first mass moment about the wheel axis. The
+[measurement helper](../tools/measure_pitch_inertia.py) can calculate the period and inertia from a
+telemetry capture. Update the authoritative value in
+[`HardwareNominal`](../tests/simulator/balancer_simulator.h), restore the normal configuration, and
+verify the build before balancing.
 
 ## Runtime Prerequisites
 
