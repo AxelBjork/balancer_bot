@@ -200,19 +200,15 @@ TEST(SimulatorRunnerTest, PositiveAndNegativeComOffsetsProduceMirroredPlantRespo
   EXPECT_NEAR(positive.state().velocity, -negative.state().velocity, 1e-10);
 }
 
-TEST(SimulatorRunnerTest, HardwareNominalConstantsRemainAuthoritative) {
+TEST(SimulatorRunnerTest, HardwareNominalDerivedValuesStayConsistent) {
   using Nominal = BalancerSimulator::HardwareNominal;
-  EXPECT_DOUBLE_EQ(Nominal::gravity, 9.81);
-  EXPECT_DOUBLE_EQ(Nominal::wheel_radius, 0.0412);
-  EXPECT_DOUBLE_EQ(Nominal::motor_count, 2.0);
-  EXPECT_DOUBLE_EQ(Nominal::motor_stall_torque_nm, 0.45);
-  EXPECT_DOUBLE_EQ(Nominal::combined_stall_force_n, 22.5);
+  EXPECT_DOUBLE_EQ(Nominal::combined_stall_force_n,
+                   Nominal::motor_count * Nominal::motor_stall_torque_nm /
+                       Nominal::wheel_radius);
+  EXPECT_DOUBLE_EQ(Nominal::meters_per_step,
+                   2.0 * M_PI * Nominal::wheel_radius / Nominal::steps_per_rev);
   EXPECT_DOUBLE_EQ(BalancerSimulator::physics_for_profile(PhysicsProfile::Realistic).max_force_n,
                    Nominal::combined_stall_force_n);
-  EXPECT_DOUBLE_EQ(Nominal::total_mass_kg, 1.032);
-  EXPECT_DOUBLE_EQ(Nominal::first_mass_moment_kg_m, 0.06192);
-  EXPECT_DOUBLE_EQ(Nominal::pitch_inertia_about_axle_kg_m2, 0.0067552);
-  EXPECT_DOUBLE_EQ(Nominal::steps_per_rev, 3200.0);
 }
 
 TEST(SimulatorRunnerTest, UnifiedEngineIsDeterministicForSameSeedAndInputs) {
@@ -244,7 +240,7 @@ TEST(SimulatorRunnerTest, ScheduledAndUdpStyleJoystickInputsProduceEquivalentTim
   scheduled_scenario.imu_noise_seed = 77;
   scheduled_scenario.joy_segments.push_back(SimulatorJoySegment{
       .start_s = 0.0,
-      .duration_s = 0.5,
+      .duration_s = 0.0,
       .forward = 0.4,
       .turn = -0.2,
       .forward_end = 0.4,

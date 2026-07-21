@@ -31,7 +31,6 @@ if str(GENERATED_BINDINGS) not in sys.path:
     sys.path.insert(0, str(GENERATED_BINDINGS))
 
 from generated_balancer import SystemTelemetryPayload  # noqa: E402
-from tools.telemetry_analysis.frames import read_telemetry_csv  # noqa: E402
 
 SYSTEM_TELEMETRY_ID = 3003
 SYSTEM_TELEMETRY_SIZE = SystemTelemetryPayload.WIRE_SIZE
@@ -43,7 +42,7 @@ DISCONNECT_AFTER_S = 1.0
 REGISTER_INTERVAL_S = 2.0
 RESOLVE_RETRY_S = 10.0
 MAX_UPLOAD_BYTES = 128 * 1024 * 1024
-STATIC_DIR = Path(__file__).with_name("static_app")
+STATIC_DIR = Path(__file__).with_name("static")
 PI_BINARY = ROOT / "build-pi" / "balancer_pi"
 PID_CONFIG = ROOT / "pid.conf"
 SERVER_LOG_DIR = ROOT / "data" / "server"
@@ -590,6 +589,14 @@ def _number(row: dict[str, Any], *names: str) -> float:
 
 def load_playback_csv(path: Path) -> list[tuple[float, dict[str, Any]]]:
     """Normalize dashboard and simulator CSV rows into browser telemetry views."""
+    try:
+        from tools.telemetry_analysis.frames import read_telemetry_csv
+    except ModuleNotFoundError as exc:
+        if exc.name == "pandas":
+            raise RuntimeError(
+                "CSV playback requires pandas; install requirements-dev.txt to use --csv or upload a CSV."
+            ) from exc
+        raise
     rows = read_telemetry_csv(path).to_dict(orient="records")
     samples: list[tuple[float, dict[str, Any]]] = []
     time_keys = ("t_sec", "received_at_monotonic_s", "received_at_unix_s")

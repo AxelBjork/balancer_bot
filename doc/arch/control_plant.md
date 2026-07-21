@@ -10,9 +10,10 @@ inertia `J` about the axle. Its mass matrix is
 > \begin{bmatrix}T&H\cos\theta\\H\cos\theta&J\end{bmatrix}.
 > $$
 
-The current nominal values are `T = 1.032 kg`, `H = 0.06192 kg m`, and provisional
-`J = 0.0067552 kg m²`. The value of `J` is retained from the previous model only until it is
-measured with the physical-pendulum procedure documented in the Pi runtime guide.
+The authoritative nominal mass, geometry, and inertia values are defined by
+[`HardwareNominal`](../../tests/simulator/balancer_simulator.h). Pitch inertia should be updated
+from the physical-pendulum procedure documented in the Pi runtime guide; these values are
+intentionally not duplicated here.
 
 ## Variables
 

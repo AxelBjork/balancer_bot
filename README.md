@@ -77,6 +77,9 @@ another source is selected or the server exits. `--csv` remains available as a s
 python3 tools/telemetry_dashboard/server.py --csv build/sim/example/timeline.csv
 ```
 
+Live telemetry uses only the Python standard library. CSV playback uses the shared pandas-backed
+telemetry loader, so install `requirements-dev.txt` when using `--csv` or uploading a CSV.
+
 Open `http://127.0.0.1:8080`. The dashboard is read-only, uses the existing UDP telemetry
 stream, and intentionally claims the bridge's one active UDP peer; do not run it alongside a
 SIL client or another UDP observer. Add `--listen-lan` only when the laptop's network is trusted.
@@ -102,23 +105,6 @@ The dashboard keeps the ten newest files and rotates an active file at 128 MiB.
 ```bash
 ./build_cmake OFF
 ```
-
-## Main Binaries
-
-- `balancer_pi`
-  the Raspberry Pi hardware runtime
-- `sil_app`
-  the UDP-driven software-in-the-loop runtime
-- `balancer_simulator`
-  the deterministic plant + controller runner
-- `balancer_plant_audit`
-  prints the linearized upright plant, controllability rank, and candidate overdamped poles
-- `tools/analyze_timeline.py`
-  estimates lag and scale relationships from a `timeline.csv` artifact or captured telemetry log
-- `balancer_tests`
-  the C++ unit and integration test binary
-- `tools/run_afl.py`
-  launches `afl-fuzz` against the registered harnesses built in `build-afl/`
 
 ## Simplified BOM
 
