@@ -59,6 +59,13 @@ That means:
 - UDP-visible messages appear in the Python bindings
 - internal-only bus messages such as `MotorFeedback` do not
 
+The generated dataclass `pack_wire()` and `unpack_wire()` methods are the supported external
+serialization API. They encode reflected field offsets and padding with little-endian Python
+`struct` formats; callers must not treat dataclass construction or ad-hoc byte packing as a
+separate protocol. The UDP bridge forwards the corresponding reflected C++ object bytes and
+therefore requires little-endian storage, IEEE-754 `float`/`double`, and one-byte `bool` on the
+supported target ABI. Those assumptions are checked in the bridge at compile time.
+
 ### IPC Docs
 
 `doc/ipc/protocol.md` documents the reflected balancer message set and service graph. The docs generator includes the runtime messages needed to describe the real internal topology, including internal-only service messages.

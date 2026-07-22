@@ -1,0 +1,38 @@
+{
+  "purpose": "provisional passive physical-pendulum estimate of pitch inertia about the wheel axle",
+  "controller_fitting_allowed": false,
+  "source": {
+    "file": "data/server/telemetry_20260722-000533_00.csv",
+    "sha256": "970c1d27eaf5a6bd4138e547019942106637d55565fe37d63f8de1100d82078a",
+    "rows": 49159
+  },
+  "parameters": {
+    "gravity_mps2": 9.81,
+    "first_mass_moment_kg_m": 0.06192,
+    "provisional_pitch_inertia_about_axle_kg_m2": 0.0045
+  },
+  "segments": [
+    {
+      "file": "session0_51p2_to_54p6.csv",
+      "session": 0,
+      "start_t_sec": 51.2,
+      "end_t_sec": 54.6,
+      "rows": 1359,
+      "period_s_median": 0.5438305588382129,
+      "period_s_stddev": 0.026434989765612177,
+      "pitch_inertia_about_axle_kg_m2": 0.004550587125932225,
+      "sha256": "1b0039b814fc050e52e715be1c3b054b18e7d199237dd7de9989c2db592399c3"
+    },
+    {
+      "file": "session1_3p8_to_5p5.csv",
+      "session": 1,
+      "start_t_sec": 3.8,
+      "end_t_sec": 5.5,
+      "rows": 676,
+      "period_s_median": 0.5418616415355189,
+      "period_s_stddev": 0.019636157806086105,
+      "pitch_inertia_about_axle_kg_m2": 0.004517696327838944,
+      "sha256": "5935007f3af927bccf2a1838e1d470bab9c0495837d1c667feb466e0ff58ce6a"
+    }
+  ]
+}

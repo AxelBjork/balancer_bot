@@ -1,0 +1,64 @@
+{
+  "purpose": "qualitative wood-floor reference for direct drive through pitch without motor velocity feed-forward",
+  "controller_fitting_allowed": false,
+  "source": {
+    "file": "data/server/telemetry_20260722-193855_00.csv",
+    "sha256": "3aa8ca152888c27c87e0ce7d3d578de1e73727bddbb93cb871b0bfa114b21d77",
+    "session": 1,
+    "source_row_start": 69207,
+    "source_row_end": 70085
+  },
+  "segment": {
+    "file": "session1_55p8_to_58p0.csv",
+    "sha256": "54cb13527cb602b163ad93f52764948189494b7525df157bc77ac18f47160139",
+    "rows": 879,
+    "start_t_sec": 55.8025016784668,
+    "end_t_sec": 58.0,
+    "controller_fault_rows": 0,
+    "controller_saturation_rows": 0,
+    "actuator_fault_rows": 0,
+    "whole_window": {
+      "mean_u_sps": 555.2528963932541,
+      "rms_u_sps": 749.311632114932,
+      "mean_measured_velocity_sps": 571.2649362436978,
+      "rms_measured_velocity_sps": 734.8220207202492,
+      "pitch_rms_deg": 2.303782273872381,
+      "pitch_rate_rms_dps": 17.61029492975766,
+      "left_actual_steps_delta": 1226,
+      "right_actual_steps_delta": 1226
+    },
+    "command_window": {
+      "start_t_sec": 55.8,
+      "end_t_sec": 57.18,
+      "mean_u_sps": 723.8963172050657,
+      "rms_u_sps": 870.4971202114252,
+      "mean_measured_velocity_sps": 705.496142164772,
+      "rms_measured_velocity_sps": 837.4768928041802,
+      "pitch_rms_deg": 2.2926318576842726,
+      "pitch_rate_rms_dps": 20.608092731332434,
+      "left_actual_steps_delta": 984,
+      "right_actual_steps_delta": 984
+    },
+    "release_window": {
+      "start_t_sec": 57.18,
+      "end_t_sec": 58.0,
+      "mean_u_sps": 271.9525157002414,
+      "rms_u_sps": 481.3651137545054,
+      "mean_measured_velocity_sps": 345.7728799555519,
+      "rms_measured_velocity_sps": 518.482520348599,
+      "pitch_rms_deg": 2.3223931102377917,
+      "pitch_rate_rms_dps": 10.846989540374244,
+      "left_actual_steps_delta": 242,
+      "right_actual_steps_delta": 242
+    }
+  },
+  "artifacts": [
+    {
+      "file": "session1_55p8_to_58p0.svg",
+      "bytes": 174907,
+      "sha256": "1fe6ad134f13b1e5b394c65359d40f5e39fdb5e722154c82e123fd01ebbe11ce",
+      "source": "session1_55p8_to_58p0.csv",
+      "renderer": "tools.telemetry_analysis.plotting.write_multiplot_svg"
+    }
+  ]
+}

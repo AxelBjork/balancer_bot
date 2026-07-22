@@ -5,6 +5,8 @@
 #include <sys/uio.h>
 
 #include <atomic>
+#include <bit>
+#include <limits>
 #include <thread>
 
 #include "messages/core_msgs.h"
@@ -45,7 +47,8 @@ class DOC_DESC(kUdpBridgeDoc) UdpBridge {
  public:
   static constexpr const char* kDocDescription = kUdpBridgeDoc;
 
-  using Subscribes = MsgList<MsgId::MotorTargets, MsgId::SystemTelemetry, MsgId::SimStartAck, MsgId::SimRunDone>;
+  using Subscribes = MsgList<MsgId::MotorTargets, MsgId::SystemTelemetry, MsgId::SimulatorTelemetry,
+                             MsgId::SimStartAck, MsgId::SimRunDone>;
   using Publishes = MsgList<MsgId::PhysicsTick, MsgId::JoystickCommand, MsgId::ImuRawData,
                             MsgId::SimStartRun, MsgId::SimStopRun>;
 
@@ -101,5 +104,11 @@ class DOC_DESC(kUdpBridgeDoc) UdpBridge {
     return static_cast<int>(::sendmsg(udp_fd_, &msg, 0));
   }
 };
+
+static_assert(std::endian::native == std::endian::little,
+              "UDP reflected payloads require little-endian C++ storage");
+static_assert(sizeof(bool) == 1, "UDP reflected payloads require one-byte bool");
+static_assert(std::numeric_limits<float>::is_iec559 && std::numeric_limits<double>::is_iec559,
+              "UDP reflected payloads require IEEE-754 floating point");
 
 }  // namespace ipc

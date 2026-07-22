@@ -56,8 +56,8 @@ struct Telemetry {
   double pitch_sp_deg{};
   double rate_sp_dps{};
   double rate_error_dps{};
-  double command_saturated{};
-  double actuator_fault{};
+  bool command_saturated{};
+  bool actuator_fault{};
   uint32_t controller_fault_flags{};
   uint32_t controller_saturation_flags{};
 };
@@ -66,7 +66,7 @@ struct Telemetry {
 // Runtime-configurable PID gains loaded from pid.conf
 // Default values are set here, can be overridden at runtime by load()
 struct ConfigPid {
-  inline static constexpr int config_version = 2;
+  inline static constexpr int config_version = 3;
 
   // PX4 Rate PID (inner loop, pitch axis only)
   inline static double rate_P = 0.25;

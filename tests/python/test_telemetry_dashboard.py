@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import csv
 import dataclasses
+import hashlib
 import json
 import logging
+import math
 import re
 import socket
 import subprocess
@@ -101,7 +103,7 @@ def test_csv_logger_writes_every_raw_field_with_fixed_header(tmp_path):
     with log_path.open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
     assert "received_at_unix_s" in rows[0]
-    assert "wheel_equivalent_mass_kg" in rows[0]
+    assert "motor_feedback_age_ms" in rows[0]
     assert float(rows[0]["pitch_deg"]) == -1.25
     assert len(rows) == 400
     assert float(rows[-1]["pitch_deg"]) == 397.75
@@ -225,7 +227,7 @@ def test_receive_and_controller_gaps_are_counted_and_written_as_jsonl(tmp_path):
     events = [json.loads(line) for line in (tmp_path / "dashboard_events.jsonl").read_text().splitlines()]
     assert [event["event"] for event in events] == ["udp_receive_pause", "telemetry_packet_gap"]
     assert events[0]["receive_gap_s"] == 0.25
-    assert events[1]["controller_gap_s"] == 0.49750000000000005
+    assert math.isclose(events[1]["controller_gap_s"], 0.4975, abs_tol=1e-6)
 
 
 def test_playback_csv_normalizes_simulator_rows_without_relogging(tmp_path):
@@ -325,12 +327,29 @@ def test_udp_host_falls_back_to_pi_mdns_name_when_ssh_is_unavailable():
         assert resolve_udp_host("rpi4") == "192.168.1.26"
 
 
+def write_build_manifest(binary: Path, config: Path) -> Path:
+    manifest = binary.with_name(f"{binary.name}.manifest.json")
+    version = int(re.search(r"^\s*config_version\s*=\s*(\d+)", config.read_text(), re.MULTILINE).group(1))
+    manifest.write_text(
+        json.dumps(
+            {
+                "format_version": 1,
+                "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+                "pid_config_sha256": hashlib.sha256(config.read_bytes()).hexdigest(),
+                "pid_config_version": version,
+            }
+        )
+    )
+    return manifest
+
+
 def test_deployer_uses_current_build_with_host_scp_and_never_starts_robot(tmp_path, monkeypatch):
     deployer = DeploymentManager("pi@rpi4")
     completed = Mock(returncode=0, stdout="", stderr="")
     binary, config = tmp_path / "balancer_pi", tmp_path / "pid.conf"
     binary.write_bytes(b"ELF")
-    config.write_text("config_version = 2\n")
+    config.write_text("config_version = 3\n")
+    write_build_manifest(binary, config)
     monkeypatch.setattr("tools.telemetry_dashboard.server.PI_BINARY", binary)
     monkeypatch.setattr("tools.telemetry_dashboard.server.PID_CONFIG", config)
     with patch("tools.telemetry_dashboard.server.subprocess.run", return_value=completed) as run:
@@ -342,18 +361,90 @@ def test_deployer_uses_current_build_with_host_scp_and_never_starts_robot(tmp_pa
     assert "ssh" not in command
 
 
-def test_start_and_abort_use_short_lived_ssh_commands():
+def test_deployer_rejects_missing_or_stale_build_manifest(tmp_path, monkeypatch):
+    deployer = DeploymentManager("pi@rpi4")
+    binary, config = tmp_path / "balancer_pi", tmp_path / "pid.conf"
+    binary.write_bytes(b"ELF")
+    config.write_text("config_version = 3\n")
+    monkeypatch.setattr("tools.telemetry_dashboard.server.PI_BINARY", binary)
+    monkeypatch.setattr("tools.telemetry_dashboard.server.PID_CONFIG", config)
+    with pytest.raises(ValueError, match="stale for pid.conf"):
+        deployer.deploy_current()
+    write_build_manifest(binary, config)
+    config.write_text("config_version = 3\ncontroller_enabled = 1\n")
+    with pytest.raises(ValueError, match="stale for pid.conf"):
+        deployer.start()
+
+
+def test_start_and_abort_use_short_lived_ssh_commands(tmp_path, monkeypatch):
     deployer = DeploymentManager("pi@rpi4")
     completed = Mock(returncode=0, stdout="", stderr="")
+    binary, config = tmp_path / "balancer_pi", tmp_path / "pid.conf"
+    binary.write_bytes(b"ELF")
+    config.write_text("config_version = 3\n")
+    write_build_manifest(binary, config)
+    monkeypatch.setattr("tools.telemetry_dashboard.server.PI_BINARY", binary)
+    monkeypatch.setattr("tools.telemetry_dashboard.server.PID_CONFIG", config)
     with patch("tools.telemetry_dashboard.server.subprocess.run", return_value=completed) as run:
         assert deployer.start()["ok"]
         assert deployer.abort()["ok"]
     commands = [call.args[0] for call in run.call_args_list]
     assert commands[0][:2] == ["ssh", "pi@rpi4"]
     assert "nohup sudo -n ./balancer_pi" in commands[0][2]
+    assert "cd ~ || exit 1;" in commands[0][2]
+    assert "&& nohup" not in commands[0][2]
+    assert "sleep 1" in commands[0][2]
+    assert "tail -n 40 ~/balancer_pi.log" in commands[0][2]
     assert "pkill -TERM -x balancer_pi" in commands[1][2]
     assert "pkill -KILL" not in commands[1][2]
     assert "status" in commands[1][2]
+
+
+def test_start_surfaces_immediate_remote_failure_log(tmp_path, monkeypatch):
+    deployer = DeploymentManager("pi@rpi4")
+    binary, config = tmp_path / "balancer_pi", tmp_path / "pid.conf"
+    binary.write_bytes(b"ELF")
+    config.write_text("config_version = 3\n")
+    write_build_manifest(binary, config)
+    monkeypatch.setattr("tools.telemetry_dashboard.server.PI_BINARY", binary)
+    monkeypatch.setattr("tools.telemetry_dashboard.server.PID_CONFIG", config)
+    completed = Mock(
+        returncode=1,
+        stdout="Start failed (exit 134):\nwhat(): PID configuration version mismatch: expected 3, got 2\n",
+        stderr="",
+    )
+    with patch("tools.telemetry_dashboard.server.subprocess.run", return_value=completed):
+        with pytest.raises(RuntimeError, match="PID configuration version mismatch: expected 3, got 2"):
+            deployer.start()
+
+
+def test_dashboard_operation_failures_are_written_to_jsonl(tmp_path):
+    listener = configure_diagnostic_logging(tmp_path)
+    state = TelemetryState("rpi4")
+    hub = SseHub(state)
+    deployer = Mock()
+    deployer.start.side_effect = subprocess.TimeoutExpired(["ssh", "pi@rpi4"], 15)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(hub, state, deployer))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{server.server_address[1]}/api/start", method="POST"
+    )
+    try:
+        with pytest.raises(urllib.error.HTTPError) as response:
+            urllib.request.urlopen(request, timeout=1)
+        assert response.value.code == 400
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+        listener.stop()
+        DIAGNOSTIC_LOGGER.handlers = [logging.NullHandler()]
+        DIAGNOSTIC_LOGGER.propagate = True
+    events = [json.loads(line) for line in (tmp_path / "dashboard_events.jsonl").read_text().splitlines()]
+    assert events[-1]["event"] == "dashboard_operation_failure"
+    assert events[-1]["operation"] == "start"
+    assert events[-1]["error_type"] == "TimeoutExpired"
 
 
 def test_deployer_normalizes_plain_pi_hostname_to_pi_user():
