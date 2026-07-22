@@ -12,7 +12,7 @@ The control pipeline is:
 2. a 50 Hz velocity PI turns completed-pulse speed error into a bounded pitch setpoint
 3. the pitch error plus filtered pitch-rate damping become a pitch-rate setpoint
 4. the 400 Hz PX4 `RateControl` produces the normalized balance correction
-5. the target wheel speed is fed forward and the balance correction is added in steps per second
+5. the balance correction becomes the common wheel command in steps per second
 6. balance-priority turn allocation produces the left/right stepper commands
 
 Important details:
@@ -63,7 +63,17 @@ in the simulator code. Use the physical-pendulum procedure in the Pi guide when 
 The actuator model advances requested motor position from scheduled pulses, tracks a separate
 rotor/wheel state, limits motor force with a torque-speed envelope, estimates missed steps from
 excess phase error, and transmits force to the cart-pole through a traction-limited tire coupling.
-The controller sees only completed-pulse feedback.
+The controller sees only completed-pulse feedback. Its outer reference is
+
+> $$
+> \theta_{sp} = K_{vp}(v_{ref}-v)
+> + \operatorname{atan2}(a_{ref}s_m,g) + \theta_{COM}.
+> $$
+
+Because the inverted-pendulum plant has an inverse response, a forward command may initially
+reduce or reverse motor output to acquire positive lean before settling into forward travel.
+The requested velocity drives velocity error and acceleration preview. Removing `theta_COM` from
+both measured and requested pitch prevents physical trim from being interpreted as drive lean.
 
 The simulator applies disturbances as exogenous plant inputs rather than controller references:
 

@@ -187,14 +187,17 @@ The equations above are the compact small-angle audit model. The current code ad
 
 Current controller structure in code:
 
-Outer velocity PI at 50 Hz:
+Outer velocity feedback and acceleration feed-forward at 50 Hz, with a bounded integral term that
+learns only the stationary center-of-mass trim:
 
 > $$
 > e_v = v_{\mathrm{ref}} - v_{\mathrm{completed\ pulses}}
 > $$
 
 > $$
-> \theta_{\mathrm{ref}} = \operatorname{clamp}(K_{pv}e_v + K_{iv}\int e_v dt)
+> \theta_{\mathrm{ref}} = \operatorname{clamp}\left(
+> K_{pv}e_v + \operatorname{atan2}(a_{\mathrm{ref}}s_m,g) + \theta_{\mathrm{COM}}
+> \right)
 > $$
 
 Inner attitude shaping:
@@ -207,16 +210,20 @@ PX4 rate loop:
 
 - it tracks `theta_dot_ref` and produces the normalized motor command
 
-Motor scaling and target-speed feed-forward:
+Motor scaling:
 
+- `v_ref` remains the requested trajectory used by velocity feedback and acceleration preview
 - the normalized PX4 output is converted to wheel command with fixed
 
 > $$
-> u_{\mathrm{sps}} = v_{\mathrm{ref,sps}} - u_{\mathrm{norm}}\,k_{\mathrm{output}}
+> u_{\mathrm{sps}} = -u_{\mathrm{norm}}\,k_{\mathrm{output}}
 > $$
 
 - the result is clamped by `balance_max_sps`, then turn allocation consumes only the remaining
   balance authority
+- positive wheel acceleration produces negative initial pitch acceleration, while sustained
+  positive vehicle acceleration requires positive equilibrium pitch; motor output may therefore
+  initially reduce or reverse while acquiring a forward lean
 
 Notes:
 

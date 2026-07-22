@@ -11,7 +11,7 @@ from generated_balancer import (
     SimStartAckPayload,
     SimStartRunPayload,
     SimStopRunPayload,
-    SystemTelemetryPayload,
+    SimulatorTelemetryPayload,
 )
 
 from tests.python.support.run_artifacts import RunRecorder
@@ -329,13 +329,20 @@ def run_scenario_live(
             msg_id, payload = udp.recv(timeout=min(0.1, max(0.01, deadline - time.monotonic())))
         except TimeoutError:
             continue
-        if msg_id == int(BalancerMsgId.SystemTelemetry):
-            telemetry = SystemTelemetryPayload.unpack(payload)
-            if telemetry.run_id != run_id:
+        if msg_id == int(BalancerMsgId.SimulatorTelemetry):
+            telemetry = SimulatorTelemetryPayload.unpack(payload)
+            if telemetry.system.run_id != run_id:
                 continue
-            # Match the dashboard's raw CSV schema exactly. Reflection keeps new
-            # telemetry fields in both capture paths without another manual map.
-            row = {field.name: getattr(telemetry, field.name) for field in fields(telemetry)}
+            # Keep simulator artifacts flat while the wire API remains a single,
+            # nested simulator frame.
+            row = {field.name: getattr(telemetry.system, field.name) for field in fields(telemetry.system)}
+            row.update(
+                {
+                    field.name: getattr(telemetry, field.name)
+                    for field in fields(telemetry)
+                    if field.name != "system"
+                }
+            )
             recorder.record_step(row)
             if abs(telemetry.plant_pitch_deg) > fail_fast_pitch_deg:
                 udp.send(BalancerMsgId.SimStopRun, SimStopRunPayload(run_id=run_id).pack())

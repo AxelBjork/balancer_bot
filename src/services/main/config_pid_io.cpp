@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -7,6 +8,7 @@
 #include <string>
 #include <unordered_set>
 #include <unordered_map>
+#include <vector>
 
 #include "messages/types.h"
 
@@ -25,7 +27,11 @@ void ConfigPid::load(const std::string& path) {
     throw std::runtime_error("PID configuration cannot be opened: " + path);
   }
 
-  std::unordered_map<std::string, double> values;
+  struct ParsedLine {
+    std::string key;
+    std::string value_text;
+  };
+  std::vector<ParsedLine> parsed_lines;
   std::unordered_set<std::string> allowed = {
       "config_version", "rate_P", "rate_I", "rate_D", "rate_I_lim", "rate_FF",
       "velocity_P", "velocity_I", "velocity_I_limit_deg", "angle_P", "angle_D",
@@ -59,23 +65,54 @@ void ConfigPid::load(const std::string& path) {
     };
     const std::string key = trim(line.substr(0, equals));
     const std::string value_text = trim(line.substr(equals + 1));
-    if (!allowed.contains(key)) {
-      throw std::runtime_error("Unknown PID configuration key: " + key);
+    parsed_lines.push_back({key, value_text});
+  }
+
+  // Validate the schema version before interpreting any schema-specific key.
+  // This makes newer configuration files fail clearly on older binaries.
+  const auto version = std::find_if(parsed_lines.begin(), parsed_lines.end(),
+                                    [](const ParsedLine& item) { return item.key == "config_version"; });
+  if (version == parsed_lines.end()) {
+    throw std::runtime_error("Missing PID configuration key: config_version");
+  }
+  if (std::count_if(parsed_lines.begin(), parsed_lines.end(),
+                    [](const ParsedLine& item) { return item.key == "config_version"; }) != 1) {
+    throw std::runtime_error("Duplicate PID configuration key: config_version");
+  }
+  size_t version_parsed = 0;
+  double version_value = 0.0;
+  try {
+    version_value = std::stod(version->value_text, &version_parsed);
+  } catch (const std::exception&) {
+    throw std::runtime_error("Invalid value for PID configuration key: config_version");
+  }
+  if (version_parsed != version->value_text.size() || !std::isfinite(version_value)) {
+    throw std::runtime_error("Non-finite or malformed PID value for key: config_version");
+  }
+  if (version_value != static_cast<double>(config_version)) {
+    throw std::runtime_error("PID configuration version mismatch: expected " +
+                             std::to_string(config_version) + ", got " + version->value_text);
+  }
+
+  std::unordered_map<std::string, double> values;
+  for (const auto& item : parsed_lines) {
+    if (!allowed.contains(item.key)) {
+      throw std::runtime_error("Unknown PID configuration key: " + item.key);
     }
-    if (values.contains(key)) {
-      throw std::runtime_error("Duplicate PID configuration key: " + key);
+    if (values.contains(item.key)) {
+      throw std::runtime_error("Duplicate PID configuration key: " + item.key);
     }
     size_t parsed = 0;
     double value = 0.0;
     try {
-      value = std::stod(value_text, &parsed);
+      value = std::stod(item.value_text, &parsed);
     } catch (const std::exception&) {
-      throw std::runtime_error("Invalid value for PID configuration key: " + key);
+      throw std::runtime_error("Invalid value for PID configuration key: " + item.key);
     }
-    if (parsed != value_text.size() || !std::isfinite(value)) {
-      throw std::runtime_error("Non-finite or malformed PID value for key: " + key);
+    if (parsed != item.value_text.size() || !std::isfinite(value)) {
+      throw std::runtime_error("Non-finite or malformed PID value for key: " + item.key);
     }
-    values.emplace(key, value);
+    values.emplace(item.key, value);
   }
 
   for (const auto& key : allowed) {
@@ -83,9 +120,6 @@ void ConfigPid::load(const std::string& path) {
     if (!values.contains(key)) {
       throw std::runtime_error("Missing PID configuration key: " + key);
     }
-  }
-  if (values.at("config_version") != static_cast<double>(config_version)) {
-    throw std::runtime_error("PID configuration requires config_version = 2");
   }
   if (values.contains("controller_enabled") && values.at("controller_enabled") != 0.0 &&
       values.at("controller_enabled") != 1.0) {
@@ -133,7 +167,7 @@ void ConfigPid::save(const std::string& path) {
     f << "# Balancer Bot PID Configuration\n";
     f << "# Modifying this file requires application restart (or reload logic)\n\n";
 
-    f << "config_version       = 2\n\n";
+    f << "config_version       = " << config_version << "\n\n";
     f << "# --- Rate Controller (400 Hz) ---\n";
     write_param(f, "rate_P", rate_P);
     write_param(f, "rate_I", rate_I);

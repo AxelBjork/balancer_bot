@@ -16,6 +16,7 @@ class MsgId(IntEnum):
     SimStopRun = 3007
     SimRunDone = 3008
     ImuRawData = 3009
+    SimulatorTelemetry = 3010
 
 BalancerMsgId = MsgId
 
@@ -96,9 +97,8 @@ class MotorTargetsPayload:
 
 @dataclass
 class SystemTelemetryPayload:
-    WIRE_SIZE = 504
+    WIRE_SIZE = 136
     run_id: int
-    seed: int
     controller_fault_flags: int
     controller_saturation_flags: int
     imu_timestamp_us: int
@@ -121,8 +121,6 @@ class SystemTelemetryPayload:
     pitch_sp_deg: float
     rate_setpoint_dps: float
     rate_error_dps: float
-    command_saturated: float
-    actuator_fault: float
     left_target_sps: float
     right_target_sps: float
     left_applied_sps: float
@@ -131,41 +129,12 @@ class SystemTelemetryPayload:
     motor_feedback_age_ms: float
     left_actual_steps: int
     right_actual_steps: int
-    plant_pitch_deg: float
-    plant_pitch_rate_dps: float
-    plant_position_m: float
-    plant_velocity_mps: float
-    target_wheel_velocity: float
-    actual_wheel_velocity: float
-    plant_velocity_error: float
-    f_cmd: float
-    f_app: float
-    external_force_n: float
-    external_com_bias_rad: float
-    x_ddot: float
-    theta_ddot: float
-    force_saturated: float
-    phase_error_steps: float
-    missed_steps: float
-    traction_limit_n: float
-    motor_force_limit_n: float
-    total_mass_scale: float
-    pitch_inertia_scale: float
-    motor_max_force_n: float
-    motor_no_load_speed_mps: float
-    motor_velocity_damping: float
-    motor_tau_s: float
-    traction_coefficient: float
-    pitch_damping: float
-    cart_damping: float
-    phase_error_limit_steps: float
-    tire_stiffness_n_per_m: float
-    tire_damping_n_s_per_m: float
-    wheel_equivalent_mass_kg: float
+    command_saturated: bool
+    actuator_fault: bool
 
     def pack_wire(self) -> bytes:
         data = bytearray()
-        data.extend(struct.pack("<IIIIQdddddddddddddddddddddddddddqqddddddddddddddddddddddddddddddd", self.run_id, self.seed, self.controller_fault_flags, self.controller_saturation_flags, self.imu_timestamp_us, self.t_sec, self.age_ms, self.pitch_deg, self.pitch_rate_dps, self.raw_acc_pitch_deg, self.fused_pitch_deg, self.gyro_pitch_rate_dps, self.filtered_pitch_rate_dps, self.u_sps, self.turn_sps, self.target_velocity_sps, self.vel_error, self.measured_vel_sps, self.velocity_p_term_deg, self.velocity_i_term_deg, self.pitch_error_deg, self.pitch_sp_deg, self.rate_setpoint_dps, self.rate_error_dps, self.command_saturated, self.actuator_fault, self.left_target_sps, self.right_target_sps, self.left_applied_sps, self.right_applied_sps, self.motor_update_dt_ms, self.motor_feedback_age_ms, self.left_actual_steps, self.right_actual_steps, self.plant_pitch_deg, self.plant_pitch_rate_dps, self.plant_position_m, self.plant_velocity_mps, self.target_wheel_velocity, self.actual_wheel_velocity, self.plant_velocity_error, self.f_cmd, self.f_app, self.external_force_n, self.external_com_bias_rad, self.x_ddot, self.theta_ddot, self.force_saturated, self.phase_error_steps, self.missed_steps, self.traction_limit_n, self.motor_force_limit_n, self.total_mass_scale, self.pitch_inertia_scale, self.motor_max_force_n, self.motor_no_load_speed_mps, self.motor_velocity_damping, self.motor_tau_s, self.traction_coefficient, self.pitch_damping, self.cart_damping, self.phase_error_limit_steps, self.tire_stiffness_n_per_m, self.tire_damping_n_s_per_m, self.wheel_equivalent_mass_kg))
+        data.extend(struct.pack("<III4xQfffffffffffffffffffffffffii??2x", self.run_id, self.controller_fault_flags, self.controller_saturation_flags, self.imu_timestamp_us, self.t_sec, self.age_ms, self.pitch_deg, self.pitch_rate_dps, self.raw_acc_pitch_deg, self.fused_pitch_deg, self.gyro_pitch_rate_dps, self.filtered_pitch_rate_dps, self.u_sps, self.turn_sps, self.target_velocity_sps, self.vel_error, self.measured_vel_sps, self.velocity_p_term_deg, self.velocity_i_term_deg, self.pitch_error_deg, self.pitch_sp_deg, self.rate_setpoint_dps, self.rate_error_dps, self.left_target_sps, self.right_target_sps, self.left_applied_sps, self.right_applied_sps, self.motor_update_dt_ms, self.motor_feedback_age_ms, self.left_actual_steps, self.right_actual_steps, self.command_saturated, self.actuator_fault))
         return bytes(data)
 
     def pack(self) -> bytes:
@@ -174,9 +143,9 @@ class SystemTelemetryPayload:
     @classmethod
     def unpack_wire(cls, data: bytes) -> "SystemTelemetryPayload":
         offset = 0
-        run_id, seed, controller_fault_flags, controller_saturation_flags, imu_timestamp_us, t_sec, age_ms, pitch_deg, pitch_rate_dps, raw_acc_pitch_deg, fused_pitch_deg, gyro_pitch_rate_dps, filtered_pitch_rate_dps, u_sps, turn_sps, target_velocity_sps, vel_error, measured_vel_sps, velocity_p_term_deg, velocity_i_term_deg, pitch_error_deg, pitch_sp_deg, rate_setpoint_dps, rate_error_dps, command_saturated, actuator_fault, left_target_sps, right_target_sps, left_applied_sps, right_applied_sps, motor_update_dt_ms, motor_feedback_age_ms, left_actual_steps, right_actual_steps, plant_pitch_deg, plant_pitch_rate_dps, plant_position_m, plant_velocity_mps, target_wheel_velocity, actual_wheel_velocity, plant_velocity_error, f_cmd, f_app, external_force_n, external_com_bias_rad, x_ddot, theta_ddot, force_saturated, phase_error_steps, missed_steps, traction_limit_n, motor_force_limit_n, total_mass_scale, pitch_inertia_scale, motor_max_force_n, motor_no_load_speed_mps, motor_velocity_damping, motor_tau_s, traction_coefficient, pitch_damping, cart_damping, phase_error_limit_steps, tire_stiffness_n_per_m, tire_damping_n_s_per_m, wheel_equivalent_mass_kg = struct.unpack_from("<IIIIQdddddddddddddddddddddddddddqqddddddddddddddddddddddddddddddd", data, offset)
-        offset += struct.calcsize("<IIIIQdddddddddddddddddddddddddddqqddddddddddddddddddddddddddddddd")
-        return cls(run_id=run_id, seed=seed, controller_fault_flags=controller_fault_flags, controller_saturation_flags=controller_saturation_flags, imu_timestamp_us=imu_timestamp_us, t_sec=t_sec, age_ms=age_ms, pitch_deg=pitch_deg, pitch_rate_dps=pitch_rate_dps, raw_acc_pitch_deg=raw_acc_pitch_deg, fused_pitch_deg=fused_pitch_deg, gyro_pitch_rate_dps=gyro_pitch_rate_dps, filtered_pitch_rate_dps=filtered_pitch_rate_dps, u_sps=u_sps, turn_sps=turn_sps, target_velocity_sps=target_velocity_sps, vel_error=vel_error, measured_vel_sps=measured_vel_sps, velocity_p_term_deg=velocity_p_term_deg, velocity_i_term_deg=velocity_i_term_deg, pitch_error_deg=pitch_error_deg, pitch_sp_deg=pitch_sp_deg, rate_setpoint_dps=rate_setpoint_dps, rate_error_dps=rate_error_dps, command_saturated=command_saturated, actuator_fault=actuator_fault, left_target_sps=left_target_sps, right_target_sps=right_target_sps, left_applied_sps=left_applied_sps, right_applied_sps=right_applied_sps, motor_update_dt_ms=motor_update_dt_ms, motor_feedback_age_ms=motor_feedback_age_ms, left_actual_steps=left_actual_steps, right_actual_steps=right_actual_steps, plant_pitch_deg=plant_pitch_deg, plant_pitch_rate_dps=plant_pitch_rate_dps, plant_position_m=plant_position_m, plant_velocity_mps=plant_velocity_mps, target_wheel_velocity=target_wheel_velocity, actual_wheel_velocity=actual_wheel_velocity, plant_velocity_error=plant_velocity_error, f_cmd=f_cmd, f_app=f_app, external_force_n=external_force_n, external_com_bias_rad=external_com_bias_rad, x_ddot=x_ddot, theta_ddot=theta_ddot, force_saturated=force_saturated, phase_error_steps=phase_error_steps, missed_steps=missed_steps, traction_limit_n=traction_limit_n, motor_force_limit_n=motor_force_limit_n, total_mass_scale=total_mass_scale, pitch_inertia_scale=pitch_inertia_scale, motor_max_force_n=motor_max_force_n, motor_no_load_speed_mps=motor_no_load_speed_mps, motor_velocity_damping=motor_velocity_damping, motor_tau_s=motor_tau_s, traction_coefficient=traction_coefficient, pitch_damping=pitch_damping, cart_damping=cart_damping, phase_error_limit_steps=phase_error_limit_steps, tire_stiffness_n_per_m=tire_stiffness_n_per_m, tire_damping_n_s_per_m=tire_damping_n_s_per_m, wheel_equivalent_mass_kg=wheel_equivalent_mass_kg)
+        run_id, controller_fault_flags, controller_saturation_flags, imu_timestamp_us, t_sec, age_ms, pitch_deg, pitch_rate_dps, raw_acc_pitch_deg, fused_pitch_deg, gyro_pitch_rate_dps, filtered_pitch_rate_dps, u_sps, turn_sps, target_velocity_sps, vel_error, measured_vel_sps, velocity_p_term_deg, velocity_i_term_deg, pitch_error_deg, pitch_sp_deg, rate_setpoint_dps, rate_error_dps, left_target_sps, right_target_sps, left_applied_sps, right_applied_sps, motor_update_dt_ms, motor_feedback_age_ms, left_actual_steps, right_actual_steps, command_saturated, actuator_fault = struct.unpack_from("<III4xQfffffffffffffffffffffffffii??2x", data, offset)
+        offset += struct.calcsize("<III4xQfffffffffffffffffffffffffii??2x")
+        return cls(run_id=run_id, controller_fault_flags=controller_fault_flags, controller_saturation_flags=controller_saturation_flags, imu_timestamp_us=imu_timestamp_us, t_sec=t_sec, age_ms=age_ms, pitch_deg=pitch_deg, pitch_rate_dps=pitch_rate_dps, raw_acc_pitch_deg=raw_acc_pitch_deg, fused_pitch_deg=fused_pitch_deg, gyro_pitch_rate_dps=gyro_pitch_rate_dps, filtered_pitch_rate_dps=filtered_pitch_rate_dps, u_sps=u_sps, turn_sps=turn_sps, target_velocity_sps=target_velocity_sps, vel_error=vel_error, measured_vel_sps=measured_vel_sps, velocity_p_term_deg=velocity_p_term_deg, velocity_i_term_deg=velocity_i_term_deg, pitch_error_deg=pitch_error_deg, pitch_sp_deg=pitch_sp_deg, rate_setpoint_dps=rate_setpoint_dps, rate_error_dps=rate_error_dps, left_target_sps=left_target_sps, right_target_sps=right_target_sps, left_applied_sps=left_applied_sps, right_applied_sps=right_applied_sps, motor_update_dt_ms=motor_update_dt_ms, motor_feedback_age_ms=motor_feedback_age_ms, left_actual_steps=left_actual_steps, right_actual_steps=right_actual_steps, command_saturated=command_saturated, actuator_fault=actuator_fault)
 
     @classmethod
     def unpack(cls, data: bytes) -> "SystemTelemetryPayload":
@@ -461,6 +430,74 @@ class ImuRawPayload:
     def unpack(cls, data: bytes) -> "ImuRawPayload":
         return cls.unpack_wire(data)
 
+@dataclass
+class SimulatorTelemetryPayload:
+    WIRE_SIZE = 264
+    system: SystemTelemetryPayload
+    seed: int
+    plant_pitch_deg: float
+    plant_pitch_rate_dps: float
+    plant_position_m: float
+    plant_velocity_mps: float
+    target_wheel_velocity: float
+    actual_wheel_velocity: float
+    plant_velocity_error: float
+    f_cmd: float
+    f_app: float
+    external_force_n: float
+    external_com_bias_rad: float
+    x_ddot: float
+    theta_ddot: float
+    phase_error_steps: float
+    missed_steps: float
+    traction_limit_n: float
+    motor_force_limit_n: float
+    total_mass_scale: float
+    pitch_inertia_scale: float
+    motor_max_force_n: float
+    motor_no_load_speed_mps: float
+    motor_velocity_damping: float
+    motor_tau_s: float
+    traction_coefficient: float
+    pitch_damping: float
+    cart_damping: float
+    phase_error_limit_steps: float
+    tire_stiffness_n_per_m: float
+    tire_damping_n_s_per_m: float
+    wheel_equivalent_mass_kg: float
+    force_saturated: bool
+
+    def pack_wire(self) -> bytes:
+        data = bytearray()
+        item = self.system
+        if not hasattr(item, 'pack_wire'):
+            if isinstance(item, tuple):
+                item = SystemTelemetryPayload(*item)
+            elif isinstance(item, dict):
+                item = SystemTelemetryPayload(**item)
+            else:
+                item = SystemTelemetryPayload(item)
+        data.extend(item.pack_wire())
+        data.extend(struct.pack("<Iffffffffffffffffffffffffffffff?3x", self.seed, self.plant_pitch_deg, self.plant_pitch_rate_dps, self.plant_position_m, self.plant_velocity_mps, self.target_wheel_velocity, self.actual_wheel_velocity, self.plant_velocity_error, self.f_cmd, self.f_app, self.external_force_n, self.external_com_bias_rad, self.x_ddot, self.theta_ddot, self.phase_error_steps, self.missed_steps, self.traction_limit_n, self.motor_force_limit_n, self.total_mass_scale, self.pitch_inertia_scale, self.motor_max_force_n, self.motor_no_load_speed_mps, self.motor_velocity_damping, self.motor_tau_s, self.traction_coefficient, self.pitch_damping, self.cart_damping, self.phase_error_limit_steps, self.tire_stiffness_n_per_m, self.tire_damping_n_s_per_m, self.wheel_equivalent_mass_kg, self.force_saturated))
+        return bytes(data)
+
+    def pack(self) -> bytes:
+        return self.pack_wire()
+
+    @classmethod
+    def unpack_wire(cls, data: bytes) -> "SimulatorTelemetryPayload":
+        offset = 0
+        sub_size = SystemTelemetryPayload.WIRE_SIZE
+        system = SystemTelemetryPayload.unpack_wire(data[offset:offset+sub_size])
+        offset += sub_size
+        seed, plant_pitch_deg, plant_pitch_rate_dps, plant_position_m, plant_velocity_mps, target_wheel_velocity, actual_wheel_velocity, plant_velocity_error, f_cmd, f_app, external_force_n, external_com_bias_rad, x_ddot, theta_ddot, phase_error_steps, missed_steps, traction_limit_n, motor_force_limit_n, total_mass_scale, pitch_inertia_scale, motor_max_force_n, motor_no_load_speed_mps, motor_velocity_damping, motor_tau_s, traction_coefficient, pitch_damping, cart_damping, phase_error_limit_steps, tire_stiffness_n_per_m, tire_damping_n_s_per_m, wheel_equivalent_mass_kg, force_saturated = struct.unpack_from("<Iffffffffffffffffffffffffffffff?3x", data, offset)
+        offset += struct.calcsize("<Iffffffffffffffffffffffffffffff?3x")
+        return cls(system=system, seed=seed, plant_pitch_deg=plant_pitch_deg, plant_pitch_rate_dps=plant_pitch_rate_dps, plant_position_m=plant_position_m, plant_velocity_mps=plant_velocity_mps, target_wheel_velocity=target_wheel_velocity, actual_wheel_velocity=actual_wheel_velocity, plant_velocity_error=plant_velocity_error, f_cmd=f_cmd, f_app=f_app, external_force_n=external_force_n, external_com_bias_rad=external_com_bias_rad, x_ddot=x_ddot, theta_ddot=theta_ddot, phase_error_steps=phase_error_steps, missed_steps=missed_steps, traction_limit_n=traction_limit_n, motor_force_limit_n=motor_force_limit_n, total_mass_scale=total_mass_scale, pitch_inertia_scale=pitch_inertia_scale, motor_max_force_n=motor_max_force_n, motor_no_load_speed_mps=motor_no_load_speed_mps, motor_velocity_damping=motor_velocity_damping, motor_tau_s=motor_tau_s, traction_coefficient=traction_coefficient, pitch_damping=pitch_damping, cart_damping=cart_damping, phase_error_limit_steps=phase_error_limit_steps, tire_stiffness_n_per_m=tire_stiffness_n_per_m, tire_damping_n_s_per_m=tire_damping_n_s_per_m, wheel_equivalent_mass_kg=wheel_equivalent_mass_kg, force_saturated=force_saturated)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> "SimulatorTelemetryPayload":
+        return cls.unpack_wire(data)
+
 MESSAGE_BY_ID = {
     MsgId.PhysicsTick: PhysicsTickPayload,
     MsgId.JoystickCommand: JoystickCommandPayload,
@@ -471,18 +508,20 @@ MESSAGE_BY_ID = {
     MsgId.SimStopRun: SimStopRunPayload,
     MsgId.SimRunDone: SimRunDonePayload,
     MsgId.ImuRawData: ImuRawPayload,
+    MsgId.SimulatorTelemetry: SimulatorTelemetryPayload,
 }
 
 PAYLOAD_SIZE_BY_ID = {
     MsgId.PhysicsTick: 16,
     MsgId.JoystickCommand: 16,
     MsgId.MotorTargets: 16,
-    MsgId.SystemTelemetry: 504,
+    MsgId.SystemTelemetry: 136,
     MsgId.SimStartRun: 1120,
     MsgId.SimStartAck: 8,
     MsgId.SimStopRun: 4,
     MsgId.SimRunDone: 104,
     MsgId.ImuRawData: 56,
+    MsgId.SimulatorTelemetry: 264,
 }
 
-PROTOCOL_HASH = "09915846710265fe"
+PROTOCOL_HASH = "25cdf09604164fd7"

@@ -144,8 +144,8 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
     t.pitch_sp_deg = p_->pitch_setpoint_rad * 180.0 / M_PI;
     t.rate_sp_dps = p_->rate_setpoint_rad_s * 180.0 / M_PI;
     t.rate_error_dps = (p_->rate_setpoint_rad_s - pitch_rate_rad_s) * 180.0 / M_PI;
-    t.command_saturated = p_->command_saturated ? 1.0 : 0.0;
-    t.actuator_fault = p_->actuator_fault ? 1.0 : 0.0;
+    t.command_saturated = p_->command_saturated;
+    t.actuator_fault = p_->actuator_fault;
     t.controller_fault_flags = p_->controller_fault_flags;
     t.controller_saturation_flags = p_->controller_saturation_flags;
     p_->tel_cb(std::move(t));
@@ -231,7 +231,7 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
     const double candidate_i =
         std::clamp(p_->com_trim_rad + integral_delta, -integral_limit_rad, integral_limit_rad);
     p_->acceleration_pitch_rad = std::clamp(
-        -std::atan2(p_->target_acceleration_sps2 * Config::meters_per_step, Config::g0),
+        std::atan2(p_->target_acceleration_sps2 * Config::meters_per_step, Config::g0),
         -kMaxAccelerationPitchRad, kMaxAccelerationPitchRad);
     const double candidate_pitch =
         p_->acceleration_pitch_rad + p_->velocity_p_rad + candidate_i;
@@ -267,11 +267,10 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
                                    {0.0f, static_cast<float>(pitch_accel_rad_s2), 0.0f},
                                    static_cast<float>(dt), false);
 
-  // The rate loop supplies the balance correction around the commanded wheel
-  // speed. Without this kinematic feed-forward, a velocity-command actuator
-  // can only sustain travel by holding a permanent attitude/rate error.
-  const double raw_balance_sps =
-      p_->target_velocity_sps - static_cast<double>(u(1)) * ConfigPid::output_scale_sps;
+  // The outer loop requests motion through pitch. The rate loop alone allocates
+  // the wheel command, avoiding a second direct-speed term that can cancel its
+  // balance correction at the motor boundary.
+  const double raw_balance_sps = -static_cast<double>(u(1)) * ConfigPid::output_scale_sps;
   const double balance_limit_sps = std::clamp(ConfigPid::balance_max_sps, 0.0, kMaxSps);
   const double balance_sps = std::clamp(raw_balance_sps, -balance_limit_sps, balance_limit_sps);
   const double raw_turn_sps =

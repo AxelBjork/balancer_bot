@@ -19,12 +19,12 @@ inline constexpr char kControlServiceDoc[] =
     "error and target acceleration form the pitch reference, while a bounded integral term learns "
     "only the stationary center-of-mass trim:\n\n"
     "$$ \\theta_{sp} = k_{vp}(v_{ref} - v) "
-    "- \\operatorname{atan2}(a_{ref}s_m,g) + \\theta_{COM} $$\n\n"
+    "+ \\operatorname{atan2}(a_{ref}s_m,g) + \\theta_{COM} $$\n\n"
     "$$ \\omega_{sp} = k_{pitch}(\\theta_{sp} - \\theta) - k_{pitch\\_rate}\\dot{\\theta} $$\n\n"
-    "The governed speed is fed forward and the unchanged pitch-rate controller adds its balance "
-    "correction before balance-priority turn allocation. Completed motor pulses provide velocity "
-    "feedback. Faults reset dynamic state but preserve bounded COM trim. Existing telemetry "
-    "reports the pitch-reference terms, commands, feedback, saturation, and faults.";
+    "The pitch-rate controller supplies the wheel command before turn allocation. Motor output can "
+    "initially reduce or reverse to acquire lean. Faults clear dynamic state but preserve bounded "
+    "COM trim. Telemetry reports the pitch-reference terms, commands, feedback, saturation, and "
+    "faults.";
 
 class DOC_DESC(kControlServiceDoc) ControlService {
  public:

@@ -11,8 +11,8 @@ This document is generated from the balancer runtime message registry and the re
 It describes the reflected runtime message bus used by the balancer services, including the UDP-facing
 messages consumed by the SIL harness and the internal-only messages exchanged between services.
 
-- Documented balancer message count: `11`
-- Protocol hash: `09915846710265fe`
+- Documented balancer message count: `12`
+- Protocol hash: `25cdf09604164fd7`
 - UDP ingress/egress gateway: `UdpBridge`
 
 ## System Architecture
@@ -57,11 +57,11 @@ The architecture is divided into three logical areas:
 >
 > A ramped joystick command supplies a governed wheel-speed reference. At 50 Hz, velocity error and target acceleration form the pitch reference, while a bounded integral term learns only the stationary center-of-mass trim:
 >
-> $$ \theta_{sp} = k_{vp}(v_{ref} - v) - \operatorname{atan2}(a_{ref}s_m,g) + \theta_{COM} $$
+> $$ \theta_{sp} = k_{vp}(v_{ref} - v) + \operatorname{atan2}(a_{ref}s_m,g) + \theta_{COM} $$
 >
 > $$ \omega_{sp} = k_{pitch}(\theta_{sp} - \theta) - k_{pitch\_rate}\dot{\theta} $$
 >
-> The governed speed is fed forward and the unchanged pitch-rate controller adds its balance correction before balance-priority turn allocation. Completed motor pulses provide velocity feedback. Faults reset dynamic state but preserve bounded COM trim. Existing telemetry reports the pitch-reference terms, commands, feedback, saturation, and faults.
+> The pitch-rate controller supplies the wheel command before turn allocation. Motor output can initially reduce or reverse to acquire lean. Faults clear dynamic state but preserve bounded COM trim. Telemetry reports the pitch-reference terms, commands, feedback, saturation, and faults.
 
 - Publishes: `MotorTargets`, `SystemTelemetry`
 - Subscribes: `PhysicsTick`, `ImuData`, `JoystickCommand`, `MotorFeedback`
@@ -101,7 +101,7 @@ The architecture is divided into three logical areas:
 > This makes the UDP contract symmetric with the Python bindings generated from the same message definitions. Ope
 
 - Publishes: `PhysicsTick`, `JoystickCommand`, `ImuRawData`, `SimStartRun`, `SimStopRun`
-- Subscribes: `MotorTargets`, `SystemTelemetry`, `SimStartAck`, `SimRunDone`
+- Subscribes: `MotorTargets`, `SystemTelemetry`, `SimulatorTelemetry`, `SimStartAck`, `SimRunDone`
 
 ---
 
@@ -175,77 +175,45 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 - Numeric ID: `3003`
 - Payload type: `SystemTelemetryPayload`
 - Python type: `SystemTelemetryPayload`
-- Wire size: `504` bytes
+- Wire size: `136` bytes
 - Published by: `ControlService`
 - Consumed by: `UdpBridge`
 
 | Field | C++ Type | Python Type | Bytes | Offset | Description |
 |---|---|---|---:|---:|---|
 | `run_id` | `uint32_t` | `int` | 4 | 0 |  |
-| `seed` | `uint32_t` | `int` | 4 | 4 |  |
-| `controller_fault_flags` | `uint32_t` | `int` | 4 | 8 |  |
-| `controller_saturation_flags` | `uint32_t` | `int` | 4 | 12 |  |
+| `controller_fault_flags` | `uint32_t` | `int` | 4 | 4 |  |
+| `controller_saturation_flags` | `uint32_t` | `int` | 4 | 8 |  |
 | `imu_timestamp_us` | `uint64_t` | `int` | 8 | 16 |  |
-| `t_sec` | `double` | `float` | 8 | 24 |  |
-| `age_ms` | `double` | `float` | 8 | 32 |  |
-| `pitch_deg` | `double` | `float` | 8 | 40 |  |
-| `pitch_rate_dps` | `double` | `float` | 8 | 48 |  |
-| `raw_acc_pitch_deg` | `double` | `float` | 8 | 56 |  |
-| `fused_pitch_deg` | `double` | `float` | 8 | 64 |  |
-| `gyro_pitch_rate_dps` | `double` | `float` | 8 | 72 |  |
-| `filtered_pitch_rate_dps` | `double` | `float` | 8 | 80 |  |
-| `u_sps` | `double` | `float` | 8 | 88 |  |
-| `turn_sps` | `double` | `float` | 8 | 96 |  |
-| `target_velocity_sps` | `double` | `float` | 8 | 104 |  |
-| `vel_error` | `double` | `float` | 8 | 112 |  |
-| `measured_vel_sps` | `double` | `float` | 8 | 120 |  |
-| `velocity_p_term_deg` | `double` | `float` | 8 | 128 |  |
-| `velocity_i_term_deg` | `double` | `float` | 8 | 136 |  |
-| `pitch_error_deg` | `double` | `float` | 8 | 144 |  |
-| `pitch_sp_deg` | `double` | `float` | 8 | 152 |  |
-| `rate_setpoint_dps` | `double` | `float` | 8 | 160 |  |
-| `rate_error_dps` | `double` | `float` | 8 | 168 |  |
-| `command_saturated` | `double` | `float` | 8 | 176 |  |
-| `actuator_fault` | `double` | `float` | 8 | 184 |  |
-| `left_target_sps` | `double` | `float` | 8 | 192 |  |
-| `right_target_sps` | `double` | `float` | 8 | 200 |  |
-| `left_applied_sps` | `double` | `float` | 8 | 208 |  |
-| `right_applied_sps` | `double` | `float` | 8 | 216 |  |
-| `motor_update_dt_ms` | `double` | `float` | 8 | 224 |  |
-| `motor_feedback_age_ms` | `double` | `float` | 8 | 232 |  |
-| `left_actual_steps` | `int64_t` | `int` | 8 | 240 |  |
-| `right_actual_steps` | `int64_t` | `int` | 8 | 248 |  |
-| `plant_pitch_deg` | `double` | `float` | 8 | 256 |  |
-| `plant_pitch_rate_dps` | `double` | `float` | 8 | 264 |  |
-| `plant_position_m` | `double` | `float` | 8 | 272 |  |
-| `plant_velocity_mps` | `double` | `float` | 8 | 280 |  |
-| `target_wheel_velocity` | `double` | `float` | 8 | 288 |  |
-| `actual_wheel_velocity` | `double` | `float` | 8 | 296 |  |
-| `plant_velocity_error` | `double` | `float` | 8 | 304 |  |
-| `f_cmd` | `double` | `float` | 8 | 312 |  |
-| `f_app` | `double` | `float` | 8 | 320 |  |
-| `external_force_n` | `double` | `float` | 8 | 328 |  |
-| `external_com_bias_rad` | `double` | `float` | 8 | 336 |  |
-| `x_ddot` | `double` | `float` | 8 | 344 |  |
-| `theta_ddot` | `double` | `float` | 8 | 352 |  |
-| `force_saturated` | `double` | `float` | 8 | 360 |  |
-| `phase_error_steps` | `double` | `float` | 8 | 368 |  |
-| `missed_steps` | `double` | `float` | 8 | 376 |  |
-| `traction_limit_n` | `double` | `float` | 8 | 384 |  |
-| `motor_force_limit_n` | `double` | `float` | 8 | 392 |  |
-| `total_mass_scale` | `double` | `float` | 8 | 400 |  |
-| `pitch_inertia_scale` | `double` | `float` | 8 | 408 |  |
-| `motor_max_force_n` | `double` | `float` | 8 | 416 |  |
-| `motor_no_load_speed_mps` | `double` | `float` | 8 | 424 |  |
-| `motor_velocity_damping` | `double` | `float` | 8 | 432 |  |
-| `motor_tau_s` | `double` | `float` | 8 | 440 |  |
-| `traction_coefficient` | `double` | `float` | 8 | 448 |  |
-| `pitch_damping` | `double` | `float` | 8 | 456 |  |
-| `cart_damping` | `double` | `float` | 8 | 464 |  |
-| `phase_error_limit_steps` | `double` | `float` | 8 | 472 |  |
-| `tire_stiffness_n_per_m` | `double` | `float` | 8 | 480 |  |
-| `tire_damping_n_s_per_m` | `double` | `float` | 8 | 488 |  |
-| `wheel_equivalent_mass_kg` | `double` | `float` | 8 | 496 |  |
+| `t_sec` | `float` | `float` | 4 | 24 |  |
+| `age_ms` | `float` | `float` | 4 | 28 |  |
+| `pitch_deg` | `float` | `float` | 4 | 32 |  |
+| `pitch_rate_dps` | `float` | `float` | 4 | 36 |  |
+| `raw_acc_pitch_deg` | `float` | `float` | 4 | 40 |  |
+| `fused_pitch_deg` | `float` | `float` | 4 | 44 |  |
+| `gyro_pitch_rate_dps` | `float` | `float` | 4 | 48 |  |
+| `filtered_pitch_rate_dps` | `float` | `float` | 4 | 52 |  |
+| `u_sps` | `float` | `float` | 4 | 56 |  |
+| `turn_sps` | `float` | `float` | 4 | 60 |  |
+| `target_velocity_sps` | `float` | `float` | 4 | 64 |  |
+| `vel_error` | `float` | `float` | 4 | 68 |  |
+| `measured_vel_sps` | `float` | `float` | 4 | 72 |  |
+| `velocity_p_term_deg` | `float` | `float` | 4 | 76 |  |
+| `velocity_i_term_deg` | `float` | `float` | 4 | 80 |  |
+| `pitch_error_deg` | `float` | `float` | 4 | 84 |  |
+| `pitch_sp_deg` | `float` | `float` | 4 | 88 |  |
+| `rate_setpoint_dps` | `float` | `float` | 4 | 92 |  |
+| `rate_error_dps` | `float` | `float` | 4 | 96 |  |
+| `left_target_sps` | `float` | `float` | 4 | 100 |  |
+| `right_target_sps` | `float` | `float` | 4 | 104 |  |
+| `left_applied_sps` | `float` | `float` | 4 | 108 |  |
+| `right_applied_sps` | `float` | `float` | 4 | 112 |  |
+| `motor_update_dt_ms` | `float` | `float` | 4 | 116 |  |
+| `motor_feedback_age_ms` | `float` | `float` | 4 | 120 |  |
+| `left_actual_steps` | `int32_t` | `int` | 4 | 124 |  |
+| `right_actual_steps` | `int32_t` | `int` | 4 | 128 |  |
+| `command_saturated` | `bool` | `bool` | 1 | 132 |  |
+| `actuator_fault` | `bool` | `bool` | 1 | 133 |  |
 
 ### `MsgId::MotorFeedback`
 
@@ -384,6 +352,51 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 | `acc` | `std::array<double, 3>` | `list[float]` | 24 | 0 |  |
 | `gyr` | `std::array<double, 3>` | `list[float]` | 24 | 24 |  |
 | `timestamp_us` | `uint64_t` | `int` | 8 | 48 |  |
+
+### `MsgId::SimulatorTelemetry`
+
+- Numeric ID: `3010`
+- Payload type: `SimulatorTelemetryPayload`
+- Python type: `SimulatorTelemetryPayload`
+- Wire size: `264` bytes
+- Published by: _None_
+- Consumed by: `UdpBridge`
+
+| Field | C++ Type | Python Type | Bytes | Offset | Description |
+|---|---|---|---:|---:|---|
+| `system` | `SystemTelemetryPayload` | `SystemTelemetryPayload` | 136 | 0 |  |
+| `seed` | `uint32_t` | `int` | 4 | 136 |  |
+| `plant_pitch_deg` | `float` | `float` | 4 | 140 |  |
+| `plant_pitch_rate_dps` | `float` | `float` | 4 | 144 |  |
+| `plant_position_m` | `float` | `float` | 4 | 148 |  |
+| `plant_velocity_mps` | `float` | `float` | 4 | 152 |  |
+| `target_wheel_velocity` | `float` | `float` | 4 | 156 |  |
+| `actual_wheel_velocity` | `float` | `float` | 4 | 160 |  |
+| `plant_velocity_error` | `float` | `float` | 4 | 164 |  |
+| `f_cmd` | `float` | `float` | 4 | 168 |  |
+| `f_app` | `float` | `float` | 4 | 172 |  |
+| `external_force_n` | `float` | `float` | 4 | 176 |  |
+| `external_com_bias_rad` | `float` | `float` | 4 | 180 |  |
+| `x_ddot` | `float` | `float` | 4 | 184 |  |
+| `theta_ddot` | `float` | `float` | 4 | 188 |  |
+| `phase_error_steps` | `float` | `float` | 4 | 192 |  |
+| `missed_steps` | `float` | `float` | 4 | 196 |  |
+| `traction_limit_n` | `float` | `float` | 4 | 200 |  |
+| `motor_force_limit_n` | `float` | `float` | 4 | 204 |  |
+| `total_mass_scale` | `float` | `float` | 4 | 208 |  |
+| `pitch_inertia_scale` | `float` | `float` | 4 | 212 |  |
+| `motor_max_force_n` | `float` | `float` | 4 | 216 |  |
+| `motor_no_load_speed_mps` | `float` | `float` | 4 | 220 |  |
+| `motor_velocity_damping` | `float` | `float` | 4 | 224 |  |
+| `motor_tau_s` | `float` | `float` | 4 | 228 |  |
+| `traction_coefficient` | `float` | `float` | 4 | 232 |  |
+| `pitch_damping` | `float` | `float` | 4 | 236 |  |
+| `cart_damping` | `float` | `float` | 4 | 240 |  |
+| `phase_error_limit_steps` | `float` | `float` | 4 | 244 |  |
+| `tire_stiffness_n_per_m` | `float` | `float` | 4 | 248 |  |
+| `tire_damping_n_s_per_m` | `float` | `float` | 4 | 252 |  |
+| `wheel_equivalent_mass_kg` | `float` | `float` | 4 | 256 |  |
+| `force_saturated` | `bool` | `bool` | 1 | 260 |  |
 
 ---
 

@@ -363,15 +363,15 @@ double run_fresh_core_once(double angle_rad, double gyro_rad_s, double velocity_
 std::filesystem::path write_temp_pid_config(std::string contents) {
   const auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
   const auto path = std::filesystem::temp_directory_path() /
-                    ("balancer_pid_v2_" + std::to_string(suffix) + ".conf");
+                    ("balancer_pid_v3_" + std::to_string(suffix) + ".conf");
   std::ofstream output(path);
   output << contents;
   output.close();
   return path;
 }
 
-const char* valid_pid_v2_config() {
-  return R"(config_version = 2
+const char* valid_pid_v3_config() {
+  return R"(config_version = 3
 rate_P = 0.25
 rate_I = 0
 rate_D = 0
@@ -390,9 +390,9 @@ output_scale_sps = 3200
 )";
 }
 
-TEST(ConfigPidV2Test, LoadsCompleteStrictSchema) {
+TEST(ConfigPidV3Test, LoadsCompleteStrictSchema) {
   ScopedConfigPidRestore restore;
-  const auto path = write_temp_pid_config(valid_pid_v2_config());
+  const auto path = write_temp_pid_config(valid_pid_v3_config());
   EXPECT_NO_THROW(ConfigPid::load(path.string()));
   EXPECT_DOUBLE_EQ(ConfigPid::velocity_P, 0.002);
   EXPECT_DOUBLE_EQ(ConfigPid::balance_max_sps, 12000.0);
@@ -400,31 +400,44 @@ TEST(ConfigPidV2Test, LoadsCompleteStrictSchema) {
   std::filesystem::remove(path);
 }
 
-TEST(ConfigPidV2Test, OptionalControllerEnabledDisablesActuationMode) {
+TEST(ConfigPidV3Test, OptionalControllerEnabledDisablesActuationMode) {
   ScopedConfigPidRestore restore;
-  const auto path = write_temp_pid_config(std::string(valid_pid_v2_config()) + "controller_enabled = 0\n");
+  const auto path = write_temp_pid_config(std::string(valid_pid_v3_config()) + "controller_enabled = 0\n");
   ASSERT_NO_THROW(ConfigPid::load(path.string()));
   EXPECT_FALSE(ConfigPid::controller_enabled);
   std::filesystem::remove(path);
 }
 
-TEST(ConfigPidV2Test, RejectsUnknownDuplicateMissingNonFiniteAndInvalidValues) {
+TEST(ConfigPidV3Test, RejectsUnknownDuplicateMissingNonFiniteAndInvalidValues) {
   const std::vector<std::string> invalid = {
-      std::string(valid_pid_v2_config()) + "legacy_gain = 1\n",
-      std::string(valid_pid_v2_config()) + "rate_P = 1\n",
-      "config_version = 2\n",
-      std::string(valid_pid_v2_config())
-          .replace(std::string(valid_pid_v2_config()).find("rate_P = 0.25"), 13, "rate_P = nan"),
-      std::string(valid_pid_v2_config())
-          .replace(std::string(valid_pid_v2_config()).find("pitch_max_deg = 10"), 18,
+      std::string(valid_pid_v3_config()) + "legacy_gain = 1\n",
+      std::string(valid_pid_v3_config()) + "rate_P = 1\n",
+      "config_version = 3\n",
+      std::string(valid_pid_v3_config())
+          .replace(std::string(valid_pid_v3_config()).find("rate_P = 0.25"), 13, "rate_P = nan"),
+      std::string(valid_pid_v3_config())
+          .replace(std::string(valid_pid_v3_config()).find("pitch_max_deg = 10"), 18,
                    "pitch_max_deg = 90"),
-      std::string(valid_pid_v2_config()).replace(0, 18, "config_version = 1"),
+      std::string(valid_pid_v3_config()).replace(0, 18, "config_version = 2"),
   };
   for (const auto& contents : invalid) {
     const auto path = write_temp_pid_config(contents);
     EXPECT_THROW(ConfigPid::load(path.string()), std::runtime_error) << contents;
     std::filesystem::remove(path);
   }
+}
+
+TEST(ConfigPidV3Test, RejectsOldVersionBeforeNewSchemaKey) {
+  const auto path = write_temp_pid_config(
+      std::string(valid_pid_v3_config()).replace(0, 18, "config_version = 2") +
+      "future_only_key = 1\n");
+  try {
+    ConfigPid::load(path.string());
+    FAIL() << "Expected config version mismatch";
+  } catch (const std::runtime_error& error) {
+    EXPECT_STREQ(error.what(), "PID configuration version mismatch: expected 3, got 2");
+  }
+  std::filesystem::remove(path);
 }
 
 TEST(RateControllerCoreTest, ZeroInputsStayNearZero) {
@@ -515,6 +528,22 @@ TEST(RateControllerCoreTest, PitchRateSetpointIsLimitedBeforeRateController) {
   EXPECT_NEAR(h.runner().lastRight(), h.runner().lastLeft(), 1e-6);
 }
 
+TEST(RateControllerCoreTest, RateControllerOutputSubtractsSymmetricallyAtMotorBoundary) {
+  ScopedConfigPidRestore restore;
+  set_zeroed_gain_audit_config();
+  ConfigPid::rate_P = 0.25;
+  ConfigPid::angle_P = 100.0;
+
+  const double positive_rate_output_motor =
+      run_fresh_core_once(-10.0 * M_PI / 180.0, 0.0);
+  const double negative_rate_output_motor =
+      run_fresh_core_once(10.0 * M_PI / 180.0, 0.0);
+
+  EXPECT_LT(positive_rate_output_motor, 0.0);
+  EXPECT_GT(negative_rate_output_motor, 0.0);
+  EXPECT_NEAR(positive_rate_output_motor, -negative_rate_output_motor, 1e-6);
+}
+
 TEST(RateControllerCoreTest, BalancePriorityTrimsTurnAtRail) {
   ScopedConfigPidRestore restore;
   set_zeroed_gain_audit_config();
@@ -550,14 +579,14 @@ TEST(RateControllerCoreTest, VelocityOuterLoopRunsAtFiftyHertzAndMapsForwardComm
   EXPECT_NEAR(h.telemetry().back().target_vel_sps, 48.0, 1e-9);
   EXPECT_GT(h.telemetry().back().vel_p_term_deg, 0.0);
   EXPECT_NEAR(h.telemetry().back().vel_i_term_deg, 0.0, 1e-9);
-  EXPECT_LT(h.telemetry().back().pitch_sp_deg, h.telemetry().back().vel_p_term_deg);
-  EXPECT_NEAR(h.runner().lastLeft(), 48.0, 1e-6);
-  EXPECT_NEAR(h.runner().lastRight(), 48.0, 1e-6);
+  EXPECT_GT(h.telemetry().back().pitch_sp_deg, h.telemetry().back().vel_p_term_deg);
+  EXPECT_NEAR(h.runner().lastLeft(), 0.0, 1e-6);
+  EXPECT_NEAR(h.runner().lastRight(), 0.0, 1e-6);
 
   h.run_steps(192, 1.0 / 400.0);
   EXPECT_NEAR(h.telemetry().back().target_vel_sps, ConfigPid::drive_max_sps, 1e-9);
-  EXPECT_NEAR(h.runner().lastLeft(), ConfigPid::drive_max_sps, 1e-6);
-  EXPECT_NEAR(h.runner().lastRight(), ConfigPid::drive_max_sps, 1e-6);
+  EXPECT_NEAR(h.runner().lastLeft(), 0.0, 1e-6);
+  EXPECT_NEAR(h.runner().lastRight(), 0.0, 1e-6);
 }
 
 TEST(RateControllerCoreTest, ForwardReferenceBrakesThroughZeroBeforeReversing) {
@@ -576,28 +605,52 @@ TEST(RateControllerCoreTest, ForwardReferenceBrakesThroughZeroBeforeReversing) {
   EXPECT_NEAR(h.telemetry().back().target_vel_sps, -48.0, 1e-9);
 }
 
-TEST(RateControllerCoreTest, PositiveAndNegativeCommandsHavePromptSymmetricFeedForward) {
+TEST(RateControllerCoreTest, PositiveAndNegativeVelocityErrorsProduceSymmetricPitchReferences) {
   ScopedConfigPidRestore restore;
   set_zeroed_gain_audit_config();
-  ConfigPid::rate_P = 0.20;
-  ConfigPid::angle_P = 28.0;
-  ConfigPid::angle_D = 0.25;
   ConfigPid::velocity_P = 0.004;
 
   const auto run_direction = [](double direction) {
     RateControllerHarness h;
     h.setJoystick(direction, 0.0);
     h.runner().setActualSpeedSps(0.0);
-    h.run_steps(8, 1.0 / 400.0);
-    return std::pair{h.telemetry().back(), h.runner().lastLeft()};
+    h.run_steps(200, 1.0 / 400.0);
+    return h.telemetry().back();
   };
 
-  const auto [positive_telemetry, positive_output] = run_direction(1.0);
-  const auto [negative_telemetry, negative_output] = run_direction(-1.0);
-  EXPECT_GT(positive_output, 0.0);
-  EXPECT_LT(negative_output, 0.0);
-  EXPECT_NEAR(positive_output, -negative_output, 1e-3);
+  const auto positive_telemetry = run_direction(1.0);
+  const auto negative_telemetry = run_direction(-1.0);
+  EXPECT_GT(positive_telemetry.vel_error, 0.0);
+  EXPECT_LT(negative_telemetry.vel_error, 0.0);
+  EXPECT_GT(positive_telemetry.vel_p_term_deg, 0.0);
+  EXPECT_LT(negative_telemetry.vel_p_term_deg, 0.0);
+  EXPECT_GT(positive_telemetry.pitch_sp_deg, 0.0);
+  EXPECT_LT(negative_telemetry.pitch_sp_deg, 0.0);
   EXPECT_NEAR(positive_telemetry.pitch_sp_deg, -negative_telemetry.pitch_sp_deg, 1e-6);
+}
+
+TEST(RateControllerCoreTest, TargetAccelerationPitchFeedForwardMatchesPlantPolarity) {
+  ScopedConfigPidRestore restore;
+  set_zeroed_gain_audit_config();
+
+  const auto run_direction = [](double direction) {
+    RateControllerHarness h;
+    h.setJoystick(direction, 0.0);
+    h.runner().setActualSpeedSps(0.0);
+    h.run_steps(8, 1.0 / 400.0);
+    return h.telemetry().back();
+  };
+
+  const auto positive = run_direction(1.0);
+  const auto negative = run_direction(-1.0);
+  const double expected_pitch_deg =
+      std::atan2(2400.0 * Config::meters_per_step, Config::g0) * 180.0 / M_PI;
+  EXPECT_GT(positive.target_vel_sps, 0.0);
+  EXPECT_LT(negative.target_vel_sps, 0.0);
+  EXPECT_NEAR(positive.vel_p_term_deg, 0.0, 1e-9);
+  EXPECT_NEAR(negative.vel_p_term_deg, 0.0, 1e-9);
+  EXPECT_NEAR(positive.pitch_sp_deg, expected_pitch_deg, 1e-6);
+  EXPECT_NEAR(negative.pitch_sp_deg, -expected_pitch_deg, 1e-6);
 }
 
 TEST(RateControllerCoreTest, StationaryComTrimOpposesNeutralDriftAndRemainsBounded) {
@@ -1016,7 +1069,8 @@ TEST(ControlServiceTest, UsesMotorFeedbackForVelocityTelemetry) {
 
   ASSERT_FALSE(h.telemetry().empty());
   EXPECT_NEAR(h.telemetry().back().measured_vel_sps, 123.0, 5.0);
-  EXPECT_NEAR(h.telemetry().back().vel_error, h.telemetry().back().target_velocity_sps - 123.0,
+  EXPECT_NEAR(h.telemetry().back().vel_error,
+              static_cast<double>(h.telemetry().back().target_velocity_sps) - 123.0,
               5.0);
   EXPECT_GT(h.telemetry().back().velocity_p_term_deg, 0.0);
   EXPECT_NEAR(h.telemetry().back().left_applied_sps, 200.0, 1e-3);

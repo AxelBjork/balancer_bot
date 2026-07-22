@@ -36,7 +36,7 @@ def test_balancer_simulator_start_ack_and_done(simulator_udp):
             msg_id, payload = simulator_udp.recv(timeout=0.1)
         except TimeoutError:
             continue
-        if msg_id == int(BalancerMsgId.SystemTelemetry):
+        if msg_id == int(BalancerMsgId.SimulatorTelemetry):
             saw_telemetry = True
             continue
         if msg_id == int(BalancerMsgId.SimRunDone):

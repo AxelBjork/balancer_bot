@@ -5,10 +5,12 @@ from __future__ import annotations
 import argparse
 import csv
 import dataclasses
+import hashlib
 import json
 import logging
 import logging.handlers
 import queue
+import re
 import socket
 import struct
 import subprocess
@@ -803,22 +805,49 @@ class DeploymentManager:
             raise ValueError("Configure a Pi target before running this operation.")
         return self.ssh_target
 
-    def deploy_current(self) -> dict[str, Any]:
+    def _validate_current_build(self) -> None:
         if not PI_BINARY.is_file():
             raise ValueError(f"Cross-built binary not found: {PI_BINARY}. Run ./build_cmake OFF first.")
         if not PID_CONFIG.is_file():
             raise ValueError(f"PID config not found: {PID_CONFIG}")
+        manifest_path = PI_BINARY.with_name(f"{PI_BINARY.name}.manifest.json")
+        stale_message = "Cross-built binary is stale for pid.conf; run ./build_cmake OFF first."
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            config_match = re.search(
+                r"^\s*config_version\s*=\s*(\d+)\s*(?:#.*)?$",
+                PID_CONFIG.read_text(encoding="utf-8"),
+                re.MULTILINE,
+            )
+            if (
+                not isinstance(manifest, dict)
+                or manifest.get("format_version") != 1
+                or not config_match
+                or manifest.get("binary_sha256") != hashlib.sha256(PI_BINARY.read_bytes()).hexdigest()
+                or manifest.get("pid_config_sha256") != hashlib.sha256(PID_CONFIG.read_bytes()).hexdigest()
+                or manifest.get("pid_config_version") != int(config_match.group(1))
+            ):
+                raise ValueError(stale_message)
+        except (OSError, json.JSONDecodeError, ValueError, TypeError):
+            raise ValueError(stale_message) from None
+
+    def deploy_current(self) -> dict[str, Any]:
+        self._validate_current_build()
         output = self._run(["scp", str(PI_BINARY), str(PID_CONFIG), f"{self._target()}:~/"], 120)
         return {"ok": True, "message": output or "Deployed build-pi/balancer_pi and pid.conf to the Pi."}
 
     def start(self) -> dict[str, Any]:
+        self._validate_current_build()
         command = (
-            "cd ~ && rm -f ~/balancer_pi.pid && "
-            "(nohup sudo -n ./balancer_pi </dev/null >~/balancer_pi.log 2>&1 & "
-            "echo $! >~/balancer_pi.pid)"
+            "cd ~ || exit 1; rm -f ~/balancer_pi.pid; : >~/balancer_pi.log; "
+            "nohup sudo -n ./balancer_pi </dev/null >~/balancer_pi.log 2>&1 & "
+            "pid=$!; echo \"$pid\" >~/balancer_pi.pid; sleep 1; "
+            "if ! kill -0 \"$pid\" 2>/dev/null; then "
+            "wait \"$pid\"; status=$?; rm -f ~/balancer_pi.pid; "
+            "echo \"Start failed (exit $status):\"; tail -n 40 ~/balancer_pi.log; exit 1; fi"
         )
         self._run(["ssh", self._target(), command], 15)
-        return {"ok": True, "message": "Start requested. Live output is in ~/balancer_pi.log on the Pi."}
+        return {"ok": True, "message": "Balancer started successfully. Live output is in ~/balancer_pi.log on the Pi."}
 
     def abort(self) -> dict[str, Any]:
         command = (
@@ -1067,6 +1096,19 @@ def make_handler(hub: SseHub, state: TelemetryState, deployer: DeploymentManager
                     state.set_run_active(False)
                 self._json(HTTPStatus.OK, result)
             except (KeyError, ValueError, RuntimeError, subprocess.TimeoutExpired, FileNotFoundError) as exc:
+                DIAGNOSTIC_LOGGER.error(
+                    "dashboard %s failed: %s",
+                    self.path,
+                    exc,
+                    extra={
+                        "event_data": {
+                            "event": "dashboard_operation_failure",
+                            "operation": self.path.removeprefix("/api/"),
+                            "error_type": type(exc).__name__,
+                            "error": str(exc),
+                        }
+                    },
+                )
                 self._json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
 
         def _json(self, status: HTTPStatus, body: dict[str, Any]) -> None:

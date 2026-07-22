@@ -49,70 +49,74 @@ struct DOC_DESC(
     "Detailed controller telemetry streamed out over UDP and used for runtime logging/visibility.")
     SystemTelemetryPayload {
   uint32_t run_id;
-  uint32_t seed;
   uint32_t controller_fault_flags;
   uint32_t controller_saturation_flags;
   uint64_t imu_timestamp_us;
-  double t_sec;
-  double age_ms;
-  double pitch_deg;
-  double pitch_rate_dps;
-  double raw_acc_pitch_deg;
-  double fused_pitch_deg;
-  double gyro_pitch_rate_dps;
-  double filtered_pitch_rate_dps;
-  double u_sps;
-  double turn_sps;
-  double target_velocity_sps;
-  double vel_error;
-  double measured_vel_sps;
-  double velocity_p_term_deg;
-  double velocity_i_term_deg;
-  double pitch_error_deg;
-  double pitch_sp_deg;
-  double rate_setpoint_dps;
-  double rate_error_dps;
-  double command_saturated;
-  double actuator_fault;
-  double left_target_sps;
-  double right_target_sps;
-  double left_applied_sps;
-  double right_applied_sps;
-  double motor_update_dt_ms;
-  double motor_feedback_age_ms;
-  int64_t left_actual_steps;
-  int64_t right_actual_steps;
-  double plant_pitch_deg;
-  double plant_pitch_rate_dps;
-  double plant_position_m;
-  double plant_velocity_mps;
-  double target_wheel_velocity;
-  double actual_wheel_velocity;
-  double plant_velocity_error;
-  double f_cmd;
-  double f_app;
-  double external_force_n;
-  double external_com_bias_rad;
-  double x_ddot;
-  double theta_ddot;
-  double force_saturated;
-  double phase_error_steps;
-  double missed_steps;
-  double traction_limit_n;
-  double motor_force_limit_n;
-  double total_mass_scale;
-  double pitch_inertia_scale;
-  double motor_max_force_n;
-  double motor_no_load_speed_mps;
-  double motor_velocity_damping;
-  double motor_tau_s;
-  double traction_coefficient;
-  double pitch_damping;
-  double cart_damping;
-  double phase_error_limit_steps;
-  double tire_stiffness_n_per_m;
-  double tire_damping_n_s_per_m;
-  double wheel_equivalent_mass_kg;
+  float t_sec;
+  float age_ms;
+  float pitch_deg;
+  float pitch_rate_dps;
+  float raw_acc_pitch_deg;
+  float fused_pitch_deg;
+  float gyro_pitch_rate_dps;
+  float filtered_pitch_rate_dps;
+  float u_sps;
+  float turn_sps;
+  float target_velocity_sps;
+  float vel_error;
+  float measured_vel_sps;
+  float velocity_p_term_deg;
+  float velocity_i_term_deg;
+  float pitch_error_deg;
+  float pitch_sp_deg;
+  float rate_setpoint_dps;
+  float rate_error_dps;
+  float left_target_sps;
+  float right_target_sps;
+  float left_applied_sps;
+  float right_applied_sps;
+  float motor_update_dt_ms;
+  float motor_feedback_age_ms;
+  int32_t left_actual_steps;
+  int32_t right_actual_steps;
+  bool command_saturated;
+  bool actuator_fault;
+};
+
+struct SimulatorTelemetryPayload {
+  SystemTelemetryPayload system;
+  uint32_t seed;
+  float plant_pitch_deg;
+  float plant_pitch_rate_dps;
+  float plant_position_m;
+  float plant_velocity_mps;
+  float target_wheel_velocity;
+  float actual_wheel_velocity;
+  float plant_velocity_error;
+  float f_cmd;
+  float f_app;
+  float external_force_n;
+  float external_com_bias_rad;
+  float x_ddot;
+  float theta_ddot;
+  float phase_error_steps;
+  float missed_steps;
+  float traction_limit_n;
+  float motor_force_limit_n;
+  float total_mass_scale;
+  float pitch_inertia_scale;
+  float motor_max_force_n;
+  float motor_no_load_speed_mps;
+  float motor_velocity_damping;
+  float motor_tau_s;
+  float traction_coefficient;
+  float pitch_damping;
+  float cart_damping;
+  float phase_error_limit_steps;
+  float tire_stiffness_n_per_m;
+  float tire_damping_n_s_per_m;
+  float wheel_equivalent_mass_kg;
+  bool force_saturated;
 };
 
 struct DOC_DESC(
@@ -263,6 +267,12 @@ template <>
 struct MessageTraits<MsgId::SystemTelemetry> {
   using Payload = ipc::SystemTelemetryPayload;
   static constexpr std::string_view name = "SystemTelemetry";
+};
+
+template <>
+struct MessageTraits<MsgId::SimulatorTelemetry> {
+  using Payload = ipc::SimulatorTelemetryPayload;
+  static constexpr std::string_view name = "SimulatorTelemetry";
 };
 
 template <>
