@@ -59,9 +59,19 @@ struct DOC_DESC(
   double filtered_pitch_rate_dps;
   double u_sps;
   double turn_sps;
-  double vel_error;
-  double measured_vel_sps;
-  double vel_p_term;
+  // Compatibility aliases for pre-velocity-decomposition consumers. Prefer the
+  // explicitly named fields immediately below.
+  double vel_error;         // Legacy zero-reference error of corrected_axle_velocity_sps [steps/s].
+  double measured_vel_sps;  // Legacy corrected_axle_velocity_sps [steps/s].
+  double vel_p_term;  // Legacy velocity-loop pitch contribution from corrected axle velocity [rad].
+  double raw_common_mode_completed_step_velocity_sps;
+  double pitch_motion_correction_sps;
+  double corrected_axle_velocity_sps;
+  double corrected_axle_velocity_mps;
+  double nominal_acceleration_mps2;
+  double commanded_acceleration_mps2;
+  double acceleration_pitch_contribution_deg;
+  double current_pitch_trim_deg;
   double pitch_ref_from_vel_deg;
   double pitch_error_deg;
   double pitch_sp_deg;

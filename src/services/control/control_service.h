@@ -3,10 +3,10 @@
 #include <algorithm>
 #include <cmath>
 
-#include "services/main/config.h"
 #include "messages/balancer_msgs.h"
 #include "publisher.h"
 #include "services/control/rate_controller_core.h"
+#include "services/main/config.h"
 
 namespace sil {
 
@@ -29,7 +29,8 @@ inline constexpr char kControlServiceDoc[] =
     "The service also exposes several practical adaptations that matter for balancing behavior: it "
     "uses real motor feedback from `MotorService` whenever it is available and falls back to the "
     "last commanded wheel speeds only in SIL-style configurations where no hardware feedback "
-    "exists. It learns a slow lean-trim bias from persistent drift, and resets or decays that trim when the "
+    "exists. It learns a slow lean-trim bias from persistent drift, and resets or decays that trim "
+    "when the "
     "robot is highly tilted or actively commanded. Every control step also publishes "
     "`SystemTelemetry`, including fused pitch, filtered pitch rate, raw IMU diagnostics, "
     "pitch-reference decomposition, rate setpoint, controller output, wheel-speed command, "
@@ -65,7 +66,9 @@ class DOC_DESC(kControlServiceDoc) ControlService {
   double last_right_sps_ = 0.0;
   ipc::MotorFeedbackPayload latest_motor_feedback_{};
   bool have_motor_feedback_ = false;
-  double observed_velocity_sps_ = 0.0;
+  // Signed common-mode velocity derived from motor-completed steps. The core
+  // applies its pitch-motion correction before using it in the outer loop.
+  double raw_common_mode_completed_step_velocity_sps_ = 0.0;
   double filtered_velocity_sps_ = 0.0;
   double velocity_observer_accum_s_ = 0.0;
   double last_raw_acc_pitch_deg_ = 0.0;
@@ -108,15 +111,15 @@ inline void ControlService::on_message<MsgId::PhysicsTick>(const PhysicsTickPayl
 template <>
 inline void ControlService::on_message<MsgId::MotorFeedback>(const ipc::MotorFeedbackPayload& p) {
   latest_motor_feedback_ = p;
-  observed_velocity_sps_ = -p.measured_avg_sps;
+  raw_common_mode_completed_step_velocity_sps_ = -p.measured_avg_sps;
   if (!have_motor_feedback_) {
-    filtered_velocity_sps_ = observed_velocity_sps_;
+    filtered_velocity_sps_ = raw_common_mode_completed_step_velocity_sps_;
   }
   const double dt_s = std::max(0.0, p.update_dt_ms / 1000.0);
   velocity_observer_accum_s_ += dt_s;
   const double period_s = (Config::fc_velocity_hz > 0.0) ? (1.0 / Config::fc_velocity_hz) : 0.0;
   if (!have_motor_feedback_ || period_s <= 0.0 || velocity_observer_accum_s_ + 1e-12 >= period_s) {
-    filtered_velocity_sps_ = observed_velocity_sps_;
+    filtered_velocity_sps_ = raw_common_mode_completed_step_velocity_sps_;
     velocity_observer_accum_s_ = 0.0;
   }
   core_.updateOuterLoop(have_motor_feedback_ ? filtered_velocity_sps_ : 0.0, dt_s);

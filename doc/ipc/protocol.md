@@ -12,7 +12,7 @@ It describes the reflected runtime message bus used by the balancer services, in
 messages consumed by the SIL harness and the internal-only messages exchanged between services.
 
 - Documented balancer message count: `11`
-- Protocol hash: `e9f92793dfef58a7`
+- Protocol hash: `52546372821ef280`
 - UDP ingress/egress gateway: `UdpBridge`
 
 ## System Architecture
@@ -179,7 +179,7 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 - Numeric ID: `3003`
 - Payload type: `SystemTelemetryPayload`
 - Python type: `SystemTelemetryPayload`
-- Wire size: `312` bytes
+- Wire size: `376` bytes
 - Published by: `ControlService`
 - Consumed by: `UdpBridge`
 
@@ -199,31 +199,39 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 | `vel_error` | `double` | `float` | 8 | 88 |  |
 | `measured_vel_sps` | `double` | `float` | 8 | 96 |  |
 | `vel_p_term` | `double` | `float` | 8 | 104 |  |
-| `pitch_ref_from_vel_deg` | `double` | `float` | 8 | 112 |  |
-| `pitch_error_deg` | `double` | `float` | 8 | 120 |  |
-| `pitch_sp_deg` | `double` | `float` | 8 | 128 |  |
-| `pitch_trim_deg` | `double` | `float` | 8 | 136 |  |
-| `trim_active` | `double` | `float` | 8 | 144 |  |
-| `left_applied_sps` | `double` | `float` | 8 | 152 |  |
-| `right_applied_sps` | `double` | `float` | 8 | 160 |  |
-| `motor_update_dt_ms` | `double` | `float` | 8 | 168 |  |
-| `motor_feedback_age_ms` | `double` | `float` | 8 | 176 |  |
-| `left_actual_steps` | `int64_t` | `int` | 8 | 184 |  |
-| `right_actual_steps` | `int64_t` | `int` | 8 | 192 |  |
-| `plant_pitch_deg` | `double` | `float` | 8 | 200 |  |
-| `plant_pitch_rate_dps` | `double` | `float` | 8 | 208 |  |
-| `plant_position_m` | `double` | `float` | 8 | 216 |  |
-| `plant_velocity_mps` | `double` | `float` | 8 | 224 |  |
-| `target_wheel_velocity` | `double` | `float` | 8 | 232 |  |
-| `actual_wheel_velocity` | `double` | `float` | 8 | 240 |  |
-| `plant_velocity_error` | `double` | `float` | 8 | 248 |  |
-| `f_cmd` | `double` | `float` | 8 | 256 |  |
-| `f_app` | `double` | `float` | 8 | 264 |  |
-| `external_force_n` | `double` | `float` | 8 | 272 |  |
-| `external_com_bias_rad` | `double` | `float` | 8 | 280 |  |
-| `x_ddot` | `double` | `float` | 8 | 288 |  |
-| `theta_ddot` | `double` | `float` | 8 | 296 |  |
-| `force_saturated` | `double` | `float` | 8 | 304 |  |
+| `raw_common_mode_completed_step_velocity_sps` | `double` | `float` | 8 | 112 |  |
+| `pitch_motion_correction_sps` | `double` | `float` | 8 | 120 |  |
+| `corrected_axle_velocity_sps` | `double` | `float` | 8 | 128 |  |
+| `corrected_axle_velocity_mps` | `double` | `float` | 8 | 136 |  |
+| `nominal_acceleration_mps2` | `double` | `float` | 8 | 144 |  |
+| `commanded_acceleration_mps2` | `double` | `float` | 8 | 152 |  |
+| `acceleration_pitch_contribution_deg` | `double` | `float` | 8 | 160 |  |
+| `current_pitch_trim_deg` | `double` | `float` | 8 | 168 |  |
+| `pitch_ref_from_vel_deg` | `double` | `float` | 8 | 176 |  |
+| `pitch_error_deg` | `double` | `float` | 8 | 184 |  |
+| `pitch_sp_deg` | `double` | `float` | 8 | 192 |  |
+| `pitch_trim_deg` | `double` | `float` | 8 | 200 |  |
+| `trim_active` | `double` | `float` | 8 | 208 |  |
+| `left_applied_sps` | `double` | `float` | 8 | 216 |  |
+| `right_applied_sps` | `double` | `float` | 8 | 224 |  |
+| `motor_update_dt_ms` | `double` | `float` | 8 | 232 |  |
+| `motor_feedback_age_ms` | `double` | `float` | 8 | 240 |  |
+| `left_actual_steps` | `int64_t` | `int` | 8 | 248 |  |
+| `right_actual_steps` | `int64_t` | `int` | 8 | 256 |  |
+| `plant_pitch_deg` | `double` | `float` | 8 | 264 |  |
+| `plant_pitch_rate_dps` | `double` | `float` | 8 | 272 |  |
+| `plant_position_m` | `double` | `float` | 8 | 280 |  |
+| `plant_velocity_mps` | `double` | `float` | 8 | 288 |  |
+| `target_wheel_velocity` | `double` | `float` | 8 | 296 |  |
+| `actual_wheel_velocity` | `double` | `float` | 8 | 304 |  |
+| `plant_velocity_error` | `double` | `float` | 8 | 312 |  |
+| `f_cmd` | `double` | `float` | 8 | 320 |  |
+| `f_app` | `double` | `float` | 8 | 328 |  |
+| `external_force_n` | `double` | `float` | 8 | 336 |  |
+| `external_com_bias_rad` | `double` | `float` | 8 | 344 |  |
+| `x_ddot` | `double` | `float` | 8 | 352 |  |
+| `theta_ddot` | `double` | `float` | 8 | 360 |  |
+| `force_saturated` | `double` | `float` | 8 | 368 |  |
 
 ### `MsgId::MotorFeedback`
 

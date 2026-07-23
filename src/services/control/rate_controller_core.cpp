@@ -12,8 +12,15 @@
 
 using matrix::Vector3f;
 
-struct RateControllerCore::Impl {
+namespace {
 
+// The IMU is mounted above the axle. Convert its pitch-induced tangential
+// velocity to the controller's completed-step velocity convention.
+constexpr double kImuLeverArmM = 0.060;
+
+}  // namespace
+
+struct RateControllerCore::Impl {
   std::function<void(double, double)> motors_cb;
   std::function<void(const Telemetry&)> tel_cb;
 
@@ -28,7 +35,9 @@ struct RateControllerCore::Impl {
   double pitch_setpoint_rad{0.0};
   double lean_trim_rad{0.0};
   bool lean_trim_active{false};
-  double measured_velocity_sps{0.0};
+  double raw_common_mode_completed_step_velocity_sps{0.0};
+  double pitch_motion_correction_sps{0.0};
+  double corrected_axle_velocity_sps{0.0};
   double vel_error_sps{0.0};
   double velocity_pitch_setpoint_rad{0.0};
   double turn_sps{0.0};
@@ -56,16 +65,21 @@ void RateControllerCore::stop() {
 
 void RateControllerCore::updateOuterLoop(double measured_velocity_sps, double dt_s) {
   const JoyCmd joy = p_->latest_joy;
-  p_->measured_velocity_sps = measured_velocity_sps;
-  p_->vel_error_sps = -measured_velocity_sps;
+  p_->raw_common_mode_completed_step_velocity_sps = measured_velocity_sps;
+  p_->pitch_motion_correction_sps =
+      p_->latest_imu.gyro_rad_s * kImuLeverArmM / Config::meters_per_step;
+  p_->corrected_axle_velocity_sps =
+      p_->raw_common_mode_completed_step_velocity_sps + p_->pitch_motion_correction_sps;
+  p_->vel_error_sps = -p_->corrected_axle_velocity_sps;
   p_->velocity_pitch_setpoint_rad = ConfigPid::vel_P * p_->vel_error_sps;
 
   const double joy_pitch_rad = static_cast<double>(joy.forward) * kMaxPitchSetpointRad * 0.8;
-  p_->pitch_setpoint_rad = std::clamp(p_->velocity_pitch_setpoint_rad + p_->lean_trim_rad +
-                 joy_pitch_rad,
+  p_->pitch_setpoint_rad =
+      std::clamp(p_->velocity_pitch_setpoint_rad + p_->lean_trim_rad + joy_pitch_rad,
                  -kMaxPitchSetpointRad, kMaxPitchSetpointRad);
 
-  const double max_trim_rad = std::clamp(ConfigPid::lean_trim_max_deg * M_PI / 180.0, 0.0, kMaxPitchSetpointRad);
+  const double max_trim_rad =
+      std::clamp(ConfigPid::lean_trim_max_deg * M_PI / 180.0, 0.0, kMaxPitchSetpointRad);
 
   if (std::abs(joy.forward) > Config::deadzone && kLeanTrimDecayS > 0.0) {
     p_->lean_trim_rad *= (1.0 - std::clamp(dt_s / kLeanTrimDecayS, 0.0, 1.0));
@@ -73,9 +87,9 @@ void RateControllerCore::updateOuterLoop(double measured_velocity_sps, double dt
   } else if (ConfigPid::lean_trim_I != 0.0 && !p_->command_saturated) {
     p_->lean_trim_rad =
         std::clamp(p_->lean_trim_rad -
-                       ConfigPid::lean_trim_I * (measured_velocity_sps / kMaxSps) * dt_s,
+                       ConfigPid::lean_trim_I * (p_->corrected_axle_velocity_sps / kMaxSps) * dt_s,
                    -max_trim_rad, max_trim_rad);
-    p_->lean_trim_active = std::abs(measured_velocity_sps) > 1e-3;
+    p_->lean_trim_active = std::abs(p_->corrected_axle_velocity_sps) > 1e-3;
   } else {
     p_->lean_trim_active = false;
   }
@@ -98,8 +112,8 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
   const JoyCmd joy = p_->latest_joy;
   p_->turn_sps = static_cast<double>(joy.turn) * kPitchOutToSps * 0.4;
 
-  const double rate_sp_rad_s =
-      ConfigPid::pitch_P * (p_->pitch_setpoint_rad - pitch_rad) - ConfigPid::pitch_D * pitch_rate_rad_s;
+  const double rate_sp_rad_s = ConfigPid::pitch_P * (p_->pitch_setpoint_rad - pitch_rad) -
+                               ConfigPid::pitch_D * pitch_rate_rad_s;
 
   const Vector3f u = p_->rc.update({0.0f, static_cast<float>(pitch_rate_rad_s), 0.0f},
                                    {0.0f, static_cast<float>(rate_sp_rad_s), 0.0f},
@@ -123,7 +137,15 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
     t.turn_sps = p_->turn_sps;
     t.vel_error = p_->vel_error_sps;
     t.vel_p_term = p_->velocity_pitch_setpoint_rad;
-    t.measured_vel_sps = p_->measured_velocity_sps;
+    t.measured_vel_sps = p_->corrected_axle_velocity_sps;
+    t.raw_common_mode_completed_step_velocity_sps = p_->raw_common_mode_completed_step_velocity_sps;
+    t.pitch_motion_correction_sps = p_->pitch_motion_correction_sps;
+    t.corrected_axle_velocity_sps = p_->corrected_axle_velocity_sps;
+    t.corrected_axle_velocity_mps = p_->corrected_axle_velocity_sps * Config::meters_per_step;
+    t.nominal_acceleration_mps2 = Config::g0 * std::tan(p_->velocity_pitch_setpoint_rad);
+    t.commanded_acceleration_mps2 = Config::g0 * std::tan(p_->pitch_setpoint_rad);
+    t.acceleration_pitch_contribution_deg = p_->velocity_pitch_setpoint_rad * 180.0 / M_PI;
+    t.current_pitch_trim_deg = p_->lean_trim_rad * 180.0 / M_PI;
     t.pitch_ref_from_vel_deg = p_->velocity_pitch_setpoint_rad * 180.0 / M_PI;
     t.pitch_error_deg = (p_->pitch_setpoint_rad - pitch_rad) * 180.0 / M_PI;
     t.pitch_sp_deg = p_->pitch_setpoint_rad * 180.0 / M_PI;

@@ -26,12 +26,27 @@ struct Telemetry {
   double pitch_deg;
   double pitch_rate_dps;
   double filtered_pitch_rate_dps;
-  double u_sps;        // wheel command [steps/s]
-  double turn_sps;     // differential steering command [steps/s]
-  // Translational outer-loop diagnostics
-  double vel_error;
-  double vel_p_term;
-  double measured_vel_sps;
+  double u_sps;     // wheel command [steps/s]
+  double turn_sps;  // differential steering command [steps/s]
+  // Translational outer-loop diagnostics. These are retained for consumers of the
+  // original telemetry schema; prefer the explicitly named velocity fields below.
+  double vel_error;  // Legacy: zero-reference error of corrected_axle_velocity_sps [steps/s].
+  double
+      vel_p_term;  // Legacy: velocity-loop pitch contribution from corrected axle velocity [rad].
+  double measured_vel_sps;  // Legacy: corrected_axle_velocity_sps [steps/s].
+  double raw_common_mode_completed_step_velocity_sps;  // Signed common-mode velocity from completed
+                                                       // motor steps [steps/s].
+  double pitch_motion_correction_sps;  // Pitch-rate correction applied to the common-mode velocity
+                                       // [steps/s].
+  double corrected_axle_velocity_sps;  // Pitch-motion-corrected axle velocity [steps/s].
+  double corrected_axle_velocity_mps;  // Pitch-motion-corrected axle velocity [m/s].
+  double nominal_acceleration_mps2;  // Acceleration represented by the velocity-only pitch request
+                                     // [m/s^2].
+  double
+      commanded_acceleration_mps2;  // Acceleration represented by the final pitch request [m/s^2].
+  double acceleration_pitch_contribution_deg;  // Velocity-loop pitch contribution derived from
+                                               // nominal acceleration [deg].
+  double current_pitch_trim_deg;  // Current learned pitch trim included in the final request [deg].
   double pitch_ref_from_vel_deg;
   double pitch_error_deg;
   double pitch_sp_deg;

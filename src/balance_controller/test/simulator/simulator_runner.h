@@ -58,6 +58,14 @@ struct SimulatorTimelineRow {
   double right_sps = 0.0;
   double vel_error = 0.0;
   double vel_p_term = 0.0;
+  double raw_common_mode_completed_step_velocity_sps = 0.0;
+  double pitch_motion_correction_sps = 0.0;
+  double corrected_axle_velocity_sps = 0.0;
+  double corrected_axle_velocity_mps = 0.0;
+  double nominal_acceleration_mps2 = 0.0;
+  double commanded_acceleration_mps2 = 0.0;
+  double acceleration_pitch_contribution_deg = 0.0;
+  double current_pitch_trim_deg = 0.0;
   double pitch_ref_from_vel_deg = 0.0;
   double pitch_error_deg = 0.0;
   double pitch_trim_deg = 0.0;

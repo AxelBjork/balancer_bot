@@ -231,6 +231,16 @@ SimulatorRunResult run_simulator_scenario_with_loaded_pid(const SimulatorScenari
       row.u_sps = latest_telemetry.u_sps;
       row.vel_error = latest_telemetry.vel_error;
       row.vel_p_term = latest_telemetry.vel_p_term;
+      row.raw_common_mode_completed_step_velocity_sps =
+          latest_telemetry.raw_common_mode_completed_step_velocity_sps;
+      row.pitch_motion_correction_sps = latest_telemetry.pitch_motion_correction_sps;
+      row.corrected_axle_velocity_sps = latest_telemetry.corrected_axle_velocity_sps;
+      row.corrected_axle_velocity_mps = latest_telemetry.corrected_axle_velocity_mps;
+      row.nominal_acceleration_mps2 = latest_telemetry.nominal_acceleration_mps2;
+      row.commanded_acceleration_mps2 = latest_telemetry.commanded_acceleration_mps2;
+      row.acceleration_pitch_contribution_deg =
+          latest_telemetry.acceleration_pitch_contribution_deg;
+      row.current_pitch_trim_deg = latest_telemetry.current_pitch_trim_deg;
       row.pitch_ref_from_vel_deg = latest_telemetry.pitch_ref_from_vel_deg;
       row.pitch_trim_deg = latest_telemetry.pitch_trim_deg;
       row.trim_active = latest_telemetry.trim_active;

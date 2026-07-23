@@ -569,6 +569,26 @@ class SimulatorService {
     payload.measured_vel_sps =
         run.pipeline.services.observer.have_telemetry ? telemetry.measured_vel_sps : 0.0;
     payload.vel_p_term = run.pipeline.services.observer.have_telemetry ? telemetry.vel_p_term : 0.0;
+    payload.raw_common_mode_completed_step_velocity_sps =
+        run.pipeline.services.observer.have_telemetry
+            ? telemetry.raw_common_mode_completed_step_velocity_sps
+            : 0.0;
+    payload.pitch_motion_correction_sps =
+        run.pipeline.services.observer.have_telemetry ? telemetry.pitch_motion_correction_sps : 0.0;
+    payload.corrected_axle_velocity_sps =
+        run.pipeline.services.observer.have_telemetry ? telemetry.corrected_axle_velocity_sps : 0.0;
+    payload.corrected_axle_velocity_mps =
+        run.pipeline.services.observer.have_telemetry ? telemetry.corrected_axle_velocity_mps : 0.0;
+    payload.nominal_acceleration_mps2 =
+        run.pipeline.services.observer.have_telemetry ? telemetry.nominal_acceleration_mps2 : 0.0;
+    payload.commanded_acceleration_mps2 =
+        run.pipeline.services.observer.have_telemetry ? telemetry.commanded_acceleration_mps2 : 0.0;
+    payload.acceleration_pitch_contribution_deg =
+        run.pipeline.services.observer.have_telemetry
+            ? telemetry.acceleration_pitch_contribution_deg
+            : 0.0;
+    payload.current_pitch_trim_deg =
+        run.pipeline.services.observer.have_telemetry ? telemetry.current_pitch_trim_deg : 0.0;
     payload.pitch_ref_from_vel_deg =
         run.pipeline.services.observer.have_telemetry ? telemetry.pitch_ref_from_vel_deg : 0.0;
     payload.pitch_sp_deg =

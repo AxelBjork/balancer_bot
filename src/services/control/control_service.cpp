@@ -31,12 +31,21 @@ ControlService::ControlService(ipc::MessageBus& bus) : bus_(bus) {
     p.vel_error = t.vel_error;
     p.measured_vel_sps = t.measured_vel_sps;
     p.vel_p_term = t.vel_p_term;
+    p.raw_common_mode_completed_step_velocity_sps = t.raw_common_mode_completed_step_velocity_sps;
+    p.pitch_motion_correction_sps = t.pitch_motion_correction_sps;
+    p.corrected_axle_velocity_sps = t.corrected_axle_velocity_sps;
+    p.corrected_axle_velocity_mps = t.corrected_axle_velocity_mps;
+    p.nominal_acceleration_mps2 = t.nominal_acceleration_mps2;
+    p.commanded_acceleration_mps2 = t.commanded_acceleration_mps2;
+    p.acceleration_pitch_contribution_deg = t.acceleration_pitch_contribution_deg;
+    p.current_pitch_trim_deg = t.current_pitch_trim_deg;
     p.pitch_ref_from_vel_deg = t.pitch_ref_from_vel_deg;
     p.pitch_error_deg = t.pitch_error_deg;
     p.pitch_sp_deg = t.pitch_sp_deg;
     p.pitch_trim_deg = t.pitch_trim_deg;
     p.trim_active = t.trim_active;
-    p.left_applied_sps = have_motor_feedback_ ? latest_motor_feedback_.left_applied_sps : last_left_sps_;
+    p.left_applied_sps =
+        have_motor_feedback_ ? latest_motor_feedback_.left_applied_sps : last_left_sps_;
     p.right_applied_sps =
         have_motor_feedback_ ? latest_motor_feedback_.right_applied_sps : last_right_sps_;
     p.motor_update_dt_ms = have_motor_feedback_ ? latest_motor_feedback_.update_dt_ms : 0.0;
