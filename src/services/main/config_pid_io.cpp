@@ -38,6 +38,9 @@ void ConfigPid::load(const std::string& path) {
                                                         {"rate_D", &rate_D},
                                                         {"rate_I_lim", &rate_I_lim},
                                                         {"rate_FF", &rate_FF},
+                                                        {"max_acceleration_m_s2", &max_acceleration_m_s2},
+                                                        {"max_jerk_m_s3", &max_jerk_m_s3},
+                                                        {"velocity_damping_per_s", &velocity_damping_per_s},
                                                         {"vel_P", &vel_P},
                                                         {"lean_trim_I", &lean_trim_I},
                                                         {"lean_trim_max_deg", &lean_trim_max_deg},
@@ -102,6 +105,9 @@ void ConfigPid::save(const std::string& path) {
     f << "\n";
 
     f << "# --- Physics-Based Outer Loop ---\n";
+    write_param(f, "max_acceleration_m_s2", max_acceleration_m_s2);
+    write_param(f, "max_jerk_m_s3", max_jerk_m_s3);
+    write_param(f, "velocity_damping_per_s", velocity_damping_per_s);
     write_param(f, "vel_P", vel_P);
     write_param(f, "lean_trim_I", lean_trim_I);
     write_param(f, "lean_trim_max_deg", lean_trim_max_deg);

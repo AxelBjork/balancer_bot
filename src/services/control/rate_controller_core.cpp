@@ -26,6 +26,7 @@ struct RateControllerCore::Impl {
   RateControl rc{};
 
   double pitch_setpoint_rad{0.0};
+  double nominal_acceleration_m_s2{0.0};
   double lean_trim_rad{0.0};
   bool lean_trim_active{false};
   double measured_velocity_sps{0.0};
@@ -56,14 +57,15 @@ void RateControllerCore::stop() {
 
 void RateControllerCore::updateOuterLoop(double measured_velocity_sps, double dt_s) {
   const JoyCmd joy = p_->latest_joy;
-  p_->measured_velocity_sps = measured_velocity_sps;
-  p_->vel_error_sps = -measured_velocity_sps;
-  p_->velocity_pitch_setpoint_rad = ConfigPid::vel_P * p_->vel_error_sps;
+  if (!std::isfinite(measured_velocity_sps) || !std::isfinite(dt_s) || dt_s <= 0.0 ||
+      !std::isfinite(joy.forward) || !std::isfinite(ConfigPid::max_acceleration_m_s2) ||
+      !std::isfinite(ConfigPid::max_jerk_m_s3) || !std::isfinite(ConfigPid::velocity_damping_per_s)) {
+    return;
+  }
 
-  const double joy_pitch_rad = static_cast<double>(joy.forward) * kMaxPitchSetpointRad * 0.8;
-  p_->pitch_setpoint_rad = std::clamp(p_->velocity_pitch_setpoint_rad + p_->lean_trim_rad +
-                 joy_pitch_rad,
-                 -kMaxPitchSetpointRad, kMaxPitchSetpointRad);
+  const double corrected_axle_velocity_sps = measured_velocity_sps;
+  p_->measured_velocity_sps = corrected_axle_velocity_sps;
+  p_->vel_error_sps = -corrected_axle_velocity_sps;
 
   const double max_trim_rad = std::clamp(ConfigPid::lean_trim_max_deg * M_PI / 180.0, 0.0, kMaxPitchSetpointRad);
 
@@ -79,6 +81,25 @@ void RateControllerCore::updateOuterLoop(double measured_velocity_sps, double dt
   } else {
     p_->lean_trim_active = false;
   }
+
+  const double max_acceleration_m_s2 = std::max(0.0, ConfigPid::max_acceleration_m_s2);
+  const double max_jerk_m_s3 = std::max(0.0, ConfigPid::max_jerk_m_s3);
+  const double target_acceleration_m_s2 =
+      std::clamp(joy.forward, -1.0, 1.0) * max_acceleration_m_s2;
+  const double max_acceleration_delta_m_s2 = max_jerk_m_s3 * dt_s;
+  p_->nominal_acceleration_m_s2 += std::clamp(
+      target_acceleration_m_s2 - p_->nominal_acceleration_m_s2,
+      -max_acceleration_delta_m_s2, max_acceleration_delta_m_s2);
+
+  // On release, zero stick slews this retained state toward zero. Until it
+  // reaches zero, damping still subtracts the measured velocity and requests
+  // braking rather than turning the release into a motor-speed feed-forward.
+  const double corrected_axle_velocity_m_s = corrected_axle_velocity_sps * Config::meters_per_step;
+  const double commanded_acceleration_m_s2 = p_->nominal_acceleration_m_s2 -
+                                             ConfigPid::velocity_damping_per_s * corrected_axle_velocity_m_s;
+  p_->velocity_pitch_setpoint_rad = std::atan2(commanded_acceleration_m_s2, Config::g0);
+  p_->pitch_setpoint_rad = std::clamp(p_->velocity_pitch_setpoint_rad + p_->lean_trim_rad,
+                                      -kMaxPitchSetpointRad, kMaxPitchSetpointRad);
 }
 
 void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point now) {

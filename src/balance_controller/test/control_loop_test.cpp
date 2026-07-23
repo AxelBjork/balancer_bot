@@ -286,6 +286,9 @@ struct ConfigPidSnapshot {
   double rate_D = ConfigPid::rate_D;
   double rate_I_lim = ConfigPid::rate_I_lim;
   double rate_FF = ConfigPid::rate_FF;
+  double max_acceleration_m_s2 = ConfigPid::max_acceleration_m_s2;
+  double max_jerk_m_s3 = ConfigPid::max_jerk_m_s3;
+  double velocity_damping_per_s = ConfigPid::velocity_damping_per_s;
   double vel_P = ConfigPid::vel_P;
   double lean_trim_I = ConfigPid::lean_trim_I;
   double lean_trim_max_deg = ConfigPid::lean_trim_max_deg;
@@ -298,6 +301,9 @@ struct ConfigPidSnapshot {
     ConfigPid::rate_D = rate_D;
     ConfigPid::rate_I_lim = rate_I_lim;
     ConfigPid::rate_FF = rate_FF;
+    ConfigPid::max_acceleration_m_s2 = max_acceleration_m_s2;
+    ConfigPid::max_jerk_m_s3 = max_jerk_m_s3;
+    ConfigPid::velocity_damping_per_s = velocity_damping_per_s;
     ConfigPid::vel_P = vel_P;
     ConfigPid::lean_trim_I = lean_trim_I;
     ConfigPid::lean_trim_max_deg = lean_trim_max_deg;
@@ -395,7 +401,7 @@ TEST(RateControllerCoreGainAuditTest, RateDConsumesImuPitchAcceleration) {
   EXPECT_NEAR(h.runner().lastLeft(), h.runner().lastRight(), 1e-6);
 }
 
-TEST(RateControllerCoreGainAuditTest, OuterKVelSignControlsVelocityPitchReference) {
+TEST(RateControllerCoreGainAuditTest, VelocityDampingBrakesIndependentOfLegacyVelocityGain) {
   ScopedConfigPidRestore restore;
   set_zeroed_gain_audit_config();
   ConfigPid::rate_P = 0.25;
@@ -408,9 +414,30 @@ TEST(RateControllerCoreGainAuditTest, OuterKVelSignControlsVelocityPitchReferenc
   const double negative_gain_output = run_fresh_core_once(0.0, 0.0, 1000.0);
 
   EXPECT_LT(positive_gain_output, 0.0);
-  EXPECT_GT(negative_gain_output, 0.0);
+  EXPECT_LT(negative_gain_output, 0.0);
   EXPECT_NEAR(std::abs(positive_gain_output), std::abs(negative_gain_output),
               std::abs(positive_gain_output) * 0.05);
+}
+
+TEST(RateControllerCoreTest, ReleaseRetainsJerkLimitedAccelerationThenVelocityDampingBrakes) {
+  ScopedConfigPidRestore restore;
+  ConfigPid::max_acceleration_m_s2 = 2.0;
+  ConfigPid::max_jerk_m_s3 = 1.0;
+  ConfigPid::velocity_damping_per_s = 2.0;
+
+  RateControllerHarness h;
+  h.setJoystick(1.0, 0.0);
+  h.run_steps(2, 0.01);
+
+  h.setJoystick(0.0, 0.0);
+  const double braking_velocity_sps = 0.1 / Config::meters_per_step;
+  h.runner().setActualSpeedSps(braking_velocity_sps);
+  h.run_steps(1, 0.01);
+
+  ASSERT_FALSE(h.telemetry().empty());
+  // Releasing the stick only slews the retained acceleration down by jerk * dt.
+  // Damping then dominates it and commands a negative pitch to brake motion.
+  EXPECT_LT(h.telemetry().back().pitch_ref_from_vel_deg, 0.0);
 }
 
 TEST(RateControllerCoreTest, SteeringSplitsWheelCommands) {

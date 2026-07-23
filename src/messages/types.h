@@ -50,9 +50,15 @@ struct ConfigPid {
   inline static double rate_I_lim = 0.15;
   inline static double rate_FF = 0.0;
 
-  // Physics-based outer loop:
-  // pitch_ref = vel_P * velocity_error + internal trim_bias
-  // rate_sp   = pitch_P * (pitch_ref - pitch) - pitch_D * pitch_rate
+  // Physics-based outer loop. The joystick commands acceleration, which is
+  // jerk-limited before velocity damping is applied.
+  inline static double max_acceleration_m_s2 = 3.0;
+  inline static double max_jerk_m_s3 = 8.0;
+  inline static double velocity_damping_per_s = 2.5;
+
+  // Legacy velocity gain retained only for configuration compatibility; it no
+  // longer participates in the outer-loop command. Lean trim remains additive
+  // to the acceleration-derived pitch reference.
   inline static double vel_P = 0.00015;
   inline static double lean_trim_I = 0.60;
   inline static double lean_trim_max_deg = 4.0;
