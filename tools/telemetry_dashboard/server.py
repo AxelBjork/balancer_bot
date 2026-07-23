@@ -596,7 +596,8 @@ def load_playback_csv(path: Path) -> list[tuple[float, dict[str, Any]]]:
     except ModuleNotFoundError as exc:
         if exc.name == "pandas":
             raise RuntimeError(
-                "CSV playback requires pandas; install requirements-dev.txt to use --csv or upload a CSV."
+                "CSV playback requires pandas; install the pyproject.toml dependencies "
+                "to use --csv or upload a CSV."
             ) from exc
         raise
     rows = read_telemetry_csv(path).to_dict(orient="records")

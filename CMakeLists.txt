@@ -23,10 +23,18 @@ endif()
 
 # Options: build the quick test by default; app is opt-in and *hard* requires libs.
 option(BUILD_TESTS "Build unit tests" ON)
+
+# C++26 reflection requires the repository's GCC trunk toolchain.  Keep the
+# host build usable with the system compiler when that optional toolchain is
+# not installed; developers with it can still explicitly enable the artifacts.
+set(_balancer_reflection_default OFF)
+if (EXISTS "/usr/local/gcc-16.1.0/bin/g++")
+  set(_balancer_reflection_default ON)
+endif()
 option(
   BUILD_REFLECTION_ARTIFACTS
   "Build reflection-generated docs and Python bindings as part of the default host build"
-  ${BUILD_TESTS}
+  ${_balancer_reflection_default}
 )
 option(BUILD_AFL_TARGETS "Build AFL++ fuzz harnesses" OFF)
 
@@ -62,9 +70,13 @@ target_compile_options(project_warnings INTERFACE
 )
 target_link_options(project_warnings INTERFACE
   -Wl,-z,relro,-z,now
-  -L/usr/local/gcc-16.1.0/lib64
-  -Wl,-rpath,/usr/local/gcc-16.1.0/lib64
 )
+if (EXISTS "/usr/local/gcc-16.1.0/lib64")
+  target_link_options(project_warnings INTERFACE
+    -L/usr/local/gcc-16.1.0/lib64
+    -Wl,-rpath,/usr/local/gcc-16.1.0/lib64
+  )
+endif()
 
 add_library(project_pi_optimization INTERFACE)
 target_compile_options(project_pi_optimization INTERFACE

@@ -50,11 +50,17 @@ function(add_balancer_common_target)
     ${imu_dir}/pitch_lpf.cpp
     ${imu_dir}/imu_service.cpp
     ${input_dir}/input_service.cpp
-    ${input_dir}/xbox_controller.cpp
     ${main_dir}/config_pid_io.cpp
     ${CMAKE_SOURCE_DIR}/src/services/motor/motor_service.cpp
     ${CMAKE_SOURCE_DIR}/src/services/time/time_service.cpp
   )
+
+  if (BAL_SDL_LIBS)
+    list(APPEND balancer_sources ${input_dir}/xbox_controller.cpp)
+  else()
+    message(STATUS "SDL2 not found; building without gamepad input")
+    list(APPEND balancer_sources ${input_dir}/xbox_controller_stub.cpp)
+  endif()
 
   add_library(balancer_common STATIC ${balancer_sources})
 

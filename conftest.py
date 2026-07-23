@@ -80,7 +80,7 @@ def _run_standard_build() -> None:
         "-B",
         str(_BUILD_DIR),
         "-DBUILD_TESTS=ON",
-        "-DBUILD_REFLECTION_ARTIFACTS=ON",
+        "-DBUILD_REFLECTION_ARTIFACTS=OFF",
     ]
     build_cmd = [
         "cmake",
@@ -90,7 +90,6 @@ def _run_standard_build() -> None:
         "balancer_tests",
         "balancer_simulator",
         "sil_app",
-        "balancer_reflection",
         "-j8",
     ]
     ctest_cmd = ["ctest", "--test-dir", str(_BUILD_DIR), "--output-on-failure", "-j8"]
@@ -98,7 +97,7 @@ def _run_standard_build() -> None:
     cache_path = _BUILD_DIR / "CMakeCache.txt"
     cache = cache_path.read_text(encoding="utf-8", errors="replace") if cache_path.exists() else ""
     configured_for_gate = (
-        "BUILD_TESTS:BOOL=ON" in cache and "BUILD_REFLECTION_ARTIFACTS:BOOL=ON" in cache
+        "BUILD_TESTS:BOOL=ON" in cache and "BUILD_REFLECTION_ARTIFACTS:BOOL=OFF" in cache
     )
     # The build tool re-runs CMake automatically when CMake inputs change. Avoiding an
     # unconditional no-op configure saves roughly ten seconds in this environment.

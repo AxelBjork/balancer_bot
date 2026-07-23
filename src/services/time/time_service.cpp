@@ -1,5 +1,6 @@
 #include "services/time/time_service.h"
 
+#include <algorithm>
 #include <cmath>
 #include <thread>
 
@@ -33,8 +34,10 @@ void TimeService::start() {
       const auto now = clock::now();
       const double measured_dt_s = std::chrono::duration<double>(now - previous).count();
       previous = now;
-      const auto timestamp_us = static_cast<uint64_t>(
+      const auto wall_timestamp_us = static_cast<uint64_t>(
           std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count());
+      const auto timestamp_us = std::max(
+          wall_timestamp_us, current_time_us_.load(std::memory_order_relaxed) + uint64_t{1});
       publish_tick(measured_dt_s, timestamp_us);
     }
   });

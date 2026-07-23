@@ -78,7 +78,8 @@ python3 tools/telemetry_dashboard/server.py --csv build/sim/example/timeline.csv
 ```
 
 Live telemetry uses only the Python standard library. CSV playback uses the shared pandas-backed
-telemetry loader, so install `requirements-dev.txt` when using `--csv` or uploading a CSV.
+telemetry loader, so install the dependencies declared in `pyproject.toml` when using `--csv` or
+uploading a CSV.
 
 Open `http://127.0.0.1:8080`. The dashboard is read-only, uses the existing UDP telemetry
 stream, and intentionally claims the bridge's one active UDP peer; do not run it alongside a
