@@ -121,12 +121,13 @@ class ControlServiceHarness {
   }
 
   void sendMotorFeedback(double left_applied_sps, double right_applied_sps, double measured_avg_sps,
-                         int64_t left_actual_steps, int64_t right_actual_steps) {
+                         int64_t left_actual_steps, int64_t right_actual_steps,
+                         double update_dt_s = 1.0 / 400.0) {
     ipc::MotorFeedbackPayload payload{};
     payload.left_applied_sps = left_applied_sps;
     payload.right_applied_sps = right_applied_sps;
     payload.measured_avg_sps = measured_avg_sps;
-    payload.update_dt_ms = 1000.0 / 400.0;
+    payload.update_dt_ms = update_dt_s * 1000.0;
     payload.left_actual_steps = left_actual_steps;
     payload.right_actual_steps = right_actual_steps;
     control_.on_message<MsgId::MotorFeedback>(payload);
@@ -175,6 +176,16 @@ class ControlServiceHarness {
   std::vector<ipc::MotorTargetsPayload> motor_targets_;
   std::vector<ipc::SystemTelemetryPayload> telemetry_;
 };
+
+constexpr double kFeedbackDtS = 0.01;
+constexpr double kStepsPerRad = Config::steps_per_rev / (2.0 * M_PI);
+
+void paired_feedback_sample(ControlServiceHarness& h, uint64_t time_us, double pitch_rad,
+                            int64_t left_steps, int64_t right_steps, double dt_s = kFeedbackDtS) {
+  h.step_with_imu(dt_s, time_us, pitch_rad);
+  h.sendMotorFeedback(0.0, 0.0, 0.0, left_steps, right_steps, dt_s);
+  h.step_with_imu(dt_s, time_us + 1, pitch_rad);
+}
 
 class ImuServiceHarness {
  public:
@@ -422,6 +433,48 @@ TEST(RateControllerCoreTest, SteeringSplitsWheelCommands) {
   EXPECT_NE(h.runner().lastLeft(), h.runner().lastRight());
 }
 
+TEST(RateControllerCoreTest, StickRequestsAreSymmetricAndJerkLimited) {
+  RateControllerHarness positive;
+  RateControllerHarness negative;
+  positive.setJoystick(1.0, 0.0);
+  negative.setJoystick(-1.0, 0.0);
+  positive.run_steps(1, 1.0 / 400.0);
+  negative.run_steps(1, 1.0 / 400.0);
+  ASSERT_FALSE(positive.telemetry().empty());
+  ASSERT_FALSE(negative.telemetry().empty());
+  // A full stick edge must not request the full pitch limit in one 400 Hz tick.
+  EXPECT_LT(std::abs(positive.telemetry().back().pitch_sp_deg),
+            kMaxPitchSetpointRad * 180.0 / M_PI);
+  EXPECT_NEAR(positive.telemetry().back().pitch_sp_deg, -negative.telemetry().back().pitch_sp_deg,
+              1e-6);
+
+  positive.run_steps(200, 1.0 / 400.0);
+  negative.run_steps(200, 1.0 / 400.0);
+  EXPECT_NEAR(positive.telemetry().back().pitch_sp_deg, -negative.telemetry().back().pitch_sp_deg,
+              1e-4);
+  EXPECT_LE(std::abs(positive.telemetry().back().pitch_sp_deg),
+            kMaxPitchSetpointRad * 180.0 / M_PI + 1e-6);
+}
+
+TEST(RateControllerCoreTest, ReleasedStickBrakesByVelocityWithoutSpeedBias) {
+  RateControllerHarness h;
+  h.setJoystick(0.0, 0.0);
+  h.runner().setActualSpeedSps(1000.0);
+  h.run_steps(40, 1.0 / 400.0);
+  ASSERT_FALSE(h.telemetry().empty());
+  EXPECT_LT(h.telemetry().back().pitch_sp_deg, 0.0);
+  EXPECT_LT(h.telemetry().back().vel_error, 0.0);
+
+  // With all rate gains disabled, no target-speed term may leak directly to motors.
+  ScopedConfigPidRestore restore;
+  set_zeroed_gain_audit_config();
+  RateControllerHarness no_rate;
+  no_rate.setJoystick(1.0, 0.0);
+  no_rate.run_steps(100, 1.0 / 400.0);
+  EXPECT_NEAR(no_rate.runner().lastLeft(), 0.0, 1e-6);
+  EXPECT_NEAR(no_rate.runner().lastRight(), 0.0, 1e-6);
+}
+
 TEST(RateControllerCoreTest, SmallResidualVelocityProducesOnlySmallCorrectivePitchRef) {
   RateControllerHarness h;
   h.setJoystick(0.0, 0.0);
@@ -625,6 +678,77 @@ TEST(ControlServiceTest, UsesMotorFeedbackForVelocityTelemetry) {
   EXPECT_NEAR(h.telemetry().back().right_applied_sps, 46.0, 1e-3);
   EXPECT_EQ(h.telemetry().back().left_actual_steps, 0);
   EXPECT_EQ(h.telemetry().back().right_actual_steps, 0);
+}
+
+TEST(ControlServiceKinematicFeedbackTest, FixedAxlePitchIsRemovedFromCommonModeVelocity) {
+  ControlServiceHarness h;
+  paired_feedback_sample(h, 10000, 0.0, 0, 0);
+  const double pitch_delta = 0.10;
+  const int64_t steps = static_cast<int64_t>(std::llround(-kStepsPerRad * pitch_delta));
+  paired_feedback_sample(h, 20000, pitch_delta, steps, steps);
+
+  const double raw_sps = -static_cast<double>(steps) / kFeedbackDtS;
+  const double contamination = Config::steps_per_rev * pitch_delta / (2.0 * M_PI * kFeedbackDtS);
+  EXPECT_NEAR(raw_sps, contamination, 0.6);
+  ASSERT_FALSE(h.telemetry().empty());
+  EXPECT_NEAR(h.telemetry().back().measured_vel_sps, 0.0, 1.0);
+}
+
+TEST(ControlServiceKinematicFeedbackTest, TranslationAndPitchCorrectionRespectPolarity) {
+  ControlServiceHarness h;
+  paired_feedback_sample(h, 10000, 0.0, 0, 0);
+  constexpr double kTranslationSps = -240.0;  // controller convention
+  const double pitch_delta = -0.08;
+  const int64_t steps = static_cast<int64_t>(std::llround(
+      -(kTranslationSps + Config::steps_per_rev * pitch_delta / (2.0 * M_PI * kFeedbackDtS)) *
+      kFeedbackDtS));
+  paired_feedback_sample(h, 20000, pitch_delta, steps, steps);
+  ASSERT_FALSE(h.telemetry().empty());
+  EXPECT_NEAR(h.telemetry().back().measured_vel_sps, kTranslationSps, 1.0);
+}
+
+TEST(ControlServiceKinematicFeedbackTest, ConstantPitchTranslationAndDifferentialTurnArePreserved) {
+  ControlServiceHarness h;
+  paired_feedback_sample(h, 10000, 0.2, 0, 0);
+  // Equal common-mode step motion is translation; unequal wheel motion must
+  // still average to the same translational estimate.
+  paired_feedback_sample(h, 20000, 0.2, 12, 36);
+  ASSERT_FALSE(h.telemetry().empty());
+  EXPECT_NEAR(h.telemetry().back().measured_vel_sps, -2400.0, 1.0);
+}
+
+TEST(ControlServiceKinematicFeedbackTest, FirstAndInvalidIntervalsDoNotCreateVelocitySpikes) {
+  ControlServiceHarness h;
+  paired_feedback_sample(h, 10000, 0.0, 500, 500);
+  ASSERT_FALSE(h.telemetry().empty());
+  EXPECT_NEAR(h.telemetry().back().measured_vel_sps, 0.0, 1e-6);
+  h.sendMotorFeedback(0.0, 0.0, 0.0, 900, 900, 0.0);
+  h.step_with_imu(kFeedbackDtS, 20000, 0.3);
+  EXPECT_NEAR(h.telemetry().back().measured_vel_sps, 0.0, 1e-6);
+  h.sendMotorFeedback(0.0, 0.0, 0.0, 1200, 1200, -0.01);
+  h.step_with_imu(kFeedbackDtS, 30000, 0.5);
+  EXPECT_NEAR(h.telemetry().back().measured_vel_sps, 0.0, 1e-6);
+}
+
+TEST(ControlServiceKinematicFeedbackTest, SinusoidalFixedAxlePitchHasRawButNoCorrectedVelocity) {
+  ControlServiceHarness h;
+  constexpr double kHz = 2.3;
+  constexpr double kAmplitude = 0.12;
+  int64_t steps = 0;
+  double previous_pitch = 0.0;
+  paired_feedback_sample(h, 10000, previous_pitch, steps, steps);
+  double max_raw = 0.0;
+  for (int i = 1; i < 100; ++i) {
+    const double pitch = kAmplitude * std::sin(2.0 * M_PI * kHz * i * kFeedbackDtS);
+    steps += static_cast<int64_t>(std::llround(-kStepsPerRad * (pitch - previous_pitch)));
+    paired_feedback_sample(h, static_cast<uint64_t>((i + 1) * 10000), pitch, steps, steps);
+    max_raw = std::max(max_raw, std::abs(-static_cast<double>(static_cast<int64_t>(std::llround(
+                                             -kStepsPerRad * (pitch - previous_pitch)))) /
+                                         kFeedbackDtS));
+    EXPECT_NEAR(h.telemetry().back().measured_vel_sps, 0.0, 2.0);
+    previous_pitch = pitch;
+  }
+  EXPECT_GT(max_raw, 1000.0);
 }
 
 TEST(ControlServiceTest, VelocityObserverUpdatesAtConfiguredCadence) {

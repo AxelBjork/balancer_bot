@@ -13,7 +13,6 @@
 using matrix::Vector3f;
 
 struct RateControllerCore::Impl {
-
   std::function<void(double, double)> motors_cb;
   std::function<void(const Telemetry&)> tel_cb;
 
@@ -34,6 +33,9 @@ struct RateControllerCore::Impl {
   double turn_sps{0.0};
   double last_u_sps{0.0};
   bool command_saturated{false};
+  // The stick is an acceleration request, not a target-speed bias.  Keeping
+  // this state jerk-limited prevents an abrupt lean request on stick edges.
+  double nominal_accel{0.0};
 };
 
 RateControllerCore::RateControllerCore() : p_(new Impl) {
@@ -60,21 +62,31 @@ void RateControllerCore::updateOuterLoop(double measured_velocity_sps, double dt
   p_->vel_error_sps = -measured_velocity_sps;
   p_->velocity_pitch_setpoint_rad = ConfigPid::vel_P * p_->vel_error_sps;
 
-  const double joy_pitch_rad = static_cast<double>(joy.forward) * kMaxPitchSetpointRad * 0.8;
-  p_->pitch_setpoint_rad = std::clamp(p_->velocity_pitch_setpoint_rad + p_->lean_trim_rad +
-                 joy_pitch_rad,
+  constexpr double kMaxNominalAccel = 1.0;
+  constexpr double kMaxJerk = 8.0;
+  constexpr double kReleaseBrakeGain = 0.001;
+  const double requested_accel = (std::abs(joy.forward) > Config::deadzone)
+                                     ? std::clamp(static_cast<double>(joy.forward), -1.0, 1.0)
+                                     : std::clamp(-kReleaseBrakeGain * measured_velocity_sps,
+                                                  -kMaxNominalAccel, kMaxNominalAccel);
+  const double max_accel_change = kMaxJerk * std::max(0.0, dt_s);
+  p_->nominal_accel +=
+      std::clamp(requested_accel - p_->nominal_accel, -max_accel_change, max_accel_change);
+  const double joy_pitch_rad = p_->nominal_accel * kMaxPitchSetpointRad * 0.8;
+  p_->pitch_setpoint_rad =
+      std::clamp(p_->velocity_pitch_setpoint_rad + p_->lean_trim_rad + joy_pitch_rad,
                  -kMaxPitchSetpointRad, kMaxPitchSetpointRad);
 
-  const double max_trim_rad = std::clamp(ConfigPid::lean_trim_max_deg * M_PI / 180.0, 0.0, kMaxPitchSetpointRad);
+  const double max_trim_rad =
+      std::clamp(ConfigPid::lean_trim_max_deg * M_PI / 180.0, 0.0, kMaxPitchSetpointRad);
 
   if (std::abs(joy.forward) > Config::deadzone && kLeanTrimDecayS > 0.0) {
     p_->lean_trim_rad *= (1.0 - std::clamp(dt_s / kLeanTrimDecayS, 0.0, 1.0));
     p_->lean_trim_active = false;
   } else if (ConfigPid::lean_trim_I != 0.0 && !p_->command_saturated) {
-    p_->lean_trim_rad =
-        std::clamp(p_->lean_trim_rad -
-                       ConfigPid::lean_trim_I * (measured_velocity_sps / kMaxSps) * dt_s,
-                   -max_trim_rad, max_trim_rad);
+    p_->lean_trim_rad = std::clamp(
+        p_->lean_trim_rad - ConfigPid::lean_trim_I * (measured_velocity_sps / kMaxSps) * dt_s,
+        -max_trim_rad, max_trim_rad);
     p_->lean_trim_active = std::abs(measured_velocity_sps) > 1e-3;
   } else {
     p_->lean_trim_active = false;
@@ -98,8 +110,8 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
   const JoyCmd joy = p_->latest_joy;
   p_->turn_sps = static_cast<double>(joy.turn) * kPitchOutToSps * 0.4;
 
-  const double rate_sp_rad_s =
-      ConfigPid::pitch_P * (p_->pitch_setpoint_rad - pitch_rad) - ConfigPid::pitch_D * pitch_rate_rad_s;
+  const double rate_sp_rad_s = ConfigPid::pitch_P * (p_->pitch_setpoint_rad - pitch_rad) -
+                               ConfigPid::pitch_D * pitch_rate_rad_s;
 
   const Vector3f u = p_->rc.update({0.0f, static_cast<float>(pitch_rate_rad_s), 0.0f},
                                    {0.0f, static_cast<float>(rate_sp_rad_s), 0.0f},

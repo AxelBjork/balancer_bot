@@ -10,6 +10,11 @@ enum class PhysicsProfile {
   Simplified,
 };
 
+enum class VelocityFeedbackModel {
+  IdealPlantVelocity,
+  MotorRelative,
+};
+
 struct SimulatorPhysics {
   double drive_force_per_mps = 500.0;
   double max_force_n = 20.0;
@@ -26,6 +31,7 @@ struct SimulatorConfig {
   double wheel_slip_factor = 1.0;
   double velocity_feedback_scale = 1.0;
   double velocity_feedback_tau_s = 0.1;
+  VelocityFeedbackModel velocity_feedback_model = VelocityFeedbackModel::IdealPlantVelocity;
   double imu_pitch_lag_s = 0.0;
   uint32_t imu_noise_seed = 0;
   double accel_noise_std_mps2 = 0.0;
@@ -72,13 +78,29 @@ class BalancerSimulator {
   ipc::ImuRawPayload make_raw_imu_payload(uint64_t sim_time_us) const;
   ipc::ImuSamplePayload make_imu_payload(uint64_t sim_time_us) const;
 
-  const Config& config() const { return cfg_; }
-  const SimulatorPhysics& physics() const { return physics_; }
-  const State& state() const { return state_; }
-  const Diagnostics& diagnostics() const { return diagnostics_; }
-  double get_pitch() const { return state_.pitch; }
-  double get_position() const { return state_.position; }
+  const Config& config() const {
+    return cfg_;
+  }
+  const SimulatorPhysics& physics() const {
+    return physics_;
+  }
+  const State& state() const {
+    return state_;
+  }
+  const Diagnostics& diagnostics() const {
+    return diagnostics_;
+  }
+  double get_pitch() const {
+    return state_.pitch;
+  }
+  double get_position() const {
+    return state_.position;
+  }
   double get_actual_speed_sps() const;
+  double get_raw_feedback_sps() const {
+    return measured_velocity_sps_;
+  }
+  double get_corrected_axle_speed_sps() const;
 
   static SimulatorPhysics physics_for_profile(PhysicsProfile profile);
   static std::string_view profile_name(PhysicsProfile profile);

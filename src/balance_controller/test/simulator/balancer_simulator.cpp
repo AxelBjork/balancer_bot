@@ -13,7 +13,8 @@ constexpr double kGyroScale = 6550.0;
 constexpr double kReferenceWheelVelocityMps =
     (2.0 * kPi * 0.040) / 1.0;  // one wheel rev per second for the configured geometry
 
-double steps_per_sec_to_wheel_velocity(double steps_per_sec, double steps_per_rev, double wheel_radius) {
+double steps_per_sec_to_wheel_velocity(double steps_per_sec, double steps_per_rev,
+                                       double wheel_radius) {
   // Controller convention is negative wheel SPS for forward corrective motion.
   return -(steps_per_sec / steps_per_rev) * 2.0 * kPi * wheel_radius;
 }
@@ -76,9 +77,8 @@ void BalancerSimulator::step(double dt_s) {
   const double avg_steps_per_sec = 0.5 * (left_target_sps_ + right_target_sps_);
   const double target_wheel_velocity =
       steps_per_sec_to_wheel_velocity(avg_steps_per_sec, steps_per_rev, wheel_radius);
-  const double desired_force =
-      std::clamp(target_wheel_velocity * physics_.drive_force_per_mps,
-                 -physics_.max_force_n, physics_.max_force_n);
+  const double desired_force = std::clamp(target_wheel_velocity * physics_.drive_force_per_mps,
+                                          -physics_.max_force_n, physics_.max_force_n);
 
   if (physics_.motor_tau_s > 0.0) {
     const double alpha = std::clamp(dt_s / (physics_.motor_tau_s + dt_s), 0.0, 1.0);
@@ -92,9 +92,8 @@ void BalancerSimulator::step(double dt_s) {
                                  : 1.0;
   applied_drive_force_ += force_alpha * (desired_force - applied_drive_force_);
   const double F_cmd = desired_force;
-  const double F_app =
-      std::clamp(applied_drive_force_ * cfg_.wheel_slip_factor,
-                 -physics_.max_force_n, physics_.max_force_n);
+  const double F_app = std::clamp(applied_drive_force_ * cfg_.wheel_slip_factor,
+                                  -physics_.max_force_n, physics_.max_force_n);
   const double total_force = F_app + external_force_n_;
 
   const double Q = state_.pitch + cfg_.com_angle_offset_rad + external_com_bias_rad_;
@@ -112,7 +111,8 @@ void BalancerSimulator::step(double dt_s) {
   const double d21 = m * l * cQ;
   const double d22 = I + m * l * l;
 
-  const double rhs1 = total_force + m * l * Q_dot * Q_dot * sQ - physics_.cart_damping * state_.velocity;
+  const double rhs1 =
+      total_force + m * l * Q_dot * Q_dot * sQ - physics_.cart_damping * state_.velocity;
   const double rhs2 = m * gravity * l * sQ - physics_.pitch_damping * state_.pitch_rate;
 
   const double det = d11 * d22 - d12 * d21;
@@ -130,12 +130,16 @@ void BalancerSimulator::step(double dt_s) {
     state_.velocity = 0.0;
   }
 
+  const double axle_sps = state_.velocity / (2.0 * kPi * wheel_radius) * steps_per_rev;
+  // q_dot = u_dot - r*theta_dot (expressed as wheel angular velocity).
+  // This intentionally includes pitch motion in the encoder-like stream.
+  const double motor_relative_sps = axle_sps - steps_per_rev * state_.pitch_rate / (2.0 * kPi);
   const double measured_velocity_target_sps =
       cfg_.velocity_feedback_scale *
-      (state_.velocity / (2.0 * kPi * wheel_radius) * steps_per_rev);
+      (cfg_.velocity_feedback_model == VelocityFeedbackModel::MotorRelative ? motor_relative_sps
+                                                                            : axle_sps);
   if (cfg_.velocity_feedback_tau_s > 0.0) {
-    const double alpha =
-        std::clamp(dt_s / (cfg_.velocity_feedback_tau_s + dt_s), 0.0, 1.0);
+    const double alpha = std::clamp(dt_s / (cfg_.velocity_feedback_tau_s + dt_s), 0.0, 1.0);
     measured_velocity_sps_ += alpha * (measured_velocity_target_sps - measured_velocity_sps_);
   } else {
     measured_velocity_sps_ = measured_velocity_target_sps;
@@ -159,9 +163,8 @@ void BalancerSimulator::step(double dt_s) {
   diagnostics_.external_com_bias_rad = external_com_bias_rad_;
   diagnostics_.x_ddot = x_ddot;
   diagnostics_.theta_ddot = theta_ddot;
-  diagnostics_.command_saturated =
-      (std::abs(F_cmd) >= physics_.max_force_n * 0.999) ||
-      (std::abs(F_app) >= physics_.max_force_n * 0.999);
+  diagnostics_.command_saturated = (std::abs(F_cmd) >= physics_.max_force_n * 0.999) ||
+                                   (std::abs(F_app) >= physics_.max_force_n * 0.999);
 }
 
 ipc::ImuRawPayload BalancerSimulator::make_raw_imu_payload(uint64_t sim_time_us) const {
@@ -203,6 +206,14 @@ double BalancerSimulator::get_actual_speed_sps() const {
   return measured_velocity_sps_;
 }
 
+double BalancerSimulator::get_corrected_axle_speed_sps() const {
+  if (cfg_.velocity_feedback_model == VelocityFeedbackModel::MotorRelative) {
+    return measured_velocity_sps_ +
+           cfg_.velocity_feedback_scale * steps_per_rev * state_.pitch_rate / (2.0 * kPi);
+  }
+  return measured_velocity_sps_;
+}
+
 BalancerSimulator::LinearizedUprightModel BalancerSimulator::linearized_upright_model(
     const SimulatorPhysics& physics) {
   (void)physics;
@@ -239,11 +250,12 @@ BalancerSimulator::LinearizedUprightModel BalancerSimulator::linearized_upright_
   return model;
 }
 
-std::array<double, 4> BalancerSimulator::overdamped_candidate_poles(const SimulatorPhysics& physics) {
+std::array<double, 4> BalancerSimulator::overdamped_candidate_poles(
+    const SimulatorPhysics& physics) {
   const auto model = linearized_upright_model(physics);
   const double open_loop_pitch_rate = std::sqrt(std::max(0.0, model.A[3][2]));
-  const double actuator_limited_rate =
-      0.5 / std::max(physics.motor_tau_s, 0.02);
-  const double base = std::clamp(std::min(1.25 * open_loop_pitch_rate, actuator_limited_rate), 1.0, 8.0);
+  const double actuator_limited_rate = 0.5 / std::max(physics.motor_tau_s, 0.02);
+  const double base =
+      std::clamp(std::min(1.25 * open_loop_pitch_rate, actuator_limited_rate), 1.0, 8.0);
   return {{-0.45 * base, -0.75 * base, -1.05 * base, -1.35 * base}};
 }

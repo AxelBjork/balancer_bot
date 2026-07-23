@@ -36,6 +36,7 @@ struct SimulatorScenario {
   double wheel_slip_factor = 1.0;
   double velocity_feedback_scale = 1.0;
   double velocity_feedback_tau_s = 0.0;
+  VelocityFeedbackModel velocity_feedback_model = VelocityFeedbackModel::IdealPlantVelocity;
   double imu_pitch_lag_s = 0.0;
   uint32_t imu_noise_seed = 0;
   double accel_noise_std_mps2 = 0.0;
@@ -70,6 +71,8 @@ struct SimulatorTimelineRow {
   double plant_pitch_rate_dps = 0.0;
   double plant_position = 0.0;
   double plant_velocity = 0.0;
+  double raw_feedback_sps = 0.0;
+  double corrected_feedback_sps = 0.0;
   double target_wheel_velocity = 0.0;
   double actual_wheel_velocity = 0.0;
   double velocity_error = 0.0;

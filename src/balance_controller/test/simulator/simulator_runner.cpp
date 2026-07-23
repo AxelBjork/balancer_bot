@@ -8,9 +8,9 @@
 #include <stdexcept>
 #include <string>
 
-#include "services/main/config.h"
-#include "services/imu/pitch_lpf.h"
 #include "messages/types.h"
+#include "services/imu/pitch_lpf.h"
+#include "services/main/config.h"
 
 namespace {
 
@@ -69,7 +69,8 @@ DisturbanceSample disturbance_sample(const SimulatorDisturbance& disturbance, do
   return {};
 }
 
-DisturbanceSample scenario_disturbance_for_time(const SimulatorScenario& scenario, double sim_time_s) {
+DisturbanceSample scenario_disturbance_for_time(const SimulatorScenario& scenario,
+                                                double sim_time_s) {
   DisturbanceSample total{};
   for (const auto& disturbance : scenario.disturbances) {
     const DisturbanceSample sample = disturbance_sample(disturbance, sim_time_s);
@@ -85,12 +86,15 @@ double raw_acc_pitch_deg(const std::array<double, 3>& acc) {
 
 class SimImuPipeline {
  public:
-  explicit SimImuPipeline(const SimulatorScenario& scenario):
-        rng_(scenario.imu_noise_seed),
+  explicit SimImuPipeline(const SimulatorScenario& scenario)
+      : rng_(scenario.imu_noise_seed),
         accel_noise_std_(scenario.accel_noise_std_mps2),
         gyro_noise_std_(scenario.gyro_noise_std_rad_s),
-        accel_noise_(0.0, scenario.accel_noise_std_mps2 > 0.0 ? scenario.accel_noise_std_mps2 : 1.0),
-        gyro_noise_(0.0, scenario.gyro_noise_std_rad_s > 0.0 ? scenario.gyro_noise_std_rad_s : 1.0) {}
+        accel_noise_(0.0,
+                     scenario.accel_noise_std_mps2 > 0.0 ? scenario.accel_noise_std_mps2 : 1.0),
+        gyro_noise_(0.0,
+                    scenario.gyro_noise_std_rad_s > 0.0 ? scenario.gyro_noise_std_rad_s : 1.0) {
+  }
 
   ipc::ImuSamplePayload sample(const BalancerSimulator& sim, uint64_t sim_time_us) {
     auto payload = sim.make_imu_payload(sim_time_us);
@@ -115,10 +119,8 @@ class SimImuPipeline {
   std::normal_distribution<double> gyro_noise_;
 };
 
-SimulatorScenario make_scenario(std::string name,
-                                double initial_pitch_deg,
-                                double com_angle_offset_rad,
-                                PhysicsProfile physics_profile) {
+SimulatorScenario make_scenario(std::string name, double initial_pitch_deg,
+                                double com_angle_offset_rad, PhysicsProfile physics_profile) {
   SimulatorScenario scenario;
   scenario.name = std::move(name);
   scenario.initial_pitch_deg = initial_pitch_deg;
@@ -138,6 +140,7 @@ SimulatorRunResult run_simulator_scenario_with_loaded_pid(const SimulatorScenari
   sim_cfg.wheel_slip_factor = scenario.wheel_slip_factor;
   sim_cfg.velocity_feedback_scale = scenario.velocity_feedback_scale;
   sim_cfg.velocity_feedback_tau_s = scenario.velocity_feedback_tau_s;
+  sim_cfg.velocity_feedback_model = scenario.velocity_feedback_model;
   sim_cfg.imu_pitch_lag_s = scenario.imu_pitch_lag_s;
   sim_cfg.imu_noise_seed = scenario.imu_noise_seed;
   sim_cfg.accel_noise_std_mps2 = scenario.accel_noise_std_mps2;
@@ -194,7 +197,7 @@ SimulatorRunResult run_simulator_scenario_with_loaded_pid(const SimulatorScenari
     sample.t = std::chrono::steady_clock::time_point(std::chrono::microseconds(imu.timestamp_us));
 
     core.pushImu(sample);
-    core.updateOuterLoop(sim.get_actual_speed_sps(), kTickDtS);
+    core.updateOuterLoop(sim.get_corrected_axle_speed_sps(), kTickDtS);
     core.step(kTickDtS, sample.t);
     left_actual_steps += left_sps * kTickDtS;
     right_actual_steps += right_sps * kTickDtS;
@@ -208,6 +211,8 @@ SimulatorRunResult run_simulator_scenario_with_loaded_pid(const SimulatorScenari
     row.plant_pitch_rate_dps = sim.state().pitch_rate * 180.0 / kPi;
     row.plant_position = sim.state().position;
     row.plant_velocity = sim.state().velocity;
+    row.raw_feedback_sps = sim.get_raw_feedback_sps();
+    row.corrected_feedback_sps = sim.get_corrected_axle_speed_sps();
     row.target_wheel_velocity = diag.target_wheel_velocity;
     row.actual_wheel_velocity = diag.actual_wheel_velocity;
     row.velocity_error = diag.velocity_error;
@@ -215,10 +220,9 @@ SimulatorRunResult run_simulator_scenario_with_loaded_pid(const SimulatorScenari
     row.f_app = diag.f_app;
     row.x_ddot = diag.x_ddot;
     row.theta_ddot = diag.theta_ddot;
-    row.command_saturated = (std::abs(left_sps) >= (0.99 * kMaxSps) ||
-                             std::abs(right_sps) >= (0.99 * kMaxSps))
-                                ? 1.0
-                                : 0.0;
+    row.command_saturated =
+        (std::abs(left_sps) >= (0.99 * kMaxSps) || std::abs(right_sps) >= (0.99 * kMaxSps)) ? 1.0
+                                                                                            : 0.0;
     row.force_saturated = diag.command_saturated ? 1.0 : 0.0;
     if (have_telemetry) {
       row.pitch_deg = latest_telemetry.pitch_deg;
@@ -369,18 +373,11 @@ std::optional<SimulatorScenario> simulator_named_scenario(std::string_view name,
 std::vector<SimulatorScenario> simulator_scenario_set(std::string_view set_name,
                                                       PhysicsProfile physics_profile) {
   static constexpr std::array<std::string_view, 5> kRequired = {
-      "neutral_hold",
-      "pitch_bias_pos",
-      "pitch_bias_neg",
-      "com_offset_pos",
-      "com_offset_neg",
+      "neutral_hold", "pitch_bias_pos", "pitch_bias_neg", "com_offset_pos", "com_offset_neg",
   };
   static constexpr std::array<std::string_view, 5> kCapability = {
-      "combined_bias_pos",
-      "combined_bias_neg",
-      "recovery_large_pitch_pos",
-      "recovery_large_pitch_neg",
-      "disturbance_pulse",
+      "combined_bias_pos",        "combined_bias_neg", "recovery_large_pitch_pos",
+      "recovery_large_pitch_neg", "disturbance_pulse",
   };
   static constexpr std::array<std::string_view, 3> kSlowPush = {
       "slow_push_recover",
