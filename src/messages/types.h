@@ -54,6 +54,10 @@ struct ConfigPid {
   // pitch_ref = vel_P * velocity_error + internal trim_bias
   // rate_sp   = pitch_P * (pitch_ref - pitch) - pitch_D * pitch_rate
   inline static double vel_P = 0.00015;
+  // Enables adaptive lean-trim learning. Disabled by default while the velocity
+  // estimator is being validated; the already configured/learned trim is held.
+  inline static bool lean_trim_enabled = false;
+  inline static double lean_trim_fixed_deg = 0.0;
   inline static double lean_trim_I = 0.60;
   inline static double lean_trim_max_deg = 4.0;
   inline static double pitch_P = 12.0;

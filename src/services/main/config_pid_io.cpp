@@ -5,12 +5,23 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 
 #include "messages/types.h"
 
 static void write_param(std::ofstream& f, const std::string& name, double value) {
   f << std::left << std::setw(20) << name << " = " << value << "\n";
+}
+
+static void write_param(std::ofstream& f, const std::string& name, bool value) {
+  f << std::left << std::setw(20) << name << " = " << (value ? "true" : "false") << "\n";
+}
+
+static std::optional<bool> parse_bool(std::string_view value) {
+  if (value == "true" || value == "1") return true;
+  if (value == "false" || value == "0") return false;
+  return std::nullopt;
 }
 
 void ConfigPid::load(const std::string& path) {
@@ -39,6 +50,7 @@ void ConfigPid::load(const std::string& path) {
                                                         {"rate_I_lim", &rate_I_lim},
                                                         {"rate_FF", &rate_FF},
                                                         {"vel_P", &vel_P},
+                                                        {"lean_trim_fixed_deg", &lean_trim_fixed_deg},
                                                         {"lean_trim_I", &lean_trim_I},
                                                         {"lean_trim_max_deg", &lean_trim_max_deg},
                                                         {"pitch_P", &pitch_P},
@@ -69,8 +81,15 @@ void ConfigPid::load(const std::string& path) {
         val_str.erase(0, val_str.find_first_not_of(" \t"));
         val_str.erase(val_str.find_last_not_of(" \t\r\n") + 1);
 
-        auto it = param_map.find(key);
-        if (it != param_map.end()) {
+        if (key == "lean_trim_enabled") {
+          const auto enabled = parse_bool(val_str);
+          if (enabled.has_value()) {
+            lean_trim_enabled = *enabled;
+            std::cout << "Loaded " << key << " = " << std::boolalpha << lean_trim_enabled << "\n";
+          } else {
+            std::cerr << "[Config] Error parsing boolean for " << key << ": '" << val_str << "'\n";
+          }
+        } else if (auto it = param_map.find(key); it != param_map.end()) {
           try {
             *it->second = std::stod(val_str);
             std::cout << "Loaded " << key << " = " << *it->second << "\n";
@@ -103,6 +122,8 @@ void ConfigPid::save(const std::string& path) {
 
     f << "# --- Physics-Based Outer Loop ---\n";
     write_param(f, "vel_P", vel_P);
+    write_param(f, "lean_trim_enabled", lean_trim_enabled);
+    write_param(f, "lean_trim_fixed_deg", lean_trim_fixed_deg);
     write_param(f, "lean_trim_I", lean_trim_I);
     write_param(f, "lean_trim_max_deg", lean_trim_max_deg);
     write_param(f, "pitch_P", pitch_P);

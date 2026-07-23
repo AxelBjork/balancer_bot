@@ -12,6 +12,12 @@
 
 using matrix::Vector3f;
 
+namespace {
+constexpr double kLeanTrimMaxCommandedAccelerationSps2 = 500.0;
+constexpr double kLeanTrimMaxPitchRateRadS = 5.0 * M_PI / 180.0;
+constexpr double kLeanTrimMaxPitchRad = 8.0 * M_PI / 180.0;
+}  // namespace
+
 struct RateControllerCore::Impl {
 
   std::function<void(double, double)> motors_cb;
@@ -27,12 +33,14 @@ struct RateControllerCore::Impl {
 
   double pitch_setpoint_rad{0.0};
   double lean_trim_rad{0.0};
+  double fixed_lean_trim_rad{0.0};
   bool lean_trim_active{false};
   double measured_velocity_sps{0.0};
   double vel_error_sps{0.0};
   double velocity_pitch_setpoint_rad{0.0};
   double turn_sps{0.0};
   double last_u_sps{0.0};
+  double commanded_acceleration_sps2{0.0};
   bool command_saturated{false};
 };
 
@@ -54,23 +62,35 @@ void RateControllerCore::start() {
 void RateControllerCore::stop() {
 }
 
-void RateControllerCore::updateOuterLoop(double measured_velocity_sps, double dt_s) {
+void RateControllerCore::updateOuterLoop(double measured_velocity_sps, double dt_s,
+                                         bool corrected_axle_velocity_valid) {
   const JoyCmd joy = p_->latest_joy;
   p_->measured_velocity_sps = measured_velocity_sps;
   p_->vel_error_sps = -measured_velocity_sps;
   p_->velocity_pitch_setpoint_rad = ConfigPid::vel_P * p_->vel_error_sps;
+  p_->fixed_lean_trim_rad = std::clamp(ConfigPid::lean_trim_fixed_deg * M_PI / 180.0,
+                                        -kMaxPitchSetpointRad, kMaxPitchSetpointRad);
 
   const double joy_pitch_rad = static_cast<double>(joy.forward) * kMaxPitchSetpointRad * 0.8;
-  p_->pitch_setpoint_rad = std::clamp(p_->velocity_pitch_setpoint_rad + p_->lean_trim_rad +
+  p_->pitch_setpoint_rad = std::clamp(p_->velocity_pitch_setpoint_rad + p_->fixed_lean_trim_rad + p_->lean_trim_rad +
                  joy_pitch_rad,
                  -kMaxPitchSetpointRad, kMaxPitchSetpointRad);
 
   const double max_trim_rad = std::clamp(ConfigPid::lean_trim_max_deg * M_PI / 180.0, 0.0, kMaxPitchSetpointRad);
 
-  if (std::abs(joy.forward) > Config::deadzone && kLeanTrimDecayS > 0.0) {
-    p_->lean_trim_rad *= (1.0 - std::clamp(dt_s / kLeanTrimDecayS, 0.0, 1.0));
-    p_->lean_trim_active = false;
-  } else if (ConfigPid::lean_trim_I != 0.0 && !p_->command_saturated) {
+  // Trim is deliberately held, rather than decayed, whenever a learning gate
+  // is closed. This preserves a manually established fixed trim while the
+  // inner loop and corrected-velocity estimator are being validated.
+  const bool no_operator_command = std::abs(joy.forward) <= Config::deadzone;
+  const bool low_commanded_acceleration =
+      std::abs(p_->commanded_acceleration_sps2) <= kLeanTrimMaxCommandedAccelerationSps2;
+  const bool low_pitch_rate = p_->have_imu && std::abs(p_->latest_imu.gyro_rad_s) <= kLeanTrimMaxPitchRateRadS;
+  const bool acceptable_pitch = p_->have_imu && std::abs(p_->latest_imu.angle_rad) <= kLeanTrimMaxPitchRad;
+  const bool learning_allowed = ConfigPid::lean_trim_enabled && corrected_axle_velocity_valid &&
+                                no_operator_command && low_commanded_acceleration && low_pitch_rate && acceptable_pitch &&
+                                !p_->command_saturated;
+
+  if (learning_allowed && ConfigPid::lean_trim_I != 0.0) {
     p_->lean_trim_rad =
         std::clamp(p_->lean_trim_rad -
                        ConfigPid::lean_trim_I * (measured_velocity_sps / kMaxSps) * dt_s,
@@ -107,8 +127,10 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
                                    static_cast<float>(dt), false);
 
   double u_sps = std::clamp(static_cast<double>(u(1)) * kPitchOutToSps, -kMaxSps, kMaxSps);
+  p_->commanded_acceleration_sps2 = (u_sps - p_->last_u_sps) / dt;
   p_->last_u_sps = u_sps;
-  p_->command_saturated = std::abs(u_sps) >= (0.99 * kMaxSps);
+  p_->command_saturated = std::max(std::abs(u_sps + p_->turn_sps), std::abs(u_sps - p_->turn_sps)) >=
+                          (0.99 * kMaxSps);
 
   if (p_->motors_cb) p_->motors_cb(u_sps + p_->turn_sps, u_sps - p_->turn_sps);
 
@@ -127,7 +149,7 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
     t.pitch_ref_from_vel_deg = p_->velocity_pitch_setpoint_rad * 180.0 / M_PI;
     t.pitch_error_deg = (p_->pitch_setpoint_rad - pitch_rad) * 180.0 / M_PI;
     t.pitch_sp_deg = p_->pitch_setpoint_rad * 180.0 / M_PI;
-    t.pitch_trim_deg = p_->lean_trim_rad * 180.0 / M_PI;
+    t.pitch_trim_deg = (p_->fixed_lean_trim_rad + p_->lean_trim_rad) * 180.0 / M_PI;
     t.trim_active = p_->lean_trim_active ? 1.0 : 0.0;
     p_->tel_cb(std::move(t));
   }

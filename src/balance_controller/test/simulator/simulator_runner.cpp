@@ -194,7 +194,7 @@ SimulatorRunResult run_simulator_scenario_with_loaded_pid(const SimulatorScenari
     sample.t = std::chrono::steady_clock::time_point(std::chrono::microseconds(imu.timestamp_us));
 
     core.pushImu(sample);
-    core.updateOuterLoop(sim.get_actual_speed_sps(), kTickDtS);
+    core.updateOuterLoop(sim.get_actual_speed_sps(), kTickDtS, true);
     core.step(kTickDtS, sample.t);
     left_actual_steps += left_sps * kTickDtS;
     right_actual_steps += right_sps * kTickDtS;

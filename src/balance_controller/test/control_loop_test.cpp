@@ -68,6 +68,10 @@ class RateControllerHarness {
     core_.setJoystick(JoyCmd{static_cast<float>(forward), static_cast<float>(turn)});
   }
 
+  void setCorrectedAxleVelocityValid(bool valid) {
+    corrected_axle_velocity_valid_ = valid;
+  }
+
   void setImu(double angle_rad, double gyro_rad_s, uint64_t sim_time_us,
               double pitch_accel_rad_s2 = 0.0) {
     ImuSample s{};
@@ -81,7 +85,7 @@ class RateControllerHarness {
   void tick(double dt_s, uint64_t sim_time_us) {
     const auto now = std::chrono::steady_clock::time_point(std::chrono::microseconds(sim_time_us));
     current_time_us_ = sim_time_us;
-    core_.updateOuterLoop(runner_.getActualSpeedSps(), dt_s);
+    core_.updateOuterLoop(runner_.getActualSpeedSps(), dt_s, corrected_axle_velocity_valid_);
     core_.step(dt_s, now);
   }
 
@@ -108,6 +112,7 @@ class RateControllerHarness {
   RateControllerCore core_;
   std::vector<Telemetry> telemetry_;
   uint64_t current_time_us_{0};
+  bool corrected_axle_velocity_valid_{false};
 };
 
 class ControlServiceHarness {
@@ -287,6 +292,8 @@ struct ConfigPidSnapshot {
   double rate_I_lim = ConfigPid::rate_I_lim;
   double rate_FF = ConfigPid::rate_FF;
   double vel_P = ConfigPid::vel_P;
+  bool lean_trim_enabled = ConfigPid::lean_trim_enabled;
+  double lean_trim_fixed_deg = ConfigPid::lean_trim_fixed_deg;
   double lean_trim_I = ConfigPid::lean_trim_I;
   double lean_trim_max_deg = ConfigPid::lean_trim_max_deg;
   double pitch_P = ConfigPid::pitch_P;
@@ -299,6 +306,8 @@ struct ConfigPidSnapshot {
     ConfigPid::rate_I_lim = rate_I_lim;
     ConfigPid::rate_FF = rate_FF;
     ConfigPid::vel_P = vel_P;
+    ConfigPid::lean_trim_enabled = lean_trim_enabled;
+    ConfigPid::lean_trim_fixed_deg = lean_trim_fixed_deg;
     ConfigPid::lean_trim_I = lean_trim_I;
     ConfigPid::lean_trim_max_deg = lean_trim_max_deg;
     ConfigPid::pitch_P = pitch_P;
@@ -320,6 +329,8 @@ void set_zeroed_gain_audit_config() {
   ConfigPid::rate_I_lim = 1.0;
   ConfigPid::rate_FF = 0.0;
   ConfigPid::vel_P = 0.0;
+  ConfigPid::lean_trim_enabled = true;
+  ConfigPid::lean_trim_fixed_deg = 0.0;
   ConfigPid::lean_trim_I = 0.03;
   ConfigPid::lean_trim_max_deg = 4.0;
   ConfigPid::pitch_P = 0.0;
@@ -485,7 +496,10 @@ TEST(RateControllerCoreTest, VelocityFeedbackAffectsTelemetryWhenCommanded) {
 }
 
 TEST(RateControllerCoreTest, LeanTrimAccumulatesCorrectiveBiasForPositiveVelocityDrift) {
+  ScopedConfigPidRestore guard;
+  ConfigPid::lean_trim_enabled = true;
   RateControllerHarness h;
+  h.setCorrectedAxleVelocityValid(true);
   h.setJoystick(0.0, 0.0);
   h.runner().setActualSpeedSps(800.0);
   h.run_steps(400, 1.0 / 400.0, 0.0, 0.0);
@@ -496,7 +510,10 @@ TEST(RateControllerCoreTest, LeanTrimAccumulatesCorrectiveBiasForPositiveVelocit
 }
 
 TEST(RateControllerCoreTest, LeanTrimAccumulatesOppositeBiasForNegativeVelocityDrift) {
+  ScopedConfigPidRestore guard;
+  ConfigPid::lean_trim_enabled = true;
   RateControllerHarness h;
+  h.setCorrectedAxleVelocityValid(true);
   h.setJoystick(0.0, 0.0);
   h.runner().setActualSpeedSps(-800.0);
   h.run_steps(400, 1.0 / 400.0, 0.0, 0.0);
@@ -506,8 +523,11 @@ TEST(RateControllerCoreTest, LeanTrimAccumulatesOppositeBiasForNegativeVelocityD
   EXPECT_GT(h.telemetry().back().trim_active, 0.5);
 }
 
-TEST(RateControllerCoreTest, LeanTrimDecaysWhenOperatorCommandIsPresent) {
+TEST(RateControllerCoreTest, LeanTrimHoldsWhenOperatorCommandIsPresent) {
+  ScopedConfigPidRestore guard;
+  ConfigPid::lean_trim_enabled = true;
   RateControllerHarness h;
+  h.setCorrectedAxleVelocityValid(true);
   h.setJoystick(0.0, 0.0);
   h.runner().setActualSpeedSps(800.0);
   h.run_steps(400, 1.0 / 400.0, 0.0, 0.0);
@@ -517,12 +537,15 @@ TEST(RateControllerCoreTest, LeanTrimDecaysWhenOperatorCommandIsPresent) {
   h.run_steps(400, 1.0 / 400.0, 0.0, 0.0);
 
   ASSERT_FALSE(h.telemetry().empty());
-  EXPECT_LT(std::abs(h.telemetry().back().pitch_trim_deg), accumulated_trim_deg);
+  EXPECT_NEAR(std::abs(h.telemetry().back().pitch_trim_deg), accumulated_trim_deg, 1e-6);
   EXPECT_LT(h.telemetry().back().trim_active, 0.5);
 }
 
 TEST(RateControllerCoreTest, LeanTrimHoldsWhenVelocityIsInsideDeadband) {
+  ScopedConfigPidRestore guard;
+  ConfigPid::lean_trim_enabled = true;
   RateControllerHarness h;
+  h.setCorrectedAxleVelocityValid(true);
   h.setJoystick(0.0, 0.0);
   h.runner().setActualSpeedSps(800.0);
   h.run_steps(400, 1.0 / 400.0, 0.0, 0.0);
@@ -539,36 +562,74 @@ TEST(RateControllerCoreTest, LeanTrimHoldsWhenVelocityIsInsideDeadband) {
 
 TEST(RateControllerCoreTest, LeanTrimContinuesAtModerateTilt) {
   ScopedConfigPidRestore guard;
+  ConfigPid::lean_trim_enabled = true;
   ConfigPid::lean_trim_I = 0.03;
 
   RateControllerHarness h;
+  h.setCorrectedAxleVelocityValid(true);
   h.setJoystick(0.0, 0.0);
   h.runner().setActualSpeedSps(800.0);
   h.run_steps(400, 1.0 / 400.0, 0.0, 0.0);
   const double accumulated_trim_deg = h.telemetry().back().pitch_trim_deg;
   ASSERT_GT(std::abs(accumulated_trim_deg), 1e-3);
 
-  // Lean trim continues to accumulate at moderate tilt (no pitch gate)
+  // The pitch gate freezes learning but retains the established trim.
   h.run_steps(800, 1.0 / 400.0, 12.0 * M_PI / 180.0, 0.0);
 
   ASSERT_FALSE(h.telemetry().empty());
-  EXPECT_GT(std::abs(h.telemetry().back().pitch_trim_deg), std::abs(accumulated_trim_deg));
+  EXPECT_NEAR(h.telemetry().back().pitch_trim_deg, accumulated_trim_deg, 1e-6);
 }
 
 TEST(RateControllerCoreTest, LeanTrimPersistsThroughLargeTilt) {
+  ScopedConfigPidRestore guard;
+  ConfigPid::lean_trim_enabled = true;
   RateControllerHarness h;
+  h.setCorrectedAxleVelocityValid(true);
   h.setJoystick(0.0, 0.0);
   h.runner().setActualSpeedSps(800.0);
   h.run_steps(400, 1.0 / 400.0, 0.0, 0.0);
   const double trim_before = h.telemetry().back().pitch_trim_deg;
   ASSERT_GT(std::abs(trim_before), 1e-3);
 
-  // Trim persists through large tilt (no hard reset). Higher trim authority may continue
-  // integrating slightly over these few ticks; the important property is that it is retained.
+  // A closed pitch gate holds trim without resetting or decaying it.
   h.run_steps(8, 1.0 / 400.0, 25.0 * M_PI / 180.0, 0.0);
 
   ASSERT_FALSE(h.telemetry().empty());
-  EXPECT_NEAR(h.telemetry().back().pitch_trim_deg, trim_before, 0.02);
+  EXPECT_NEAR(h.telemetry().back().pitch_trim_deg, trim_before, 1e-6);
+  EXPECT_LT(h.telemetry().back().trim_active, 0.5);
+}
+
+TEST(RateControllerCoreTest, LeanTrimHoldsUntilCorrectedAxleVelocityIsValidated) {
+  ScopedConfigPidRestore guard;
+  ConfigPid::lean_trim_enabled = true;
+
+  RateControllerHarness h;
+  h.setJoystick(0.0, 0.0);
+  h.runner().setActualSpeedSps(800.0);
+  h.run_steps(400, 1.0 / 400.0);
+
+  ASSERT_FALSE(h.telemetry().empty());
+  EXPECT_NEAR(h.telemetry().back().pitch_trim_deg, 0.0, 1e-9);
+  EXPECT_LT(h.telemetry().back().trim_active, 0.5);
+
+  h.setCorrectedAxleVelocityValid(true);
+  h.run_steps(400, 1.0 / 400.0);
+  EXPECT_LT(h.telemetry().back().pitch_trim_deg, 0.0);
+  EXPECT_GT(h.telemetry().back().trim_active, 0.5);
+}
+
+TEST(RateControllerCoreTest, FixedLeanTrimIsRetainedWhileLearningIsDisabled) {
+  ScopedConfigPidRestore guard;
+  ConfigPid::lean_trim_enabled = false;
+  ConfigPid::lean_trim_fixed_deg = 1.5;
+
+  RateControllerHarness h;
+  h.setJoystick(0.0, 0.0);
+  h.runner().setActualSpeedSps(800.0);
+  h.run_steps(400, 1.0 / 400.0);
+
+  ASSERT_FALSE(h.telemetry().empty());
+  EXPECT_NEAR(h.telemetry().back().pitch_trim_deg, 1.5, 1e-6);
   EXPECT_LT(h.telemetry().back().trim_active, 0.5);
 }
 

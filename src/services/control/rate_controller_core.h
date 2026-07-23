@@ -27,7 +27,10 @@ class RateControllerCore {
 
   void pushImu(const ImuSample& s);
   void setJoystick(const JoyCmd& j);  // kept for API compat; may be no-op
-  void updateOuterLoop(double measured_velocity_sps, double dt_s);
+  // `corrected_axle_velocity_valid` must only be true for the corrected axle
+  // velocity estimate, never for raw motor-relative velocity.
+  void updateOuterLoop(double measured_velocity_sps, double dt_s,
+                       bool corrected_axle_velocity_valid = false);
   void setTelemetrySink(std::function<void(const Telemetry&)> cb);
 
   // Callbacks to drive motors (steps/s). You wire these from the wrapper.
