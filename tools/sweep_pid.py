@@ -52,7 +52,9 @@ PID_KEYS = (
     "rate_D",
     "rate_I_lim",
     "rate_FF",
-    "vel_P",
+    "max_longitudinal_accel_mps2",
+    "max_jerk_mps3",
+    "velocity_damping_per_s",
     "lean_trim_I",
     "lean_trim_max_deg",
     "pitch_P",
@@ -97,8 +99,11 @@ def _write_pid(path: Path, values: dict[str, float]) -> None:
         f"rate_I_lim           = {values['rate_I_lim']:.12g}",
         f"rate_FF              = {values['rate_FF']:.12g}",
         "",
-        "# --- Outer Loop ---",
-        f"vel_P                = {values['vel_P']:.12g}",
+        "# --- Longitudinal Acceleration Outer Loop ---",
+        "# joystick acceleration -> jerk-limited acceleration -> pitch; units are SI.",
+        f"max_longitudinal_accel_mps2 = {values['max_longitudinal_accel_mps2']:.12g}",
+        f"max_jerk_mps3        = {values['max_jerk_mps3']:.12g}",
+        f"velocity_damping_per_s = {values['velocity_damping_per_s']:.12g}",
         f"lean_trim_I          = {values['lean_trim_I']:.12g}",
         f"lean_trim_max_deg    = {values['lean_trim_max_deg']:.12g}",
         f"pitch_P              = {values['pitch_P']:.12g}",
@@ -151,7 +156,9 @@ def _candidate_grid(base: dict[str, float], args: argparse.Namespace) -> list[di
         "rate_P": _float_list(args.rate_p),
         "rate_I": _float_list(args.rate_i),
         "rate_D": _float_list(args.rate_d),
-        "vel_P": _float_list(args.vel_p),
+        "max_longitudinal_accel_mps2": _float_list(args.max_longitudinal_accel_mps2),
+        "max_jerk_mps3": _float_list(args.max_jerk_mps3),
+        "velocity_damping_per_s": _float_list(args.velocity_damping_per_s),
         "lean_trim_I": _float_list(args.lean_trim_i),
         "lean_trim_max_deg": _float_list(args.lean_trim_max_deg),
         "pitch_P": _float_list(args.pitch_p),
@@ -199,7 +206,12 @@ def main() -> int:
     parser.add_argument("--rate-p", default="0.10,0.15,0.20,0.25")
     parser.add_argument("--rate-i", default="0.0")
     parser.add_argument("--rate-d", default="0.04,0.08, 0.12, 0.16")
-    parser.add_argument("--vel-p", default="0.0003,0.0004, 0.0005, 0.0006, 0.0007")
+    parser.add_argument("--max-longitudinal-accel-mps2", default="1.0,1.5,2.0",
+                        help="Maximum joystick-requested longitudinal acceleration [m/s^2].")
+    parser.add_argument("--max-jerk-mps3", default="4.0,6.0,8.0",
+                        help="Maximum acceleration slew rate [m/s^3].")
+    parser.add_argument("--velocity-damping-per-s", default="0.5,1.0,1.5",
+                        help="Velocity damping gain [1/s].")
     parser.add_argument("--lean-trim-i", default="0.30, 0.60")
     parser.add_argument("--lean-trim-max-deg", default="6.0")
     parser.add_argument("--pitch-p", default="4, 6, 8, 10,")

@@ -30,6 +30,7 @@ struct RateControllerCore::Impl {
   bool lean_trim_active{false};
   double measured_velocity_sps{0.0};
   double vel_error_sps{0.0};
+  double commanded_accel_mps2{0.0};
   double velocity_pitch_setpoint_rad{0.0};
   double turn_sps{0.0};
   double last_u_sps{0.0};
@@ -57,12 +58,22 @@ void RateControllerCore::stop() {
 void RateControllerCore::updateOuterLoop(double measured_velocity_sps, double dt_s) {
   const JoyCmd joy = p_->latest_joy;
   p_->measured_velocity_sps = measured_velocity_sps;
+  const double measured_velocity_mps = measured_velocity_sps * Config::meters_per_step;
+  const double requested_accel_mps2 =
+      std::clamp(static_cast<double>(joy.forward), -1.0, 1.0) * ConfigPid::max_longitudinal_accel_mps2;
+  const double damped_accel_mps2 = requested_accel_mps2 -
+      ConfigPid::velocity_damping_per_s * measured_velocity_mps;
+  const double max_accel_mps2 = std::max(0.0, ConfigPid::max_longitudinal_accel_mps2);
+  const double accel_target_mps2 = std::clamp(damped_accel_mps2, -max_accel_mps2, max_accel_mps2);
+  const double max_delta_accel_mps2 = std::max(0.0, ConfigPid::max_jerk_mps3) * std::max(0.0, dt_s);
+  p_->commanded_accel_mps2 += std::clamp(accel_target_mps2 - p_->commanded_accel_mps2,
+                                         -max_delta_accel_mps2, max_delta_accel_mps2);
   p_->vel_error_sps = -measured_velocity_sps;
-  p_->velocity_pitch_setpoint_rad = ConfigPid::vel_P * p_->vel_error_sps;
+  p_->velocity_pitch_setpoint_rad = std::asin(std::clamp(p_->commanded_accel_mps2 / Config::g0,
+                                                           -std::sin(kMaxPitchSetpointRad),
+                                                           std::sin(kMaxPitchSetpointRad)));
 
-  const double joy_pitch_rad = static_cast<double>(joy.forward) * kMaxPitchSetpointRad * 0.8;
-  p_->pitch_setpoint_rad = std::clamp(p_->velocity_pitch_setpoint_rad + p_->lean_trim_rad +
-                 joy_pitch_rad,
+  p_->pitch_setpoint_rad = std::clamp(p_->velocity_pitch_setpoint_rad + p_->lean_trim_rad,
                  -kMaxPitchSetpointRad, kMaxPitchSetpointRad);
 
   const double max_trim_rad = std::clamp(ConfigPid::lean_trim_max_deg * M_PI / 180.0, 0.0, kMaxPitchSetpointRad);

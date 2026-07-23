@@ -57,11 +57,13 @@ The architecture is divided into three logical areas:
 
 ### `ControlService`
 
-> Owns the balancing control pipeline that converts `PhysicsTick`, `ImuData`, and `JoystickCommand`, and `MotorFeedback` inputs into wheel-speed targets and streaming controller telemetry.
+> Owns the balancing control pipeline that converts `PhysicsTick`, `ImuData`, `JoystickCommand`, and `MotorFeedback` inputs into actuator commands and streaming controller telemetry.
 >
-> This service is intentionally thin: it caches the latest bus inputs, translates them into the `RateControllerCore` API, and republishes the core's outputs as reflected IPC payloads. The control law itself is a physics-shaped outer loop wrapped around the PX4 pitch-rate controller. A joystick forward command produces a target wheel velocity in steps per second. The velocity term is combined with lean-trim and angle-trim biases are added, and the PX4 `RateControl` block tracks a damped pitch-rate setpoint:
+> This service is intentionally thin: it caches the latest bus inputs, translates them into the `RateControllerCore` API, and republishes the core's outputs as reflected IPC payloads. The control law is an acceleration-to-pitch outer loop wrapped around the PX4 pitch-rate controller. A joystick forward command requests longitudinal acceleration; the request is jerk-limited, velocity damping is subtracted, and the result is converted to a pitch reference before lean trim is added. The PX4 `RateControl` block then tracks a damped pitch-rate setpoint:
 >
-> $$ \theta_{sp} = k_{vel}(v_{ref} - v) + \theta_{trim} $$
+> $$ a_{sp} = \operatorname{jerkLimit}(a_{joy} - k_v v) $$
+>
+> $$ \theta_{sp} = \arcsin(\operatorname{clamp}(a_{sp}/g)) + \theta_{trim} $$
 >
 > $$ \omega_{sp} = k_{pitch}(\theta_{sp} - \theta) - k_{pitch\_rate}\dot{\theta} $$
 >

@@ -8,8 +8,8 @@ This is the maintainer-facing notebook for the balancing stack. It captures the 
 
 The control pipeline is:
 
-1. joystick forward input and optional position hold become a target wheel velocity
-2. a velocity-to-pitch outer law turns wheel speed error into a pitch setpoint
+1. joystick forward input becomes a requested longitudinal acceleration
+2. a jerk-limited acceleration controller, with velocity damping, turns that request into a pitch setpoint
 3. slow trims bias the pitch setpoint when persistent error or drift is present
 4. the pitch error plus filtered pitch-rate damping become a pitch-rate setpoint
 5. PX4 `RateControl` produces the normalized pitch-axis effort
@@ -22,7 +22,8 @@ Important details:
 - trim bias is an internal `RateControllerCore` behavior, not a PID file knob
 - when hardware feedback exists, velocity and position feedback come from `MotorFeedback`
 - in SIL without a motor backend, the controller falls back to the last commanded wheel speeds
-- the active outer-loop gains are `vel_P`, `pitch_P`, and `pitch_D`
+- the outer-loop parameters are `max_longitudinal_accel_mps2`, `max_jerk_mps3`,
+  `velocity_damping_per_s`, `pitch_P`, and `pitch_D`
 
 ## Why Tick-Driven Control Matters
 

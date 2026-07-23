@@ -286,7 +286,9 @@ struct ConfigPidSnapshot {
   double rate_D = ConfigPid::rate_D;
   double rate_I_lim = ConfigPid::rate_I_lim;
   double rate_FF = ConfigPid::rate_FF;
-  double vel_P = ConfigPid::vel_P;
+  double max_longitudinal_accel_mps2 = ConfigPid::max_longitudinal_accel_mps2;
+  double max_jerk_mps3 = ConfigPid::max_jerk_mps3;
+  double velocity_damping_per_s = ConfigPid::velocity_damping_per_s;
   double lean_trim_I = ConfigPid::lean_trim_I;
   double lean_trim_max_deg = ConfigPid::lean_trim_max_deg;
   double pitch_P = ConfigPid::pitch_P;
@@ -298,7 +300,9 @@ struct ConfigPidSnapshot {
     ConfigPid::rate_D = rate_D;
     ConfigPid::rate_I_lim = rate_I_lim;
     ConfigPid::rate_FF = rate_FF;
-    ConfigPid::vel_P = vel_P;
+    ConfigPid::max_longitudinal_accel_mps2 = max_longitudinal_accel_mps2;
+    ConfigPid::max_jerk_mps3 = max_jerk_mps3;
+    ConfigPid::velocity_damping_per_s = velocity_damping_per_s;
     ConfigPid::lean_trim_I = lean_trim_I;
     ConfigPid::lean_trim_max_deg = lean_trim_max_deg;
     ConfigPid::pitch_P = pitch_P;
@@ -319,7 +323,9 @@ void set_zeroed_gain_audit_config() {
   ConfigPid::rate_D = 0.0;
   ConfigPid::rate_I_lim = 1.0;
   ConfigPid::rate_FF = 0.0;
-  ConfigPid::vel_P = 0.0;
+  ConfigPid::max_longitudinal_accel_mps2 = 0.0;
+  ConfigPid::max_jerk_mps3 = 0.0;
+  ConfigPid::velocity_damping_per_s = 0.0;
   ConfigPid::lean_trim_I = 0.03;
   ConfigPid::lean_trim_max_deg = 4.0;
   ConfigPid::pitch_P = 0.0;
@@ -395,16 +401,18 @@ TEST(RateControllerCoreGainAuditTest, RateDConsumesImuPitchAcceleration) {
   EXPECT_NEAR(h.runner().lastLeft(), h.runner().lastRight(), 1e-6);
 }
 
-TEST(RateControllerCoreGainAuditTest, OuterKVelSignControlsVelocityPitchReference) {
+TEST(RateControllerCoreGainAuditTest, VelocityDampingSignControlsVelocityPitchReference) {
   ScopedConfigPidRestore restore;
   set_zeroed_gain_audit_config();
   ConfigPid::rate_P = 0.25;
   ConfigPid::pitch_P = 10.0;
 
-  ConfigPid::vel_P = 5.5e-05;
+  ConfigPid::max_longitudinal_accel_mps2 = 10.0;
+  ConfigPid::max_jerk_mps3 = 10000.0;
+  ConfigPid::velocity_damping_per_s = 1.0;
   const double positive_gain_output = run_fresh_core_once(0.0, 0.0, 1000.0);
 
-  ConfigPid::vel_P = -5.5e-05;
+  ConfigPid::velocity_damping_per_s = -1.0;
   const double negative_gain_output = run_fresh_core_once(0.0, 0.0, 1000.0);
 
   EXPECT_LT(positive_gain_output, 0.0);

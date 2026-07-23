@@ -15,7 +15,7 @@ struct ImuSample {
 
 // ---- Joystick command (forward/turn normalized to [-1, 1]) ----
 struct JoyCmd {
-  double forward;  // + forward speed command
+  double forward;  // + forward acceleration request
   double turn;     // + left faster, right slower (CCW yaw)
 };
 
@@ -50,10 +50,14 @@ struct ConfigPid {
   inline static double rate_I_lim = 0.15;
   inline static double rate_FF = 0.0;
 
-  // Physics-based outer loop:
-  // pitch_ref = vel_P * velocity_error + internal trim_bias
-  // rate_sp   = pitch_P * (pitch_ref - pitch) - pitch_D * pitch_rate
-  inline static double vel_P = 0.00015;
+  // Longitudinal outer loop:
+  // joystick acceleration request -> jerk-limited longitudinal acceleration -> pitch reference.
+  // Velocity damping opposes measured longitudinal velocity before the acceleration is converted
+  // to a pitch reference. Units are explicit so these are physical limits, not a wheel-speed gain.
+  inline static double max_longitudinal_accel_mps2 = 1.5;
+  inline static double max_jerk_mps3 = 6.0;
+  inline static double velocity_damping_per_s = 1.0;
+  // Slow stationary drift correction and pitch-to-rate loop.
   inline static double lean_trim_I = 0.60;
   inline static double lean_trim_max_deg = 4.0;
   inline static double pitch_P = 12.0;

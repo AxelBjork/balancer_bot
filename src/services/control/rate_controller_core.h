@@ -6,7 +6,7 @@
 
 // ====== Control Loop Constants ======
 // Motor / speed ceiling (primary scaling knob)
-static constexpr double kMaxSps = 4000.0;  // clamp for wheel speed command (steps/s)
+static constexpr double kMaxSps = 4000.0;  // actuator command ceiling (steps/s)
 static constexpr double kPitchOutToSps = 3200;
 static constexpr double kLeanTrimDecayS = 6.0;
 static constexpr double kMaxPitchSetpointRad = 0.4;  // ~17 degrees max lean
@@ -26,7 +26,8 @@ class RateControllerCore {
   void step(double dt_s, std::chrono::steady_clock::time_point now);
 
   void pushImu(const ImuSample& s);
-  void setJoystick(const JoyCmd& j);  // kept for API compat; may be no-op
+  // The forward axis requests longitudinal acceleration; turn remains differential steering.
+  void setJoystick(const JoyCmd& j);
   void updateOuterLoop(double measured_velocity_sps, double dt_s);
   void setTelemetrySink(std::function<void(const Telemetry&)> cb);
 

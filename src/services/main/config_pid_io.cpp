@@ -38,7 +38,9 @@ void ConfigPid::load(const std::string& path) {
                                                         {"rate_D", &rate_D},
                                                         {"rate_I_lim", &rate_I_lim},
                                                         {"rate_FF", &rate_FF},
-                                                        {"vel_P", &vel_P},
+                                                        {"max_longitudinal_accel_mps2", &max_longitudinal_accel_mps2},
+                                                        {"max_jerk_mps3", &max_jerk_mps3},
+                                                        {"velocity_damping_per_s", &velocity_damping_per_s},
                                                         {"lean_trim_I", &lean_trim_I},
                                                         {"lean_trim_max_deg", &lean_trim_max_deg},
                                                         {"pitch_P", &pitch_P},
@@ -69,6 +71,12 @@ void ConfigPid::load(const std::string& path) {
         val_str.erase(0, val_str.find_first_not_of(" \t"));
         val_str.erase(val_str.find_last_not_of(" \t\r\n") + 1);
 
+        if (key == "vel_P") {
+          std::cerr << "[Config] Deprecated key 'vel_P' in " << path
+                    << " is ignored; use max_longitudinal_accel_mps2, max_jerk_mps3, "
+                       "and velocity_damping_per_s.\n";
+          continue;
+        }
         auto it = param_map.find(key);
         if (it != param_map.end()) {
           try {
@@ -101,8 +109,11 @@ void ConfigPid::save(const std::string& path) {
     write_param(f, "rate_FF", rate_FF);
     f << "\n";
 
-    f << "# --- Physics-Based Outer Loop ---\n";
-    write_param(f, "vel_P", vel_P);
+    f << "# --- Longitudinal Acceleration Outer Loop ---\n";
+    f << "# joystick acceleration -> jerk-limited acceleration -> pitch; units are SI.\n";
+    write_param(f, "max_longitudinal_accel_mps2", max_longitudinal_accel_mps2);
+    write_param(f, "max_jerk_mps3", max_jerk_mps3);
+    write_param(f, "velocity_damping_per_s", velocity_damping_per_s);
     write_param(f, "lean_trim_I", lean_trim_I);
     write_param(f, "lean_trim_max_deg", lean_trim_max_deg);
     write_param(f, "pitch_P", pitch_P);
