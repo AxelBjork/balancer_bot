@@ -16,7 +16,7 @@ struct ImuSample {
 
 // ---- Joystick command (forward/turn normalized to [-1, 1]) ----
 struct JoyCmd {
-  double forward;  // + forward speed command
+  double forward;  // + forward acceleration command
   double turn;     // + left faster, right slower (CCW yaw)
 };
 
@@ -66,7 +66,7 @@ struct Telemetry {
 // Runtime-configurable PID gains loaded from pid.conf
 // Default values are set here, can be overridden at runtime by load()
 struct ConfigPid {
-  inline static constexpr int config_version = 3;
+  inline static constexpr int config_version = 4;
 
   // PX4 Rate PID (inner loop, pitch axis only)
   inline static double rate_P = 0.25;
@@ -79,6 +79,10 @@ struct ConfigPid {
   // Velocity gains produce degrees from an error expressed in steps/s; velocity_I
   // is learned only at a stationary command and remains the COM trim limit.
   inline static double velocity_P = 0.0020;
+  // Longitudinal acceleration command and corrected-velocity damping.
+  inline static double max_longitudinal_accel_mps2 = 1.5;
+  inline static double max_jerk_mps3 = 8.0;
+  inline static double velocity_damping_per_s = 1.0;
   inline static double velocity_I = 0.0010;
   inline static double velocity_I_limit_deg = 4.0;
   inline static double angle_P = 12.0;

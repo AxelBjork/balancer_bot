@@ -34,7 +34,7 @@ void ConfigPid::load(const std::string& path) {
   std::vector<ParsedLine> parsed_lines;
   std::unordered_set<std::string> allowed = {
       "config_version", "rate_P", "rate_I", "rate_D", "rate_I_lim", "rate_FF",
-      "velocity_P", "velocity_I", "velocity_I_limit_deg", "angle_P", "angle_D",
+      "velocity_P", "max_longitudinal_accel_mps2", "max_jerk_mps3", "velocity_damping_per_s", "velocity_I", "velocity_I_limit_deg", "angle_P", "angle_D",
       "drive_max_sps", "turn_max_sps", "pitch_max_deg", "balance_max_sps",
       "output_scale_sps", "controller_enabled"};
   controller_enabled = true;
@@ -130,7 +130,7 @@ void ConfigPid::load(const std::string& path) {
     if (values.at(key) < 0.0) throw std::runtime_error(std::string(key) + " must be non-negative");
   };
   for (const char* key : {"rate_P", "rate_I", "rate_D", "rate_I_lim", "rate_FF",
-                          "velocity_P", "velocity_I", "velocity_I_limit_deg", "angle_P",
+                          "velocity_P", "max_longitudinal_accel_mps2", "max_jerk_mps3", "velocity_damping_per_s", "velocity_I", "velocity_I_limit_deg", "angle_P",
                           "angle_D", "turn_max_sps"}) {
     nonnegative(key);
   }
@@ -149,6 +149,9 @@ void ConfigPid::load(const std::string& path) {
   rate_I_lim = values.at("rate_I_lim");
   rate_FF = values.at("rate_FF");
   velocity_P = values.at("velocity_P");
+  max_longitudinal_accel_mps2 = values.at("max_longitudinal_accel_mps2");
+  max_jerk_mps3 = values.at("max_jerk_mps3");
+  velocity_damping_per_s = values.at("velocity_damping_per_s");
   velocity_I = values.at("velocity_I");
   velocity_I_limit_deg = values.at("velocity_I_limit_deg");
   angle_P = values.at("angle_P");
@@ -178,6 +181,9 @@ void ConfigPid::save(const std::string& path) {
 
     f << "# --- Velocity control / stationary COM trim (50 Hz) and allocation ---\n";
     write_param(f, "velocity_P", velocity_P);
+    write_param(f, "max_longitudinal_accel_mps2", max_longitudinal_accel_mps2);
+    write_param(f, "max_jerk_mps3", max_jerk_mps3);
+    write_param(f, "velocity_damping_per_s", velocity_damping_per_s);
     write_param(f, "velocity_I", velocity_I);
     write_param(f, "velocity_I_limit_deg", velocity_I_limit_deg);
     write_param(f, "angle_P", angle_P);

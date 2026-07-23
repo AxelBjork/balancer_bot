@@ -21,22 +21,16 @@ constexpr double kFalloverMarginRad = 5.0 * M_PI / 180.0;
 constexpr double kFalloverRearmPitchRad = 10.0 * M_PI / 180.0;
 constexpr double kFalloverRearmRateRadS = 30.0 * M_PI / 180.0;
 constexpr double kVelocityLoopPeriodS = 1.0 / 50.0;
-constexpr double kDriveAccelerationSps2 = 2400.0;
-constexpr double kDriveDecelerationSps2 = 3600.0;
-constexpr double kMaxAccelerationPitchRad = 3.0 * M_PI / 180.0;
-
-double joystick_to_sps(double command) {
+double joystick_to_acceleration(double command) {
   const double magnitude = std::abs(command);
-  if (magnitude <= Config::deadzone) return 0.0;
-  const double normalized =
-      std::clamp((magnitude - Config::deadzone) / (1.0 - Config::deadzone), 0.0, 1.0);
-  return std::copysign(normalized * ConfigPid::drive_max_sps, command);
+  if (!std::isfinite(command) || magnitude <= Config::deadzone) return 0.0;
+  const double normalized = std::clamp(
+      (magnitude - Config::deadzone) / (1.0 - Config::deadzone), 0.0, 1.0);
+  return std::copysign(normalized * ConfigPid::max_longitudinal_accel_mps2, command);
 }
 
 double move_toward(double value, double target, double max_delta) {
-  if (value < target) return std::min(value + max_delta, target);
-  if (value > target) return std::max(value - max_delta, target);
-  return value;
+  return std::clamp(target, value - max_delta, value + max_delta);
 }
 
 }  // namespace
@@ -54,8 +48,10 @@ struct RateControllerCore::Impl {
   std::chrono::steady_clock::time_point start_ts{};
   RateControl rc{};
 
-  double target_velocity_sps{0.0};
+  double target_velocity_sps{0.0};  // retained telemetry; no speed command is applied
   double target_acceleration_sps2{0.0};
+  double nominal_acceleration_mps2{0.0};
+  double commanded_acceleration_mps2{0.0};
   double acceleration_pitch_rad{0.0};
   double measured_velocity_sps{0.0};
   double vel_error_sps{0.0};
@@ -108,6 +104,8 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
     p_->rc.resetIntegral(1);
     p_->target_velocity_sps = 0.0;
     p_->target_acceleration_sps2 = 0.0;
+    p_->nominal_acceleration_mps2 = 0.0;
+    p_->commanded_acceleration_mps2 = 0.0;
     p_->acceleration_pitch_rad = 0.0;
     p_->vel_error_sps = 0.0;
     p_->velocity_p_rad = 0.0;
@@ -167,9 +165,8 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
   const double fallover_limit_rad =
       std::max(Config::max_tilt_rad, pitch_limit_rad + kFalloverMarginRad);
   const JoyCmd joy = p_->latest_joy;
-  const double requested_velocity_sps =
-      std::isfinite(joy.forward) ? joystick_to_sps(joy.forward) : 0.0;
-  const bool fallover_recovery_requested = requested_velocity_sps != 0.0;
+  const double requested_acceleration_mps2 = joystick_to_acceleration(joy.forward);
+  const bool fallover_recovery_requested = requested_acceleration_mps2 != 0.0;
 
   uint32_t fault_flags = ControllerFaultNone;
   if (imu_age_s > kMaxImuAgeS) fault_flags |= ControllerFaultStaleImu;
@@ -203,44 +200,32 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
   if (p_->outer_elapsed_s + 1e-12 >= kVelocityLoopPeriodS) {
     const double outer_dt = p_->outer_elapsed_s;
     p_->outer_elapsed_s = 0.0;
-    const double previous_target_velocity_sps = p_->target_velocity_sps;
-    const bool reversing = previous_target_velocity_sps * requested_velocity_sps < 0.0;
-    const double active_target_sps = reversing ? 0.0 : requested_velocity_sps;
-    const bool slowing_down = std::abs(active_target_sps) < std::abs(previous_target_velocity_sps);
-    const double slew_rate_sps2 = slowing_down ? kDriveDecelerationSps2 : kDriveAccelerationSps2;
-    p_->target_velocity_sps =
-        move_toward(previous_target_velocity_sps, active_target_sps, slew_rate_sps2 * outer_dt);
-    p_->target_acceleration_sps2 =
-        (p_->target_velocity_sps - previous_target_velocity_sps) / outer_dt;
-    p_->vel_error_sps = p_->target_velocity_sps - p_->measured_velocity_sps;
-    p_->velocity_p_rad = ConfigPid::velocity_P * p_->vel_error_sps * M_PI / 180.0;
+    // Stick commands nominal chassis acceleration. The balance loop alone
+    // retains common-mode motor authority; no target speed is added at the motor boundary.
+    p_->nominal_acceleration_mps2 = move_toward(
+        p_->nominal_acceleration_mps2, requested_acceleration_mps2,
+        std::max(0.0, ConfigPid::max_jerk_mps3) * outer_dt);
+    const double measured_velocity_mps = p_->measured_velocity_sps * Config::meters_per_step;
+    const double max_accel = std::max(0.0, ConfigPid::max_longitudinal_accel_mps2);
+    p_->commanded_acceleration_mps2 = std::clamp(
+        p_->nominal_acceleration_mps2 - ConfigPid::velocity_damping_per_s * measured_velocity_mps,
+        -max_accel, max_accel);
+    p_->target_velocity_sps = 0.0;
+    p_->target_acceleration_sps2 = p_->commanded_acceleration_mps2 / Config::meters_per_step;
+    p_->vel_error_sps = -p_->measured_velocity_sps;
+    p_->velocity_p_rad = 0.0;
 
-    // This integral is only the stationary physical COM trim. At neutral it
-    // must remain active while correcting drift: qualifying it on already-low
-    // speed, pitch, or pitch rate creates a self-sustaining moving equilibrium.
-    // Command tracking has no integral state, so motion cannot become delayed
-    // stored pitch.
-    const bool com_trim_learning = requested_velocity_sps == 0.0 &&
-                                   p_->target_velocity_sps == 0.0 &&
+    const bool com_trim_learning = requested_acceleration_mps2 == 0.0 &&
                                    !controller_was_saturated;
     const double integral_limit_rad = ConfigPid::velocity_I_limit_deg * M_PI / 180.0;
-    const double integral_delta =
-        com_trim_learning
-            ? ConfigPid::velocity_I * p_->vel_error_sps * outer_dt * M_PI / 180.0
-            : 0.0;
-    const double candidate_i =
-        std::clamp(p_->com_trim_rad + integral_delta, -integral_limit_rad, integral_limit_rad);
-    p_->acceleration_pitch_rad = std::clamp(
-        std::atan2(p_->target_acceleration_sps2 * Config::meters_per_step, Config::g0),
-        -kMaxAccelerationPitchRad, kMaxAccelerationPitchRad);
-    const double candidate_pitch =
-        p_->acceleration_pitch_rad + p_->velocity_p_rad + candidate_i;
-    const bool pitch_would_saturate = std::abs(candidate_pitch) > pitch_limit_rad;
-    if (com_trim_learning && !pitch_would_saturate) {
-      p_->com_trim_rad = candidate_i;
-    }
-    p_->pitch_setpoint_rad = std::clamp(
-        p_->acceleration_pitch_rad + p_->velocity_p_rad + p_->com_trim_rad,
+    const double integral_delta = com_trim_learning
+        ? ConfigPid::velocity_I * p_->vel_error_sps * outer_dt * M_PI / 180.0 : 0.0;
+    const double candidate_i = std::clamp(p_->com_trim_rad + integral_delta,
+        -integral_limit_rad, integral_limit_rad);
+    p_->acceleration_pitch_rad = std::atan2(p_->commanded_acceleration_mps2, Config::g0);
+    const double candidate_pitch = p_->acceleration_pitch_rad + candidate_i;
+    if (com_trim_learning && std::abs(candidate_pitch) <= pitch_limit_rad) p_->com_trim_rad = candidate_i;
+    p_->pitch_setpoint_rad = std::clamp(p_->acceleration_pitch_rad + p_->com_trim_rad,
         -pitch_limit_rad, pitch_limit_rad);
   }
   if (std::abs(p_->acceleration_pitch_rad + p_->velocity_p_rad + p_->com_trim_rad) >

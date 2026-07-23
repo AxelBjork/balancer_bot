@@ -60,6 +60,10 @@ class DOC_DESC(kControlServiceDoc) ControlService {
   double last_fused_pitch_deg_ = 0.0;
   double last_gyro_pitch_rate_dps_ = 0.0;
   double last_filtered_pitch_rate_dps_ = 0.0;
+  bool have_feedback_reference_ = false;
+  int64_t feedback_left_steps_ = 0;
+  int64_t feedback_right_steps_ = 0;
+  double feedback_pitch_rad_ = 0.0;
 };
 
 template <>
@@ -95,8 +99,27 @@ inline void ControlService::on_message<MsgId::PhysicsTick>(const PhysicsTickPayl
 template <>
 inline void ControlService::on_message<MsgId::MotorFeedback>(const ipc::MotorFeedbackPayload& p) {
   latest_motor_feedback_ = p;
-  observed_velocity_sps_ = p.measured_avg_sps;
   const double dt_s = std::max(0.0, p.update_dt_ms / 1000.0);
+  // Completed steps are motor-relative. Correct common-mode displacement with
+  // the paired fused-pitch displacement before filtering it as axle velocity.
+  if (!have_feedback_reference_) {
+    feedback_left_steps_ = p.left_actual_steps;
+    feedback_right_steps_ = p.right_actual_steps;
+    feedback_pitch_rad_ = last_fused_pitch_deg_ * M_PI / 180.0;
+    have_feedback_reference_ = true;
+    observed_velocity_sps_ = p.measured_avg_sps;
+  } else if (dt_s > 0.0) {
+    const double motor_delta_steps = 0.5 * static_cast<double>(
+        (p.left_actual_steps - feedback_left_steps_) +
+        (p.right_actual_steps - feedback_right_steps_));
+    const double pitch_rad = last_fused_pitch_deg_ * M_PI / 180.0;
+    const double pitch_steps = Config::steps_per_rev * (pitch_rad - feedback_pitch_rad_) /
+                               (2.0 * M_PI);
+    observed_velocity_sps_ = (motor_delta_steps + pitch_steps) / dt_s;
+    feedback_left_steps_ = p.left_actual_steps;
+    feedback_right_steps_ = p.right_actual_steps;
+    feedback_pitch_rad_ = pitch_rad;
+  }
   if (!have_motor_feedback_ || Config::fc_velocity_hz <= 0.0 || dt_s <= 0.0) {
     filtered_velocity_sps_ = observed_velocity_sps_;
   } else {
