@@ -65,9 +65,14 @@ class DOC_DESC(kControlServiceDoc) ControlService {
   double last_right_sps_ = 0.0;
   ipc::MotorFeedbackPayload latest_motor_feedback_{};
   bool have_motor_feedback_ = false;
+  bool have_previous_feedback_sample_ = false;
   double observed_velocity_sps_ = 0.0;
-  double filtered_velocity_sps_ = 0.0;
-  double velocity_observer_accum_s_ = 0.0;
+  double previous_common_actual_steps_ = 0.0;
+  uint64_t previous_feedback_timestamp_us_ = 0;
+  double previous_feedback_pitch_rad_ = 0.0;
+  // Latest controller-facing fused pitch. Motor feedback is emitted at the current physics tick,
+  // so this is the pitch at the feedback interval end rather than a pitch-rate approximation.
+  double latest_fused_pitch_rad_ = 0.0;
   double last_raw_acc_pitch_deg_ = 0.0;
   double last_fused_pitch_deg_ = 0.0;
   double last_gyro_pitch_rate_dps_ = 0.0;
@@ -94,6 +99,7 @@ inline void ControlService::on_message<MsgId::ImuData>(const ipc::ImuSamplePaylo
   const double az = p.acc[2];
   last_raw_acc_pitch_deg_ = std::atan2(-ax, std::sqrt(ay * ay + az * az)) * (180.0 / M_PI);
   last_fused_pitch_deg_ = p.pitch_rad * (180.0 / M_PI);
+  latest_fused_pitch_rad_ = p.pitch_rad;
   last_gyro_pitch_rate_dps_ = p.gyr[1] * (180.0 / M_PI);
   last_filtered_pitch_rate_dps_ = p.pitch_rate_rad_s * (180.0 / M_PI);
   core_.pushImu(s);
@@ -108,18 +114,30 @@ inline void ControlService::on_message<MsgId::PhysicsTick>(const PhysicsTickPayl
 template <>
 inline void ControlService::on_message<MsgId::MotorFeedback>(const ipc::MotorFeedbackPayload& p) {
   latest_motor_feedback_ = p;
+  // Retain the legacy 50 ms commanded-pulse estimate for diagnostics only. It must not be mixed
+  // with the instantaneous pitch displacement correction below.
   observed_velocity_sps_ = -p.measured_avg_sps;
-  if (!have_motor_feedback_) {
-    filtered_velocity_sps_ = observed_velocity_sps_;
+  if (have_previous_feedback_sample_ &&
+      p.feedback_timestamp_us > previous_feedback_timestamp_us_) {
+    const double dt_s =
+        static_cast<double>(p.feedback_timestamp_us - previous_feedback_timestamp_us_) / 1e6;
+    // Fixed-axle sign check: with the axle fixed, wheel pulse displacement is the negative of
+    // body pitch displacement. Thus completed_common_delta_steps + pitch_delta_steps is zero.
+    const double current_common_actual_steps =
+        0.5 * (static_cast<double>(p.left_actual_steps) + static_cast<double>(p.right_actual_steps));
+    // This is -0.5 * ((left - previous_left) + (right - previous_right)).
+    const double completed_common_delta_steps =
+        previous_common_actual_steps_ - current_common_actual_steps;
+    const double pitch_delta_steps = Config::steps_per_rev *
+        (latest_fused_pitch_rad_ - previous_feedback_pitch_rad_) / (2.0 * M_PI);
+    const double corrected_axle_delta_steps = completed_common_delta_steps + pitch_delta_steps;
+    core_.updateOuterLoop(corrected_axle_delta_steps / dt_s, dt_s);
   }
-  const double dt_s = std::max(0.0, p.update_dt_ms / 1000.0);
-  velocity_observer_accum_s_ += dt_s;
-  const double period_s = (Config::fc_velocity_hz > 0.0) ? (1.0 / Config::fc_velocity_hz) : 0.0;
-  if (!have_motor_feedback_ || period_s <= 0.0 || velocity_observer_accum_s_ + 1e-12 >= period_s) {
-    filtered_velocity_sps_ = observed_velocity_sps_;
-    velocity_observer_accum_s_ = 0.0;
-  }
-  core_.updateOuterLoop(have_motor_feedback_ ? filtered_velocity_sps_ : 0.0, dt_s);
+  previous_common_actual_steps_ =
+      0.5 * (static_cast<double>(p.left_actual_steps) + static_cast<double>(p.right_actual_steps));
+  previous_feedback_timestamp_us_ = p.feedback_timestamp_us;
+  previous_feedback_pitch_rad_ = latest_fused_pitch_rad_;
+  have_previous_feedback_sample_ = true;
   have_motor_feedback_ = true;
 }
 

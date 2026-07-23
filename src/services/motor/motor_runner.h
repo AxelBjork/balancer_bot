@@ -17,6 +17,10 @@ struct MotorFeedbackSample {
   double measured_avg_sps{0.0};
   double update_dt_ms{0.0};
   double feedback_age_ms{0.0};
+  uint64_t feedback_timestamp_us{0};
+  // Integrated estimates of pulses applied to the drivers, not encoder measurements. Missed
+  // steps and wheel slip are not observable here; wheel encoders are required for true axle
+  // velocity feedback.
   int64_t left_actual_steps{0};
   int64_t right_actual_steps{0};
 };
@@ -301,6 +305,7 @@ class MotorRunner {
                                                   (last_applied_fwdR_ ? 1.0 : -1.0) *
                                                   right_positive_dir;
     sample.update_dt_ms = last_update_dt_s_ * 1000.0;
+    sample.feedback_timestamp_us = current_time_us_.load(std::memory_order_relaxed);
     if (last_call_time_us_ > 0u) {
       const uint64_t now_us = current_time_us_.load(std::memory_order_relaxed);
       sample.feedback_age_ms =

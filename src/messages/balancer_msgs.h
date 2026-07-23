@@ -91,13 +91,17 @@ struct DOC_DESC(
 
 struct DOC_DESC(
     "Internal motor feedback sample published by the motor service. It carries the currently "
-    "applied wheel rates after slew limiting, a steps-derived average wheel-speed estimate used by "
-    "closed-loop hardware feedback, and the integrated actual step counts.") MotorFeedbackPayload {
+    "applied wheel rates after slew limiting, a raw steps-derived average wheel-speed diagnostic, "
+    "and integrated applied-pulse step estimates. `left_actual_steps` and `right_actual_steps` "
+    "are not encoder measurements: missed motor steps and wheel slip are invisible to them. "
+    "Wheel encoders are required to measure true axle velocity.") MotorFeedbackPayload {
   double left_applied_sps;
   double right_applied_sps;
   double measured_avg_sps;
   double update_dt_ms;
   double feedback_age_ms;
+  // Timestamp of this sample's interval end, in the controller's monotonic time base.
+  uint64_t feedback_timestamp_us;
   int64_t left_actual_steps;
   int64_t right_actual_steps;
 };

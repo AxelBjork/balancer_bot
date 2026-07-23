@@ -121,12 +121,14 @@ class ControlServiceHarness {
   }
 
   void sendMotorFeedback(double left_applied_sps, double right_applied_sps, double measured_avg_sps,
-                         int64_t left_actual_steps, int64_t right_actual_steps) {
+                         int64_t left_actual_steps, int64_t right_actual_steps,
+                         uint64_t feedback_timestamp_us = 0) {
     ipc::MotorFeedbackPayload payload{};
     payload.left_applied_sps = left_applied_sps;
     payload.right_applied_sps = right_applied_sps;
     payload.measured_avg_sps = measured_avg_sps;
     payload.update_dt_ms = 1000.0 / 400.0;
+    payload.feedback_timestamp_us = feedback_timestamp_us;
     payload.left_actual_steps = left_actual_steps;
     payload.right_actual_steps = right_actual_steps;
     control_.on_message<MsgId::MotorFeedback>(payload);
@@ -606,50 +608,51 @@ TEST(ImuServiceTest, ConvertsRawImuToFusedImuDataAndPreservesRawVectors) {
   EXPECT_EQ(fused.timestamp_us, raw.timestamp_us);
 }
 
-TEST(ControlServiceTest, UsesMotorFeedbackForVelocityTelemetry) {
+TEST(ControlServiceTest, UsesCorrectedFeedbackDisplacementForVelocityTelemetry) {
   ControlServiceHarness h;
   h.sendJoystick(0.2, 0.0);
 
-  for (int i = 0; i < 200; ++i) {
-    const uint64_t sim_time_us = static_cast<uint64_t>((i + 1) * 2500);
-    h.sendMotorFeedback(200.0, 46.0, 123.0, 0, 0);
-    h.step_with_imu(1.0 / 400.0, sim_time_us);
-  }
+  h.step_with_imu(1.0 / 400.0, 0);
+  h.sendMotorFeedback(200.0, 46.0, 123.0, 0, 0, 0);
+  h.step_with_imu(1.0 / 400.0, 25000);
+  // Raw measured_avg_sps intentionally disagrees: the control path uses only displacement.
+  h.sendMotorFeedback(200.0, 46.0, 123.0, 3, 3, 25000);
+  h.step_with_imu(1.0 / 400.0, 27500);
 
   ASSERT_FALSE(h.telemetry().empty());
-  // Motor step feedback is converted into controller velocity convention at the service boundary.
-  EXPECT_NEAR(h.telemetry().back().measured_vel_sps, -123.0, 5.0);
-  EXPECT_NEAR(h.telemetry().back().vel_error, 123.0, 5.0);
+  EXPECT_NEAR(h.telemetry().back().measured_vel_sps, -120.0, 1e-6);
+  EXPECT_NEAR(h.telemetry().back().vel_error, 120.0, 1e-6);
   EXPECT_GT(h.telemetry().back().pitch_ref_from_vel_deg, 0.0);
   EXPECT_NEAR(h.telemetry().back().left_applied_sps, 200.0, 1e-3);
   EXPECT_NEAR(h.telemetry().back().right_applied_sps, 46.0, 1e-3);
-  EXPECT_EQ(h.telemetry().back().left_actual_steps, 0);
-  EXPECT_EQ(h.telemetry().back().right_actual_steps, 0);
 }
 
-TEST(ControlServiceTest, VelocityObserverUpdatesAtConfiguredCadence) {
+TEST(ControlServiceTest, FixedAxlePitchDisplacementCancelsWheelDisplacement) {
   ControlServiceHarness h;
-  h.sendJoystick(0.0, 0.0);
-  h.sendMotorFeedback(0.0, 0.0, 0.0, 0, 0);
+  constexpr double kPitchDeltaRad = 2.0 * M_PI / Config::steps_per_rev;
 
-  for (int i = 0; i < 7; ++i) {
-    const uint64_t sim_time_us = static_cast<uint64_t>((i + 1) * 2500);
-    h.step_with_imu(1.0 / 400.0, sim_time_us);
-  }
-
-  ASSERT_FALSE(h.telemetry().empty());
-  EXPECT_NEAR(h.telemetry().back().pitch_ref_from_vel_deg, 0.0, 1e-6);
-  EXPECT_NEAR(h.telemetry().back().vel_error, 0.0, 1e-6);
-
-  for (int i = 0; i < 8; ++i) {
-    h.sendMotorFeedback(0.0, 0.0, 1000.0, 0, 0);
-    const uint64_t sim_time_us = static_cast<uint64_t>((8 + i + 1) * 2500);
-    h.step_with_imu(1.0 / 400.0, sim_time_us);
-  }
+  h.step_with_imu(1.0 / 400.0, 0, 0.0);
+  h.sendMotorFeedback(0.0, 0.0, 999.0, 0, 0, 0);
+  h.step_with_imu(1.0 / 400.0, 10000, kPitchDeltaRad);
+  // For a fixed axle, the wheel displacement is -pitch_delta_steps, so the corrected
+  // displacement must be zero. This also confirms the controller sign convention.
+  h.sendMotorFeedback(0.0, 0.0, 999.0, -1, -1, 10000);
+  h.step_with_imu(1.0 / 400.0, 12500, kPitchDeltaRad);
 
   ASSERT_FALSE(h.telemetry().empty());
-  EXPECT_GT(h.telemetry().back().pitch_ref_from_vel_deg, 0.0);
-  EXPECT_NEAR(h.telemetry().back().vel_error, 1000.0, 1e-3);
+  EXPECT_NEAR(h.telemetry().back().measured_vel_sps, 0.0, 1e-9);
+  EXPECT_NEAR(h.telemetry().back().vel_error, 0.0, 1e-9);
+}
+
+TEST(ControlServiceTest, IgnoresFeedbackWithoutAPositiveTimestampInterval) {
+  ControlServiceHarness h;
+  h.step_with_imu(1.0 / 400.0, 0);
+  h.sendMotorFeedback(0.0, 0.0, 0.0, 0, 0, 10000);
+  h.sendMotorFeedback(0.0, 0.0, 0.0, 10, 10, 10000);
+  h.step_with_imu(1.0 / 400.0, 12500);
+
+  ASSERT_FALSE(h.telemetry().empty());
+  EXPECT_NEAR(h.telemetry().back().measured_vel_sps, 0.0, 1e-9);
 }
 
 TEST(ControlServiceTest, UsesFilteredPitchRateForControlAndKeepsRawGyroForDiagnostics) {

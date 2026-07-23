@@ -16,6 +16,7 @@ void MotorService::handle_motor_targets(const ipc::MotorTargetsPayload& p) {
   payload.measured_avg_sps = feedback.measured_avg_sps;
   payload.update_dt_ms = feedback.update_dt_ms;
   payload.feedback_age_ms = feedback.feedback_age_ms;
+  payload.feedback_timestamp_us = feedback.feedback_timestamp_us;
   payload.left_actual_steps = feedback.left_actual_steps;
   payload.right_actual_steps = feedback.right_actual_steps;
   bus_.publish<MsgId::MotorFeedback>(payload);
