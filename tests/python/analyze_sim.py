@@ -1,5 +1,7 @@
 import math
 
+from tools.telemetry_analysis.stepper_geometry import WHEEL_RADIUS_M
+
 # ==========================================
 # 1. Physics Parameters (from balancer_simulator.h & User)
 # ==========================================
@@ -21,12 +23,12 @@ Kp_rate = 0.75        # Rate P gain (User Request)
 Kd_rate = 0.6        # Rate D gain (Restored)
 
 # Motor conversion gain
-# pid out 1.0 -> 3200 sps.
-# -3200 sps -> Forward Velocity (Positive m/s).
-# r = 0.04m.
-# v = (-u_sps / 3200) * (2 * pi * r)
+# This diagnostic uses the verified 1/32 conversion: one wheel revolution is
+# 6400 STEP pulses.  -6400 SPS is one reverse wheel revolution per second.
+# r = 0.0412m.
+# v = (-u_sps / 6400) * (2 * pi * r)
 # G_motor = -1.0 * (2 * pi * r) = -0.2513
-G_motor = -0.2513  # (m/s) / (PID_unit)
+G_motor = -2.0 * math.pi * WHEEL_RADIUS_M  # (m/s) / (PID_unit)
 
 # Effective Gains
 # v = G_motor * [ Kp_rate * (rate_sp - dtheta) + Kd_rate * d/dt(rate_sp - dtheta) ]

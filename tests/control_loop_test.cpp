@@ -477,13 +477,14 @@ TEST(ConfigPidV10Test, LoadsCompleteStrictSchema) {
 TEST(ConfigPidV10Test, LoadsCheckedInConfigAsAuthoritativeDefault) {
   ScopedConfigPidRestore restore;
   ASSERT_NO_THROW(ConfigPid::load(std::string(BALANCER_REPO_ROOT) + "/pid.conf"));
-  EXPECT_DOUBLE_EQ(ConfigPid::values.pitch_gain, 6000.0);
-  EXPECT_DOUBLE_EQ(ConfigPid::values.pitch_rate_gain, 350.0);
-  EXPECT_DOUBLE_EQ(ConfigPid::values.pitch_accel_gain, 0.0);
-  EXPECT_DOUBLE_EQ(ConfigPid::values.velocity_control_cutoff_hz, 3.0);
-  EXPECT_DOUBLE_EQ(ConfigPid::values.velocity_damping_per_s, 8.0);
-  EXPECT_DOUBLE_EQ(ConfigPid::values.velocity_pitch_limit_deg, 4.0);
+  EXPECT_DOUBLE_EQ(ConfigPid::values.pitch_gain, 203550.0);
+  EXPECT_DOUBLE_EQ(ConfigPid::values.pitch_rate_gain, 1932.0);
+  EXPECT_DOUBLE_EQ(ConfigPid::values.pitch_accel_gain, 14.7);
+  EXPECT_DOUBLE_EQ(ConfigPid::values.velocity_control_cutoff_hz, 0.68);
+  EXPECT_DOUBLE_EQ(ConfigPid::values.velocity_damping_per_s, 5.5);
+  EXPECT_DOUBLE_EQ(ConfigPid::values.velocity_pitch_limit_deg, 2.5);
   EXPECT_DOUBLE_EQ(ConfigPid::values.velocity_I, 0.001);
+  EXPECT_DOUBLE_EQ(ConfigPid::values.balance_max_sps, Config::max_step_rate_sps);
   EXPECT_TRUE(ConfigPid::controller_enabled);
 }
 
@@ -589,7 +590,7 @@ TEST(ControlServicePidConfigTest, PublishesStatusAndRejectsAtomically) {
   EXPECT_DOUBLE_EQ(ConfigPid::values.pitch_rate_gain, 370.0);
 
   ConfigPidValues invalid = updated;
-  invalid.turn_max_sps = 12001.0;
+  invalid.turn_max_sps = Config::max_step_rate_sps + 1.0;
   harness.sendPidOverride(18, invalid);
   ASSERT_EQ(harness.pid_status().size(), 2u);
   EXPECT_EQ(harness.pid_status().back().request_id, 18u);
@@ -739,6 +740,31 @@ TEST(RateControllerCoreStateFeedbackTest, IndependentTermsUseRobotForwardPolarit
   EXPECT_DOUBLE_EQ(t.active_pitch_gain_sps_per_rad, 1000.0);
   EXPECT_DOUBLE_EQ(t.active_pitch_rate_gain_sps_per_rad_s, 200.0);
   EXPECT_DOUBLE_EQ(t.active_pitch_accel_gain_sps_per_rad_s2, 4.0);
+}
+
+TEST(RateControllerCoreStateFeedbackTest, GainsConsumeRadiansAndRadiansPerSecondWithoutDtScale) {
+  ScopedConfigPidRestore restore;
+  set_zeroed_gain_audit_config();
+  ConfigPid::values.pitch_gain = 6000.0;
+  ConfigPid::values.pitch_rate_gain = 350.0;
+
+  RateControllerHarness h;
+  h.setJoystick(0.0, 0.0);
+  const double pitch_rad = 1.0 * M_PI / 180.0;
+  const double rate_rad_s = 1.0 * M_PI / 180.0;
+  h.setImu(pitch_rad, rate_rad_s, 2500);
+  h.tick(1.0 / 400.0, 2500);
+  ASSERT_FALSE(h.telemetry().empty());
+  const auto& first = h.telemetry().back();
+  const double expected = (6000.0 + 350.0) * M_PI / 180.0;
+  EXPECT_NEAR(first.pitch_feedback_sps, 6000.0 * M_PI / 180.0, 1e-12);
+  EXPECT_NEAR(first.pitch_rate_feedback_sps, 350.0 * M_PI / 180.0, 1e-12);
+  EXPECT_NEAR(first.u_sps, expected, 1e-12);
+
+  h.setImu(pitch_rad, rate_rad_s, 7500);
+  h.tick(1.0 / 200.0, 7500);
+  ASSERT_FALSE(h.telemetry().empty());
+  EXPECT_NEAR(h.telemetry().back().u_sps, expected, 1e-12);
 }
 
 TEST(RateControllerCoreStateFeedbackTest, StateFeedbackDoesNotDependOnNestedPidProducts) {
@@ -957,7 +983,11 @@ TEST(RateControllerCoreTest, CorrectedAxleVelocityRemovesPitchOnlyCompletedStepM
 
   const auto& t = h.telemetry().back();
   EXPECT_GT(std::abs(t.raw_completed_velocity_sps), 100.0);
-  EXPECT_NEAR(t.corrected_axle_velocity_sps, 0.0, 5.0);
+  // At 1/32, the completed-step quantization is twice as fine in distance
+  // per pulse but the same raw SPS fixture still leaves a small residual in
+  // this synthetic pitch-only sequence. Keep the assertion tied to the
+  // physical conversion without making it an exact-zero quantization test.
+  EXPECT_NEAR(t.corrected_axle_velocity_sps, 0.0, 10.0);
 }
 
 TEST(RateControllerCoreTest, CorrectedAxleVelocityUsesWrappedPitchDifference) {
@@ -1517,7 +1547,9 @@ TEST(RateControllerCoreTest, LargeResidualVelocityIsBrakedWithoutCommand) {
   EXPECT_GT(std::abs(h.telemetry().back().pitch_sp_deg), 1e-3);
   const double drive_limit_deg =
       std::atan2(ConfigPid::values.drive_max_acceleration_mps2, Config::g0) * 180.0 / M_PI;
-  EXPECT_LE(std::abs(h.telemetry().back().pitch_sp_deg), drive_limit_deg + 0.1);
+  const double configured_pitch_limit_deg =
+      std::max(drive_limit_deg, ConfigPid::values.velocity_pitch_limit_deg);
+  EXPECT_LE(std::abs(h.telemetry().back().pitch_sp_deg), configured_pitch_limit_deg + 0.1);
 }
 
 TEST(RateControllerCoreTest, VelocityPitchAuthorityIsExplicitAndSymmetric) {
@@ -1742,6 +1774,23 @@ TEST(ControlServiceTest, TelemetryCarriesImuDiagnostics) {
   EXPECT_NEAR(t.raw_acc_pitch_deg, 5.0, 0.1);
   EXPECT_NEAR(t.fused_pitch_deg, 5.0, 0.1);
   EXPECT_NEAR(t.gyro_pitch_rate_dps, gyro_rad_s * 180.0 / M_PI, 0.1);
+}
+
+TEST(ControlServiceTest, TelemetryCarriesMonotonicSenderIdentityAndTiming) {
+  ControlServiceHarness h;
+  h.sendJoystick(0.0, 0.0);
+  h.step_with_imu(1.0 / 400.0, 2500);
+  h.step_with_imu(1.0 / 400.0, 5000);
+
+  ASSERT_GE(h.telemetry().size(), 2U);
+  const auto& first = h.telemetry()[h.telemetry().size() - 2];
+  const auto& second = h.telemetry().back();
+  EXPECT_NE(first.run_id, 0U);
+  EXPECT_EQ(second.run_id, first.run_id);
+  EXPECT_EQ(first.packet_seq + 1U, second.packet_seq);
+  EXPECT_EQ(first.loop_seq + 1U, second.loop_seq);
+  EXPECT_EQ(first.sender_monotonic_ns, 2'500'000U);
+  EXPECT_EQ(second.sender_monotonic_ns, 5'000'000U);
 }
 
 TEST(ControlServiceTest, TelemetryCarriesOuterLoopBreakdownAndMotorFeedback) {

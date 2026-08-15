@@ -70,6 +70,10 @@ def test_tick_driven_telemetry_stream(udp):
         assert payload.age_ms >= 0.0
         assert payload.pitch_deg == payload.pitch_deg
         assert payload.u_sps == payload.u_sps
+        assert payload.run_id != 0
+        assert payload.packet_seq > 0
+        assert payload.loop_seq > 0
+        assert payload.sender_monotonic_ns > 0
         return
 
     raise AssertionError("Did not receive SystemTelemetry message from sil_app")

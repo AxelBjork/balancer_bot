@@ -334,6 +334,22 @@ promoting any derived files into the [hardware data archive](../data/README.md).
 manifests state whether the source capture is still available and what claim each retained extract
 supports.
 
+### Freeze investigation checklist
+
+For a short controlled run, collect the dashboard event log, the raw CSV, and the packet capture.
+On the Pi, use these read-only probes while the dashboard is connected:
+
+```bash
+pidstat -p "$(pidof balancer_pi)" -u -r -w 1
+top -H -p "$(pidof balancer_pi)"
+vmstat 1
+tcpdump -i any -n -tttt udp port 9000 -w /tmp/balancer_udp.pcap
+```
+
+Interpret the timelines together: a sender timestamp gap points to scheduler/dispatch work, a
+receiver gap with continuous sender sequence points to the receiver/network path, and a browser
+long-frame/SSE gap with healthy server reception points to rendering or the HTTP client.
+
 ## Recommended First Hardware Session
 
 1. Start with the wheels off the ground or the robot physically restrained.

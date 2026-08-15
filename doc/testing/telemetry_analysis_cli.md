@@ -6,9 +6,11 @@ derived output must be written only to an explicit path under `build/` or anothe
 location.
 
 While diagnosing live capture gaps, the dashboard status includes the maximum and average duration
-of `TelemetryState.accept`, plus the approximate CSV queue depth. `udp_receive_pause` events indicate
-that receive timestamps paused while controller time remained continuous; `csv_write_stall` events
-identify a slow individual CSV write.
+of `TelemetryState.accept`, the sender run/sequence identifiers, sender and receiver gap estimates,
+the approximate CSV queue depth, and dashboard SSE/display timing. `udp_receive_pause` events
+indicate that receive timestamps paused while sender time remained continuous;
+`telemetry_packet_gap` events identify sender timing or sequence gaps; `telemetry_run_reset` events
+identify a process/run boundary; and `csv_write_stall` events identify a slow individual CSV write.
 
 The live dashboard distinguishes fresh telemetry from Pi reachability: `telemetry_connected` drives
 the **Streaming** state, while `pi_ready` identifies an online Pi whose telemetry has stopped. The

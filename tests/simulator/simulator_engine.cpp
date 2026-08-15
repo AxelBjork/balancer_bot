@@ -12,6 +12,7 @@
 #include "services/main/config.h"
 #include "services/motor/motor_service.h"
 #include "services/time/time_service.h"
+#include "simulator/simulator_scheduler.h"
 #include "simulator/simulator_runner.h"
 
 namespace {
@@ -183,7 +184,11 @@ struct EnginePipeline {
   double rolling_residual_velocity_mps = 0.0;
   double rolling_residual_steps = 0.0;
 
-  EnginePipeline() : bus(this, &EnginePipeline::dispatch), services(bus) {
+  explicit EnginePipeline(double initial_fused_pitch_deg)
+      : bus(this, &EnginePipeline::dispatch), services(bus) {
+    if (std::abs(initial_fused_pitch_deg) > 1e-12) {
+      services.imu.setInitialPitchForSimulation(initial_fused_pitch_deg * M_PI / 180.0);
+    }
     // Seed the production observer at the physical zero-time wheel position.
     // Initial chassis velocity is then represented by the first subsequent
     // rolling displacement rather than being silently invisible to control.
@@ -241,6 +246,9 @@ struct SimulatorEngine::Impl {
   std::uniform_real_distribution<double> loss_unit{0.0, 1.0};
   std::deque<DelayedImu> delayed_imu;
   std::deque<std::pair<double, double>> velocity_history;
+  SimulatorTimeScheduler scheduler{static_cast<uint64_t>(std::llround(kControlDtS * 1e6))};
+  std::vector<ScheduledStepEvent> scheduled_step_events;
+  std::vector<SimulatorEvent> events_at_time;
   ipc::ImuRawPayload latest_raw{};
   ipc::JoystickCommandPayload external_joystick{};
   bool use_external_joystick{false};
@@ -251,7 +259,7 @@ struct SimulatorEngine::Impl {
   explicit Impl(const SimulatorScenario& input)
       : scenario(input),
         simulator(makeSimulatorConfig(input)),
-        pipeline(),
+        pipeline(input.initial_fused_pitch_deg),
         rng(input.imu_noise_seed),
         accel_noise(0.0, input.accel_noise_std_mps2 > 0.0 ? input.accel_noise_std_mps2 : 1.0),
         gyro_noise(0.0, input.gyro_noise_std_rad_s > 0.0 ? input.gyro_noise_std_rad_s : 1.0) {
@@ -335,16 +343,23 @@ struct SimulatorEngine::Impl {
     if (velocity_history.empty() || requested_time <= velocity_history.front().first) {
       return velocity_history.empty() ? simulator.state().velocity : velocity_history.front().second;
     }
-    for (std::size_t index = 1; index < velocity_history.size(); ++index) {
-      const auto& previous = velocity_history[index - 1];
-      const auto& next = velocity_history[index];
-      if (requested_time > next.first) continue;
-      const double span = next.first - previous.first;
-      if (span <= 0.0) return next.second;
-      const double alpha = std::clamp((requested_time - previous.first) / span, 0.0, 1.0);
-      return previous.second + (next.second - previous.second) * alpha;
-    }
-    return velocity_history.back().second;
+    // The history is time-ordered.  A forward scan made long-horizon
+    // scenarios quadratic: with zero latency every controller tick walked
+    // through the entire 20,001-sample history before reaching the newest
+    // sample.  lower_bound preserves the same interpolation while making
+    // delayed velocity lookup logarithmic.
+    const auto next = std::lower_bound(
+        velocity_history.begin(), velocity_history.end(), requested_time,
+        [](const std::pair<double, double>& sample, double value) {
+          return sample.first < value;
+        });
+    if (next == velocity_history.end()) return velocity_history.back().second;
+    if (next == velocity_history.begin()) return next->second;
+    const auto previous = next - 1;
+    const double span = next->first - previous->first;
+    if (span <= 0.0) return next->second;
+    const double alpha = std::clamp((requested_time - previous->first) / span, 0.0, 1.0);
+    return previous->second + (next->second - previous->second) * alpha;
   }
 
   void setControllerVelocityEstimate(double time_s) {
@@ -356,34 +371,111 @@ struct SimulatorEngine::Impl {
         estimated_velocity_mps - simulator.diagnostics().target_wheel_velocity);
   }
 
-  void advancePlantTo(double target_time_us) {
-    while (next_imu_time_us <= target_time_us + 1e-9) {
-      const double dt_s = std::max(0.0, next_imu_time_us - plant_time_us) / 1e6;
-      setDisturbance(plant_time_us / 1e6);
-      const auto emitted = pipeline.services.motors.getScheduledStepPosition(
-          static_cast<uint64_t>(std::llround(next_imu_time_us)));
-      simulator.set_emitted_steps(emitted.left_steps, emitted.right_steps);
-      simulator.step(dt_s);
-      plant_time_us = next_imu_time_us;
-      const uint64_t timestamp_us = static_cast<uint64_t>(std::llround(next_imu_time_us));
-      sampleImu(timestamp_us);
-      publishReleasedImu(timestamp_us);
+  void scheduleScenarioBoundaries(uint64_t start_us, uint64_t target_us) {
+    for (const auto& disturbance : scenario.disturbances) {
+      const auto schedule_boundary = [&](double time_s) {
+        if (time_s <= 0.0) return;
+        const uint64_t timestamp_us =
+            static_cast<uint64_t>(std::llround(time_s * 1e6));
+        if (timestamp_us > start_us && timestamp_us <= target_us) {
+          scheduler.schedule(
+              SimulatorEvent{timestamp_us, SimulatorEventKind::Scenario, 0, 0});
+        }
+      };
+      schedule_boundary(disturbance.start_s);
+      if (disturbance.duration_s > 0.0) {
+        schedule_boundary(disturbance.start_s + disturbance.duration_s);
+      }
+    }
+  }
+
+  void scheduleImuSamples(uint64_t start_us, uint64_t target_us) {
+    while (true) {
+      const uint64_t timestamp_us =
+          static_cast<uint64_t>(std::llround(next_imu_time_us));
+      if (timestamp_us > target_us) {
+        break;
+      }
+      // Preserve the legacy behavior when rounding places an IMU sample
+      // exactly on the current plant boundary.  The old polling loop emitted
+      // that zero-duration sample before continuing; the event scheduler
+      // intentionally rejects events at or before its current timestamp.
+      if (timestamp_us <= start_us) {
+        sampleImu(timestamp_us);
+        publishReleasedImu(timestamp_us);
+      } else {
+        scheduler.schedule(
+            SimulatorEvent{timestamp_us, SimulatorEventKind::ImuSample, 0, 0});
+      }
       next_imu_time_us += kImuPeriodUs;
     }
+  }
 
-    const double remaining_s = std::max(0.0, target_time_us - plant_time_us) / 1e6;
-    setDisturbance(plant_time_us / 1e6);
-    const auto emitted = pipeline.services.motors.getScheduledStepPosition(
-        static_cast<uint64_t>(std::llround(target_time_us)));
-    simulator.set_emitted_steps(emitted.left_steps, emitted.right_steps);
-    simulator.step(remaining_s);
-    plant_time_us = target_time_us;
-    publishReleasedImu(static_cast<uint64_t>(std::llround(target_time_us)));
+  void advancePlantTo(double target_time_us) {
+    const uint64_t start_us = static_cast<uint64_t>(std::llround(plant_time_us));
+    const uint64_t target_us = static_cast<uint64_t>(std::llround(target_time_us));
+    if (target_us <= start_us) {
+      return;
+    }
+
+    scheduler.clear_pending_events();
+    scheduler.advance_to(start_us);
+    const bool uses_step_events = !simulator.physics().direct_force;
+    if (uses_step_events) {
+      pipeline.services.motors.getScheduledStepEvents(start_us, target_us,
+                                                      scheduled_step_events);
+      scheduler.schedule_step_events(scheduled_step_events);
+    }
+    scheduleScenarioBoundaries(start_us, target_us);
+    scheduleImuSamples(start_us, target_us);
+
+    // The cumulative position at the interval start includes all events that
+    // were retired by MotorRunner before this interval.  Subsequent updates
+    // are then driven only by individual timestamped STEP events.
+    double emitted_left_steps = 0.0;
+    double emitted_right_steps = 0.0;
+    if (uses_step_events) {
+      auto emitted = pipeline.services.motors.getScheduledStepPosition(start_us);
+      emitted_left_steps = emitted.left_steps;
+      emitted_right_steps = emitted.right_steps;
+      simulator.set_emitted_motor_steps(emitted_left_steps, emitted_right_steps);
+    }
+
+    while (scheduler.current_time_us() < target_us) {
+      const uint64_t current_us = scheduler.current_time_us();
+      const uint64_t next_us = scheduler.next_event_time_us(target_us).value_or(target_us);
+      if (next_us > current_us) {
+        setDisturbance(static_cast<double>(current_us) / 1e6);
+        if (uses_step_events) {
+          simulator.set_emitted_motor_steps(emitted_left_steps, emitted_right_steps);
+        }
+        simulator.step(static_cast<double>(next_us - current_us) / 1e6);
+        scheduler.advance_to(next_us);
+        plant_time_us = static_cast<double>(next_us);
+      }
+
+      scheduler.pop_events_at(scheduler.current_time_us(), events_at_time);
+      for (const auto& event : events_at_time) {
+        if (event.kind == SimulatorEventKind::Step) {
+          emitted_left_steps += static_cast<double>(event.left_step_delta);
+          emitted_right_steps += static_cast<double>(event.right_step_delta);
+          simulator.set_emitted_motor_steps(emitted_left_steps, emitted_right_steps);
+        } else if (event.kind == SimulatorEventKind::Scenario) {
+          setDisturbance(static_cast<double>(scheduler.current_time_us()) / 1e6);
+        } else if (event.kind == SimulatorEventKind::ImuSample) {
+          const uint64_t timestamp_us = scheduler.current_time_us();
+          sampleImu(timestamp_us);
+          publishReleasedImu(timestamp_us);
+        }
+      }
+    }
+
+    plant_time_us = static_cast<double>(target_us);
+    publishReleasedImu(target_us);
   }
 
   SimulatorTimelineRow step() {
-    const uint64_t start_us = pipeline.services.time.current_time_us();
-    const uint64_t end_us = start_us + static_cast<uint64_t>(std::llround(kControlDtS * 1e6));
+    const uint64_t end_us = scheduler.next_controller_time_us();
     setControllerVelocityEstimate(plant_time_us / 1e6);
     advancePlantTo(static_cast<double>(end_us));
     // Keep the residual current for the next control interval.  It represents
@@ -416,12 +508,13 @@ struct SimulatorEngine::Impl {
       pipeline.bus.publish<MsgId::PitchAuthorityDiagnosticCommand>(command);
     }
     pipeline.services.time.advance(kControlDtS);
+    scheduler.controller_sample_processed(end_us);
 
     if (pipeline.services.observer.have_feedback) {
       const auto& feedback = pipeline.services.observer.feedback;
       // The continuous post-slew command drives the motor's field-speed term.
       // Exact pulse-frame quantization already enters the plant independently
-      // through set_emitted_steps(), so using the active-frame average here
+      // through set_emitted_motor_steps(), so using the active-frame average here
       // would count the same quantization twice.
       simulator.set_motor_targets(feedback.left_slewed_sps, feedback.right_slewed_sps);
     }
@@ -459,6 +552,61 @@ struct SimulatorEngine::Impl {
     row.missed_steps = diagnostics.missed_steps;
     row.traction_limit_n = diagnostics.traction_limit_n;
     row.motor_force_limit_n = diagnostics.motor_force_limit_n;
+    row.stepper_commanded_microsteps_left = diagnostics.stepper_commanded_microsteps_left;
+    row.stepper_commanded_microsteps_right = diagnostics.stepper_commanded_microsteps_right;
+    row.stepper_commanded_field_angle_left_rad =
+        diagnostics.stepper_commanded_field_angle_left_rad;
+    row.stepper_commanded_field_angle_right_rad =
+        diagnostics.stepper_commanded_field_angle_right_rad;
+    row.stepper_commanded_field_electrical_angle_left_rad =
+        diagnostics.stepper_commanded_field_electrical_angle_left_rad;
+    row.stepper_commanded_field_electrical_angle_right_rad =
+        diagnostics.stepper_commanded_field_electrical_angle_right_rad;
+    row.stepper_commanded_field_velocity_mps =
+        diagnostics.stepper_commanded_field_velocity_mps;
+    row.stepper_actual_relative_angle_left_rad =
+        diagnostics.stepper_actual_relative_angle_left_rad;
+    row.stepper_actual_relative_angle_right_rad =
+        diagnostics.stepper_actual_relative_angle_right_rad;
+    row.stepper_actual_rotor_electrical_angle_left_rad =
+        diagnostics.stepper_actual_rotor_electrical_angle_left_rad;
+    row.stepper_actual_rotor_electrical_angle_right_rad =
+        diagnostics.stepper_actual_rotor_electrical_angle_right_rad;
+    row.stepper_electrical_phase_error_left_rad =
+        diagnostics.stepper_electrical_phase_error_left_rad;
+    row.stepper_electrical_phase_error_right_rad =
+        diagnostics.stepper_electrical_phase_error_right_rad;
+    row.stepper_torque_left_nm = diagnostics.stepper_torque_left_nm;
+    row.stepper_torque_right_nm = diagnostics.stepper_torque_right_nm;
+    row.stepper_summed_torque_nm = diagnostics.stepper_summed_torque_nm;
+    row.stepper_actual_wheel_velocity_mps = diagnostics.stepper_actual_wheel_velocity_mps;
+    row.stepper_chassis_velocity_mps = diagnostics.stepper_chassis_velocity_mps;
+    row.stepper_current_ref_a_left = diagnostics.stepper_current_ref_a_left;
+    row.stepper_current_ref_b_left = diagnostics.stepper_current_ref_b_left;
+    row.stepper_current_a_left = diagnostics.stepper_current_a_left;
+    row.stepper_current_b_left = diagnostics.stepper_current_b_left;
+    row.stepper_phase_voltage_a_left = diagnostics.stepper_phase_voltage_a_left;
+    row.stepper_phase_voltage_b_left = diagnostics.stepper_phase_voltage_b_left;
+    row.stepper_back_emf_a_left = diagnostics.stepper_back_emf_a_left;
+    row.stepper_back_emf_b_left = diagnostics.stepper_back_emf_b_left;
+    row.stepper_electrical_power_left_w = diagnostics.stepper_electrical_power_left_w;
+    row.stepper_mechanical_power_left_w = diagnostics.stepper_mechanical_power_left_w;
+    row.stepper_resistive_loss_left_w = diagnostics.stepper_resistive_loss_left_w;
+    row.stepper_magnetic_energy_left_j = diagnostics.stepper_magnetic_energy_left_j;
+    row.stepper_current_ref_a_right = diagnostics.stepper_current_ref_a_right;
+    row.stepper_current_ref_b_right = diagnostics.stepper_current_ref_b_right;
+    row.stepper_current_a_right = diagnostics.stepper_current_a_right;
+    row.stepper_current_b_right = diagnostics.stepper_current_b_right;
+    row.stepper_phase_voltage_a_right = diagnostics.stepper_phase_voltage_a_right;
+    row.stepper_phase_voltage_b_right = diagnostics.stepper_phase_voltage_b_right;
+    row.stepper_back_emf_a_right = diagnostics.stepper_back_emf_a_right;
+    row.stepper_back_emf_b_right = diagnostics.stepper_back_emf_b_right;
+    row.stepper_electrical_power_right_w = diagnostics.stepper_electrical_power_right_w;
+    row.stepper_mechanical_power_right_w = diagnostics.stepper_mechanical_power_right_w;
+    row.stepper_resistive_loss_right_w = diagnostics.stepper_resistive_loss_right_w;
+    row.stepper_magnetic_energy_right_j = diagnostics.stepper_magnetic_energy_right_j;
+    row.stepper_voltage_saturated_left = diagnostics.stepper_voltage_saturated_left ? 1.0 : 0.0;
+    row.stepper_voltage_saturated_right = diagnostics.stepper_voltage_saturated_right ? 1.0 : 0.0;
     row.seed = scenario.imu_noise_seed;
     row.total_mass_scale = scenario.total_mass_scale;
     row.pitch_inertia_scale = scenario.pitch_inertia_scale;

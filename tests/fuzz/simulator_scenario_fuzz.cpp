@@ -24,8 +24,11 @@ float clamp_finite(float value, float lo, float hi, float fallback) {
 PhysicsProfile map_profile(uint8_t raw_profile) {
   if (raw_profile == 1) return PhysicsProfile::Realistic;
   if (raw_profile == 2) return PhysicsProfile::ActuatorStress;
-  if (raw_profile == 3) return PhysicsProfile::IdealForce;
-  if (raw_profile == 4) return PhysicsProfile::SimpleForce;
+  if (raw_profile == 3) return PhysicsProfile::DirectActuator;
+  if (raw_profile == 4) return PhysicsProfile::RetiredSimpleForce;
+  if (raw_profile == 5) return PhysicsProfile::RetiredNoSlipActuator;
+  if (raw_profile == 6) return PhysicsProfile::StepperPhase;
+  if (raw_profile == 7) return PhysicsProfile::StepperPhaseElectrical;
   return PhysicsProfile::Simplified;
 }
 

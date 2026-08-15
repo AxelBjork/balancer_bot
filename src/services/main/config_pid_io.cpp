@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "services/main/config_pid_io.h"
+#include "services/main/config.h"
 
 namespace {
 
@@ -101,8 +102,9 @@ ConfigPidValidationCode ConfigPid::validate_numeric(const ConfigPidValues& value
   if (values.velocity_pitch_limit_deg > 90.0) {
     return ConfigPidValidationCode::OutOfRange;
   }
-  if (values.drive_max_sps > 12000.0 || values.turn_max_sps > 12000.0 ||
-      values.balance_max_sps > 12000.0) {
+  if (values.drive_max_sps > Config::max_step_rate_sps ||
+      values.turn_max_sps > Config::max_step_rate_sps ||
+      values.balance_max_sps > Config::max_step_rate_sps) {
     return ConfigPidValidationCode::OutOfRange;
   }
   return ConfigPidValidationCode::Accepted;

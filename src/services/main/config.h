@@ -10,9 +10,24 @@ struct AxisCfg {
 struct Config {
   // ========= General =========
   static constexpr int run_seconds = 120;
-  static constexpr double wheel_diam_m = 0.080;              // 80 mm
-  static constexpr double steps_per_rev = 360 / 1.8 * 16.0;  // 1.8° * 16x
-  static constexpr double meters_per_step = M_PI * wheel_diam_m / steps_per_rev;
+  // Measured wheel geometry and verified driver configuration. Keep this as
+  // the single source for production SPS<->distance conversion and the
+  // simulator's physical actuator profiles.
+  static constexpr double wheel_radius_m = 0.0412;
+  static constexpr double wheel_diam_m = 2.0 * wheel_radius_m;
+  static constexpr int motor_full_steps_per_rev = 200;
+  static constexpr int microsteps_per_full_step = 32;
+  static constexpr int commanded_steps_per_rev =
+      motor_full_steps_per_rev * microsteps_per_full_step;
+  static constexpr double steps_per_rev =
+      static_cast<double>(commanded_steps_per_rev);
+  static constexpr double meters_per_step =
+      2.0 * M_PI * wheel_radius_m / steps_per_rev;
+  // The verified 1/32 migration preserves the previous physical field-speed
+  // authority by allowing four times the historical 1/8 raw STEP rate.  This
+  // is the single scheduler/controller rail; PID files may select a lower
+  // balance_max_sps for a particular experiment.
+  static constexpr double max_step_rate_sps = 16000.0;
 
   // ========= IMU =========
   static constexpr double sampling_hz = 833.000;  // available 12.5 26 52 104 208 416 833
@@ -59,6 +74,10 @@ struct Config {
 };
 
 static_assert(Config::sampling_hz > 0.0);
+static_assert(Config::commanded_steps_per_rev == 6400);
+static_assert(Config::microsteps_per_full_step == 32);
+static_assert(Config::max_step_rate_sps == 16000.0);
+static_assert(Config::wheel_diam_m == 0.0824);
 static_assert(Config::imu_accel_lpf_hz > 0.0 &&
               Config::imu_accel_lpf_hz < Config::sampling_hz / 2.0);
 static_assert(Config::imu_gyro_lpf_hz > 0.0 &&

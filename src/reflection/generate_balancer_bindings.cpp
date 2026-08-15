@@ -24,14 +24,10 @@ void generate_enum(std::set<std::string>& visited) {
   }
 
   using UnderlyingT = std::underlying_type_t<E>;
-  constexpr std::size_t N = get_enum_size<E>();
-  [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-    (..., [] {
-      constexpr auto e = EnumArrHolder<E, N>::arr[Is];
-      std::cout << "    " << std::meta::identifier_of(e) << " = "
-                << static_cast<UnderlyingT>([:e:]) << "\n";
-    }());
-  }(std::make_index_sequence<N>{});
+  template for (constexpr auto e : reflected_enumerators<E>()) {
+    std::cout << "    " << std::meta::identifier_of(e) << " = "
+              << static_cast<UnderlyingT>([:e:]) << "\n";
+  }
 
   std::cout << "\n";
 }
@@ -56,31 +52,24 @@ void generate_struct(std::set<std::string>& visited, std::set<std::string>& visi
   }
   visited.insert(class_name);
 
-  constexpr std::size_t N = get_fields_size<T>();
+  template for (constexpr auto field : reflected_members<T>()) {
+    constexpr auto type = std::meta::type_of(field);
+    using FieldT = typename[:type:];
+    using BaseT = std::remove_all_extents_t<FieldT>;
 
-  if constexpr (N > 0) {
-    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-      (..., [&] {
-        constexpr auto field = StructArrHolder<T, N>::arr[Is];
-        constexpr auto type = std::meta::type_of(field);
-        using FieldT = typename[:type:];
-        using BaseT = std::remove_all_extents_t<FieldT>;
-
-        if constexpr (is_array_like_v<FieldT>) {
-          using ArrayT = std::remove_cv_t<FieldT>;
-          using ElemT = std::remove_cv_t<typename array_traits<ArrayT>::element_type>;
-          if constexpr (std::is_enum_v<ElemT>) {
-            generate_enum<ElemT>(visited_enums);
-          } else if constexpr (std::is_class_v<ElemT> && !is_array_like_v<ElemT>) {
-            generate_struct<ElemT>(visited, visited_enums);
-          }
-        } else if constexpr (std::is_enum_v<BaseT>) {
-          generate_enum<std::remove_cv_t<BaseT>>(visited_enums);
-        } else if constexpr (std::is_class_v<BaseT>) {
-          generate_struct<BaseT>(visited, visited_enums);
-        }
-      }());
-    }(std::make_index_sequence<N>{});
+    if constexpr (is_array_like_v<FieldT>) {
+      using ArrayT = std::remove_cv_t<FieldT>;
+      using ElemT = std::remove_cv_t<typename array_traits<ArrayT>::element_type>;
+      if constexpr (std::is_enum_v<ElemT>) {
+        generate_enum<ElemT>(visited_enums);
+      } else if constexpr (std::is_class_v<ElemT> && !is_array_like_v<ElemT>) {
+        generate_struct<ElemT>(visited, visited_enums);
+      }
+    } else if constexpr (std::is_enum_v<BaseT>) {
+      generate_enum<std::remove_cv_t<BaseT>>(visited_enums);
+    } else if constexpr (std::is_class_v<BaseT>) {
+      generate_struct<BaseT>(visited, visited_enums);
+    }
   }
 
   std::cout << "@dataclass\nclass " << class_name << ":\n";
@@ -120,92 +109,28 @@ void generate_struct(std::set<std::string>& visited, std::set<std::string>& visi
     unpack_args.clear();
   };
 
-  if constexpr (N > 0) {
-    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-      (..., [&] {
-        constexpr auto field = StructArrHolder<T, N>::arr[Is];
-        constexpr auto type = std::meta::type_of(field);
-        using FieldT = typename[:type:];
+  if constexpr (reflected_members<T>().size() > 0) {
+    template for (constexpr auto field : reflected_members<T>()) {
+      constexpr auto type = std::meta::type_of(field);
+      using FieldT = typename[:type:];
 
-        std::string field_name{std::meta::identifier_of(field)};
-        std::cout << "    " << field_name << ": " << get_python_annotation<FieldT>() << "\n";
+      std::string field_name{std::meta::identifier_of(field)};
+      std::cout << "    " << field_name << ": " << get_python_annotation<FieldT>() << "\n";
 
-        constexpr auto field_offset = std::meta::offset_of(field).bytes;
-        if (field_offset > current_offset) {
-          const std::size_t pad = field_offset - current_offset;
-          pack_fmt += std::to_string(pad) + "x";
-          current_offset += pad;
-        }
+      constexpr auto field_offset = std::meta::offset_of(field).bytes;
+      if (field_offset > current_offset) {
+        const std::size_t pad = field_offset - current_offset;
+        pack_fmt += std::to_string(pad) + "x";
+        current_offset += pad;
+      }
 
-        if constexpr (is_array_like_v<FieldT>) {
-          using ArrayT = std::remove_cv_t<FieldT>;
-          using ElemT = std::remove_cv_t<typename array_traits<ArrayT>::element_type>;
-          constexpr std::size_t elem_count = array_traits<ArrayT>::size;
+      if constexpr (is_array_like_v<FieldT>) {
+        using ArrayT = std::remove_cv_t<FieldT>;
+        using ElemT = std::remove_cv_t<typename array_traits<ArrayT>::element_type>;
+        constexpr std::size_t elem_count = array_traits<ArrayT>::size;
 
-          if constexpr (is_byte_like_v<ElemT>) {
-            pack_fmt += std::to_string(elem_count) + "s";
-            if (!pack_args.empty()) {
-              pack_args += ", ";
-            }
-            pack_args += "self." + field_name;
-
-            if (!unpack_args.empty()) {
-              unpack_args += ", ";
-            }
-            unpack_args += field_name;
-            current_offset += elem_count;
-          } else if constexpr (std::is_class_v<ElemT>) {
-            flush_format();
-            const std::string sub_type = get_python_type_name<ElemT>();
-            pack_instructions += "        for item in self." + field_name + ":\n";
-            pack_instructions += "            if not hasattr(item, 'pack_wire'):\n";
-            pack_instructions += "                if isinstance(item, tuple):\n";
-            pack_instructions += "                    item = " + sub_type + "(*item)\n";
-            pack_instructions += "                elif isinstance(item, dict):\n";
-            pack_instructions += "                    item = " + sub_type + "(**item)\n";
-            pack_instructions += "                else:\n";
-            pack_instructions += "                    item = " + sub_type + "(item)\n";
-            pack_instructions += "            data.extend(item.pack_wire())\n";
-
-            unpack_instructions += "        " + field_name + " = []\n";
-            unpack_instructions += "        for _ in range(" + std::to_string(elem_count) + "):\n";
-            unpack_instructions += "            sub_size = " + sub_type + ".WIRE_SIZE\n";
-            unpack_instructions +=
-                "            item = " + sub_type + ".unpack_wire(data[offset:offset+sub_size])\n";
-            unpack_instructions += "            " + field_name + ".append(item)\n";
-            unpack_instructions += "            offset += sub_size\n";
-            current_offset += elem_count * sizeof(ElemT);
-          } else {
-            flush_format();
-            const std::string fmt =
-                "<" + std::to_string(elem_count) + std::string(get_struct_format_char<^^ElemT>());
-            pack_instructions +=
-                "        data.extend(struct.pack(\"" + fmt + "\", *self." + field_name + "))\n";
-            unpack_instructions += "        " + field_name + " = list(struct.unpack_from(\"" + fmt +
-                                   "\", data, offset))\n";
-            unpack_instructions += "        offset += struct.calcsize(\"" + fmt + "\")\n";
-            current_offset += elem_count * sizeof(ElemT);
-          }
-        } else if constexpr (std::is_class_v<FieldT>) {
-          flush_format();
-          const std::string sub_type = get_python_type_name<FieldT>();
-          pack_instructions += "        item = self." + field_name + "\n";
-          pack_instructions += "        if not hasattr(item, 'pack_wire'):\n";
-          pack_instructions += "            if isinstance(item, tuple):\n";
-          pack_instructions += "                item = " + sub_type + "(*item)\n";
-          pack_instructions += "            elif isinstance(item, dict):\n";
-          pack_instructions += "                item = " + sub_type + "(**item)\n";
-          pack_instructions += "            else:\n";
-          pack_instructions += "                item = " + sub_type + "(item)\n";
-          pack_instructions += "        data.extend(item.pack_wire())\n";
-
-          unpack_instructions += "        sub_size = " + sub_type + ".WIRE_SIZE\n";
-          unpack_instructions += "        " + field_name + " = " + sub_type +
-                                 ".unpack_wire(data[offset:offset+sub_size])\n";
-          unpack_instructions += "        offset += sub_size\n";
-          current_offset += sizeof(FieldT);
-        } else {
-          pack_fmt += get_struct_format_char<type>();
+        if constexpr (is_byte_like_v<ElemT>) {
+          pack_fmt += std::to_string(elem_count) + "s";
           if (!pack_args.empty()) {
             pack_args += ", ";
           }
@@ -215,10 +140,71 @@ void generate_struct(std::set<std::string>& visited, std::set<std::string>& visi
             unpack_args += ", ";
           }
           unpack_args += field_name;
-          current_offset += sizeof(FieldT);
+          current_offset += elem_count;
+        } else if constexpr (std::is_class_v<ElemT>) {
+          flush_format();
+          const std::string sub_type = get_python_type_name<ElemT>();
+          pack_instructions += "        for item in self." + field_name + ":\n";
+          pack_instructions += "            if not hasattr(item, 'pack_wire'):\n";
+          pack_instructions += "                if isinstance(item, tuple):\n";
+          pack_instructions += "                    item = " + sub_type + "(*item)\n";
+          pack_instructions += "                elif isinstance(item, dict):\n";
+          pack_instructions += "                    item = " + sub_type + "(**item)\n";
+          pack_instructions += "                else:\n";
+          pack_instructions += "                    item = " + sub_type + "(item)\n";
+          pack_instructions += "            data.extend(item.pack_wire())\n";
+
+          unpack_instructions += "        " + field_name + " = []\n";
+          unpack_instructions += "        for _ in range(" + std::to_string(elem_count) + "):\n";
+          unpack_instructions += "            sub_size = " + sub_type + ".WIRE_SIZE\n";
+          unpack_instructions +=
+              "            item = " + sub_type + ".unpack_wire(data[offset:offset+sub_size])\n";
+          unpack_instructions += "            " + field_name + ".append(item)\n";
+          unpack_instructions += "            offset += sub_size\n";
+          current_offset += elem_count * sizeof(ElemT);
+        } else {
+          flush_format();
+          const std::string fmt =
+              "<" + std::to_string(elem_count) + std::string(get_struct_format_char<^^ElemT>());
+          pack_instructions +=
+              "        data.extend(struct.pack(\"" + fmt + "\", *self." + field_name + "))\n";
+          unpack_instructions += "        " + field_name + " = list(struct.unpack_from(\"" + fmt +
+                                 "\", data, offset))\n";
+          unpack_instructions += "        offset += struct.calcsize(\"" + fmt + "\")\n";
+          current_offset += elem_count * sizeof(ElemT);
         }
-      }());
-    }(std::make_index_sequence<N>{});
+      } else if constexpr (std::is_class_v<FieldT>) {
+        flush_format();
+        const std::string sub_type = get_python_type_name<FieldT>();
+        pack_instructions += "        item = self." + field_name + "\n";
+        pack_instructions += "        if not hasattr(item, 'pack_wire'):\n";
+        pack_instructions += "            if isinstance(item, tuple):\n";
+        pack_instructions += "                item = " + sub_type + "(*item)\n";
+        pack_instructions += "            elif isinstance(item, dict):\n";
+        pack_instructions += "                item = " + sub_type + "(**item)\n";
+        pack_instructions += "            else:\n";
+        pack_instructions += "                item = " + sub_type + "(item)\n";
+        pack_instructions += "        data.extend(item.pack_wire())\n";
+
+        unpack_instructions += "        sub_size = " + sub_type + ".WIRE_SIZE\n";
+        unpack_instructions += "        " + field_name + " = " + sub_type +
+                               ".unpack_wire(data[offset:offset+sub_size])\n";
+        unpack_instructions += "        offset += sub_size\n";
+        current_offset += sizeof(FieldT);
+      } else {
+        pack_fmt += get_struct_format_char<type>();
+        if (!pack_args.empty()) {
+          pack_args += ", ";
+        }
+        pack_args += "self." + field_name;
+
+        if (!unpack_args.empty()) {
+          unpack_args += ", ";
+        }
+        unpack_args += field_name;
+        current_offset += sizeof(FieldT);
+      }
+    }
 
     if (sizeof(T) > current_offset) {
       const std::size_t pad = sizeof(T) - current_offset;
@@ -233,7 +219,7 @@ void generate_struct(std::set<std::string>& visited, std::set<std::string>& visi
 
   std::cout << "\n";
   std::cout << "    def pack_wire(self) -> bytes:\n";
-  if constexpr (N > 0) {
+  if constexpr (reflected_members<T>().size() > 0) {
     std::cout << pack_instructions;
     std::cout << "        return bytes(data)\n\n";
   } else {
@@ -245,22 +231,19 @@ void generate_struct(std::set<std::string>& visited, std::set<std::string>& visi
 
   std::cout << "    @classmethod\n";
   std::cout << "    def unpack_wire(cls, data: bytes) -> \"" << class_name << "\":\n";
-  if constexpr (N > 0) {
+  if constexpr (reflected_members<T>().size() > 0) {
     std::cout << unpack_instructions;
     std::cout << "        return cls(";
 
     bool first = true;
-    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-      (..., [&] {
-        constexpr auto field = StructArrHolder<T, N>::arr[Is];
-        std::string field_name{std::meta::identifier_of(field)};
-        if (!first) {
-          std::cout << ", ";
-        }
-        std::cout << field_name << "=" << field_name;
-        first = false;
-      }());
-    }(std::make_index_sequence<N>{});
+    template for (constexpr auto field : reflected_members<T>()) {
+      std::string field_name{std::meta::identifier_of(field)};
+      if (!first) {
+        std::cout << ", ";
+      }
+      std::cout << field_name << "=" << field_name;
+      first = false;
+    }
 
     std::cout << ")\n\n";
   } else {

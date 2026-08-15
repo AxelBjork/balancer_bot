@@ -45,6 +45,12 @@ def pytest_addoption(parser):
 
 
 def pytest_sessionstart(session):
+    # pytest-xdist starts a fresh pytest session in every worker.  The build
+    # gate owns shared build/CTest directories and must run once in the master
+    # process, before workers begin the Python suite.
+    if os.environ.get("PYTEST_XDIST_WORKER"):
+        return
+
     config = session.config
     wants_build = (
         config.getoption("--build")
@@ -105,7 +111,22 @@ def _run_standard_build() -> None:
     if not configured_for_gate:
         subprocess.run(configure_cmd, check=True, cwd=_REPO_ROOT)
     subprocess.run(build_cmd, check=True, cwd=_REPO_ROOT)
-    subprocess.run(ctest_cmd, check=True, cwd=_REPO_ROOT)
+
+    ctest_log_path = _BUILD_DIR / "ctest.log"
+    print(f"Run CTest...")
+    with ctest_log_path.open("w", encoding="utf-8") as ctest_log:
+        ctest_result = subprocess.run(
+            ctest_cmd,
+            check=False,
+            cwd=_REPO_ROOT,
+            stdout=ctest_log,
+            stderr=subprocess.STDOUT,
+        )
+    print(f"CTest return code: {ctest_result.returncode}")
+    if ctest_result.returncode != 0:
+        raise RuntimeError(
+            f"CTest failed (rc={ctest_result.returncode}); see {ctest_log_path}"
+        )
 
 
 def _afl_runtime_env() -> dict[str, str]:

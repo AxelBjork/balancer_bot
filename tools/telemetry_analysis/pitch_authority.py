@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 
 from .frames import canonicalize_telemetry_frame
+from .stepper_geometry import METERS_PER_STEP
 
 
 # This is a deliberately conservative, predeclared gate for the first
@@ -416,7 +417,7 @@ def analyze_pitch_authority_sweep(
     frame: pd.DataFrame,
     *,
     response_column: str = "fused_pitch_deg",
-    meters_per_step: float = math.pi * 0.0824 / (200.0 * 16.0),
+    meters_per_step: float = METERS_PER_STEP,
     response_threshold_deg: float = 0.10,
 ) -> list[dict[str, Any]]:
     """Return one row of target-realization metrics per direct-target pulse.

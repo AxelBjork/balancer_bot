@@ -14,7 +14,7 @@ class UdpClient:
         # Full-rate simulator telemetry is intentionally emitted at 400 Hz.  A
         # large receive queue prevents a fast deterministic run from dropping
         # its terminal SimRunDone datagram while the client drains telemetry.
-        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8 * 1024 * 1024)
+        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 32 * 1024 * 1024)
         self._sock.bind(("127.0.0.1", 0))
         self._sock.settimeout(1.0)
 

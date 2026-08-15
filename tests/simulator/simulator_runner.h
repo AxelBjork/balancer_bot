@@ -45,6 +45,9 @@ struct SimulatorPitchAuthoritySegment {
 struct SimulatorScenario {
   std::string name;
   double initial_pitch_deg = 0.0;
+  // Simulator-only estimator fixture. Zero preserves normal startup, where
+  // the first gravity sample seeds fused pitch at zero.
+  double initial_fused_pitch_deg = 0.0;
   double initial_pitch_rate_dps = 0.0;
   double initial_velocity_mps = 0.0;
   double com_angle_offset_rad = 0.0;
@@ -172,6 +175,52 @@ struct SimulatorTimelineRow {
   double missed_steps = 0.0;
   double traction_limit_n = 0.0;
   double motor_force_limit_n = 0.0;
+  // StepperPhase internal diagnostics. These are intentionally kept outside
+  // the production telemetry payload until the actuator topology is settled.
+  double stepper_commanded_microsteps_left = 0.0;
+  double stepper_commanded_microsteps_right = 0.0;
+  double stepper_commanded_field_angle_left_rad = 0.0;
+  double stepper_commanded_field_angle_right_rad = 0.0;
+  double stepper_commanded_field_electrical_angle_left_rad = 0.0;
+  double stepper_commanded_field_electrical_angle_right_rad = 0.0;
+  double stepper_commanded_field_velocity_mps = 0.0;
+  double stepper_actual_relative_angle_left_rad = 0.0;
+  double stepper_actual_relative_angle_right_rad = 0.0;
+  double stepper_actual_rotor_electrical_angle_left_rad = 0.0;
+  double stepper_actual_rotor_electrical_angle_right_rad = 0.0;
+  double stepper_electrical_phase_error_left_rad = 0.0;
+  double stepper_electrical_phase_error_right_rad = 0.0;
+  double stepper_torque_left_nm = 0.0;
+  double stepper_torque_right_nm = 0.0;
+  double stepper_summed_torque_nm = 0.0;
+  double stepper_actual_wheel_velocity_mps = 0.0;
+  double stepper_chassis_velocity_mps = 0.0;
+  double stepper_current_ref_a_left = 0.0;
+  double stepper_current_ref_b_left = 0.0;
+  double stepper_current_a_left = 0.0;
+  double stepper_current_b_left = 0.0;
+  double stepper_phase_voltage_a_left = 0.0;
+  double stepper_phase_voltage_b_left = 0.0;
+  double stepper_back_emf_a_left = 0.0;
+  double stepper_back_emf_b_left = 0.0;
+  double stepper_electrical_power_left_w = 0.0;
+  double stepper_mechanical_power_left_w = 0.0;
+  double stepper_resistive_loss_left_w = 0.0;
+  double stepper_magnetic_energy_left_j = 0.0;
+  double stepper_current_ref_a_right = 0.0;
+  double stepper_current_ref_b_right = 0.0;
+  double stepper_current_a_right = 0.0;
+  double stepper_current_b_right = 0.0;
+  double stepper_phase_voltage_a_right = 0.0;
+  double stepper_phase_voltage_b_right = 0.0;
+  double stepper_back_emf_a_right = 0.0;
+  double stepper_back_emf_b_right = 0.0;
+  double stepper_electrical_power_right_w = 0.0;
+  double stepper_mechanical_power_right_w = 0.0;
+  double stepper_resistive_loss_right_w = 0.0;
+  double stepper_magnetic_energy_right_j = 0.0;
+  double stepper_voltage_saturated_left = 0.0;
+  double stepper_voltage_saturated_right = 0.0;
   uint32_t seed = 0;
   double total_mass_scale = 1.0;
   double pitch_inertia_scale = 1.0;
@@ -225,10 +274,15 @@ std::optional<SimulatorScenario> simulator_named_scenario(std::string_view name,
 std::vector<SimulatorScenario> simulator_scenario_set(std::string_view set_name,
                                                       PhysicsProfile physics_profile);
 std::vector<SimulatorScenario> transfer_scenario_set();
-std::vector<SimulatorScenario> tuning_inner_scenario_set();
-std::vector<SimulatorScenario> tuning_authority_scenario_set();
-std::vector<SimulatorScenario> tuning_velocity_scenario_set();
-std::vector<SimulatorScenario> tuning_drive_scenario_set();
-std::vector<SimulatorScenario> tuning_trim_scenario_set();
+std::vector<SimulatorScenario> tuning_inner_scenario_set(
+    PhysicsProfile physics_profile = PhysicsProfile::Realistic);
+std::vector<SimulatorScenario> tuning_authority_scenario_set(
+    PhysicsProfile physics_profile = PhysicsProfile::Realistic);
+std::vector<SimulatorScenario> tuning_velocity_scenario_set(
+    PhysicsProfile physics_profile = PhysicsProfile::Realistic);
+std::vector<SimulatorScenario> tuning_drive_scenario_set(
+    PhysicsProfile physics_profile = PhysicsProfile::Realistic);
+std::vector<SimulatorScenario> tuning_trim_scenario_set(
+    PhysicsProfile physics_profile = PhysicsProfile::Realistic);
 TransferAcceptance evaluate_transfer_scenario(const SimulatorRunResult& result);
 uint64_t update_simulator_timeline_hash(uint64_t hash, const SimulatorTimelineRow& row);

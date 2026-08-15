@@ -124,6 +124,7 @@ def main() -> int:
                     disturbances=list(scenario["disturbances"]),
                     joy_segments=list(scenario["joy_segments"]),
                     pid_config_path=str(args.pid),
+                    write_plots=True,
                     done_timeout=30.0,
                 )
                 passed, failures = _direct_acceptance(args.sim_bin, args.pid, index)

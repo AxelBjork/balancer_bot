@@ -2,6 +2,7 @@ const RUN_LIMIT_S = 120;
 const DEFAULT_WINDOW_S = 15;
 const MIN_WINDOW_S = 5;
 const MAX_POINTS = 6000;
+const TRIM_BATCH_POINTS = 50;
 const FRAME_INTERVAL_MS = 1000 / 30;
 const DISPLAY_SAMPLE_HZ = 50;
 const PERFORMANCE_WINDOW_S = 1.5;
@@ -28,6 +29,14 @@ const groups = [
     {id:"command",label:"Command RMS",derived:"performance.command",decimals:1},
     {id:"velocity",label:"Velocity RMS",derived:"performance.velocity",decimals:1},
     {id:"saturation",label:"Saturation",derived:"performance.saturation",decimals:1},
+  ]},
+  { id:"freeze-diagnostics", title:"Freeze diagnostics", unit:"ms", help:"Opt-in timing view. Sender and receiver gaps separate control/transport pauses from browser append/render work.", series:[
+    {id:"receive-gap",label:"Receiver gap",derived:"diagnostics.receive_gap_ms",decimals:1},
+    {id:"sender-gap",label:"Sender gap",derived:"diagnostics.sender_gap_ms",decimals:1},
+    {id:"sse-gap",label:"Browser SSE gap",derived:"diagnostics.sse_gap_ms",decimals:1},
+    {id:"append",label:"Browser append",derived:"diagnostics.append_ms",decimals:1},
+    {id:"render",label:"Browser render",derived:"diagnostics.render_ms",decimals:1},
+    {id:"sample-age",label:"Browser sample age",derived:"diagnostics.sample_age_ms",decimals:1},
   ]},
   { id:"attitude", title:"Attitude", unit:"deg", help:"Fused body pitch versus the total target", series:[
     {id:"fused",label:"Fused pitch",path:"attitude.fused_pitch_deg",decimals:2},
@@ -87,6 +96,7 @@ const state = {
   pid:null, joystick:{pad:null,pointerId:null,timer:0,forward:0,turn:0,inFlight:false,pending:null,neutralPending:false},
   renderQueued:false, lastRenderAt:0, backgroundLoad:0,
   ingestedSamples:0, renderedFrames:0,
+  lastSseAt:null,
 };
 const sync = uPlot.sync("balancer-timeline");
 const icons = {
@@ -160,11 +170,47 @@ function performanceValuesAt(index) {
     "performance.saturation": samples ? saturationSamples / samples * 100 : null,
   };
 }
+function previousTelemetryAt(index) {
+  for(let cursor=index-1;cursor>=0;cursor--) {
+    if(store.plotSamples[cursor]) return store.plotSamples[cursor];
+  }
+  return null;
+}
+function diagnosticValuesAt(index) {
+  const sample=store.plotSamples[index];
+  if(!sample) return null;
+  const previous=previousTelemetryAt(index);
+  const browser=sample.browserDiagnostics??{};
+  const receiveGap=previous ? (sample.received_at-previous.received_at)*1000 : null;
+  const sameRun=previous && sample.run_id && previous.run_id===sample.run_id;
+  const senderGap=sameRun && sample.sender_monotonic_ns>previous.sender_monotonic_ns
+    ? (sample.sender_monotonic_ns-previous.sender_monotonic_ns)/1e6 : null;
+  return {
+    "diagnostics.receive_gap_ms": receiveGap,
+    "diagnostics.sender_gap_ms": senderGap,
+    "diagnostics.sse_gap_ms": browser.sse_gap_ms??null,
+    "diagnostics.append_ms": browser.append_ms??null,
+    "diagnostics.render_ms": browser.render_ms??null,
+    "diagnostics.sample_age_ms": browser.sample_age_ms??null,
+  };
+}
+function derivedValuesAt(index) {
+  return {...(performanceValuesAt(index)??{}),...(diagnosticValuesAt(index)??{})};
+}
 function rebuildDerivedArrays() {
   store.derived = new Map(derivedSeries.map(series => [series.derived, []]));
   for (let index = 0; index < store.plotSamples.length; index++) {
-    const values = performanceValuesAt(index);
+    const values = derivedValuesAt(index);
     for (const series of derivedSeries) store.derived.get(series.derived).push(values?.[series.derived] ?? null);
+  }
+}
+function updateDerivedTail() {
+  const index=store.plotSamples.length-1;
+  if(index<0) return;
+  const values=derivedValuesAt(index);
+  for(const series of derivedSeries) {
+    const array=store.derived.get(series.derived);
+    if(array?.length>index) array[index]=values?.[series.derived]??null;
   }
 }
 function rebuildArrays(samples) {
@@ -202,10 +248,12 @@ function mergeStore(body, replaceDecimation=false) {
 function clearStore() {
   store.earliest=store.latest=store.origin=store.cacheStart=store.cacheEnd=null;
   store.decimated=false;
+  state.lastSseAt=null;
   rebuildArrays([]);
 }
 function append(sample) {
   if ((store.samples.at(-1)?.sequence ?? -1) >= sample.sequence) return;
+  const appendStarted=performance.now();
   state.ingestedSamples++;
   if (store.origin == null) store.origin=sample.received_at;
   const previous=store.samples.at(-1);
@@ -217,15 +265,19 @@ function append(sample) {
   }
   store.plotSamples.push(sample);store.x.push(sample.received_at);
   for (const path of paths) store.values.get(path).push(numberAt(sample,path));
-  const derivedValues = performanceValuesAt(store.plotSamples.length - 1);
+  const derivedValues = derivedValuesAt(store.plotSamples.length - 1);
   for (const series of derivedSeries) store.derived.get(series.derived).push(derivedValues?.[series.derived] ?? null);
   store.earliest=store.earliest??sample.received_at;
   store.latest=store.cacheEnd=sample.received_at;
   store.cacheStart=store.samples[0]?.received_at??sample.received_at;
-  while (store.samples.length>MAX_POINTS) {
-    store.samples.shift(); rebuildArrays(store.samples);
+  if (store.samples.length>MAX_POINTS+TRIM_BATCH_POINTS) {
+    const removeCount=store.samples.length-MAX_POINTS;
+    rebuildArrays(store.samples.slice(removeCount));
     store.cacheStart=store.samples[0]?.received_at??null;
   }
+  const appendMs=performance.now()-appendStarted;
+  sample.browserDiagnostics={...(sample.browserDiagnostics??{}),append_ms:appendMs};
+  updateDerivedTail();
   updateMetrics(sample);
   scheduleRender();
 }
@@ -263,6 +315,7 @@ function updateMetrics(sample) {
     : "No telemetry received.";
 }
 function render() {
+  const renderStarted=performance.now();
   const [start,end]=viewRange();
   state.renderedFrames++;
   const plots=$("#plots");
@@ -276,6 +329,15 @@ function render() {
     chart.setScale("x",{min:start,max:end});
   }
   renderNavigator();
+  const renderMs=performance.now()-renderStarted;
+  const sample=store.samples.at(-1);
+  if(sample) {
+    sample.browserDiagnostics={...(sample.browserDiagnostics??{}),render_ms:renderMs};
+    if(state.lastSseAt!=null) {
+      sample.browserDiagnostics.sample_age_ms=Math.max(0,performance.now()-state.lastSseAt);
+    }
+    updateDerivedTail();
+  }
 }
 function scheduleRender() {
   if (state.renderQueued) return;
@@ -557,13 +619,20 @@ function startPlayback() {
 }
 function resetForDisplayRun(displayRun) {
   state.displayRun=displayRun; state.seconds=DEFAULT_WINDOW_S; state.follow=true; state.end=null;
-  state.ingestedSamples=0; document.body.setAttribute("data-cache-ready","false");
+  state.ingestedSamples=0; state.lastSseAt=null; document.body.setAttribute("data-cache-ready","false");
   clearStore(); scheduleRender();
 }
 function stream() {
   if(state.events||state.paused||document.hidden)return;
   state.events=new EventSource("/api/stream");
-  state.events.addEventListener("telemetry",event=>append(JSON.parse(event.data)));
+  state.events.addEventListener("telemetry",event=>{
+    const now=performance.now();
+    const sseGapMs=state.lastSseAt==null?null:now-state.lastSseAt;
+    state.lastSseAt=now;
+    const sample=JSON.parse(event.data);
+    sample.browserDiagnostics={sse_gap_ms:sseGapMs,sample_age_ms:0};
+    append(sample);
+  });
   state.events.addEventListener("status",event=>{
     const status=JSON.parse(event.data); state.status=status;
     if(status.pid_status) {

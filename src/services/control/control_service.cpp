@@ -1,8 +1,24 @@
 #include "services/control/control_service.h"
 
+#include <chrono>
+#include <unistd.h>
+
+namespace {
+
+uint32_t make_run_id() {
+  const auto now = std::chrono::steady_clock::now().time_since_epoch();
+  const auto ticks = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
+  const auto pid = static_cast<uint32_t>(::getpid());
+  const uint32_t value = static_cast<uint32_t>(ticks) ^ static_cast<uint32_t>(ticks >> 32) ^ pid;
+  return value == 0 ? 1u : value;
+}
+
+}  // namespace
+
 namespace sil {
 
-ControlService::ControlService(ipc::MessageBus& bus) : bus_(bus) {
+ControlService::ControlService(ipc::MessageBus& bus) : bus_(bus), run_id_(make_run_id()) {
   core_.setMotorOutputs([this](double left, double right) {
     last_left_sps_ = left;
     last_right_sps_ = right;
@@ -15,7 +31,10 @@ ControlService::ControlService(ipc::MessageBus& bus) : bus_(bus) {
   // Telemetry publishing
   core_.setTelemetrySink([this](const Telemetry& t) {
     ipc::SystemTelemetryPayload p{};
-    p.run_id = 0;
+    p.run_id = run_id_;
+    p.packet_seq = ++packet_seq_;
+    p.loop_seq = loop_seq_;
+    p.sender_monotonic_ns = current_tick_timestamp_us_ * 1000ULL;
     p.controller_fault_flags = t.controller_fault_flags;
     p.controller_saturation_flags = t.controller_saturation_flags;
     p.t_sec = static_cast<float>(t.t_sec);

@@ -12,7 +12,7 @@ It describes the reflected runtime message bus used by the balancer services, in
 UDP runtime API and the internal-only messages exchanged between services.
 
 - Documented balancer message count: `16`
-- Protocol hash: `21d92c4c4f07766c`
+- Protocol hash: `b59fa71359c69171`
 - UDP ingress/egress gateway: `UdpBridge`
 
 ## System Architecture
@@ -96,7 +96,7 @@ The architecture is divided into three logical areas:
 >
 > A client registers by sending a UDP datagram. The bridge remembers the most recent sender as the single active peer, so outbound messages always have one explicit return path. On ingress, the bridge extracts the leading `uint16_t` message identifier and republishes the remaining payload only when the ID is authorized by `Publishes` and the payload size is valid.
 >
-> On egress, each authorized subscribed message is encoded as the reflected message ID followed immediately by the trivially-copyable payload bytes:
+> On egress, each authorized subscribed message is encoded as the reflected message ID followed immediately by the trivially-copyable payload bytes and placed on a bounded transport queue. High-rate telemetry uses latest-value coalescing and a dedicated nonblocking TX worker, so a slow UDP peer cannot extend the control dispatch path:
 >
 > $$ \text{datagram} = \texttt{uint16\_t MsgId} \; || \; \texttt{Payload bytes} $$
 >
@@ -180,7 +180,7 @@ documented messages reuse their message section.
 - Numeric ID: `3003`
 - Payload type: `SystemTelemetryPayload`
 - Python type: `SystemTelemetryPayload`
-- Wire size: `264` bytes
+- Wire size: `288` bytes
 - Published by: `ControlService`
 - Consumed by: `UdpBridge`
 
@@ -255,6 +255,9 @@ documented messages reuse their message section.
 | `pitch_authority_diagnostic_request_id` | `uint32_t` | `int` | 4 | 252 |  |
 | `pitch_authority_diagnostic_command_age_ms` | `float` | `float` | 4 | 256 |  |
 | `completed_step_acceleration_sps2` | `float` | `float` | 4 | 260 |  |
+| `packet_seq` | `uint64_t` | `int` | 8 | 264 |  |
+| `loop_seq` | `uint64_t` | `int` | 8 | 272 |  |
+| `sender_monotonic_ns` | `uint64_t` | `int` | 8 | 280 |  |
 
 ### `MsgId::MotorFeedback`
 
@@ -461,45 +464,45 @@ documented messages reuse their message section.
 - Numeric ID: `3010`
 - Payload type: `SimulatorTelemetryPayload`
 - Python type: `SimulatorTelemetryPayload`
-- Wire size: `392` bytes
+- Wire size: `416` bytes
 - Published by: _None_
 - Consumed by: `UdpBridge`
 
 | Field | C++ Type | Python Type | Bytes | Offset | Description |
 |---|---|---|---:|---:|---|
-| `system` | `SystemTelemetryPayload` | `SystemTelemetryPayload` | 264 | 0 |  |
-| `seed` | `uint32_t` | `int` | 4 | 264 |  |
-| `plant_pitch_deg` | `float` | `float` | 4 | 268 |  |
-| `plant_pitch_rate_dps` | `float` | `float` | 4 | 272 |  |
-| `plant_position_m` | `float` | `float` | 4 | 276 |  |
-| `plant_velocity_mps` | `float` | `float` | 4 | 280 |  |
-| `target_wheel_velocity` | `float` | `float` | 4 | 284 |  |
-| `actual_wheel_velocity` | `float` | `float` | 4 | 288 |  |
-| `plant_velocity_error` | `float` | `float` | 4 | 292 |  |
-| `f_cmd` | `float` | `float` | 4 | 296 |  |
-| `f_app` | `float` | `float` | 4 | 300 |  |
-| `external_force_n` | `float` | `float` | 4 | 304 |  |
-| `external_com_bias_rad` | `float` | `float` | 4 | 308 |  |
-| `x_ddot` | `float` | `float` | 4 | 312 |  |
-| `theta_ddot` | `float` | `float` | 4 | 316 |  |
-| `phase_error_steps` | `float` | `float` | 4 | 320 |  |
-| `missed_steps` | `float` | `float` | 4 | 324 |  |
-| `traction_limit_n` | `float` | `float` | 4 | 328 |  |
-| `motor_force_limit_n` | `float` | `float` | 4 | 332 |  |
-| `total_mass_scale` | `float` | `float` | 4 | 336 |  |
-| `pitch_inertia_scale` | `float` | `float` | 4 | 340 |  |
-| `motor_max_force_n` | `float` | `float` | 4 | 344 |  |
-| `motor_no_load_speed_mps` | `float` | `float` | 4 | 348 |  |
-| `motor_velocity_damping` | `float` | `float` | 4 | 352 |  |
-| `motor_tau_s` | `float` | `float` | 4 | 356 |  |
-| `traction_coefficient` | `float` | `float` | 4 | 360 |  |
-| `pitch_damping` | `float` | `float` | 4 | 364 |  |
-| `cart_damping` | `float` | `float` | 4 | 368 |  |
-| `phase_error_limit_steps` | `float` | `float` | 4 | 372 |  |
-| `tire_stiffness_n_per_m` | `float` | `float` | 4 | 376 |  |
-| `tire_damping_n_s_per_m` | `float` | `float` | 4 | 380 |  |
-| `wheel_equivalent_mass_kg` | `float` | `float` | 4 | 384 |  |
-| `force_saturated` | `bool` | `bool` | 1 | 388 |  |
+| `system` | `SystemTelemetryPayload` | `SystemTelemetryPayload` | 288 | 0 |  |
+| `seed` | `uint32_t` | `int` | 4 | 288 |  |
+| `plant_pitch_deg` | `float` | `float` | 4 | 292 |  |
+| `plant_pitch_rate_dps` | `float` | `float` | 4 | 296 |  |
+| `plant_position_m` | `float` | `float` | 4 | 300 |  |
+| `plant_velocity_mps` | `float` | `float` | 4 | 304 |  |
+| `target_wheel_velocity` | `float` | `float` | 4 | 308 |  |
+| `actual_wheel_velocity` | `float` | `float` | 4 | 312 |  |
+| `plant_velocity_error` | `float` | `float` | 4 | 316 |  |
+| `f_cmd` | `float` | `float` | 4 | 320 |  |
+| `f_app` | `float` | `float` | 4 | 324 |  |
+| `external_force_n` | `float` | `float` | 4 | 328 |  |
+| `external_com_bias_rad` | `float` | `float` | 4 | 332 |  |
+| `x_ddot` | `float` | `float` | 4 | 336 |  |
+| `theta_ddot` | `float` | `float` | 4 | 340 |  |
+| `phase_error_steps` | `float` | `float` | 4 | 344 |  |
+| `missed_steps` | `float` | `float` | 4 | 348 |  |
+| `traction_limit_n` | `float` | `float` | 4 | 352 |  |
+| `motor_force_limit_n` | `float` | `float` | 4 | 356 |  |
+| `total_mass_scale` | `float` | `float` | 4 | 360 |  |
+| `pitch_inertia_scale` | `float` | `float` | 4 | 364 |  |
+| `motor_max_force_n` | `float` | `float` | 4 | 368 |  |
+| `motor_no_load_speed_mps` | `float` | `float` | 4 | 372 |  |
+| `motor_velocity_damping` | `float` | `float` | 4 | 376 |  |
+| `motor_tau_s` | `float` | `float` | 4 | 380 |  |
+| `traction_coefficient` | `float` | `float` | 4 | 384 |  |
+| `pitch_damping` | `float` | `float` | 4 | 388 |  |
+| `cart_damping` | `float` | `float` | 4 | 392 |  |
+| `phase_error_limit_steps` | `float` | `float` | 4 | 396 |  |
+| `tire_stiffness_n_per_m` | `float` | `float` | 4 | 400 |  |
+| `tire_damping_n_s_per_m` | `float` | `float` | 4 | 404 |  |
+| `wheel_equivalent_mass_kg` | `float` | `float` | 4 | 408 |  |
+| `force_saturated` | `bool` | `bool` | 1 | 412 |  |
 
 ### `MsgId::ExternalJoystickCommand`
 

@@ -22,47 +22,17 @@ using namespace std::string_view_literals;
 template <std::meta::info R>
 consteval doc::Desc get_desc() {
   for (std::meta::info a : std::meta::annotations_of(R)) {
-    if (std::meta::type_of(a) == ^^doc::Desc) {
-      return std::meta::extract<doc::Desc>(a);
-    }
     if (std::meta::type_of(a) == ^^const doc::Desc) {
       return std::meta::extract<const doc::Desc>(a);
-    }
-    if (std::meta::type_of(a) == ^^doc::Desc&) {
-      return std::meta::extract<doc::Desc&>(a);
-    }
-    if (std::meta::type_of(a) == ^^const doc::Desc&) {
-      return std::meta::extract<const doc::Desc&>(a);
-    }
-    if (std::meta::type_of(a) == ^^doc::Desc&&) {
-      return std::meta::extract<doc::Desc&&>(a);
-    }
-    if (std::meta::type_of(a) == ^^const doc::Desc&&) {
-      return std::meta::extract<const doc::Desc&&>(a);
     }
   }
   return doc::Desc("");
 }
 
 template <typename E>
-consteval std::size_t get_enum_size() {
-  return std::meta::enumerators_of(^^E).size();
+consteval auto reflected_enumerators() {
+  return std::define_static_array(std::meta::enumerators_of(^^E));
 }
-
-template <typename E, std::size_t N>
-consteval std::array<std::meta::info, N> get_enum_array() {
-  auto vec = std::meta::enumerators_of(^^E);
-  std::array<std::meta::info, N> arr{};
-  for (std::size_t i = 0; i < N; ++i) {
-    arr[i] = vec[i];
-  }
-  return arr;
-}
-
-template <typename E, std::size_t N>
-struct EnumArrHolder {
-  static constexpr auto arr = get_enum_array<E, N>();
-};
 
 template <typename E, E Value>
 consteval std::string_view get_enum_name() {
@@ -75,26 +45,10 @@ consteval std::string_view get_enum_name() {
 }
 
 template <typename T>
-consteval std::size_t get_fields_size() {
+consteval auto reflected_members() {
   auto ctx = std::meta::access_context::current();
-  return std::meta::nonstatic_data_members_of(^^T, ctx).size();
+  return std::define_static_array(std::meta::nonstatic_data_members_of(^^T, ctx));
 }
-
-template <typename T, std::size_t N>
-consteval std::array<std::meta::info, N> get_fields_array() {
-  auto ctx = std::meta::access_context::current();
-  auto vec = std::meta::nonstatic_data_members_of(^^T, ctx);
-  std::array<std::meta::info, N> arr{};
-  for (std::size_t i = 0; i < N; ++i) {
-    arr[i] = vec[i];
-  }
-  return arr;
-}
-
-template <typename T, std::size_t N>
-struct StructArrHolder {
-  static constexpr auto arr = get_fields_array<T, N>();
-};
 
 template <typename>
 struct is_std_array : std::false_type {};
@@ -165,17 +119,14 @@ consteval void validate_reflected_struct() {
   static_assert(std::is_trivially_copyable_v<U>,
                 "reflected wire structs must be trivially copyable");
 
-  constexpr std::size_t N = get_fields_size<U>();
-  static_assert(N > 0, "reflected wire structs must contain at least one field");
+  static_assert(reflected_members<U>().size() > 0,
+                "reflected wire structs must contain at least one field");
 
-  [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-    (..., [&] {
-      constexpr auto field = StructArrHolder<U, N>::arr[Is];
-      constexpr auto type = std::meta::type_of(field);
-      using FieldT = typename[:type:];
-      validate_wire_type<FieldT>();
-    }());
-  }(std::make_index_sequence<N>{});
+  template for (constexpr auto field : reflected_members<U>()) {
+    constexpr auto type = std::meta::type_of(field);
+    using FieldT = typename[:type:];
+    validate_wire_type<FieldT>();
+  }
 }
 
 template <typename T>

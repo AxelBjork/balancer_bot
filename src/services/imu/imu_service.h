@@ -41,6 +41,10 @@ class DOC_DESC(kImuServiceDoc) ImuService {
   // Simulator-only reset for controller restart counterfactuals.
   void resetForSimulation();
 
+  // Simulator-only cold-start fixture. This does not alter hardware startup
+  // or the production estimator configuration.
+  void setInitialPitchForSimulation(double pitch_rad);
+
   template <MsgId Id>
   void on_message(const typename MessageTraits<Id>::Payload& p) {
   }

@@ -96,6 +96,41 @@ uint64_t update_simulator_timeline_hash(uint64_t hash, const SimulatorTimelineRo
   add_u64(row.trim_learning_enabled > 0.5 ? 1u : 0u);
   add_u64(row.trim_learning_block_reason);
   add_u64(row.actuator_saturation_flags);
+  add_double(row.stepper_commanded_microsteps_left);
+  add_double(row.stepper_commanded_microsteps_right);
+  add_double(row.stepper_actual_relative_angle_left_rad);
+  add_double(row.stepper_actual_relative_angle_right_rad);
+  add_double(row.stepper_electrical_phase_error_left_rad);
+  add_double(row.stepper_electrical_phase_error_right_rad);
+  add_double(row.stepper_torque_left_nm);
+  add_double(row.stepper_torque_right_nm);
+  add_double(row.stepper_chassis_velocity_mps);
+  add_double(row.stepper_current_ref_a_left);
+  add_double(row.stepper_current_ref_b_left);
+  add_double(row.stepper_current_a_left);
+  add_double(row.stepper_current_b_left);
+  add_double(row.stepper_phase_voltage_a_left);
+  add_double(row.stepper_phase_voltage_b_left);
+  add_double(row.stepper_back_emf_a_left);
+  add_double(row.stepper_back_emf_b_left);
+  add_double(row.stepper_electrical_power_left_w);
+  add_double(row.stepper_mechanical_power_left_w);
+  add_double(row.stepper_resistive_loss_left_w);
+  add_double(row.stepper_magnetic_energy_left_j);
+  add_double(row.stepper_current_ref_a_right);
+  add_double(row.stepper_current_ref_b_right);
+  add_double(row.stepper_current_a_right);
+  add_double(row.stepper_current_b_right);
+  add_double(row.stepper_phase_voltage_a_right);
+  add_double(row.stepper_phase_voltage_b_right);
+  add_double(row.stepper_back_emf_a_right);
+  add_double(row.stepper_back_emf_b_right);
+  add_double(row.stepper_electrical_power_right_w);
+  add_double(row.stepper_mechanical_power_right_w);
+  add_double(row.stepper_resistive_loss_right_w);
+  add_double(row.stepper_magnetic_energy_right_j);
+  add_u64(row.stepper_voltage_saturated_left > 0.5 ? 1u : 0u);
+  add_u64(row.stepper_voltage_saturated_right > 0.5 ? 1u : 0u);
   return hash;
 }
 
@@ -267,8 +302,8 @@ std::vector<SimulatorScenario> transfer_scenario_set() {
 
   const auto apply_profile = [](SimulatorScenario& scenario, TransferProfile profile) {
     scenario.physics_profile = profile == TransferProfile::Secondary
-                                   ? PhysicsProfile::SimpleForce
-                                   : PhysicsProfile::IdealForce;
+                                   ? PhysicsProfile::ActuatorStress
+                                   : PhysicsProfile::DirectActuator;
   };
 
   const auto release_scenario = [&](std::string name, TransferProfile profile, double sign) {
@@ -326,20 +361,21 @@ std::vector<SimulatorScenario> transfer_scenario_set() {
       release_scenario("nominal_release_neg", TransferProfile::Nominal, -1.0),
       push_scenario("nominal_push_symmetric", TransferProfile::Nominal),
       drive_scenario("nominal_drive_bidirectional", TransferProfile::Nominal),
-      release_scenario("simple_force_release", TransferProfile::Secondary, 1.0),
-      push_scenario("simple_force_push_symmetric", TransferProfile::Secondary),
-      drive_scenario("simple_force_drive_bidirectional", TransferProfile::Secondary),
+      release_scenario("actuator_stress_release", TransferProfile::Secondary, 1.0),
+      push_scenario("actuator_stress_push_symmetric", TransferProfile::Secondary),
+      drive_scenario("actuator_stress_drive_bidirectional", TransferProfile::Secondary),
   };
 }
 
-std::vector<SimulatorScenario> tuning_inner_scenario_set() {
-  const auto nominal = [](std::string name, double pitch_deg, double pitch_rate_dps) {
+std::vector<SimulatorScenario> tuning_inner_scenario_set(PhysicsProfile physics_profile) {
+  const auto nominal = [physics_profile](std::string name, double pitch_deg,
+                                         double pitch_rate_dps) {
     SimulatorScenario scenario;
     scenario.name = std::move(name);
     scenario.duration_s = 4.0;
     scenario.initial_pitch_deg = pitch_deg;
     scenario.initial_pitch_rate_dps = pitch_rate_dps;
-    scenario.physics_profile = PhysicsProfile::Realistic;
+    scenario.physics_profile = physics_profile;
     return scenario;
   };
   return {
@@ -351,20 +387,20 @@ std::vector<SimulatorScenario> tuning_inner_scenario_set() {
   };
 }
 
-std::vector<SimulatorScenario> tuning_authority_scenario_set() {
-  const auto release = [](std::string name, double pitch_deg) {
+std::vector<SimulatorScenario> tuning_authority_scenario_set(PhysicsProfile physics_profile) {
+  const auto release = [physics_profile](std::string name, double pitch_deg) {
     SimulatorScenario scenario;
     scenario.name = std::move(name);
     scenario.duration_s = 5.0;
     scenario.initial_pitch_deg = pitch_deg;
-    scenario.physics_profile = PhysicsProfile::Realistic;
+    scenario.physics_profile = physics_profile;
     return scenario;
   };
-  const auto push = [](std::string name, double force_n) {
+  const auto push = [physics_profile](std::string name, double force_n) {
     SimulatorScenario scenario;
     scenario.name = std::move(name);
     scenario.duration_s = 5.0;
-    scenario.physics_profile = PhysicsProfile::Realistic;
+    scenario.physics_profile = physics_profile;
     scenario.disturbances.push_back(SimulatorDisturbance{
         .kind = SimulatorDisturbanceKind::Step,
         .start_s = 1.0,
@@ -384,11 +420,11 @@ std::vector<SimulatorScenario> tuning_authority_scenario_set() {
   };
 }
 
-std::vector<SimulatorScenario> tuning_drive_scenario_set() {
+std::vector<SimulatorScenario> tuning_drive_scenario_set(PhysicsProfile physics_profile) {
   SimulatorScenario scenario;
   scenario.name = "tuning_drive_bidirectional";
   scenario.duration_s = 9.0;
-  scenario.physics_profile = PhysicsProfile::Realistic;
+  scenario.physics_profile = physics_profile;
   scenario.joy_segments = {
       SimulatorJoySegment{.start_s = 1.0, .duration_s = 2.0, .forward = 0.5, .forward_end = 0.5},
       SimulatorJoySegment{.start_s = 5.0, .duration_s = 2.0, .forward = -0.5, .forward_end = -0.5},
@@ -396,22 +432,22 @@ std::vector<SimulatorScenario> tuning_drive_scenario_set() {
   return {scenario};
 }
 
-std::vector<SimulatorScenario> tuning_velocity_scenario_set() {
-  auto scenarios = tuning_authority_scenario_set();
+std::vector<SimulatorScenario> tuning_velocity_scenario_set(PhysicsProfile physics_profile) {
+  auto scenarios = tuning_authority_scenario_set(physics_profile);
   for (auto& scenario : scenarios) scenario.name.replace(0, 17, "tuning_velocity_");
-  auto drive = tuning_drive_scenario_set();
+  auto drive = tuning_drive_scenario_set(physics_profile);
   drive.front().name = "tuning_velocity_drive";
   scenarios.insert(scenarios.end(), drive.begin(), drive.end());
   return scenarios;
 }
 
-std::vector<SimulatorScenario> tuning_trim_scenario_set() {
-  const auto trim = [](std::string name, double offset_rad) {
+std::vector<SimulatorScenario> tuning_trim_scenario_set(PhysicsProfile physics_profile) {
+  const auto trim = [physics_profile](std::string name, double offset_rad) {
     SimulatorScenario scenario;
     scenario.name = std::move(name);
     scenario.duration_s = 15.0;
     scenario.com_angle_offset_rad = offset_rad;
-    scenario.physics_profile = PhysicsProfile::Realistic;
+    scenario.physics_profile = physics_profile;
     return scenario;
   };
   return {trim("tuning_trim_pos", 0.002), trim("tuning_trim_neg", -0.002)};

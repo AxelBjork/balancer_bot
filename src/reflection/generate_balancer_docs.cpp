@@ -23,25 +23,6 @@ using namespace balancer_reflection;
 
 namespace {
 
-template <::MsgId Target, ::MsgId... Ids>
-consteval bool contains_msg(ipc::MsgList<Ids...>) {
-  return ((Target == Ids) || ...);
-}
-
-template <typename Component, ::MsgId Id>
-consteval bool component_subscribes() {
-  if constexpr (requires { typename Component::Subscribes; }) {
-    return contains_msg<Id>(typename Component::Subscribes{});
-  } else {
-    return false;
-  }
-}
-
-template <typename Component, ::MsgId Id>
-consteval bool component_publishes() {
-  return contains_msg<Id>(typename Component::Publishes{});
-}
-
 template <typename ComponentsT, ::MsgId Id>
 consteval bool message_used_by_components() {
   return []<std::size_t... Is>(std::index_sequence<Is...>) {
@@ -63,16 +44,11 @@ constexpr void for_each_documented_message(Fn&& fn) {
 template <typename ComponentsT>
 consteval std::size_t documented_message_count() {
   std::size_t count = 0;
-  constexpr std::size_t N = get_enum_size<MsgId>();
-  [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-    (..., [&] {
-      constexpr auto e = EnumArrHolder<MsgId, N>::arr[Is];
-      constexpr auto id = static_cast<MsgId>([:e:]);
-      if constexpr (message_used_by_components<ComponentsT, id>()) {
-        ++count;
-      }
-    }());
-  }(std::make_index_sequence<N>{});
+  for_each_message_enum([&]<::MsgId Id>() {
+    if constexpr (message_used_by_components<ComponentsT, Id>()) {
+      ++count;
+    }
+  });
   return count;
 }
 
@@ -280,28 +256,24 @@ void emit_nested_struct(const std::set<std::string>& top_level_payload_names,
 template <typename T>
 void emit_field_table() {
   validate_wire_type<T>();
-  constexpr std::size_t N = get_fields_size<T>();
 
   std::cout << "| Field | C++ Type | Python Type | Bytes | Offset | Description |\n";
   std::cout << "|---|---|---|---:|---:|---|\n";
 
-  [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-    (..., [&] {
-      constexpr auto field = StructArrHolder<T, N>::arr[Is];
-      constexpr auto type = std::meta::type_of(field);
-      using FieldT = typename[:type:];
-      constexpr auto field_desc = get_desc<field>();
+  template for (constexpr auto field : reflected_members<T>()) {
+    constexpr auto type = std::meta::type_of(field);
+    using FieldT = typename[:type:];
+    constexpr auto field_desc = get_desc<field>();
 
-      std::cout << "| `" << std::meta::identifier_of(field) << "`"
-                << " | `" << get_cxx_type_name<FieldT>() << "`"
-                << " | `" << get_python_annotation<FieldT>() << "`"
-                << " | " << sizeof(FieldT) << " | " << std::meta::offset_of(field).bytes << " | ";
-      if (field_desc.text[0] != '\0') {
-        std::cout << field_desc.text;
-      }
-      std::cout << " |\n";
-    }());
-  }(std::make_index_sequence<N>{});
+    std::cout << "| `" << std::meta::identifier_of(field) << "`"
+              << " | `" << get_cxx_type_name<FieldT>() << "`"
+              << " | `" << get_python_annotation<FieldT>() << "`"
+              << " | " << sizeof(FieldT) << " | " << std::meta::offset_of(field).bytes << " | ";
+    if (field_desc.text[0] != '\0') {
+      std::cout << field_desc.text;
+    }
+    std::cout << " |\n";
+  }
 
   std::cout << "\n";
 }
@@ -309,25 +281,18 @@ void emit_field_table() {
 template <typename T>
 void emit_nested_structs(const std::set<std::string>& top_level_payload_names,
                          std::set<std::string>& emitted_nested_types) {
-  constexpr std::size_t N = get_fields_size<T>();
+  template for (constexpr auto field : reflected_members<T>()) {
+    constexpr auto type = std::meta::type_of(field);
+    using FieldT = typename[:type:];
 
-  if constexpr (N > 0) {
-    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-      (..., [&] {
-        constexpr auto field = StructArrHolder<T, N>::arr[Is];
-        constexpr auto type = std::meta::type_of(field);
-        using FieldT = typename[:type:];
-
-        if constexpr (is_array_like_v<FieldT>) {
-          using ElemT = typename array_traits<FieldT>::element_type;
-          if constexpr (std::is_class_v<ElemT> && !is_array_like_v<ElemT>) {
-            emit_nested_struct<ElemT>(top_level_payload_names, emitted_nested_types);
-          }
-        } else if constexpr (std::is_class_v<FieldT>) {
-          emit_nested_struct<FieldT>(top_level_payload_names, emitted_nested_types);
-        }
-      }());
-    }(std::make_index_sequence<N>{});
+    if constexpr (is_array_like_v<FieldT>) {
+      using ElemT = typename array_traits<FieldT>::element_type;
+      if constexpr (std::is_class_v<ElemT> && !is_array_like_v<ElemT>) {
+        emit_nested_struct<ElemT>(top_level_payload_names, emitted_nested_types);
+      }
+    } else if constexpr (std::is_class_v<FieldT>) {
+      emit_nested_struct<FieldT>(top_level_payload_names, emitted_nested_types);
+    }
   }
 }
 

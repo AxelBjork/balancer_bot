@@ -174,6 +174,7 @@ robot. The [current status](status.md) records that distinction and the remainin
 - Read [Runtime architecture](arch/runtime.md) for service ownership and the production/SIL/simulator boundaries.
 - Read [Testing strategy](testing/strategy.md) for what each validation layer proves.
 - Read [Control and plant model](arch/control_plant.md) for equations and controller/plant mapping.
-- Read [Control and simulator notes](notes/control_and_simulator.md) for validation scenarios and artifact interpretation.
+- Read [StepperPhaseElectrical scenario](arch/stepper_phase_electrical.md) for the maintained physical
+  actuator scenario and artifact interpretation.
 - Read [IMU attitude design](arch/imu_attitude_design.md) for coordinate conventions and estimator limits.
 - Read [Running on Raspberry Pi](Running_on_Pi.md) only when you need physical deployment or bring-up.

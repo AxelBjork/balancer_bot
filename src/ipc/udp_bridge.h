@@ -4,10 +4,19 @@
 #include <sys/socket.h>
 #include <sys/uio.h>
 
+#include <array>
 #include <atomic>
 #include <bit>
+#include <chrono>
+#include <condition_variable>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <limits>
+#include <memory>
+#include <mutex>
 #include <thread>
+#include <type_traits>
 
 #include "messages/core_msgs.h"
 #include "messages/balancer_msgs.h"
@@ -24,7 +33,9 @@ inline constexpr char kUdpBridgeDoc[] =
     "the bridge extracts the leading `uint16_t` message identifier and republishes the remaining "
     "payload only when the ID is authorized by `Publishes` and the payload size is valid.\n\n"
     "On egress, each authorized subscribed message is encoded as the reflected message ID followed "
-    "immediately by the trivially-copyable payload bytes:\n\n"
+    "immediately by the trivially-copyable payload bytes and placed on a bounded transport queue. "
+    "High-rate telemetry uses latest-value coalescing and a dedicated nonblocking TX worker, so a "
+    "slow UDP peer cannot extend the control dispatch path:\n\n"
     "$$ \\text{datagram} = \\texttt{uint16\\_t MsgId} \\; || \\; \\texttt{Payload bytes} $$\n\n"
     "This makes the UDP contract symmetric with the generated Python bindings and keeps the external "
     "runtime API aligned with the reflected C++ message definitions. The dashboard receives and logs "
@@ -53,13 +64,32 @@ class DOC_DESC(kUdpBridgeDoc) UdpBridge {
                             MsgId::PitchAuthorityDiagnosticCommand>;
 
   static constexpr uint16_t kDefaultPort = 9000;
+  static constexpr std::size_t kMaxDgram = 4096;
+
+  struct TxStats {
+    uint64_t enqueued = 0;
+    uint64_t coalesced = 0;
+    uint64_t dropped = 0;
+    uint64_t no_peer = 0;
+    uint64_t sends = 0;
+    uint64_t eagain = 0;
+    uint64_t send_errors = 0;
+    uint64_t max_enqueue_ns = 0;
+    uint64_t max_send_ns = 0;
+    uint64_t queue_depth = 0;
+  };
+
+  using SendFunction = ssize_t (*)(int, const msghdr*, int);
 
   bool is_connected() const;
 
-  explicit UdpBridge(MessageBus& bus);
+  explicit UdpBridge(MessageBus& bus, uint16_t port = kDefaultPort,
+                     SendFunction send_function = nullptr);
   ~UdpBridge();
 
   void start();
+  uint16_t local_port() const;
+  TxStats tx_stats() const;
   UdpBridge(const UdpBridge&) = delete;
   UdpBridge& operator=(const UdpBridge&) = delete;
 
@@ -69,39 +99,83 @@ class DOC_DESC(kUdpBridgeDoc) UdpBridge {
   }
 
  private:
+  static constexpr std::size_t kLatestSlotCount = 3;
+  static constexpr std::size_t kLowPriorityQueueCapacity = 64;
+
+  struct TxPacket {
+    std::array<uint8_t, kMaxDgram> bytes{};
+    std::size_t size = 0;
+    MsgId id = MsgId::SystemTelemetry;
+    bool latest_only = false;
+  };
+
   TypedPublisher<UdpBridge> bus_;
   int udp_fd_;
   int wake_[2];
   std::thread rx_thread_;
+  std::thread tx_thread_;
   std::atomic<PeerAddress> active_peer_{PeerAddress{0, 0, 0}};
+  SendFunction send_function_ = nullptr;
+
+  std::unique_ptr<TxPacket[]> low_priority_queue_;
+  std::size_t low_priority_head_ = 0;
+  std::size_t low_priority_size_ = 0;
+  std::array<TxPacket, kLatestSlotCount> latest_packets_{};
+  std::array<bool, kLatestSlotCount> latest_pending_{};
+  mutable std::mutex tx_mutex_;
+  std::condition_variable tx_condition_;
+  bool tx_stopping_ = false;
+
+  std::atomic<uint64_t> tx_enqueued_{0};
+  std::atomic<uint64_t> tx_coalesced_{0};
+  std::atomic<uint64_t> tx_dropped_{0};
+  std::atomic<uint64_t> tx_no_peer_{0};
+  std::atomic<uint64_t> tx_sends_{0};
+  std::atomic<uint64_t> tx_eagain_{0};
+  std::atomic<uint64_t> tx_send_errors_{0};
+  std::atomic<uint64_t> tx_max_enqueue_ns_{0};
+  std::atomic<uint64_t> tx_max_send_ns_{0};
+  std::atomic<uint64_t> tx_queue_depth_{0};
 
   void rx_loop();
+  void tx_loop();
+  bool enqueue_packet(const TxPacket& packet);
+  bool dequeue_packet(TxPacket& packet);
+  bool requeue_low_priority(const TxPacket& packet);
+  uint64_t queue_depth_locked() const;
+
+  static constexpr bool is_latest_only(MsgId id) {
+    return id == MsgId::MotorTargets || id == MsgId::SystemTelemetry ||
+           id == MsgId::SimulatorTelemetry;
+  }
+
+  static constexpr std::size_t latest_index(MsgId id) {
+    return id == MsgId::MotorTargets ? 0 : id == MsgId::SystemTelemetry ? 1 : 2;
+  }
 
   template <MsgId Id, typename Payload>
-  int forward_to_udp(const Payload& payload) {
+  void forward_to_udp(const Payload& payload) {
     static_assert(std::is_trivially_copyable_v<Payload>);
-    PeerAddress peer_val = active_peer_.load(std::memory_order_acquire);
-    if (!peer_val) return -1;
-
-    sockaddr_in peer{};
-    peer.sin_family = AF_INET;
-    peer.sin_port = peer_val.port;
-    peer.sin_addr.s_addr = peer_val.ip;
-
+    static_assert(sizeof(Payload) + sizeof(uint16_t) <= kMaxDgram);
+    const auto start = std::chrono::steady_clock::now();
+    TxPacket packet{};
     uint16_t id_raw = static_cast<uint16_t>(Id);
-    iovec iov[2];
-    iov[0].iov_base = &id_raw;
-    iov[0].iov_len = sizeof(id_raw);
-    iov[1].iov_base = const_cast<Payload*>(&payload);
-    iov[1].iov_len = sizeof(Payload);
-
-    msghdr msg = {};
-    msg.msg_name = &peer;
-    msg.msg_namelen = sizeof(peer);
-    msg.msg_iov = iov;
-    msg.msg_iovlen = 2;
-
-    return static_cast<int>(::sendmsg(udp_fd_, &msg, 0));
+    std::memcpy(packet.bytes.data(), &id_raw, sizeof(id_raw));
+    std::memcpy(packet.bytes.data() + sizeof(id_raw), &payload, sizeof(Payload));
+    packet.size = sizeof(id_raw) + sizeof(Payload);
+    packet.id = Id;
+    packet.latest_only = is_latest_only(Id);
+    enqueue_packet(packet);
+    const uint64_t duration_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - start)
+            .count());
+    uint64_t previous = tx_max_enqueue_ns_.load(std::memory_order_relaxed);
+    while (previous < duration_ns &&
+           !tx_max_enqueue_ns_.compare_exchange_weak(previous, duration_ns,
+                                                      std::memory_order_relaxed,
+                                                      std::memory_order_relaxed)) {
+    }
   }
 };
 

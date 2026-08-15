@@ -24,6 +24,7 @@ from generated_balancer import (
     JoystickCommandPayload,
     PidConfigOverridePayload,
     PidConfigStatusPayload,
+    SimulatorTelemetryPayload,
     SystemTelemetryPayload,
 )
 from tools.telemetry_dashboard.server import (
@@ -80,6 +81,22 @@ def telemetry_packet(**changes: float | int) -> bytes:
     return struct.pack("<H", SYSTEM_TELEMETRY_ID) + dataclasses.replace(base, **changes).pack()
 
 
+def test_generated_telemetry_wire_sizes_and_round_trip():
+    assert SystemTelemetryPayload.WIRE_SIZE == 288
+    assert SimulatorTelemetryPayload.WIRE_SIZE == 416
+    sample = dataclasses.replace(
+        SystemTelemetryPayload.unpack(bytes(SystemTelemetryPayload.WIRE_SIZE)),
+        run_id=17,
+        packet_seq=23,
+        loop_seq=29,
+        sender_monotonic_ns=31,
+    )
+    assert SystemTelemetryPayload.unpack(sample.pack()) == sample
+    simulator = SimulatorTelemetryPayload.unpack(bytes(SimulatorTelemetryPayload.WIRE_SIZE))
+    simulator.system = sample
+    assert SimulatorTelemetryPayload.unpack(simulator.pack()).system == sample
+
+
 def test_dashboard_decodes_generated_payload_and_latches_flags():
     state = TelemetryState("pi.local")
     packet = telemetry_packet(
@@ -125,6 +142,157 @@ def test_dashboard_decodes_generated_payload_and_latches_flags():
     assert status["telemetry_accept_avg_ms"] is not None
     assert status["telemetry_accept_max_ms"] >= status["telemetry_accept_avg_ms"]
     assert status["csv_queue_depth"] is None
+
+
+def test_dashboard_classifies_sender_receiver_gaps_and_run_resets():
+    state = TelemetryState("pi.local")
+    assert state.accept(
+        telemetry_packet(
+            run_id=41,
+            packet_seq=1,
+            loop_seq=1,
+            sender_monotonic_ns=1_000_000_000,
+            t_sec=0.0,
+        ),
+        received_at=10.0,
+    )
+    assert state.accept(
+        telemetry_packet(
+            run_id=41,
+            packet_seq=2,
+            loop_seq=2,
+            sender_monotonic_ns=1_002_500_000,
+            t_sec=0.0025,
+        ),
+        received_at=10.0025,
+    )
+
+    assert state.accept(
+        telemetry_packet(
+            run_id=41,
+            packet_seq=3,
+            loop_seq=3,
+            sender_monotonic_ns=1_202_500_000,
+            t_sec=0.2025,
+        ),
+        received_at=10.003,
+    )
+    _, status = state.snapshot(50.0)
+    assert status["telemetry_gap_count"] == 1
+    assert status["last_telemetry_gap"]["event"] == "telemetry_packet_gap"
+    assert status["last_telemetry_gap"]["classification"] == "sender_control_dispatch_pause"
+    assert status["sender_packet_seq"] == 3
+    assert status["sender_loop_seq"] == 3
+
+    assert state.accept(
+        telemetry_packet(
+            run_id=41,
+            packet_seq=4,
+            loop_seq=4,
+            sender_monotonic_ns=1_205_000_000,
+            t_sec=0.205,
+        ),
+        received_at=10.130,
+    )
+    _, status = state.snapshot(50.0)
+    assert status["telemetry_gap_count"] == 2
+    assert status["last_telemetry_gap"]["event"] == "udp_receive_pause"
+    assert status["last_telemetry_gap"]["classification"] == "receiver_or_network_pause"
+
+    assert state.accept(
+        telemetry_packet(
+            run_id=42,
+            packet_seq=1,
+            loop_seq=1,
+            sender_monotonic_ns=500_000,
+            t_sec=0.0,
+        ),
+        received_at=10.132,
+    )
+    _, status = state.snapshot(50.0)
+    assert status["telemetry_gap_count"] == 2
+    assert status["telemetry_sender_reset_count"] == 1
+    assert status["last_telemetry_gap"]["classification"] == "receiver_or_network_pause"
+
+
+def test_dashboard_reports_new_wire_metadata_and_receive_buffer():
+    state = TelemetryState("pi.local")
+    packet = telemetry_packet(run_id=7, packet_seq=9, loop_seq=11, sender_monotonic_ns=123456789)
+    assert state.accept(packet, received_at=10.0)
+    telemetry, status = state.snapshot(50.0)
+    assert telemetry["run_id"] == 7
+    assert telemetry["packet_seq"] == 9
+    assert telemetry["loop_seq"] == 11
+    assert telemetry["sender_monotonic_ns"] == 123456789
+    assert status["sender_run_id"] == 7
+    assert status["sender_packet_seq"] == 9
+    assert status["sender_loop_seq"] == 11
+
+    receiver = UdpReceiver(state, None, 9000)
+    try:
+        assert receiver.receive_buffer_bytes > 0
+        assert state.snapshot(0.0)[1]["udp_receive_buffer_bytes"] == receiver.receive_buffer_bytes
+    finally:
+        receiver.close()
+
+
+def test_dashboard_counts_packet_and_loop_sequence_gaps():
+    state = TelemetryState("pi.local")
+    assert state.accept(
+        telemetry_packet(
+            run_id=9,
+            packet_seq=1,
+            loop_seq=1,
+            sender_monotonic_ns=1_000_000_000,
+        ),
+        received_at=10.0,
+    )
+    assert state.accept(
+        telemetry_packet(
+            run_id=9,
+            packet_seq=4,
+            loop_seq=6,
+            sender_monotonic_ns=1_007_500_000,
+        ),
+        received_at=10.0075,
+    )
+    _, status = state.snapshot(50.0)
+    assert status["telemetry_packet_sequence_gap_count"] == 2
+    assert status["telemetry_loop_sequence_gap_count"] == 4
+    assert status["last_telemetry_gap"]["classification"] == "loop_without_packet_gap"
+
+
+def test_dashboard_classifies_transport_and_combined_gaps():
+    transport = TelemetryState("pi.local")
+    assert transport.accept(
+        telemetry_packet(run_id=3, packet_seq=1, loop_seq=1, sender_monotonic_ns=1_000_000_000),
+        received_at=5.0,
+    )
+    assert transport.accept(
+        telemetry_packet(run_id=3, packet_seq=3, loop_seq=3, sender_monotonic_ns=1_005_000_000),
+        received_at=5.005,
+    )
+    assert transport.snapshot(50.0)[1]["last_gap_classification"] == "packet_or_transport_gap"
+
+    combined = TelemetryState("pi.local")
+    assert combined.accept(
+        telemetry_packet(run_id=4, packet_seq=1, loop_seq=1, sender_monotonic_ns=2_000_000_000),
+        received_at=8.0,
+    )
+    assert combined.accept(
+        telemetry_packet(run_id=4, packet_seq=2, loop_seq=2, sender_monotonic_ns=2_250_000_000),
+        received_at=8.250,
+    )
+    assert combined.snapshot(50.0)[1]["last_gap_classification"] == "receiver_and_sender_gap"
+
+
+def test_browser_cache_rollover_is_batched():
+    dashboard = Path(__file__).resolve().parents[2] / "tools" / "telemetry_dashboard" / "static" / "dashboard.js"
+    source = dashboard.read_text(encoding="utf-8")
+    assert "TRIM_BATCH_POINTS" in source
+    assert "store.samples.shift()" not in source
+    assert 'id:"freeze-diagnostics"' in source
+    assert "dashboard-diagnostics" not in source
 
 
 def test_status_separates_telemetry_freshness_from_pi_reachability():
@@ -186,8 +354,8 @@ def test_pid_session_exposes_numeric_fields_and_applies_complete_snapshot():
     assert "values" not in snapshot["last_status"]
 
     invalid = dict(values)
-    invalid["drive_max_sps"] = 12001.0
-    with pytest.raises(ValueError, match="12000"):
+    invalid["drive_max_sps"] = 16001.0
+    with pytest.raises(ValueError, match="16000"):
         controller.update(invalid)
 
 
@@ -316,6 +484,9 @@ def test_csv_logger_writes_every_raw_field_with_fixed_header(tmp_path):
     assert "left_slewed_sps" in rows[0]
     assert "right_slewed_sps" in rows[0]
     assert "actuator_saturation_flags" in rows[0]
+    assert "packet_seq" in rows[0]
+    assert "loop_seq" in rows[0]
+    assert "sender_monotonic_ns" in rows[0]
     assert float(rows[0]["pitch_deg"]) == -1.25
     assert len(rows) == 400
     assert float(rows[-1]["pitch_deg"]) == 397.75

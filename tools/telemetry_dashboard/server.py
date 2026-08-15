@@ -77,9 +77,14 @@ PID_CONFIG_POSITIVE_FIELDS = frozenset(
     {"drive_max_sps", "balance_max_sps", "velocity_control_cutoff_hz"}
 )
 PID_CONFIG_LIMIT_FIELDS = frozenset({"drive_max_sps", "turn_max_sps", "balance_max_sps"})
+# Keep the dashboard validation aligned with Config::max_step_rate_sps.  The
+# C++ configuration is authoritative for the runtime; this mirror prevents a
+# dashboard request from being rejected before it reaches that validator.
+MAX_STEP_RATE_SPS = 16000.0
 DISPLAY_HZ = 50.0
 DISPLAY_HISTORY_SECONDS = 120.0
 DISPLAY_HISTORY_POINTS = 6000
+UDP_RECEIVE_BUFFER_BYTES = 4 * 1024 * 1024
 STATUS_HZ = 2.0
 DISCONNECT_AFTER_S = 1.0
 REGISTER_INTERVAL_S = 2.0
@@ -210,8 +215,10 @@ def _validate_pid_values(values: dict[str, Any], *, require_complete: bool = Tru
         if name in normalized and normalized[name] <= 0.0:
             raise ValueError(f"PID field {name} must be positive.")
     for name in PID_CONFIG_LIMIT_FIELDS:
-        if name in normalized and normalized[name] > 12000.0:
-            raise ValueError(f"PID field {name} exceeds the supported 12000 limit.")
+        if name in normalized and normalized[name] > MAX_STEP_RATE_SPS:
+            raise ValueError(
+                f"PID field {name} exceeds the supported {MAX_STEP_RATE_SPS:g} limit."
+            )
     for name in (
         "pitch_gain_sps_per_rad",
         "pitch_rate_gain_sps_per_rad_s",
@@ -273,6 +280,10 @@ def telemetry_view(sample: SystemTelemetryPayload, sequence: int, received_at: f
     return {
         "sequence": sequence,
         "received_at": received_at,
+        "run_id": int(sample.run_id),
+        "packet_seq": int(sample.packet_seq),
+        "loop_seq": int(sample.loop_seq),
+        "sender_monotonic_ns": int(sample.sender_monotonic_ns),
         "t_sec": sample.t_sec,
         "attitude": {
             "pitch_deg": sample.pitch_deg,
@@ -361,6 +372,8 @@ class CsvLogger:
         self.rows: queue.SimpleQueue[_CsvRow | _CsvRollRequest | None] = queue.SimpleQueue()
         self.closed = False
         self.error: BaseException | None = None
+        self.write_stall_count = 0
+        self.write_duration_max_s = 0.0
         self.worker = threading.Thread(target=self._run, name="telemetry-csv", daemon=True)
         self.worker.start()
 
@@ -435,7 +448,9 @@ class CsvLogger:
                 row = [wall_time, monotonic_s, *(getattr(sample, name) for name in TELEMETRY_FIELDS)]
                 self._write_row(row)
                 write_s = time.monotonic() - started
+                self.write_duration_max_s = max(self.write_duration_max_s, write_s)
                 if write_s > TELEMETRY_GAP_S:
+                    self.write_stall_count += 1
                     DIAGNOSTIC_LOGGER.warning(
                         "raw CSV write stalled for %.3f s (%d rows queued)",
                         write_s,
@@ -485,6 +500,7 @@ class TelemetryState:
         self.run_active = False
         self.pi_ready = False
         self.pid_status: dict[str, Any] | None = None
+        self.udp_receive_buffer_bytes: int | None = None
         self.lock = threading.Lock()
         self.sequence = 0
         self.latest: dict[str, Any] | None = None
@@ -499,9 +515,16 @@ class TelemetryState:
         }
         self.telemetry_gap_count = 0
         self.last_telemetry_gap: dict[str, Any] | None = None
+        self.sender_reset_count = 0
+        self.packet_sequence_gap_count = 0
+        self.loop_sequence_gap_count = 0
+        self.last_sender_time_gap_s: float | None = None
+        self.last_receiver_gap_s: float | None = None
+        self.last_gap_classification: str | None = None
         self.accept_count = 0
         self.accept_duration_total_s = 0.0
         self.accept_duration_max_s = 0.0
+        self.last_accept_stall_log = 0.0
 
     def accept(self, datagram: bytes, received_at: float | None = None) -> bool:
         started = time.monotonic()
@@ -513,6 +536,24 @@ class TelemetryState:
                 self.accept_count += 1
                 self.accept_duration_total_s += duration_s
                 self.accept_duration_max_s = max(self.accept_duration_max_s, duration_s)
+            should_log = False
+            if duration_s > TELEMETRY_GAP_S:
+                with self.lock:
+                    now = time.monotonic()
+                    if now - self.last_accept_stall_log >= 1.0:
+                        self.last_accept_stall_log = now
+                        should_log = True
+            if should_log:
+                DIAGNOSTIC_LOGGER.warning(
+                    "dashboard telemetry accept stalled for %.3f s",
+                    duration_s,
+                    extra={
+                        "event_data": {
+                            "event": "dashboard_accept_stall",
+                            "duration_s": duration_s,
+                        }
+                    },
+                )
 
     def _accept(self, datagram: bytes, received_at: float | None = None) -> bool:
         if len(datagram) != 2 + SYSTEM_TELEMETRY_SIZE:
@@ -535,46 +576,123 @@ class TelemetryState:
         if self.logger is not None:
             self.logger.write(sample, now)
         gap_event: dict[str, Any] | None = None
+        reset_event: dict[str, Any] | None = None
         with self.lock:
             previous = self.latest
             receive_gap = None if self.last_packet_at is None else now - self.last_packet_at
             controller_gap = None if previous is None else sample.t_sec - float(previous["t_sec"])
-            if (receive_gap is not None and receive_gap > TELEMETRY_GAP_S) or (
-                controller_gap is not None and controller_gap > TELEMETRY_GAP_S
-            ):
-                if receive_gap is not None and receive_gap > TELEMETRY_GAP_S and (
-                    controller_gap is None or controller_gap <= TELEMETRY_GAP_S
-                ):
+            metadata_available = any(
+                int(getattr(sample, name)) != 0
+                for name in ("run_id", "packet_seq", "loop_seq", "sender_monotonic_ns")
+            )
+            previous_metadata_available = bool(previous and previous.get("sender_metadata_available"))
+            sender_time_gap = None
+            packet_seq_delta = None
+            loop_seq_delta = None
+            packet_gap_count = 0
+            loop_gap_count = 0
+            sender_reset = False
+            if metadata_available and previous_metadata_available:
+                sender_time_gap = (
+                    sample.sender_monotonic_ns - int(previous["sender_monotonic_ns"])
+                ) / 1e9
+                packet_seq_delta = int(sample.packet_seq) - int(previous["packet_seq"])
+                loop_seq_delta = int(sample.loop_seq) - int(previous["loop_seq"])
+                sender_reset = (
+                    int(sample.run_id) != int(previous["run_id"])
+                    or packet_seq_delta < 0
+                    or loop_seq_delta < 0
+                    or sender_time_gap < 0.0
+                )
+            if sender_reset:
+                self.sender_reset_count += 1
+                reset_event = {
+                    "event": "telemetry_run_reset",
+                    "previous_run_id": int(previous["run_id"]),
+                    "current_run_id": int(sample.run_id),
+                    "previous_packet_seq": int(previous["packet_seq"]),
+                    "current_packet_seq": int(sample.packet_seq),
+                    "previous_loop_seq": int(previous["loop_seq"]),
+                    "current_loop_seq": int(sample.loop_seq),
+                    "previous_sender_monotonic_ns": int(previous["sender_monotonic_ns"]),
+                    "current_sender_monotonic_ns": int(sample.sender_monotonic_ns),
+                    "next_sequence": self.sequence + 1,
+                }
+                sender_time_gap = packet_seq_delta = loop_seq_delta = None
+            elif packet_seq_delta is not None:
+                packet_gap_count = max(0, packet_seq_delta - 1)
+                loop_gap_count = max(0, (loop_seq_delta or 0) - 1)
+                self.packet_sequence_gap_count += packet_gap_count
+                self.loop_sequence_gap_count += loop_gap_count
+
+            receiver_gap = receive_gap is not None and receive_gap > TELEMETRY_GAP_S
+            sender_gap = (
+                (sender_time_gap is not None and sender_time_gap > TELEMETRY_GAP_S)
+                if metadata_available and previous_metadata_available and not sender_reset
+                else controller_gap is not None and controller_gap > TELEMETRY_GAP_S
+            )
+            sequence_gap = packet_gap_count > 0 or loop_gap_count > 0
+            if not sender_reset and (receiver_gap or sender_gap or sequence_gap):
+                if receiver_gap and sender_gap:
+                    classification = "receiver_and_sender_gap"
+                    event_type = "telemetry_gap"
+                elif receiver_gap and not sender_gap:
+                    classification = "receiver_or_network_pause"
                     event_type = "udp_receive_pause"
-                elif controller_gap is not None and controller_gap > TELEMETRY_GAP_S and (
-                    receive_gap is None or receive_gap <= TELEMETRY_GAP_S
-                ):
+                elif sender_gap:
+                    classification = "sender_control_dispatch_pause"
+                    event_type = "telemetry_packet_gap"
+                elif loop_gap_count > packet_gap_count:
+                    classification = "loop_without_packet_gap"
                     event_type = "telemetry_packet_gap"
                 else:
-                    event_type = "telemetry_gap"
+                    classification = "packet_or_transport_gap"
+                    event_type = "telemetry_packet_gap"
                 gap_event = {
                     "event": event_type,
+                    "classification": classification,
                     "receive_gap_s": receive_gap,
                     "controller_gap_s": controller_gap,
+                    "sender_time_gap_s": sender_time_gap,
+                    "packet_seq_delta": packet_seq_delta,
+                    "loop_seq_delta": loop_seq_delta,
+                    "packet_gap_count": packet_gap_count,
+                    "loop_gap_count": loop_gap_count,
                     "previous_t_sec": None if previous is None else previous["t_sec"],
                     "current_t_sec": sample.t_sec,
+                    "run_id": int(sample.run_id),
+                    "packet_seq": int(sample.packet_seq),
+                    "loop_seq": int(sample.loop_seq),
+                    "sender_monotonic_ns": int(sample.sender_monotonic_ns),
                     "next_sequence": self.sequence + 1,
                 }
                 self.telemetry_gap_count += 1
                 self.last_telemetry_gap = gap_event
+                self.last_gap_classification = classification
+            self.last_receiver_gap_s = receive_gap
+            self.last_sender_time_gap_s = sender_time_gap
             self.sequence += 1
             self.latest = telemetry_view(sample, self.sequence, now)
+            self.latest["sender_metadata_available"] = metadata_available
             self.last_packet_at = now
             self.packet_times.append(now)
             while self.packet_times and self.packet_times[0] < now - 1.0:
                 self.packet_times.popleft()
             for key, value in self.latest["flags"].items():
                 self.latched_flags[key] |= value
+        if reset_event is not None:
+            DIAGNOSTIC_LOGGER.info(
+                "telemetry sender run reset from %s to %s",
+                reset_event["previous_run_id"],
+                reset_event["current_run_id"],
+                extra={"event_data": reset_event},
+            )
         if gap_event is not None:
             DIAGNOSTIC_LOGGER.warning(
-                "telemetry gap: receive %.3f s, controller %.3f s",
+                "telemetry gap: receive %.3f s, sender %.3f s, class %s",
                 float(gap_event["receive_gap_s"] or 0.0),
-                float(gap_event["controller_gap_s"] or 0.0),
+                float(gap_event["sender_time_gap_s"] or gap_event["controller_gap_s"] or 0.0),
+                gap_event["classification"],
                 extra={"event_data": gap_event},
             )
         return True
@@ -627,6 +745,22 @@ class TelemetryState:
                 "feedback_age_ms": None if self.latest is None else self.latest["timing"]["feedback_age_ms"],
                 "telemetry_gap_count": self.telemetry_gap_count,
                 "last_telemetry_gap": self.last_telemetry_gap,
+                "sender_run_id": None if self.latest is None else self.latest.get("run_id"),
+                "sender_packet_seq": None if self.latest is None else self.latest.get("packet_seq"),
+                "sender_loop_seq": None if self.latest is None else self.latest.get("loop_seq"),
+                "sender_monotonic_ns": (
+                    None if self.latest is None else self.latest.get("sender_monotonic_ns")
+                ),
+                "sender_time_gap_ms": (
+                    None if self.last_sender_time_gap_s is None else self.last_sender_time_gap_s * 1000.0
+                ),
+                "receiver_gap_ms": (
+                    None if self.last_receiver_gap_s is None else self.last_receiver_gap_s * 1000.0
+                ),
+                "telemetry_sender_reset_count": self.sender_reset_count,
+                "telemetry_packet_sequence_gap_count": self.packet_sequence_gap_count,
+                "telemetry_loop_sequence_gap_count": self.loop_sequence_gap_count,
+                "last_gap_classification": self.last_gap_classification,
                 "telemetry_accept_count": self.accept_count,
                 "telemetry_accept_avg_ms": (
                     None
@@ -637,6 +771,11 @@ class TelemetryState:
                     None if self.accept_count == 0 else self.accept_duration_max_s * 1000.0
                 ),
                 "csv_queue_depth": None if self.logger is None else self.logger.queue_depth(),
+                "csv_write_stall_count": None if self.logger is None else self.logger.write_stall_count,
+                "csv_write_max_ms": (
+                    None if self.logger is None else self.logger.write_duration_max_s * 1000.0
+                ),
+                "udp_receive_buffer_bytes": self.udp_receive_buffer_bytes,
             }
             return self.latest, status
 
@@ -716,15 +855,49 @@ class SseHub:
         self._history_sequence = 0
         self._static_history: list[dict[str, Any]] | None = None
         self._stopping = False
+        self._last_display_started: float | None = None
+        self.display_lateness_max_s = 0.0
+        self.display_work_max_s = 0.0
+        self.display_stall_count = 0
+        self.last_display_stall_log = 0.0
+        self.sse_stall_count = 0
+        self.sse_flush_max_s = 0.0
 
     def run(self) -> None:
         interval = 1.0 / DISPLAY_HZ
         while not self._stopping:
             started = time.monotonic()
+            if self._last_display_started is not None:
+                lateness = max(0.0, started - self._last_display_started - interval)
+                self.display_lateness_max_s = max(self.display_lateness_max_s, lateness)
+                if lateness > TELEMETRY_GAP_S:
+                    self.display_stall_count += 1
+                    if started - self.last_display_stall_log >= 1.0:
+                        self.last_display_stall_log = started
+                        DIAGNOSTIC_LOGGER.warning(
+                            "dashboard display loop stalled for %.3f s",
+                            lateness,
+                            extra={
+                                "event_data": {
+                                    "event": "dashboard_display_loop_stall",
+                                    "duration_s": lateness,
+                                }
+                            },
+                        )
+            self._last_display_started = started
             self._display_times.append(started)
             while self._display_times and self._display_times[0] < started - 1.0:
                 self._display_times.popleft()
             telemetry, status = self.state.snapshot(DISPLAY_HZ)
+            status.update(
+                {
+                    "dashboard_display_lateness_max_ms": self.display_lateness_max_s * 1000.0,
+                    "dashboard_display_work_max_ms": self.display_work_max_s * 1000.0,
+                    "dashboard_display_stall_count": self.display_stall_count,
+                    "dashboard_sse_stall_count": self.sse_stall_count,
+                    "dashboard_sse_flush_max_ms": self.sse_flush_max_s * 1000.0,
+                }
+            )
             with self.condition:
                 self.status = status
                 if self._static_history is not None:
@@ -734,7 +907,28 @@ class SseHub:
                     self._append_history(telemetry)
                 self.version += 1
                 self.condition.notify_all()
-            time.sleep(max(0.0, interval - (time.monotonic() - started)))
+            work_s = time.monotonic() - started
+            self.display_work_max_s = max(self.display_work_max_s, work_s)
+            if work_s > TELEMETRY_GAP_S:
+                self.display_stall_count += 1
+                if time.monotonic() - self.last_display_stall_log >= 1.0:
+                    self.last_display_stall_log = time.monotonic()
+                    DIAGNOSTIC_LOGGER.warning(
+                        "dashboard display update stalled for %.3f s",
+                        work_s,
+                        extra={
+                            "event_data": {
+                                "event": "dashboard_display_work_stall",
+                                "duration_s": work_s,
+                            }
+                        },
+                    )
+            time.sleep(max(0.0, interval - work_s))
+
+    def record_sse_flush(self, duration_s: float) -> None:
+        self.sse_flush_max_s = max(self.sse_flush_max_s, duration_s)
+        if duration_s > TELEMETRY_GAP_S:
+            self.sse_stall_count += 1
 
     def stop(self) -> None:
         self._stopping = True
@@ -853,6 +1047,10 @@ def load_playback_csv(path: Path) -> list[tuple[float, dict[str, Any]]]:
         source_time = _number(row, *time_keys)
         view = {
             "t_sec": _number(row, "t_sec"),
+            "run_id": int(_number(row, "run_id")),
+            "packet_seq": int(_number(row, "packet_seq")),
+            "loop_seq": int(_number(row, "loop_seq")),
+            "sender_monotonic_ns": int(_number(row, "sender_monotonic_ns")),
             "attitude": {
                 "pitch_deg": _number(row, "pitch_deg", "plant_pitch_deg"),
                 "fused_pitch_deg": _number(row, "fused_pitch_deg", "pitch_deg"),
@@ -946,8 +1144,12 @@ class UdpReceiver:
         self.pid_status_sink: Callable[[PidConfigStatusPayload], None] | None = None
         self.stopping = threading.Event()
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, UDP_RECEIVE_BUFFER_BYTES)
+        self.receive_buffer_bytes = self.socket.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
         self.socket.bind(("0.0.0.0", 0))
         self.socket.settimeout(0.2)
+        with self.state.lock:
+            self.state.udp_receive_buffer_bytes = self.receive_buffer_bytes
 
     def run(self) -> None:
         next_registration = 0.0
@@ -1777,23 +1979,55 @@ def make_handler(
             last_telemetry_sequence = -1
             last_status_at = 0.0
             last_status_key: tuple[Any, ...] | None = None
+            last_slow_flush_log = 0.0
             try:
                 while True:
                     version, telemetry, status = hub.wait_for_update(version)
+                    write_duration = 0.0
                     if telemetry is not None and telemetry.get("sequence") != last_telemetry_sequence:
-                        self.wfile.write(b"event: telemetry\ndata: " + json.dumps(telemetry, separators=(",", ":")).encode() + b"\n\n")
+                        payload = b"event: telemetry\ndata: " + json.dumps(
+                            telemetry, separators=(",", ":")
+                        ).encode() + b"\n\n"
+                        write_started = time.monotonic()
+                        self.wfile.write(payload)
+                        write_duration = max(write_duration, time.monotonic() - write_started)
                         last_telemetry_sequence = int(telemetry["sequence"])
                     now = time.monotonic()
                     status_key = (
                         status.get("run_active"), status.get("telemetry_connected"), status.get("pi_ready"),
                         status.get("connection_state"), status.get("display_run"), status.get("malformed_packets"),
+                        status.get("sender_run_id"), status.get("sender_packet_seq"),
+                        status.get("telemetry_gap_count"), status.get("last_gap_classification"),
                         json.dumps(status.get("pid_status"), sort_keys=True),
                         tuple(sorted(status.get("latched_flags", {}).items())),
                     )
                     if status_key != last_status_key or now - last_status_at >= 1.0 / STATUS_HZ:
-                        self.wfile.write(b"event: status\ndata: " + json.dumps(status, separators=(",", ":")).encode() + b"\n\n")
+                        payload = b"event: status\ndata: " + json.dumps(
+                            status, separators=(",", ":")
+                        ).encode() + b"\n\n"
+                        write_started = time.monotonic()
+                        self.wfile.write(payload)
+                        write_duration = max(write_duration, time.monotonic() - write_started)
                         last_status_key, last_status_at = status_key, now
+                    flush_started = time.monotonic()
                     self.wfile.flush()
+                    flush_duration = time.monotonic() - flush_started
+                    total_duration = max(write_duration, flush_duration)
+                    hub.record_sse_flush(flush_duration)
+                    if total_duration > TELEMETRY_GAP_S and time.monotonic() - last_slow_flush_log > 1.0:
+                        last_slow_flush_log = time.monotonic()
+                        DIAGNOSTIC_LOGGER.warning(
+                            "dashboard SSE write/flush stalled for %.3f s",
+                            total_duration,
+                            extra={
+                                "event_data": {
+                                    "event": "dashboard_sse_flush_stall",
+                                    "duration_s": total_duration,
+                                    "flush_duration_s": flush_duration,
+                                    "sender_packet_seq": status.get("sender_packet_seq"),
+                                }
+                            },
+                        )
             # A browser can close or replace its EventSource connection at any
             # time.  Windows reports a host-side abort as ConnectionAbortedError,
             # while other platforms commonly use the two exceptions below.

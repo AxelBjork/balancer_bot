@@ -43,5 +43,9 @@ def test_udp_bridge_accepts_raw_imu_data_for_control_telemetry(fresh_udp):
         latest = SystemTelemetryPayload.unpack(payload_bytes)
 
     assert latest is not None, "UDP bridge did not produce telemetry from raw IMU input"
+    assert latest.run_id != 0
+    assert latest.packet_seq > 0
+    assert latest.loop_seq > 0
+    assert latest.sender_monotonic_ns > 0
     assert math.isclose(latest.pitch_deg, math.degrees(pitch_rad), abs_tol=0.35)
     assert math.isclose(latest.raw_acc_pitch_deg, math.degrees(pitch_rad), abs_tol=1e-4)
