@@ -32,7 +32,25 @@ SimulatorPhysics BalancerSimulator::physics_for_profile(PhysicsProfile profile) 
           .wheel_equivalent_mass_kg = 0.10,
       };
     case PhysicsProfile::Realistic:
-    default:
+      return SimulatorPhysics{
+          .max_force_n = HardwareNominal::combined_stall_force_n,
+          .no_load_speed_mps = 1.2,
+          .traction_coefficient = 1.0,
+          .motor_velocity_damping = 40.0,
+          // Keep nominal chassis damping at the original baseline until a separate
+          // plant-damping model is justified by hardware evidence.
+          .cart_damping = 1.0,
+          .pitch_damping = 0.02,
+          // Provisional nominal response anchored to the approximately 2 ms
+          // electrical time constant. Pulse-frame and command effects remain
+          // represented separately by the motor runner and phase model.
+          .motor_tau_s = 0.002,
+          .phase_error_limit_steps = 16.0,
+          .tire_stiffness_n_per_m = 3000.0,
+          .tire_damping_n_s_per_m = 35.0,
+          .wheel_equivalent_mass_kg = 0.10,
+      };
+    case PhysicsProfile::ActuatorStress:
       return SimulatorPhysics{
           .max_force_n = HardwareNominal::combined_stall_force_n,
           .no_load_speed_mps = 1.2,
@@ -40,12 +58,56 @@ SimulatorPhysics BalancerSimulator::physics_for_profile(PhysicsProfile profile) 
           .motor_velocity_damping = 40.0,
           .cart_damping = 1.0,
           .pitch_damping = 0.02,
-          .motor_tau_s = 0.008,
+          // Aggregate robustness case for unmodeled command, pulse, and
+          // drivetrain delay. It is not the approximately 2 ms electrical tau.
+          .motor_tau_s = 0.020,
           .phase_error_limit_steps = 16.0,
           .tire_stiffness_n_per_m = 3000.0,
           .tire_damping_n_s_per_m = 35.0,
           .wheel_equivalent_mass_kg = 0.10,
       };
+    case PhysicsProfile::IdealForce:
+      return SimulatorPhysics{
+          .max_force_n = HardwareNominal::combined_stall_force_n,
+          .no_load_speed_mps = 1.2,
+          .traction_coefficient = 1.0,
+          .motor_velocity_damping = 0.0,
+          // The ideal no-slip reference uses a strong low-frequency
+          // translational return so completed wheel displacement and chassis
+          // velocity remain in the same nominal regime. This is not a
+          // hardware damping estimate.
+          .cart_damping = 40.0,
+          .pitch_damping = 0.02,
+          // Ideal-force reference: no modeled command lag or phase-position
+          // state is included in the attitude-controller authority path.
+          .motor_tau_s = 0.0,
+          .phase_error_limit_steps = 16.0,
+          .tire_stiffness_n_per_m = 3000.0,
+          .tire_damping_n_s_per_m = 35.0,
+          .wheel_equivalent_mass_kg = 0.10,
+          .direct_force = true,
+          .direct_force_per_sps = 40.0 * HardwareNominal::meters_per_step,
+      };
+    case PhysicsProfile::SimpleForce:
+      return SimulatorPhysics{
+          .max_force_n = HardwareNominal::combined_stall_force_n,
+          .no_load_speed_mps = 1.2,
+          .traction_coefficient = 1.0,
+          .motor_velocity_damping = 0.0,
+          .cart_damping = 1.0,
+          // The old simple actuator is retained only as a historical response
+          // comparison. Its 150 ms lag is not a measured motor constant.
+          .pitch_damping = 0.02,
+          .motor_tau_s = 0.150,
+          .phase_error_limit_steps = 16.0,
+          .tire_stiffness_n_per_m = 3000.0,
+          .tire_damping_n_s_per_m = 35.0,
+          .wheel_equivalent_mass_kg = 0.10,
+          .direct_force = true,
+          .direct_force_per_sps = 40.0 * HardwareNominal::meters_per_step,
+      };
+    default:
+      return physics_for_profile(PhysicsProfile::Realistic);
   }
 }
 
@@ -54,6 +116,13 @@ std::string_view BalancerSimulator::profile_name(PhysicsProfile profile) {
     case PhysicsProfile::Simplified:
       return "simplified";
     case PhysicsProfile::Realistic:
+      return "realistic";
+    case PhysicsProfile::ActuatorStress:
+      return "actuator_stress";
+    case PhysicsProfile::IdealForce:
+      return "ideal_force";
+    case PhysicsProfile::SimpleForce:
+      return "simple_force";
     default:
       return "realistic";
   }
@@ -63,6 +132,8 @@ BalancerSimulator::BalancerSimulator(const Config& cfg) : cfg_(cfg) {
   physics_ = cfg_.physics_override.value_or(physics_for_profile(cfg_.physics_profile));
   state_.pitch = cfg_.initial_pitch_deg * kPi / 180.0;
   state_.pitch_rate = cfg_.initial_pitch_rate_dps * kPi / 180.0;
+  state_.velocity = cfg_.initial_velocity_mps;
+  wheel_velocity_mps_ = cfg_.initial_velocity_mps;
 }
 
 void BalancerSimulator::set_motor_targets(double left_sps, double right_sps) {
@@ -88,6 +159,81 @@ void BalancerSimulator::step(double dt_s) {
   const double avg_steps_per_sec = 0.5 * (left_target_sps_ + right_target_sps_);
   const double target_wheel_velocity = steps_per_sec_to_wheel_velocity(
       avg_steps_per_sec, Nominal::steps_per_rev, Nominal::wheel_radius);
+  if (physics_.direct_force) {
+    const double T = Nominal::total_mass_kg * std::max(0.1, cfg_.total_mass_scale);
+    const double desired_force = physics_.direct_force_per_sps * avg_steps_per_sec;
+    const double traction_limit =
+        std::max(0.0, physics_.traction_coefficient) * T * Nominal::gravity;
+    const double motor_limit = std::max(0.0, physics_.max_force_n);
+    const double available_force = std::min(motor_limit, traction_limit);
+    const double limited_force =
+        std::clamp(desired_force, -available_force, available_force);
+    const double force_alpha = physics_.motor_tau_s > 0.0
+                                   ? std::clamp(dt_s / (physics_.motor_tau_s + dt_s), 0.0, 1.0)
+                                   : 1.0;
+    applied_drive_force_ += force_alpha * (limited_force - applied_drive_force_);
+
+    const double Q = state_.pitch + cfg_.com_angle_offset_rad + external_com_bias_rad_;
+    const double Q_dot = state_.pitch_rate;
+    const double sQ = std::sin(Q);
+    const double cQ = std::cos(Q);
+    const double H = Nominal::first_mass_moment_kg_m *
+                     std::max(0.1, cfg_.first_mass_moment_scale);
+    const double J = Nominal::pitch_inertia_about_axle_kg_m2 *
+                     std::max(0.1, cfg_.pitch_inertia_scale);
+    const double d11 = T;
+    const double d12 = H * cQ;
+    const double d21 = H * cQ;
+    const double d22 = J;
+    const double rhs1 = applied_drive_force_ + external_force_n_ + H * Q_dot * Q_dot * sQ -
+                        physics_.cart_damping * state_.velocity;
+    const double motor_reaction_torque = applied_drive_force_ * Nominal::wheel_radius;
+    const double com_height_m = H / T;
+    const double external_force_pitch_moment = external_force_n_ * com_height_m * cQ;
+    const double rhs2 = Nominal::gravity * H * sQ - physics_.pitch_damping * state_.pitch_rate -
+                        motor_reaction_torque + external_force_pitch_moment;
+    const double det = d11 * d22 - d12 * d21;
+    const double x_ddot = (d22 * rhs1 - d12 * rhs2) / det;
+    const double theta_ddot = (d11 * rhs2 - d21 * rhs1) / det;
+    state_.velocity += x_ddot * dt_s;
+    state_.position += state_.velocity * dt_s;
+    state_.pitch_rate += theta_ddot * dt_s;
+    state_.pitch += state_.pitch_rate * dt_s;
+    if (std::abs(state_.pitch) > kPi / 2.0) {
+      state_.pitch = state_.pitch > 0 ? kPi / 2.0 : -kPi / 2.0;
+      state_.pitch_rate = 0.0;
+      state_.velocity = 0.0;
+    }
+
+    // In the no-slip reference, chassis translation is the completed-wheel
+    // displacement seen by the outer-loop observer.
+    actual_wheel_velocity_ = state_.velocity;
+    diagnostics_.target_wheel_velocity = target_wheel_velocity;
+    diagnostics_.actual_wheel_velocity = actual_wheel_velocity_;
+    diagnostics_.velocity_error = target_wheel_velocity - actual_wheel_velocity_;
+    diagnostics_.f_cmd = desired_force;
+    diagnostics_.f_app = applied_drive_force_;
+    diagnostics_.desired_drive_force = desired_force;
+    diagnostics_.limited_drive_force = limited_force;
+    diagnostics_.applied_drive_force = applied_drive_force_;
+    diagnostics_.desired_tire_force = 0.0;
+    diagnostics_.external_force_n = external_force_n_;
+    diagnostics_.external_com_bias_rad = external_com_bias_rad_;
+    diagnostics_.x_ddot = x_ddot;
+    diagnostics_.theta_ddot = theta_ddot;
+    diagnostics_.phase_error_steps = 0.0;
+    diagnostics_.missed_steps = 0.0;
+    diagnostics_.traction_limit_n = traction_limit;
+    diagnostics_.motor_force_limit_n = motor_limit;
+    diagnostics_.command_saturated = available_force <= 0.0 ||
+                                     std::abs(desired_force) >= available_force * 0.999;
+    diagnostics_.phase_saturated = false;
+    diagnostics_.motor_force_saturated = motor_limit <= 0.0 ||
+                                         std::abs(desired_force) >= motor_limit * 0.999;
+    diagnostics_.traction_saturated = traction_limit <= 0.0 ||
+                                      std::abs(desired_force) >= traction_limit * 0.999;
+    return;
+  }
   if (!have_external_emitted_steps_) {
     emitted_steps_avg_ += avg_steps_per_sec * dt_s;
   }
@@ -111,6 +257,7 @@ void BalancerSimulator::step(double dt_s) {
   double phase_error_m = effective_command_position_m - relative_wheel_position_m;
   const double phase_limit_m =
       std::max(1.0, physics_.phase_error_limit_steps) * Nominal::meters_per_step;
+  const bool phase_saturated = std::abs(phase_error_m) > phase_limit_m;
   if (std::abs(phase_error_m) > phase_limit_m) {
     const double clamped_error = std::clamp(phase_error_m, -phase_limit_m, phase_limit_m);
     missed_distance_m_ += phase_error_m - clamped_error;
@@ -125,6 +272,8 @@ void BalancerSimulator::step(double dt_s) {
           (target_wheel_velocity - relative_wheel_velocity_mps);
   const double limited_motor_force =
       std::clamp(desired_force, -motor_force_limit, motor_force_limit);
+  const bool motor_force_saturated =
+      motor_force_limit <= 0.0 || std::abs(desired_force) >= motor_force_limit * 0.999;
 
   const double force_alpha = (physics_.motor_tau_s > 0.0)
                                  ? std::clamp(dt_s / (physics_.motor_tau_s + dt_s), 0.0, 1.0)
@@ -134,6 +283,8 @@ void BalancerSimulator::step(double dt_s) {
       physics_.tire_stiffness_n_per_m * (wheel_position_m_ - state_.position) +
       physics_.tire_damping_n_s_per_m * (wheel_velocity_mps_ - state_.velocity);
   const double tire_force = std::clamp(desired_tire_force, -traction_limit, traction_limit);
+  const bool traction_saturated =
+      traction_limit <= 0.0 || std::abs(desired_tire_force) >= traction_limit * 0.999;
   const double F_cmd = desired_force;
   const double F_app = tire_force;
   const double total_force = F_app + external_force_n_;
@@ -144,7 +295,8 @@ void BalancerSimulator::step(double dt_s) {
   const double cQ = std::cos(Q);
 
   const double T = Nominal::total_mass_kg * std::max(0.1, cfg_.total_mass_scale);
-  const double H = Nominal::first_mass_moment_kg_m;
+  const double H = Nominal::first_mass_moment_kg_m *
+                   std::max(0.1, cfg_.first_mass_moment_scale);
   const double J = Nominal::pitch_inertia_about_axle_kg_m2 *
                    std::max(0.1, cfg_.pitch_inertia_scale);
 
@@ -158,7 +310,7 @@ void BalancerSimulator::step(double dt_s) {
   const double motor_reaction_torque = applied_drive_force_ * Nominal::wheel_radius;
   // Disturbances model a horizontal push at the robot COM.  In this 2D plant,
   // that force creates both a translational force and a pitch moment about the axle.
-  const double com_height_m = Nominal::first_mass_moment_kg_m / Nominal::total_mass_kg;
+  const double com_height_m = H / T;
   const double external_force_pitch_moment = external_force_n_ * com_height_m * cQ;
   const double rhs2 = Nominal::gravity * H * sQ -
                       physics_.pitch_damping * state_.pitch_rate - motor_reaction_torque +
@@ -191,6 +343,10 @@ void BalancerSimulator::step(double dt_s) {
   diagnostics_.velocity_error = target_wheel_velocity - actual_wheel_velocity_;
   diagnostics_.f_cmd = F_cmd;
   diagnostics_.f_app = F_app;
+  diagnostics_.desired_drive_force = desired_force;
+  diagnostics_.limited_drive_force = limited_motor_force;
+  diagnostics_.applied_drive_force = applied_drive_force_;
+  diagnostics_.desired_tire_force = desired_tire_force;
   diagnostics_.external_force_n = external_force_n_;
   diagnostics_.external_com_bias_rad = external_com_bias_rad_;
   diagnostics_.x_ddot = x_ddot;
@@ -202,6 +358,9 @@ void BalancerSimulator::step(double dt_s) {
   diagnostics_.command_saturated = motor_force_limit <= 0.0 ||
                                    std::abs(F_cmd) >= motor_force_limit * 0.999 ||
                                    std::abs(desired_tire_force) >= traction_limit * 0.999;
+  diagnostics_.phase_saturated = phase_saturated;
+  diagnostics_.motor_force_saturated = motor_force_saturated;
+  diagnostics_.traction_saturated = traction_saturated;
 }
 
 ipc::ImuRawPayload BalancerSimulator::make_raw_imu_payload(uint64_t sim_time_us) const {

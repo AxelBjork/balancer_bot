@@ -6,8 +6,17 @@
 #include "messages/balancer_msgs.h"
 
 enum class PhysicsProfile {
-  Realistic,
-  Simplified,
+  // Existing wire values remain stable: simplified=0, realistic=1,
+  // actuator_stress=2. New offline-only references follow them.
+  Simplified = 0,
+  Realistic = 1,
+  // Realistic with the deliberately conservative aggregate actuator lag used
+  // for robustness experiments. This is not the nominal motor time constant.
+  ActuatorStress = 2,
+  // Direct applied-force references bypass the phase-position model. They are
+  // controller-architecture fixtures, not hardware-calibrated motor models.
+  IdealForce = 3,
+  SimpleForce = 4,
 };
 
 struct SimulatorPhysics {
@@ -24,16 +33,22 @@ struct SimulatorPhysics {
   double tire_stiffness_n_per_m = 3000.0;
   double tire_damping_n_s_per_m = 12.0;
   double wheel_equivalent_mass_kg = 0.10;
+  bool direct_force = false;
+  double direct_force_per_sps = 0.0;
 };
 
 struct SimulatorConfig {
   double com_angle_offset_rad = 0.001;
   double initial_pitch_deg = 2.0;
   double initial_pitch_rate_dps = 0.0;
+  double initial_velocity_mps = 0.0;
   PhysicsProfile physics_profile = PhysicsProfile::Realistic;
   std::optional<SimulatorPhysics> physics_override;
   double total_mass_scale = 1.0;
   double pitch_inertia_scale = 1.0;
+  // Offline robustness knob for the measured first mass moment H. The default
+  // preserves the current nominal plant exactly.
+  double first_mass_moment_scale = 1.0;
   double imu_height_m = 0.070;
 };
 
@@ -54,6 +69,10 @@ class BalancerSimulator {
     double velocity_error = 0.0;
     double f_cmd = 0.0;
     double f_app = 0.0;
+    double desired_drive_force = 0.0;
+    double limited_drive_force = 0.0;
+    double applied_drive_force = 0.0;
+    double desired_tire_force = 0.0;
     double external_force_n = 0.0;
     double external_com_bias_rad = 0.0;
     double x_ddot = 0.0;
@@ -63,6 +82,9 @@ class BalancerSimulator {
     double traction_limit_n = 0.0;
     double motor_force_limit_n = 0.0;
     bool command_saturated = false;
+    bool phase_saturated = false;
+    bool motor_force_saturated = false;
+    bool traction_saturated = false;
   };
 
   struct LinearizedUprightModel {
@@ -132,8 +154,8 @@ class BalancerSimulator {
     static constexpr double total_mass_kg = 1.032;
     // Measured complete-robot COM height is 60 mm above the axle: H = T * z_c.
     static constexpr double first_mass_moment_kg_m = 0.06192;
-    // Provisional legacy-derived value; replace after the physical-pendulum measurement.
-    static constexpr double pitch_inertia_about_axle_kg_m2 = 0.0067552;
+    // Best current passive-pendulum estimate; controller retuning is expected around this value.
+    static constexpr double pitch_inertia_about_axle_kg_m2 = 0.0045;
     static constexpr double steps_per_rev = 200.0 * 16.0;
     static constexpr double meters_per_step =
         2.0 * 3.14159265358979323846 * wheel_radius / steps_per_rev;

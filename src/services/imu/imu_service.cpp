@@ -33,6 +33,10 @@ void ImuService::stop() {
   }
 }
 
+void ImuService::resetForSimulation() {
+  estimator_->reset();
+}
+
 void ImuService::handle_raw_imu(const ipc::ImuRawPayload& p) {
   const auto ts = std::chrono::steady_clock::time_point(std::chrono::microseconds(p.timestamp_us));
   const ImuPitchEstimate estimate = estimator_->push_sample(p.acc, p.gyr, ts);

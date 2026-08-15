@@ -107,7 +107,7 @@ The names below are enough to follow most diagrams and logs:
 | `MotorTargets` | Left/right wheel targets in steps per second | Published by the controller; visible to the UDP peer |
 | `MotorFeedback` | Completed steps, applied command, timing, and actuator fault state | Internal-only controller feedback; hardware uses real completed steps, SIL uses a commanded-speed proxy, and simulation uses quantized simulated steps |
 | `SystemTelemetry` | Controller, estimator, command, feedback, saturation, and fault observations | Streamed to the UDP peer and dashboard |
-| `PidConfigOverride` / `PidConfigStatus` | Complete session-only PID snapshot and its validation result | Dashboard to `ControlService` and status back through the UDP peer; never persisted |
+| `PidConfigOverride` / `PidConfigStatus` | Complete session-only controller snapshot and its validation result | Dashboard to `ControlService` and status back through the UDP peer; never persisted |
 
 The production UDP bridge accepts only its authorized ingress messages and checks payload sizes. A
 client first sends a datagram to register; the most recent sender becomes the active peer, replacing

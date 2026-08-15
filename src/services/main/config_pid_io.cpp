@@ -52,66 +52,54 @@ static void write_param(std::ofstream& f, const std::string& name, double value)
 }
 
 ConfigPidValues ConfigPid::numeric_values() {
-  return {
-      rate_P,
-      rate_I,
-      rate_D,
-      rate_I_lim,
-      rate_FF,
-      drive_max_acceleration_mps2,
-      velocity_damping_per_s,
-      velocity_I,
-      velocity_I_limit_deg,
-      angle_P,
-      angle_D,
-      pitch_rate_max_sps,
-      drive_max_sps,
-      turn_max_sps,
-      balance_max_sps,
-  };
+  return values;
 }
 
 ConfigPidValidationCode ConfigPid::validate_numeric(const ConfigPidValues& values) {
   for (const double value : {
-           values.rate_P,
-           values.rate_I,
-           values.rate_D,
-           values.rate_I_lim,
-           values.rate_FF,
            values.drive_max_acceleration_mps2,
            values.velocity_damping_per_s,
+           values.velocity_pitch_limit_deg,
            values.velocity_I,
            values.velocity_I_limit_deg,
-           values.angle_P,
-           values.angle_D,
-           values.pitch_rate_max_sps,
            values.drive_max_sps,
            values.turn_max_sps,
            values.balance_max_sps,
+           values.pitch_gain,
+           values.pitch_rate_gain,
+           values.pitch_accel_gain,
+           values.velocity_control_cutoff_hz,
        }) {
     if (!std::isfinite(value)) return ConfigPidValidationCode::NonFinite;
   }
 
   for (const double value : {
-           values.rate_P,
-           values.rate_I,
-           values.rate_D,
-           values.rate_I_lim,
-           values.rate_FF,
            values.drive_max_acceleration_mps2,
            values.velocity_damping_per_s,
+           values.velocity_pitch_limit_deg,
            values.velocity_I,
            values.velocity_I_limit_deg,
-           values.angle_P,
-           values.angle_D,
            values.turn_max_sps,
+           values.pitch_gain,
+           values.pitch_rate_gain,
+           values.pitch_accel_gain,
        }) {
     if (value < 0.0) return ConfigPidValidationCode::Negative;
   }
 
-  if (values.pitch_rate_max_sps <= 0.0 || values.drive_max_sps <= 0.0 ||
-      values.balance_max_sps <= 0.0) {
+  if (values.drive_max_sps <= 0.0 || values.balance_max_sps <= 0.0 ||
+      values.velocity_control_cutoff_hz <= 0.0) {
     return ConfigPidValidationCode::NonPositive;
+  }
+  if (values.pitch_gain > 1.0e6 || values.pitch_rate_gain > 1.0e6 ||
+      values.pitch_accel_gain > 1.0e6) {
+    return ConfigPidValidationCode::OutOfRange;
+  }
+  // Zero disables the dedicated velocity contribution limit for diagnostics;
+  // positive values are expressed in degrees and must remain within a
+  // physically meaningful pitch envelope.
+  if (values.velocity_pitch_limit_deg > 90.0) {
+    return ConfigPidValidationCode::OutOfRange;
   }
   if (values.drive_max_sps > 12000.0 || values.turn_max_sps > 12000.0 ||
       values.balance_max_sps > 12000.0) {
@@ -120,25 +108,11 @@ ConfigPidValidationCode ConfigPid::validate_numeric(const ConfigPidValues& value
   return ConfigPidValidationCode::Accepted;
 }
 
-void ConfigPid::apply_numeric(const ConfigPidValues& values) {
-  if (validate_numeric(values) != ConfigPidValidationCode::Accepted) {
+void ConfigPid::apply_numeric(const ConfigPidValues& next_values) {
+  if (validate_numeric(next_values) != ConfigPidValidationCode::Accepted) {
     throw std::invalid_argument("Cannot apply invalid numeric PID configuration");
   }
-  rate_P = values.rate_P;
-  rate_I = values.rate_I;
-  rate_D = values.rate_D;
-  rate_I_lim = values.rate_I_lim;
-  rate_FF = values.rate_FF;
-  drive_max_acceleration_mps2 = values.drive_max_acceleration_mps2;
-  velocity_damping_per_s = values.velocity_damping_per_s;
-  velocity_I = values.velocity_I;
-  velocity_I_limit_deg = values.velocity_I_limit_deg;
-  angle_P = values.angle_P;
-  angle_D = values.angle_D;
-  pitch_rate_max_sps = values.pitch_rate_max_sps;
-  drive_max_sps = values.drive_max_sps;
-  turn_max_sps = values.turn_max_sps;
-  balance_max_sps = values.balance_max_sps;
+  values = next_values;
   g_config_pid_generation.fetch_add(1, std::memory_order_release);
 }
 
@@ -163,12 +137,11 @@ void ConfigPid::load(const std::string& path) {
   };
   std::vector<ParsedLine> parsed_lines;
   std::unordered_set<std::string> allowed = {
-      "config_version", "rate_P", "rate_I", "rate_D", "rate_I_lim", "rate_FF",
-      "drive_max_acceleration_mps2", "velocity_damping_per_s",
-      "velocity_I", "velocity_I_limit_deg", "angle_P", "angle_D",
-      "pitch_rate_max_sps", "drive_max_sps", "turn_max_sps",
-      "balance_max_sps", "controller_enabled"};
-  controller_enabled = true;
+      "config_version", "drive_max_acceleration_mps2", "velocity_damping_per_s",
+      "velocity_pitch_limit_deg", "velocity_I", "velocity_I_limit_deg", "drive_max_sps",
+      "turn_max_sps", "balance_max_sps", "pitch_gain", "pitch_rate_gain",
+      "pitch_accel_gain",
+      "velocity_control_cutoff_hz", "controller_enabled"};
   std::string line;
   size_t line_number = 0;
   while (std::getline(f, line)) {
@@ -258,21 +231,18 @@ void ConfigPid::load(const std::string& path) {
   }
 
   const ConfigPidValues numeric{
-      parsed_values.at("rate_P"),
-      parsed_values.at("rate_I"),
-      parsed_values.at("rate_D"),
-      parsed_values.at("rate_I_lim"),
-      parsed_values.at("rate_FF"),
       parsed_values.at("drive_max_acceleration_mps2"),
       parsed_values.at("velocity_damping_per_s"),
+      parsed_values.at("velocity_pitch_limit_deg"),
       parsed_values.at("velocity_I"),
       parsed_values.at("velocity_I_limit_deg"),
-      parsed_values.at("angle_P"),
-      parsed_values.at("angle_D"),
-      parsed_values.at("pitch_rate_max_sps"),
       parsed_values.at("drive_max_sps"),
       parsed_values.at("turn_max_sps"),
       parsed_values.at("balance_max_sps"),
+      parsed_values.at("pitch_gain"),
+      parsed_values.at("pitch_rate_gain"),
+      parsed_values.at("pitch_accel_gain"),
+      parsed_values.at("velocity_control_cutoff_hz"),
   };
   switch (validate_numeric(numeric)) {
     case ConfigPidValidationCode::Accepted:
@@ -286,36 +256,33 @@ void ConfigPid::load(const std::string& path) {
     case ConfigPidValidationCode::OutOfRange:
       throw std::runtime_error("PID configuration limit exceeds the supported range");
   }
+  const bool next_controller_enabled =
+      !parsed_values.contains("controller_enabled") || parsed_values.at("controller_enabled") == 1.0;
   apply_numeric(numeric);
-  controller_enabled = !parsed_values.contains("controller_enabled") || parsed_values.at("controller_enabled") == 1.0;
+  controller_enabled = next_controller_enabled;
 }
 
 void ConfigPid::save(const std::string& path) {
   std::ofstream f(path);
   if (f.is_open()) {
-    f << "# Balancer Bot PID Configuration\n";
+    f << "# Balancer Bot Controller Configuration\n";
     f << "# Modifying this file requires application restart (or reload logic)\n\n";
 
     f << "config_version       = " << config_version << "\n\n";
-    f << "# --- Rate Controller (Inner Loop) ---\n";
-    write_param(f, "rate_P", rate_P);
-    write_param(f, "rate_I", rate_I);
-    write_param(f, "rate_D", rate_D);
-    write_param(f, "rate_I_lim", rate_I_lim);
-    write_param(f, "rate_FF", rate_FF);
-    f << "\n";
-
-    f << "# --- Acceleration control / stationary COM trim (100 Hz), angle loop, and allocation ---\n";
-    write_param(f, "drive_max_acceleration_mps2", drive_max_acceleration_mps2);
-    write_param(f, "velocity_damping_per_s", velocity_damping_per_s);
-    write_param(f, "velocity_I", velocity_I);
-    write_param(f, "velocity_I_limit_deg", velocity_I_limit_deg);
-    write_param(f, "angle_P", angle_P);
-    write_param(f, "angle_D", angle_D);
-    write_param(f, "pitch_rate_max_sps", pitch_rate_max_sps);
-    write_param(f, "drive_max_sps", drive_max_sps);
-    write_param(f, "turn_max_sps", turn_max_sps);
-    write_param(f, "balance_max_sps", balance_max_sps);
+    f << "# --- Explicit attitude state feedback ---\n";
+    write_param(f, "pitch_gain", values.pitch_gain);
+    write_param(f, "pitch_rate_gain", values.pitch_rate_gain);
+    write_param(f, "pitch_accel_gain", values.pitch_accel_gain);
+    f << "\n# --- Acceleration / velocity control / stationary COM trim / allocation ---\n";
+    write_param(f, "drive_max_acceleration_mps2", values.drive_max_acceleration_mps2);
+    write_param(f, "velocity_damping_per_s", values.velocity_damping_per_s);
+    write_param(f, "velocity_pitch_limit_deg", values.velocity_pitch_limit_deg);
+    write_param(f, "velocity_I", values.velocity_I);
+    write_param(f, "velocity_I_limit_deg", values.velocity_I_limit_deg);
+    write_param(f, "velocity_control_cutoff_hz", values.velocity_control_cutoff_hz);
+    write_param(f, "drive_max_sps", values.drive_max_sps);
+    write_param(f, "turn_max_sps", values.turn_max_sps);
+    write_param(f, "balance_max_sps", values.balance_max_sps);
     write_param(f, "controller_enabled", controller_enabled ? 1.0 : 0.0);
     f << "\n";
   } else {

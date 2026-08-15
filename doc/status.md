@@ -2,14 +2,14 @@
 
 This page is the short, candid status snapshot for the project. The rest of the handbook stays mostly happy-path; this page captures the important caveats. For validation details, see [Testing Strategy](testing/strategy.md); for physical evidence, see the [data archive](../data/README.md).
 
-_Snapshot date: 2026-08-05. Run-specific claims still require the captured manifest and PID
+_Snapshot date: 2026-08-07. Run-specific claims still require the captured manifest and PID
 digest; this page is not a release record._
 
 ## What Is in Good Shape
 
 - the host gate is defined by `pytest --build`; do not rely on a hard-coded test count because the
   registered suites change
-- transfer-matrix validation uses the ten-scenario acceptance set, while fuzz smoke runs the currently
+- transfer-matrix validation uses the seven-scenario acceptance set, while fuzz smoke runs the currently
   registered seed corpus; run the commands before reporting a new pass
 - the runtime is tick-driven and the service split is wired through the message bus
 - generated bindings and generated IPC docs are part of the normal host build flow; cross-builds
@@ -41,7 +41,7 @@ digest; this page is not a release record._
 - reflection-generated docs and bindings
 - message-bus service integration
 - simulator artifact generation
-- the four nominal and six conservative margin cases in the transfer matrix
+- the four nominal and three actuator-stress cases in the transfer matrix
 - focused direct-versus-UDP all-tick equivalence for transfer catalog index `1`, plus stride-invariant
   terminal summaries
 - warning-clean host compilation/execution of all registered fuzz seeds

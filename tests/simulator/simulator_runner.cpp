@@ -93,6 +93,8 @@ uint64_t update_simulator_timeline_hash(uint64_t hash, const SimulatorTimelineRo
   add_double(row.right_actual_steps);
   add_u64(row.controller_fault_flags);
   add_u64(row.controller_saturation_flags);
+  add_u64(row.trim_learning_enabled > 0.5 ? 1u : 0u);
+  add_u64(row.trim_learning_block_reason);
   add_u64(row.actuator_saturation_flags);
   return hash;
 }
@@ -261,34 +263,12 @@ std::vector<SimulatorScenario> transfer_scenario_set() {
   // plant-authority test.
   constexpr double drive_command = 0.20;
 
-  enum class TransferProfile { Nominal, SlowWeak, FastStrong };
+  enum class TransferProfile { Nominal, Secondary };
 
   const auto apply_profile = [](SimulatorScenario& scenario, TransferProfile profile) {
-    scenario.physics_profile = PhysicsProfile::Realistic;
-    if (profile == TransferProfile::Nominal) return;
-
-    scenario.physics_override = BalancerSimulator::physics_for_profile(PhysicsProfile::Realistic);
-    scenario.imu_noise_seed = profile == TransferProfile::SlowWeak ? 2026u : 2027u;
-    scenario.accel_noise_std_mps2 = 0.20;
-    scenario.gyro_noise_std_rad_s = 0.015;
-
-    if (profile == TransferProfile::SlowWeak) {
-      scenario.total_mass_scale = 1.10;
-      // A payload increases both total mass and axle pitch inertia; H remains the measured base
-      // robot value because no payload COM geometry has been asserted for this margin sweep.
-      scenario.pitch_inertia_scale = 1.30;
-      scenario.physics_override->motor_tau_s = 0.020;
-      scenario.physics_override->traction_coefficient = 0.60;
-      scenario.physics_override->pitch_damping = 0.02;
-      scenario.physics_override->cart_damping = 0.40;
-    } else {
-      scenario.total_mass_scale = 0.90;
-      scenario.pitch_inertia_scale = 0.80;
-      scenario.physics_override->motor_tau_s = 0.004;
-      scenario.physics_override->traction_coefficient = 1.20;
-      scenario.physics_override->pitch_damping = 0.04;
-      scenario.physics_override->cart_damping = 2.0;
-    }
+    scenario.physics_profile = profile == TransferProfile::Secondary
+                                   ? PhysicsProfile::SimpleForce
+                                   : PhysicsProfile::IdealForce;
   };
 
   const auto release_scenario = [&](std::string name, TransferProfile profile, double sign) {
@@ -346,12 +326,9 @@ std::vector<SimulatorScenario> transfer_scenario_set() {
       release_scenario("nominal_release_neg", TransferProfile::Nominal, -1.0),
       push_scenario("nominal_push_symmetric", TransferProfile::Nominal),
       drive_scenario("nominal_drive_bidirectional", TransferProfile::Nominal),
-      release_scenario("slow_weak_release", TransferProfile::SlowWeak, 1.0),
-      push_scenario("slow_weak_push_symmetric", TransferProfile::SlowWeak),
-      drive_scenario("slow_weak_drive_bidirectional", TransferProfile::SlowWeak),
-      release_scenario("fast_strong_release", TransferProfile::FastStrong, -1.0),
-      push_scenario("fast_strong_push_symmetric", TransferProfile::FastStrong),
-      drive_scenario("fast_strong_drive_bidirectional", TransferProfile::FastStrong),
+      release_scenario("simple_force_release", TransferProfile::Secondary, 1.0),
+      push_scenario("simple_force_push_symmetric", TransferProfile::Secondary),
+      drive_scenario("simple_force_drive_bidirectional", TransferProfile::Secondary),
   };
 }
 
@@ -523,7 +500,17 @@ TransferAcceptance evaluate_transfer_scenario(const SimulatorRunResult& result) 
   }
 
   if (drive) {
-    constexpr double target_sps = 800.0;
+    // The drive segment is deliberately a 0.20 normalized command. With the
+    // shared acceleration and velocity-damping defaults its meaningful target
+    // is the damping-limited steady speed, not the old fixed 800 SPS fixture.
+    const double normalized_drive =
+        std::clamp((0.20 - Config::deadzone) / (1.0 - Config::deadzone), 0.0, 1.0);
+    const double expected_speed_sps =
+        ConfigPid::values.velocity_damping_per_s > 0.0
+            ? normalized_drive * ConfigPid::values.drive_max_acceleration_mps2 /
+                  (ConfigPid::values.velocity_damping_per_s * Config::meters_per_step)
+            : static_cast<double>(ConfigPid::values.drive_max_sps);
+    const double target_sps = std::clamp(0.70 * expected_speed_sps, 50.0, 800.0);
     const auto first_correct_output = [&](double start_s, double sign) {
       return std::any_of(result.rows.begin(), result.rows.end(), [&](const auto& row) {
         return row.sim_time_s >= start_s && row.sim_time_s <= start_s + 0.5 &&

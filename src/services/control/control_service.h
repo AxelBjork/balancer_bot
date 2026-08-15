@@ -11,17 +11,25 @@ namespace sil {
 
 inline constexpr char kControlServiceDoc[] =
     "Owns the balancing control pipeline that converts `PhysicsTick`, `ImuData`, and "
-    "`JoystickCommand`, and `MotorFeedback` inputs into wheel-speed targets and streaming "
+    "`JoystickCommand`, `PitchAuthorityDiagnosticCommand`, and `MotorFeedback` inputs into "
+    "wheel-speed targets and streaming "
     "controller "
     "telemetry.\n\n"
     "At 100 Hz, completed common-mode steps are corrected for chassis pitch to observe axle "
-    "velocity and filtered at 10 Hz. A jerk-limited acceleration request plus corrected-velocity "
-    "damping form the pitch reference, while a bounded integral term learns only stationary "
-    "center-of-mass trim:\n\n"
+    "velocity and filtered at 10 Hz. A separate configurable velocity-control filter can add "
+    "a slower pole without changing that observer. A jerk-limited acceleration request plus "
+    "corrected-velocity damping form the pitch reference, while a bounded integral term acquires center-of-mass "
+    "trim during neutral startup settling and only maintains it after a quiet dwell:\n\n"
     "$$ \\theta_{sp} = \\operatorname{atan2}(a_{nominal} - k_v v_{axle},g) "
     "+ \\theta_{COM} $$\n\n"
-    "$$ \\omega_{sp} = k_{pitch}(\\theta_{sp} - \\theta) - k_{pitch\\_rate}\\dot{\\theta} $$\n\n"
-    "The pitch-rate controller supplies the wheel command before turn allocation. Motor output can "
+    "The attitude controller uses independently configured state feedback at the robot-forward "
+    "motor boundary:\n\n"
+    "$$ u = K_{pitch}(\\theta-\\theta_{sp}) + K_{rate}\\dot{\\theta} "
+    "+ K_{accel}\\ddot{\\theta} $$\n\n"
+    "The signs above account for the electrical/motor-boundary polarity; they are equivalent to "
+    "the public negative-feedback form in the controller's internal rate convention. The explicit "
+    "terms are independently tunable and reported in telemetry. The attitude controller supplies "
+    "the wheel command before turn allocation. Motor output can "
     "initially reduce or reverse to acquire lean. Faults clear dynamic state but preserve bounded "
     "COM trim. Telemetry reports the pitch-reference terms, target/post-slew/applied commands, "
     "feedback, saturation, and faults. In `actuator_saturation_flags`, bit 0 is left slew "
@@ -34,7 +42,8 @@ class DOC_DESC(kControlServiceDoc) ControlService {
   using Publishes = ipc::MsgList<MsgId::MotorTargets, MsgId::SystemTelemetry,
                                  MsgId::PidConfigStatus>;
   using Subscribes = ipc::MsgList<MsgId::PhysicsTick, MsgId::ImuData, MsgId::JoystickCommand,
-                                  MsgId::MotorFeedback, MsgId::PidConfigOverride>;
+                                  MsgId::PitchAuthorityDiagnosticCommand, MsgId::MotorFeedback,
+                                  MsgId::PidConfigOverride>;
 
   explicit ControlService(ipc::MessageBus& bus);
   ~ControlService() = default;
@@ -66,6 +75,13 @@ template <>
 inline void ControlService::on_message<MsgId::JoystickCommand>(
     const ipc::JoystickCommandPayload& p) {
   core_.setJoystick(JoyCmd{p.forward, p.turn});
+}
+
+template <>
+inline void ControlService::on_message<MsgId::PitchAuthorityDiagnosticCommand>(
+    const ipc::PitchAuthorityDiagnosticCommandPayload& p) {
+  (void)core_.setPitchAuthorityDiagnostic(
+      p.active != 0, p.target_deg, p.com_trim_deg, p.duration_s, p.request_id);
 }
 
 template <>

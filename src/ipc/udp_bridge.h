@@ -49,7 +49,8 @@ class DOC_DESC(kUdpBridgeDoc) UdpBridge {
                              MsgId::SimStartAck, MsgId::SimRunDone, MsgId::PidConfigStatus>;
   using Publishes = MsgList<MsgId::PhysicsTick, MsgId::ExternalJoystickCommand,
                             MsgId::ImuRawData, MsgId::SimStartRun, MsgId::SimStopRun,
-                            MsgId::PidConfigOverride>;
+                            MsgId::PidConfigOverride,
+                            MsgId::PitchAuthorityDiagnosticCommand>;
 
   static constexpr uint16_t kDefaultPort = 9000;
 

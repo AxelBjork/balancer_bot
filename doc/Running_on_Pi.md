@@ -319,8 +319,8 @@ Notes:
 - it still loads `pid.conf` from the current working directory
 - `UdpBridge` is the production external runtime boundary and listens on port `9000`
 - the dashboard’s UDP registration is required before outbound telemetry has a peer
-- deployment, start, and abort actions use SSH; the dashboard does not currently send control
-  commands over UDP
+- deployment, start, and abort actions use SSH; PID overrides and external joystick commands use
+  UDP, while telemetry is received over UDP
 
 ### Where telemetry is recorded
 

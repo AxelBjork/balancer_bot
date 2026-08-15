@@ -44,6 +44,9 @@ constexpr std::size_t kTailWindowSamples = static_cast<std::size_t>(2.0 / kTickD
 
 constexpr uint8_t kPhysicsSimplified = 0;
 constexpr uint8_t kPhysicsRealistic = 1;
+constexpr uint8_t kPhysicsActuatorStress = 2;
+constexpr uint8_t kPhysicsIdealForce = 3;
+constexpr uint8_t kPhysicsSimpleForce = 4;
 
 constexpr uint8_t kAckAccepted = 0;
 constexpr uint8_t kAckBusy = 1;
@@ -75,6 +78,15 @@ PhysicsProfile parse_profile(uint8_t raw) {
   }
   if (raw == kPhysicsRealistic) {
     return PhysicsProfile::Realistic;
+  }
+  if (raw == kPhysicsActuatorStress) {
+    return PhysicsProfile::ActuatorStress;
+  }
+  if (raw == kPhysicsIdealForce) {
+    return PhysicsProfile::IdealForce;
+  }
+  if (raw == kPhysicsSimpleForce) {
+    return PhysicsProfile::SimpleForce;
   }
   throw std::runtime_error("invalid physics profile");
 }
@@ -405,11 +417,18 @@ class SimulatorService {
       scenario.physics_profile = profile;
       scenario.duration_s = request.duration_s;
       scenario.initial_pitch_deg = request.initial_pitch_deg;
+      scenario.initial_pitch_rate_dps = request.initial_pitch_rate_dps;
+      scenario.initial_velocity_mps = request.initial_velocity_mps;
       scenario.com_angle_offset_rad = request.com_angle_offset_rad;
       scenario.total_mass_scale = request.total_mass_scale;
       scenario.pitch_inertia_scale = request.pitch_inertia_scale;
+      // The low-frequency mass variation is a correlated mechanical case:
+      // total mass and first mass moment change together so the COM height is
+      // not accidentally moved by a request that only intended to vary mass.
+      scenario.first_mass_moment_scale = request.total_mass_scale;
       if (request.has_physics_override != 0) {
         SimulatorPhysics physics = BalancerSimulator::physics_for_profile(profile);
+        if (request.motor_max_force_n > 0.0) physics.max_force_n = request.motor_max_force_n;
         physics.no_load_speed_mps = request.motor_no_load_speed_mps;
         physics.motor_velocity_damping = request.motor_velocity_damping;
         physics.motor_tau_s = request.motor_tau_s;
@@ -430,6 +449,11 @@ class SimulatorService {
       scenario.imu_sample_loss_rate = request.imu_sample_loss_rate;
       scenario.accel_bias_mps2 = request.accel_bias_mps2;
       scenario.gyro_bias_rad_s = request.gyro_bias_rad_s;
+      scenario.velocity_estimator_bias_mps = request.velocity_estimator_bias_mps;
+      scenario.velocity_estimator_bias_drift_mps_per_s =
+          request.velocity_estimator_bias_drift_mps_per_s;
+      scenario.velocity_estimator_scale = request.velocity_estimator_scale;
+      scenario.velocity_estimator_latency_s = request.velocity_estimator_latency_s;
       for (std::size_t i = 0; i < request.disturbances.size(); ++i) {
         const auto& wire = request.disturbances[i];
         SimulatorDisturbanceKind kind = SimulatorDisturbanceKind::Step;
@@ -456,6 +480,19 @@ class SimulatorService {
             .turn_end = wire.turn_end,
         });
       }
+      for (const auto& wire : request.pitch_authority_segments) {
+        if (wire.duration_s <= 0.0) continue;
+        scenario.pitch_authority_segments.push_back(SimulatorPitchAuthoritySegment{
+            .start_s = wire.start_s,
+            .duration_s = wire.duration_s,
+            .target_deg = wire.target_deg,
+            .com_trim_deg = wire.com_trim_deg,
+        });
+      }
+      scenario.pitch_authority_refresh_dropout_start_s =
+          request.pitch_authority_refresh_dropout_start_s;
+      scenario.pitch_authority_refresh_dropout_duration_s =
+          request.pitch_authority_refresh_dropout_duration_s;
     }
 
     run_.emplace(request.run_id, pid_path, std::move(scenario), transfer_validation);
@@ -557,16 +594,68 @@ class SimulatorService {
     system.turn_sps = static_cast<float>(row.turn_sps);
     system.nominal_acceleration_mps2 = static_cast<float>(row.nominal_acceleration_mps2);
     system.raw_completed_velocity_sps = static_cast<float>(row.raw_completed_velocity_sps);
+    system.completed_step_acceleration_sps2 =
+        static_cast<float>(row.completed_step_acceleration_sps2);
     system.corrected_axle_velocity_sps = static_cast<float>(row.corrected_axle_velocity_sps);
+    system.velocity_control_sps = static_cast<float>(row.velocity_control_sps);
     system.velocity_damping_acceleration_mps2 =
         static_cast<float>(row.velocity_damping_acceleration_mps2);
     system.com_trim_deg = static_cast<float>(row.com_trim_deg);
     system.pitch_error_deg = static_cast<float>(row.pitch_error_deg);
     system.pitch_sp_deg = static_cast<float>(row.pitch_sp_deg);
-    system.rate_setpoint_dps = static_cast<float>(row.rate_setpoint_dps);
-    system.rate_error_dps = static_cast<float>(row.rate_error_dps);
+    system.pitch_feedback_sps = static_cast<float>(row.pitch_feedback_sps);
+    system.pitch_rate_feedback_sps = static_cast<float>(row.pitch_rate_feedback_sps);
+    system.pitch_accel_feedback_sps = static_cast<float>(row.pitch_accel_feedback_sps);
+    system.velocity_pitch_target_deg = static_cast<float>(row.velocity_pitch_target_deg);
+    system.balance_unclamped_sps = static_cast<float>(row.balance_unclamped_sps);
+    system.active_pitch_gain_sps_per_rad = static_cast<float>(row.active_pitch_gain_sps_per_rad);
+    system.active_pitch_rate_gain_sps_per_rad_s =
+        static_cast<float>(row.active_pitch_rate_gain_sps_per_rad_s);
+    system.active_pitch_accel_gain_sps_per_rad_s2 =
+        static_cast<float>(row.active_pitch_accel_gain_sps_per_rad_s2);
+    system.active_velocity_pitch_gain_rad_per_sps =
+        static_cast<float>(row.active_velocity_pitch_gain_rad_per_sps);
+    system.active_velocity_control_cutoff_hz =
+        static_cast<float>(row.active_velocity_control_cutoff_hz);
+    system.active_velocity_observer_cutoff_hz =
+        static_cast<float>(row.active_velocity_observer_cutoff_hz);
+    system.active_com_trim_gain_deg_per_sps_s =
+        static_cast<float>(row.active_com_trim_gain_deg_per_sps_s);
+    system.active_com_trim_limit_deg = static_cast<float>(row.active_com_trim_limit_deg);
+    system.active_velocity_pitch_limit_deg =
+        static_cast<float>(row.active_velocity_pitch_limit_deg);
+    system.active_accel_lpf_hz = static_cast<float>(row.active_accel_lpf_hz);
+    system.active_gyro_lpf_hz = static_cast<float>(row.active_gyro_lpf_hz);
+    system.active_gyro_derivative_lpf_hz = static_cast<float>(row.active_gyro_derivative_lpf_hz);
+    system.active_config_generation = row.active_config_generation;
+    system.velocity_pitch_request_unclamped_deg =
+        static_cast<float>(row.velocity_pitch_request_unclamped_deg);
+    system.velocity_pitch_request_limited_deg =
+        static_cast<float>(row.velocity_pitch_request_limited_deg);
+    system.pitch_target_unclamped_deg = static_cast<float>(row.pitch_target_unclamped_deg);
+    system.trim_quiet_rate_rms_dps = static_cast<float>(row.trim_quiet_rate_rms_dps);
+    system.velocity_authority_limited = row.velocity_authority_limited > 0.5;
+    system.trim_trusted = row.trim_trusted > 0.5;
+    system.trim_learning_allowed = row.trim_learning_allowed > 0.5;
+    system.pitch_target_limit_reason = static_cast<uint8_t>(row.pitch_target_limit_reason);
+    system.pitch_authority_diagnostic_active =
+        row.pitch_authority_diagnostic_active > 0.5;
+    system.pitch_authority_diagnostic_target_deg =
+        static_cast<float>(row.pitch_authority_diagnostic_target_deg);
+    system.pitch_authority_diagnostic_com_trim_deg =
+        static_cast<float>(row.pitch_authority_diagnostic_com_trim_deg);
+    system.pitch_authority_diagnostic_remaining_s =
+        static_cast<float>(row.pitch_authority_diagnostic_remaining_s);
+    system.pitch_authority_diagnostic_request_id =
+        static_cast<uint32_t>(row.pitch_authority_diagnostic_request_id);
+    system.pitch_authority_diagnostic_command_age_ms =
+        static_cast<float>(row.pitch_authority_diagnostic_command_age_ms);
     system.command_saturated = row.command_saturated != 0.0;
     system.actuator_fault = row.actuator_fault != 0.0;
+    system.trim_learning_enabled = row.trim_learning_enabled != 0.0 ? 1u : 0u;
+    system.trim_learning_block_reason =
+        static_cast<uint8_t>(row.trim_learning_block_reason);
+    system.trim_learning_reserved = 0u;
     system.left_target_sps = static_cast<float>(row.left_sps);
     system.right_target_sps = static_cast<float>(row.right_sps);
     system.left_slewed_sps = static_cast<float>(row.left_slewed_sps);
@@ -707,6 +796,9 @@ void print_transfer_catalog_json() {
         BalancerSimulator::physics_for_profile(scenario.physics_profile));
     if (index != 0) std::cout << ',';
     std::cout << "{\"name\":\"" << scenario.name << "\""
+              << ",\"physics_profile\":\"" << BalancerSimulator::profile_name(
+                     scenario.physics_profile)
+              << "\""
               << ",\"duration_s\":" << scenario.duration_s
               << ",\"initial_pitch_deg\":" << scenario.initial_pitch_deg
               << ",\"com_angle_offset_rad\":" << scenario.com_angle_offset_rad

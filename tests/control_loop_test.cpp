@@ -20,6 +20,16 @@
 
 namespace {
 
+class ConfigPidTestEnvironment final : public ::testing::Environment {
+ public:
+  void SetUp() override {
+    ConfigPid::load(std::string(BALANCER_REPO_ROOT) + "/pid.conf");
+  }
+};
+
+::testing::Environment* const kConfigPidTestEnvironment =
+    ::testing::AddGlobalTestEnvironment(new ConfigPidTestEnvironment());
+
 std::array<double, 3> accel_for_pitch(double angle_rad) {
   return {
       -9.81 * std::sin(angle_rad),
@@ -86,6 +96,12 @@ class RateControllerHarness {
     core_.setJoystick(JoyCmd{static_cast<float>(forward), static_cast<float>(turn)});
   }
 
+  bool setPitchAuthorityDiagnostic(bool active, double target_deg, double com_trim_deg,
+                                   double duration_s, uint32_t request_id = 0) {
+    return core_.setPitchAuthorityDiagnostic(active, target_deg, com_trim_deg, duration_s,
+                                             request_id);
+  }
+
   void setImu(double angle_rad, double gyro_rad_s, uint64_t sim_time_us,
               double pitch_accel_rad_s2 = 0.0) {
     ImuSample s{};
@@ -149,21 +165,7 @@ class ControlServiceHarness {
   void sendPidOverride(uint32_t request_id, const ConfigPidValues& values) {
     ipc::PidConfigOverridePayload payload{};
     payload.request_id = request_id;
-    payload.values = {values.rate_P,
-                      values.rate_I,
-                      values.rate_D,
-                      values.rate_I_lim,
-                      values.rate_FF,
-                      values.drive_max_acceleration_mps2,
-                      values.velocity_damping_per_s,
-                      values.velocity_I,
-                      values.velocity_I_limit_deg,
-                      values.angle_P,
-                      values.angle_D,
-                      values.pitch_rate_max_sps,
-                      values.drive_max_sps,
-                      values.turn_max_sps,
-                      values.balance_max_sps};
+    payload.values = values;
     control_.on_message<MsgId::PidConfigOverride>(payload);
   }
 
@@ -361,39 +363,11 @@ class ServiceBusHarness {
 };
 
 struct ConfigPidSnapshot {
-  double rate_P = ConfigPid::rate_P;
-  double rate_I = ConfigPid::rate_I;
-  double rate_D = ConfigPid::rate_D;
-  double rate_I_lim = ConfigPid::rate_I_lim;
-  double rate_FF = ConfigPid::rate_FF;
-  double drive_max_acceleration_mps2 = ConfigPid::drive_max_acceleration_mps2;
-  double velocity_damping_per_s = ConfigPid::velocity_damping_per_s;
-  double velocity_I = ConfigPid::velocity_I;
-  double velocity_I_limit_deg = ConfigPid::velocity_I_limit_deg;
-  double angle_P = ConfigPid::angle_P;
-  double angle_D = ConfigPid::angle_D;
-  double pitch_rate_max_sps = ConfigPid::pitch_rate_max_sps;
-  double drive_max_sps = ConfigPid::drive_max_sps;
-  double turn_max_sps = ConfigPid::turn_max_sps;
-  double balance_max_sps = ConfigPid::balance_max_sps;
+  ConfigPidValues values = ConfigPid::values;
   bool controller_enabled = ConfigPid::controller_enabled;
 
   void restore() const {
-    ConfigPid::rate_P = rate_P;
-    ConfigPid::rate_I = rate_I;
-    ConfigPid::rate_D = rate_D;
-    ConfigPid::rate_I_lim = rate_I_lim;
-    ConfigPid::rate_FF = rate_FF;
-    ConfigPid::drive_max_acceleration_mps2 = drive_max_acceleration_mps2;
-    ConfigPid::velocity_damping_per_s = velocity_damping_per_s;
-    ConfigPid::velocity_I = velocity_I;
-    ConfigPid::velocity_I_limit_deg = velocity_I_limit_deg;
-    ConfigPid::angle_P = angle_P;
-    ConfigPid::angle_D = angle_D;
-    ConfigPid::pitch_rate_max_sps = pitch_rate_max_sps;
-    ConfigPid::drive_max_sps = drive_max_sps;
-    ConfigPid::turn_max_sps = turn_max_sps;
-    ConfigPid::balance_max_sps = balance_max_sps;
+    ConfigPid::values = values;
     ConfigPid::controller_enabled = controller_enabled;
   }
 };
@@ -406,21 +380,21 @@ struct ScopedConfigPidRestore {
 };
 
 void set_zeroed_gain_audit_config() {
-  ConfigPid::rate_P = 0.0;
-  ConfigPid::rate_I = 0.0;
-  ConfigPid::rate_D = 0.0;
-  ConfigPid::rate_I_lim = 1.0;
-  ConfigPid::rate_FF = 0.0;
-  ConfigPid::drive_max_acceleration_mps2 = 0.0;
-  ConfigPid::velocity_damping_per_s = 0.0;
-  ConfigPid::velocity_I = 0.0;
-  ConfigPid::velocity_I_limit_deg = 4.0;
-  ConfigPid::angle_P = 0.0;
-  ConfigPid::angle_D = 0.0;
-  ConfigPid::pitch_rate_max_sps = 2000.0;
-  ConfigPid::drive_max_sps = 1000.0;
-  ConfigPid::turn_max_sps = 1000.0;
-  ConfigPid::balance_max_sps = 12000.0;
+  ConfigPid::values = ConfigPidValues{
+      .drive_max_acceleration_mps2 = 0.0,
+      .velocity_damping_per_s = 0.0,
+      .velocity_pitch_limit_deg = 4.0,
+      .velocity_I = 0.0,
+      .velocity_I_limit_deg = 4.0,
+      .drive_max_sps = 1000.0,
+      .turn_max_sps = 1000.0,
+      .balance_max_sps = 12000.0,
+      .pitch_gain = 0.0,
+      .pitch_rate_gain = 0.0,
+      .pitch_accel_gain = 0.0,
+      .velocity_control_cutoff_hz = 10.0,
+  };
+  ConfigPid::controller_enabled = true;
 }
 
 struct ControllerSineFit {
@@ -466,68 +440,73 @@ double run_fresh_core_once(double angle_rad, double gyro_rad_s, double velocity_
 std::filesystem::path write_temp_pid_config(std::string contents) {
   const auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
   const auto path = std::filesystem::temp_directory_path() /
-                    ("balancer_pid_v6_" + std::to_string(suffix) + ".conf");
+                    ("balancer_pid_v10_" + std::to_string(suffix) + ".conf");
   std::ofstream output(path);
   output << contents;
   output.close();
   return path;
 }
 
-const char* valid_pid_v6_config() {
-  return R"(config_version = 6
-rate_P = 0.25
-rate_I = 0
-rate_D = 0
-rate_I_lim = 0.15
-rate_FF = 0
+const char* valid_pid_v10_config() {
+  return R"(config_version = 10
+pitch_gain = 9600
+pitch_rate_gain = 1000
+pitch_accel_gain = 0
 drive_max_acceleration_mps2 = 1.5
 velocity_damping_per_s = 2
+velocity_pitch_limit_deg = 4
 velocity_I = 0.001
 velocity_I_limit_deg = 4
-angle_P = 12
-angle_D = 0.25
-pitch_rate_max_sps = 2000
+velocity_control_cutoff_hz = 3
 drive_max_sps = 1200
 turn_max_sps = 1600
 balance_max_sps = 12000
 )";
 }
 
-TEST(ConfigPidV6Test, LoadsCompleteStrictSchema) {
+TEST(ConfigPidV10Test, LoadsCompleteStrictSchema) {
   ScopedConfigPidRestore restore;
-  const auto path = write_temp_pid_config(valid_pid_v6_config());
+  const auto path = write_temp_pid_config(valid_pid_v10_config());
   EXPECT_NO_THROW(ConfigPid::load(path.string()));
-  EXPECT_DOUBLE_EQ(ConfigPid::drive_max_acceleration_mps2, 1.5);
-  EXPECT_DOUBLE_EQ(ConfigPid::pitch_rate_max_sps, 2000.0);
-  EXPECT_DOUBLE_EQ(ConfigPid::balance_max_sps, 12000.0);
+  EXPECT_DOUBLE_EQ(ConfigPid::values.drive_max_acceleration_mps2, 1.5);
+  EXPECT_DOUBLE_EQ(ConfigPid::values.balance_max_sps, 12000.0);
   EXPECT_TRUE(ConfigPid::controller_enabled);
   std::filesystem::remove(path);
 }
 
-TEST(ConfigPidV6Test, OptionalControllerEnabledDisablesActuationMode) {
+TEST(ConfigPidV10Test, LoadsCheckedInConfigAsAuthoritativeDefault) {
   ScopedConfigPidRestore restore;
-  const auto path = write_temp_pid_config(std::string(valid_pid_v6_config()) + "controller_enabled = 0\n");
+  ASSERT_NO_THROW(ConfigPid::load(std::string(BALANCER_REPO_ROOT) + "/pid.conf"));
+  EXPECT_DOUBLE_EQ(ConfigPid::values.pitch_gain, 6000.0);
+  EXPECT_DOUBLE_EQ(ConfigPid::values.pitch_rate_gain, 350.0);
+  EXPECT_DOUBLE_EQ(ConfigPid::values.pitch_accel_gain, 0.0);
+  EXPECT_DOUBLE_EQ(ConfigPid::values.velocity_control_cutoff_hz, 3.0);
+  EXPECT_DOUBLE_EQ(ConfigPid::values.velocity_damping_per_s, 8.0);
+  EXPECT_DOUBLE_EQ(ConfigPid::values.velocity_pitch_limit_deg, 4.0);
+  EXPECT_DOUBLE_EQ(ConfigPid::values.velocity_I, 0.001);
+  EXPECT_TRUE(ConfigPid::controller_enabled);
+}
+
+TEST(ConfigPidV10Test, OptionalControllerEnabledDisablesActuationMode) {
+  ScopedConfigPidRestore restore;
+  const auto path = write_temp_pid_config(std::string(valid_pid_v10_config()) + "controller_enabled = 0\n");
   ASSERT_NO_THROW(ConfigPid::load(path.string()));
   EXPECT_FALSE(ConfigPid::controller_enabled);
   std::filesystem::remove(path);
 }
 
-TEST(ConfigPidV6Test, RejectsUnknownDuplicateMissingNonFiniteAndInvalidValues) {
+TEST(ConfigPidV10Test, RejectsUnknownDuplicateMissingNonFiniteAndInvalidValues) {
   const std::vector<std::string> invalid = {
-      std::string(valid_pid_v6_config()) + "legacy_gain = 1\n",
-      std::string(valid_pid_v6_config()) + "rate_P = 1\n",
-      std::string(valid_pid_v6_config()) + "output_scale_sps = 3200\n",
-      "config_version = 6\n",
-      std::string(valid_pid_v6_config())
-          .replace(std::string(valid_pid_v6_config()).find("rate_P = 0.25"), 13, "rate_P = nan"),
-      std::string(valid_pid_v6_config())
-          .replace(std::string(valid_pid_v6_config()).find("pitch_rate_max_sps = 2000"), 25,
-                   "pitch_rate_max_sps = 0"),
-      std::string(valid_pid_v6_config())
-          .replace(std::string(valid_pid_v6_config()).find("pitch_rate_max_sps = 2000"), 25,
-                   "pitch_rate_max_sps = -1"),
-      std::string(valid_pid_v6_config()) + "pitch_max_deg = 10\n",
-      std::string(valid_pid_v6_config()).replace(0, 18, "config_version = 5"),
+      std::string(valid_pid_v10_config()) + "legacy_gain = 1\n",
+      std::string(valid_pid_v10_config()) + "rate_P = 1\n",
+      std::string(valid_pid_v10_config()) + "output_scale_sps = 3200\n",
+      "config_version = 9\n",
+      std::string(valid_pid_v10_config())
+          .replace(std::string(valid_pid_v10_config()).find("pitch_gain = 9600"), 19,
+                   "pitch_gain = nan"),
+      std::string(valid_pid_v10_config()) + "pitch_max_deg = 10\n",
+      std::string(valid_pid_v10_config()).replace(0, std::string("config_version = 10").size(),
+                                                 "config_version = 6"),
   };
   for (const auto& contents : invalid) {
     const auto path = write_temp_pid_config(contents);
@@ -536,69 +515,78 @@ TEST(ConfigPidV6Test, RejectsUnknownDuplicateMissingNonFiniteAndInvalidValues) {
   }
 }
 
-TEST(ConfigPidV6Test, RejectsOldVersionBeforeNewSchemaKey) {
+TEST(ConfigPidV10Test, RejectsOldVersionBeforeNewSchemaKey) {
   const auto path = write_temp_pid_config(
-      std::string(valid_pid_v6_config()).replace(0, 18, "config_version = 2") +
+      std::string(valid_pid_v10_config()).replace(0, std::string("config_version = 10").size(),
+                                                 "config_version = 2") +
       "future_only_key = 1\n");
   try {
     ConfigPid::load(path.string());
     FAIL() << "Expected config version mismatch";
   } catch (const std::runtime_error& error) {
-    EXPECT_STREQ(error.what(), "PID configuration version mismatch: expected 6, got 2");
+    EXPECT_STREQ(error.what(), "PID configuration version mismatch: expected 10, got 2");
   }
   std::filesystem::remove(path);
 }
 
-TEST(ConfigPidV6Test, SaveEmitsNewRateLimitAndNoOutputScale) {
+TEST(ConfigPidV10Test, SaveEmitsExplicitControllerFieldsAndNoOutputScale) {
   ScopedConfigPidRestore restore;
-  ConfigPid::pitch_rate_max_sps = 1750.0;
   const auto path = write_temp_pid_config("");
   ASSERT_NO_THROW(ConfigPid::save(path.string()));
 
   std::ifstream input(path);
   const std::string contents((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
-  EXPECT_NE(contents.find("config_version       = 6"), std::string::npos);
-  EXPECT_NE(contents.find("pitch_rate_max_sps   = 1750"), std::string::npos);
+  EXPECT_NE(contents.find("config_version       = 10"), std::string::npos);
+  const size_t attitude_section = contents.find("# --- Explicit attitude state feedback ---");
+  const size_t pitch_gain = contents.find("pitch_gain");
+  const size_t velocity_section = contents.find("# --- Acceleration / velocity control");
+  EXPECT_NE(attitude_section, std::string::npos);
+  EXPECT_NE(pitch_gain, std::string::npos);
+  EXPECT_LT(attitude_section, pitch_gain);
+  EXPECT_LT(pitch_gain, velocity_section);
+  EXPECT_EQ(contents.find("pitch_rate_max_sps"), std::string::npos);
   EXPECT_EQ(contents.find("output_scale_sps"), std::string::npos);
   std::filesystem::remove(path);
 }
 
-TEST(ConfigPidV6Test, RuntimeNumericSnapshotValidatesAndAppliesAtomically) {
+TEST(ConfigPidV10Test, RuntimeNumericSnapshotValidatesAndAppliesAtomically) {
   ScopedConfigPidRestore restore;
+  ASSERT_NO_THROW(ConfigPid::load(std::string(BALANCER_REPO_ROOT) + "/pid.conf"));
   const ConfigPidValues original = ConfigPid::numeric_values();
   ConfigPidValues updated = original;
-  updated.rate_P = 0.42;
+  updated.pitch_gain = 4200.0;
   updated.drive_max_acceleration_mps2 = 2.25;
   updated.balance_max_sps = 9000.0;
 
   EXPECT_EQ(ConfigPid::validate_numeric(updated), ConfigPidValidationCode::Accepted);
   ASSERT_NO_THROW(ConfigPid::apply_numeric(updated));
-  EXPECT_DOUBLE_EQ(ConfigPid::rate_P, 0.42);
-  EXPECT_DOUBLE_EQ(ConfigPid::drive_max_acceleration_mps2, 2.25);
-  EXPECT_DOUBLE_EQ(ConfigPid::balance_max_sps, 9000.0);
+  EXPECT_DOUBLE_EQ(ConfigPid::values.pitch_gain, 4200.0);
+  EXPECT_DOUBLE_EQ(ConfigPid::values.drive_max_acceleration_mps2, 2.25);
+  EXPECT_DOUBLE_EQ(ConfigPid::values.balance_max_sps, 9000.0);
 
   const ConfigPidValues before_invalid = ConfigPid::numeric_values();
   ConfigPidValues invalid = updated;
-  invalid.rate_I = -0.1;
+  invalid.velocity_I = -0.1;
   EXPECT_EQ(ConfigPid::validate_numeric(invalid), ConfigPidValidationCode::Negative);
   EXPECT_THROW(ConfigPid::apply_numeric(invalid), std::invalid_argument);
   const ConfigPidValues after_invalid = ConfigPid::numeric_values();
-  EXPECT_DOUBLE_EQ(after_invalid.rate_P, before_invalid.rate_P);
-  EXPECT_DOUBLE_EQ(after_invalid.rate_I, before_invalid.rate_I);
+  EXPECT_DOUBLE_EQ(after_invalid.pitch_gain, before_invalid.pitch_gain);
+  EXPECT_DOUBLE_EQ(after_invalid.velocity_I, before_invalid.velocity_I);
   EXPECT_DOUBLE_EQ(after_invalid.balance_max_sps, before_invalid.balance_max_sps);
 }
 
 TEST(ControlServicePidConfigTest, PublishesStatusAndRejectsAtomically) {
   ScopedConfigPidRestore restore;
+  ASSERT_NO_THROW(ConfigPid::load(std::string(BALANCER_REPO_ROOT) + "/pid.conf"));
   ControlServiceHarness harness;
   ConfigPidValues updated = ConfigPid::numeric_values();
-  updated.rate_P = 0.37;
+  updated.pitch_rate_gain = 370.0;
   harness.sendPidOverride(17, updated);
 
   ASSERT_EQ(harness.pid_status().size(), 1u);
   EXPECT_EQ(harness.pid_status().back().request_id, 17u);
   EXPECT_EQ(harness.pid_status().back().accepted, 1u);
-  EXPECT_DOUBLE_EQ(ConfigPid::rate_P, 0.37);
+  EXPECT_DOUBLE_EQ(ConfigPid::values.pitch_rate_gain, 370.0);
 
   ConfigPidValues invalid = updated;
   invalid.turn_max_sps = 12001.0;
@@ -608,14 +596,14 @@ TEST(ControlServicePidConfigTest, PublishesStatusAndRejectsAtomically) {
   EXPECT_EQ(harness.pid_status().back().accepted, 0u);
   EXPECT_EQ(harness.pid_status().back().result_code,
             static_cast<uint8_t>(ConfigPidValidationCode::OutOfRange));
-  EXPECT_DOUBLE_EQ(ConfigPid::rate_P, 0.37);
+  EXPECT_DOUBLE_EQ(ConfigPid::values.pitch_rate_gain, 370.0);
 }
 
 TEST(RateControllerCoreTest, RuntimePidGenerationRefreshesAndClampsTrim) {
   ScopedConfigPidRestore restore;
   set_zeroed_gain_audit_config();
-  ConfigPid::velocity_I = 0.01;
-  ConfigPid::velocity_I_limit_deg = 4.0;
+  ConfigPid::values.velocity_I = 0.01;
+  ConfigPid::values.velocity_I_limit_deg = 4.0;
 
   RateControllerHarness harness;
   harness.setJoystick(0.0, 0.0);
@@ -684,18 +672,17 @@ TEST(RateControllerCoreTest, MissingImuPublishesSafeTelemetryAndZeroCommand) {
   EXPECT_EQ(h.telemetry().back().controller_saturation_flags, ControllerSaturationNone);
 }
 
-TEST(RateControllerCoreGainAuditTest, RatePIsConnectedAndScalesOutput) {
+TEST(RateControllerCoreGainAuditTest, PitchGainIsConnectedAndScalesOutput) {
   ScopedConfigPidRestore restore;
   set_zeroed_gain_audit_config();
-  ConfigPid::angle_P = 10.0;
 
-  ConfigPid::rate_P = 0.0;
+  ConfigPid::values.pitch_gain = 0.0;
   const double no_p = run_fresh_core_once(1.0 * M_PI / 180.0, 0.0);
 
-  ConfigPid::rate_P = 0.2;
+  ConfigPid::values.pitch_gain = 1000.0;
   const double low_p = run_fresh_core_once(1.0 * M_PI / 180.0, 0.0);
 
-  ConfigPid::rate_P = 0.4;
+  ConfigPid::values.pitch_gain = 2000.0;
   const double high_p = run_fresh_core_once(1.0 * M_PI / 180.0, 0.0);
 
   EXPECT_NEAR(no_p, 0.0, 1e-6);
@@ -703,27 +690,21 @@ TEST(RateControllerCoreGainAuditTest, RatePIsConnectedAndScalesOutput) {
   EXPECT_NEAR(high_p, 2.0 * low_p, std::abs(low_p) * 0.05);
 }
 
-TEST(RateControllerCoreGainAuditTest, RateIIsConnectedAndAccumulatesAcrossSteps) {
+TEST(RateControllerCoreGainAuditTest, PitchRateGainIsConnectedAndScalesDamping) {
   ScopedConfigPidRestore restore;
   set_zeroed_gain_audit_config();
-  ConfigPid::rate_I = 0.5;
-  ConfigPid::rate_I_lim = 0.2;
-  ConfigPid::angle_P = 10.0;
-
-  RateControllerHarness h;
-  h.setJoystick(0.0, 0.0);
-  h.run_steps(1, 1.0 / 400.0, 1.0 * M_PI / 180.0, 0.0);
-  const double first_output = h.runner().lastLeft();
-  h.run_steps(80, 1.0 / 400.0, 1.0 * M_PI / 180.0, 0.0);
-
-  EXPECT_NEAR(first_output, 0.0, 1e-6);
-  EXPECT_GT(h.runner().lastLeft(), 0.0);
+  ConfigPid::values.pitch_rate_gain = 100.0;
+  const double low_damping = run_fresh_core_once(0.0, 0.2);
+  ConfigPid::values.pitch_rate_gain = 200.0;
+  const double high_damping = run_fresh_core_once(0.0, 0.2);
+  EXPECT_GT(low_damping, 0.0);
+  EXPECT_NEAR(high_damping, 2.0 * low_damping, std::abs(low_damping) * 0.05);
 }
 
-TEST(RateControllerCoreGainAuditTest, RateDConsumesImuPitchAcceleration) {
+TEST(RateControllerCoreGainAuditTest, PitchAccelerationGainConsumesImuPitchAcceleration) {
   ScopedConfigPidRestore restore;
   set_zeroed_gain_audit_config();
-  ConfigPid::rate_D = 0.01;
+  ConfigPid::values.pitch_accel_gain = 4.0;
 
   RateControllerHarness h;
   h.setJoystick(0.0, 0.0);
@@ -734,50 +715,50 @@ TEST(RateControllerCoreGainAuditTest, RateDConsumesImuPitchAcceleration) {
   EXPECT_NEAR(h.runner().lastLeft(), h.runner().lastRight(), 1e-6);
 }
 
-TEST(RateControllerCoreTest, PitchRateSetpointIsLimitedBeforeRateController) {
+TEST(RateControllerCoreStateFeedbackTest, IndependentTermsUseRobotForwardPolarity) {
   ScopedConfigPidRestore restore;
   set_zeroed_gain_audit_config();
-  ConfigPid::rate_P = 0.25;
-  ConfigPid::angle_P = 100.0;
-  ConfigPid::pitch_rate_max_sps = 1500.0;
+  ConfigPid::values.pitch_gain = 1000.0;
+  ConfigPid::values.pitch_rate_gain = 200.0;
+  ConfigPid::values.pitch_accel_gain = 4.0;
 
   RateControllerHarness h;
   h.setJoystick(0.0, 0.0);
-  h.setImu(-10.0 * M_PI / 180.0, 0.0, 2500);
+  h.setImu(0.10, 0.20, 2500, 0.30);
   h.tick(1.0 / 400.0, 2500);
 
   ASSERT_FALSE(h.telemetry().empty());
-  EXPECT_NEAR(h.telemetry().back().rate_sp_dps,
-              ConfigPid::pitch_rate_max_sps * 360.0 / Config::steps_per_rev, 1e-6);
-  EXPECT_NE(h.telemetry().back().controller_saturation_flags & ControllerSaturationRate, 0u);
-  EXPECT_NEAR(h.runner().lastLeft(), -0.25 * ConfigPid::pitch_rate_max_sps * 2.0 * M_PI,
-              1e-3);
-  EXPECT_NEAR(h.runner().lastRight(), h.runner().lastLeft(), 1e-6);
+  const auto& t = h.telemetry().back();
+  EXPECT_NEAR(t.pitch_feedback_sps, 100.0, 1e-9);
+  EXPECT_NEAR(t.pitch_rate_feedback_sps, 40.0, 1e-9);
+  EXPECT_NEAR(t.pitch_accel_feedback_sps, 1.2, 1e-9);
+  EXPECT_NEAR(t.balance_unclamped_sps, 141.2, 1e-9);
+  EXPECT_NEAR(t.u_sps, 141.2, 1e-9);
+  EXPECT_NEAR(h.runner().lastLeft(), h.runner().lastRight(), 1e-9);
+  EXPECT_NEAR(h.runner().lastLeft(), 141.2, 1e-9);
+  EXPECT_DOUBLE_EQ(t.active_pitch_gain_sps_per_rad, 1000.0);
+  EXPECT_DOUBLE_EQ(t.active_pitch_rate_gain_sps_per_rad_s, 200.0);
+  EXPECT_DOUBLE_EQ(t.active_pitch_accel_gain_sps_per_rad_s2, 4.0);
 }
 
-TEST(RateControllerCoreTest, PitchRateSetpointLimitIsSymmetricAtMotorBoundary) {
+TEST(RateControllerCoreStateFeedbackTest, StateFeedbackDoesNotDependOnNestedPidProducts) {
   ScopedConfigPidRestore restore;
   set_zeroed_gain_audit_config();
-  ConfigPid::rate_P = 0.25;
-  ConfigPid::angle_P = 100.0;
-  ConfigPid::pitch_rate_max_sps = 1500.0;
+  ConfigPid::values.pitch_gain = 700.0;
+  ConfigPid::values.pitch_rate_gain = 300.0;
 
-  const double positive_rate_output_motor =
-      run_fresh_core_once(-10.0 * M_PI / 180.0, 0.0);
-  const double negative_rate_output_motor =
-      run_fresh_core_once(10.0 * M_PI / 180.0, 0.0);
-
-  EXPECT_LT(positive_rate_output_motor, 0.0);
-  EXPECT_GT(negative_rate_output_motor, 0.0);
-  EXPECT_NEAR(positive_rate_output_motor, -negative_rate_output_motor, 1e-6);
+  const double positive = run_fresh_core_once(0.05, 0.0);
+  const double negative = run_fresh_core_once(-0.05, 0.0);
+  EXPECT_GT(positive, 0.0);
+  EXPECT_LT(negative, 0.0);
+  EXPECT_NEAR(positive, -negative, 1e-9);
 }
 
 TEST(RateControllerCoreTest, BalancePriorityTrimsTurnAtRail) {
   ScopedConfigPidRestore restore;
   set_zeroed_gain_audit_config();
-  ConfigPid::rate_P = 1.0;
-  ConfigPid::angle_P = 100.0;
-  ConfigPid::balance_max_sps = 8000.0;
+  ConfigPid::values.pitch_gain = 100000.0;
+  ConfigPid::values.balance_max_sps = 8000.0;
 
   RateControllerHarness h;
   h.setJoystick(0.0, 0.6);
@@ -785,19 +766,19 @@ TEST(RateControllerCoreTest, BalancePriorityTrimsTurnAtRail) {
   h.tick(1.0 / 400.0, 2500);
 
   ASSERT_FALSE(h.telemetry().empty());
-  EXPECT_LE(std::abs(h.runner().lastLeft()), ConfigPid::balance_max_sps);
-  EXPECT_LE(std::abs(h.runner().lastRight()), ConfigPid::balance_max_sps);
-  EXPECT_NEAR(h.telemetry().back().u_sps, ConfigPid::balance_max_sps, 1e-6);
+  EXPECT_LE(std::abs(h.runner().lastLeft()), ConfigPid::values.balance_max_sps);
+  EXPECT_LE(std::abs(h.runner().lastRight()), ConfigPid::values.balance_max_sps);
+  EXPECT_NEAR(h.telemetry().back().u_sps, ConfigPid::values.balance_max_sps, 1e-6);
   EXPECT_NEAR(h.telemetry().back().turn_sps, 0.0, 1e-6);
-  EXPECT_NEAR(h.runner().lastLeft(), ConfigPid::balance_max_sps, 1e-6);
-  EXPECT_NEAR(h.runner().lastRight(), ConfigPid::balance_max_sps, 1e-6);
+  EXPECT_NEAR(h.runner().lastLeft(), ConfigPid::values.balance_max_sps, 1e-6);
+  EXPECT_NEAR(h.runner().lastRight(), ConfigPid::values.balance_max_sps, 1e-6);
 }
 
 TEST(RateControllerCoreTest, AccelerationOuterLoopRunsAtOneHundredHertzAndJerkLimitsForwardCommand) {
   ScopedConfigPidRestore restore;
   set_zeroed_gain_audit_config();
-  ConfigPid::drive_max_acceleration_mps2 = 1.5;
-  ConfigPid::velocity_I = 0.001;
+  ConfigPid::values.drive_max_acceleration_mps2 = 1.5;
+  ConfigPid::values.velocity_I = 0.001;
 
   RateControllerHarness h;
   h.setJoystick(1.0, 0.0);
@@ -813,7 +794,7 @@ TEST(RateControllerCoreTest, AccelerationOuterLoopRunsAtOneHundredHertzAndJerkLi
 
   h.run_steps(96, 1.0 / 400.0);
   EXPECT_NEAR(h.telemetry().back().nominal_acceleration_mps2,
-              ConfigPid::drive_max_acceleration_mps2, 1e-9);
+              ConfigPid::values.drive_max_acceleration_mps2, 1e-9);
   EXPECT_NEAR(h.runner().lastLeft(), 0.0, 1e-6);
   EXPECT_NEAR(h.runner().lastRight(), 0.0, 1e-6);
 }
@@ -821,7 +802,7 @@ TEST(RateControllerCoreTest, AccelerationOuterLoopRunsAtOneHundredHertzAndJerkLi
 TEST(RateControllerCoreTest, OuterLoopUsesAccumulatedElapsedTimeUnderTickJitter) {
   ScopedConfigPidRestore restore;
   set_zeroed_gain_audit_config();
-  ConfigPid::drive_max_acceleration_mps2 = 1.5;
+  ConfigPid::values.drive_max_acceleration_mps2 = 1.5;
 
   RateControllerHarness h;
   h.setJoystick(1.0, 0.0);
@@ -843,7 +824,7 @@ TEST(RateControllerCoreTest, OuterLoopUsesAccumulatedElapsedTimeUnderTickJitter)
 TEST(RateControllerCoreTest, NineHertzCompletedStepObserverPhaseRemainsBelowSixtyFiveDegrees) {
   ScopedConfigPidRestore restore;
   set_zeroed_gain_audit_config();
-  ConfigPid::velocity_damping_per_s = 8.0;
+  ConfigPid::values.velocity_damping_per_s = 8.0;
   constexpr double kControlDtS = 1.0 / 400.0;
   constexpr double kOuterDtS = 1.0 / 100.0;
   constexpr double kFrequencyHz = 9.0;
@@ -880,7 +861,7 @@ TEST(RateControllerCoreTest, NineHertzCompletedStepObserverPhaseRemainsBelowSixt
     EXPECT_TRUE(std::isfinite(observed_velocity[index]));
     EXPECT_TRUE(std::isfinite(damping[index]));
     EXPECT_NEAR(damping[index],
-                -ConfigPid::velocity_damping_per_s * Config::meters_per_step *
+                -ConfigPid::values.velocity_damping_per_s * Config::meters_per_step *
                     observed_velocity[index],
                 1e-12);
   }
@@ -894,13 +875,13 @@ TEST(RateControllerCoreTest, NineHertzCompletedStepObserverPhaseRemainsBelowSixt
 TEST(RateControllerCoreTest, AccelerationRequestBrakesThroughZeroBeforeReversing) {
   ScopedConfigPidRestore restore;
   set_zeroed_gain_audit_config();
-  ConfigPid::drive_max_acceleration_mps2 = 1.5;
+  ConfigPid::values.drive_max_acceleration_mps2 = 1.5;
 
   RateControllerHarness h;
   h.setJoystick(1.0, 0.0);
   h.run_steps(200, 1.0 / 400.0);
   ASSERT_NEAR(h.telemetry().back().nominal_acceleration_mps2,
-              ConfigPid::drive_max_acceleration_mps2, 1e-9);
+              ConfigPid::values.drive_max_acceleration_mps2, 1e-9);
 
   h.setJoystick(-1.0, 0.0);
   h.run_steps(96, 1.0 / 400.0);
@@ -912,7 +893,7 @@ TEST(RateControllerCoreTest, AccelerationRequestBrakesThroughZeroBeforeReversing
 TEST(RateControllerCoreTest, PositiveAndNegativeAccelerationRequestsProduceSymmetricPitchReferences) {
   ScopedConfigPidRestore restore;
   set_zeroed_gain_audit_config();
-  ConfigPid::drive_max_acceleration_mps2 = 1.5;
+  ConfigPid::values.drive_max_acceleration_mps2 = 1.5;
 
   const auto run_direction = [](double direction) {
     RateControllerHarness h;
@@ -936,7 +917,7 @@ TEST(RateControllerCoreTest, PositiveAndNegativeAccelerationRequestsProduceSymme
 TEST(RateControllerCoreTest, TargetAccelerationPitchFeedForwardMatchesPlantPolarity) {
   ScopedConfigPidRestore restore;
   set_zeroed_gain_audit_config();
-  ConfigPid::drive_max_acceleration_mps2 = 1.5;
+  ConfigPid::values.drive_max_acceleration_mps2 = 1.5;
 
   const auto run_direction = [](double direction) {
     RateControllerHarness h;
@@ -1025,8 +1006,8 @@ TEST(RateControllerCoreTest, CorrectedVelocityRejectsCompletedStepCounterReset) 
 TEST(RateControllerCoreTest, AccelerationRequestIsJerkLimitedAndVelocityDampingBrakes) {
   ScopedConfigPidRestore restore;
   set_zeroed_gain_audit_config();
-  ConfigPid::drive_max_acceleration_mps2 = 1.5;
-  ConfigPid::velocity_damping_per_s = 2.0;
+  ConfigPid::values.drive_max_acceleration_mps2 = 1.5;
+  ConfigPid::values.velocity_damping_per_s = 2.0;
 
   RateControllerHarness h;
   h.setJoystick(1.0, 0.0);
@@ -1040,15 +1021,15 @@ TEST(RateControllerCoreTest, AccelerationRequestIsJerkLimitedAndVelocityDampingB
 TEST(RateControllerCoreTest, StationaryComTrimOpposesNeutralDriftAndRemainsBounded) {
   ScopedConfigPidRestore restore;
   set_zeroed_gain_audit_config();
-  ConfigPid::velocity_I = 0.01;
-  ConfigPid::velocity_I_limit_deg = 2.0;
+  ConfigPid::values.velocity_I = 0.01;
+  ConfigPid::values.velocity_I_limit_deg = 2.0;
 
   RateControllerHarness h;
   h.setJoystick(0.0, 0.0);
   h.runner().setActualSpeedSps(100.0);
   h.run_steps(800, 1.0 / 400.0);
   ASSERT_LT(h.telemetry().back().vel_i_term_deg, 0.0);
-  EXPECT_GE(h.telemetry().back().vel_i_term_deg, -ConfigPid::velocity_I_limit_deg);
+  EXPECT_GE(h.telemetry().back().vel_i_term_deg, -ConfigPid::values.velocity_I_limit_deg);
 
   const double learned_trim_deg = h.telemetry().back().vel_i_term_deg;
   h.runner().setActualSpeedSps(0.0);
@@ -1056,11 +1037,11 @@ TEST(RateControllerCoreTest, StationaryComTrimOpposesNeutralDriftAndRemainsBound
   EXPECT_NEAR(h.telemetry().back().vel_i_term_deg, learned_trim_deg, 0.01);
 }
 
-TEST(RateControllerCoreTest, StationaryComTrimCorrectsSymmetricNeutralDriftAtAnySpeed) {
+TEST(RateControllerCoreTest, ComTrimPausesDuringLargeNeutralVelocityExcursions) {
   ScopedConfigPidRestore restore;
   set_zeroed_gain_audit_config();
-  ConfigPid::velocity_I = 0.01;
-  ConfigPid::velocity_I_limit_deg = 4.0;
+  ConfigPid::values.velocity_I = 0.01;
+  ConfigPid::values.velocity_I_limit_deg = 4.0;
 
   const auto learn_trim = [](double measured_velocity_sps) {
     RateControllerHarness h;
@@ -1073,18 +1054,15 @@ TEST(RateControllerCoreTest, StationaryComTrimCorrectsSymmetricNeutralDriftAtAny
 
   const double positive_drift_trim = learn_trim(1200.0);
   const double negative_drift_trim = learn_trim(-1200.0);
-  EXPECT_LT(positive_drift_trim, 0.0);
-  EXPECT_GT(negative_drift_trim, 0.0);
-  EXPECT_NEAR(positive_drift_trim, -negative_drift_trim, 1e-6);
-  EXPECT_GE(positive_drift_trim, -ConfigPid::velocity_I_limit_deg);
-  EXPECT_LE(negative_drift_trim, ConfigPid::velocity_I_limit_deg);
+  EXPECT_NEAR(positive_drift_trim, 0.0, 1e-9);
+  EXPECT_NEAR(negative_drift_trim, 0.0, 1e-9);
 }
 
 TEST(RateControllerCoreTest, StationaryComTrimFreezesDuringCommand) {
   ScopedConfigPidRestore restore;
   set_zeroed_gain_audit_config();
-  ConfigPid::velocity_I = 0.01;
-  ConfigPid::velocity_I_limit_deg = 4.0;
+  ConfigPid::values.velocity_I = 0.01;
+  ConfigPid::values.velocity_I_limit_deg = 4.0;
 
   RateControllerHarness h;
   h.setJoystick(0.0, 0.0);
@@ -1102,10 +1080,9 @@ TEST(RateControllerCoreTest, StationaryComTrimFreezesDuringCommand) {
 TEST(RateControllerCoreTest, StationaryComTrimFreezesWhileBalanceSaturated) {
   ScopedConfigPidRestore restore;
   set_zeroed_gain_audit_config();
-  ConfigPid::rate_P = 1.0;
-  ConfigPid::angle_P = 100.0;
-  ConfigPid::velocity_I = 0.01;
-  ConfigPid::balance_max_sps = 100.0;
+  ConfigPid::values.pitch_gain = 100000.0;
+  ConfigPid::values.velocity_I = 0.01;
+  ConfigPid::values.balance_max_sps = 100.0;
 
   RateControllerHarness h;
   h.setJoystick(0.0, 0.0);
@@ -1116,31 +1093,200 @@ TEST(RateControllerCoreTest, StationaryComTrimFreezesWhileBalanceSaturated) {
   EXPECT_NEAR(h.telemetry().back().vel_i_term_deg, 0.0, 1e-9);
 }
 
+TEST(RateControllerCoreTest, CurrentBalanceSaturationBlocksTrimOnSameCycle) {
+  ScopedConfigPidRestore restore;
+  set_zeroed_gain_audit_config();
+  ConfigPid::values.pitch_gain = 100000.0;
+  ConfigPid::values.velocity_I = 0.01;
+  ConfigPid::values.balance_max_sps = 1500.0;
+
+  RateControllerHarness h;
+  h.setJoystick(0.0, 0.0);
+  h.runner().setActualSpeedSps(100.0);
+  h.run_steps(4, 1.0 / 400.0, -10.0 * M_PI / 180.0, 0.0);
+
+  ASSERT_FALSE(h.telemetry().empty());
+  const auto& telemetry = h.telemetry().back();
+  EXPECT_NE(telemetry.controller_saturation_flags & ControllerSaturationBalance, 0u);
+  EXPECT_NEAR(telemetry.com_trim_deg, 0.0, 1e-9);
+  EXPECT_FALSE(telemetry.trim_learning_enabled);
+  EXPECT_EQ(telemetry.trim_learning_block_reason,
+            ComTrimLearningBlockBalanceSaturation);
+}
+
+TEST(RateControllerCoreTest, ComTrimAcquiresThenFreezesDuringMotionAndReacquiresAtRest) {
+  ScopedConfigPidRestore restore;
+  set_zeroed_gain_audit_config();
+  ConfigPid::values.velocity_I = 0.001;
+  ConfigPid::values.velocity_I_limit_deg = 4.0;
+
+  RateControllerHarness h;
+  h.setJoystick(0.0, 0.0);
+  h.runner().setActualSpeedSps(80.0);
+  h.run_steps(1600, 1.0 / 400.0);
+  ASSERT_FALSE(h.telemetry().empty());
+  const double acquired_trim_deg = h.telemetry().back().com_trim_deg;
+  EXPECT_LT(acquired_trim_deg, -0.1);
+
+  h.runner().setActualSpeedSps(500.0);
+  h.run_steps(800, 1.0 / 400.0);
+  ASSERT_FALSE(h.telemetry().empty());
+  const auto& moving = h.telemetry().back();
+  EXPECT_NEAR(moving.com_trim_deg, acquired_trim_deg, 0.01);
+  EXPECT_FALSE(moving.trim_learning_enabled);
+  EXPECT_EQ(moving.trim_learning_block_reason, ComTrimLearningBlockMoving);
+
+  h.runner().setActualSpeedSps(0.0);
+  h.run_steps(2000, 1.0 / 400.0);
+  const auto& rested = h.telemetry().back();
+  EXPECT_TRUE(rested.trim_learning_enabled);
+  EXPECT_EQ(rested.trim_learning_block_reason, ComTrimLearningBlockNone);
+}
+
+TEST(RateControllerCoreTest, ComTrimTrustRequiresConvergedQuietEquilibrium) {
+  ScopedConfigPidRestore restore;
+  set_zeroed_gain_audit_config();
+  ConfigPid::values.velocity_I = 0.0;
+
+  RateControllerHarness h;
+  h.setJoystick(0.0, 0.0);
+  constexpr double dt_s = 1.0 / 400.0;
+  constexpr double drift_deg_per_s = 0.10;
+  for (int index = 0; index < 2400; ++index) {
+    const double time_s = static_cast<double>(index + 1) * dt_s;
+    const double pitch_rad = (0.10 + drift_deg_per_s * time_s) * M_PI / 180.0;
+    const auto timestamp_us = static_cast<uint64_t>(std::llround(time_s * 1e6));
+    h.setImu(pitch_rad, drift_deg_per_s * M_PI / 180.0, timestamp_us);
+    h.tick(dt_s, timestamp_us);
+  }
+  ASSERT_FALSE(h.telemetry().empty());
+  EXPECT_FALSE(h.telemetry().back().trim_trusted);
+
+  h.run_steps(2400, dt_s, (0.10 + drift_deg_per_s * 6.0) * M_PI / 180.0, 0.0);
+  EXPECT_TRUE(h.telemetry().back().trim_trusted);
+}
+
+TEST(RateControllerCoreTest, PitchAuthorityDiagnosticUsesFinalTargetPathAndExpires) {
+  ScopedConfigPidRestore restore;
+  set_zeroed_gain_audit_config();
+  ConfigPid::values.pitch_gain = 6000.0;
+  ConfigPid::values.pitch_rate_gain = 350.0;
+
+  RateControllerHarness h;
+  h.setJoystick(1.0, 0.0);
+  EXPECT_FALSE(h.setPitchAuthorityDiagnostic(true, 3.0, 0.0, 0.10));
+  EXPECT_TRUE(h.setPitchAuthorityDiagnostic(true, 4.0, 0.0, 0.10, 42));
+  h.setImu(0.0, 0.0, 2500);
+  h.tick(1.0 / 400.0, 2500);
+  ASSERT_FALSE(h.telemetry().empty());
+  const auto& active = h.telemetry().back();
+  EXPECT_TRUE(active.pitch_authority_diagnostic_active);
+  EXPECT_NEAR(active.pitch_authority_diagnostic_target_deg, 4.0, 1e-6);
+  EXPECT_GT(active.pitch_authority_diagnostic_remaining_s, 0.0);
+  EXPECT_EQ(active.pitch_authority_diagnostic_request_id, 42u);
+  EXPECT_GT(active.pitch_authority_diagnostic_command_age_ms, 0.0);
+  EXPECT_NEAR(active.pitch_target_unclamped_deg, 4.0, 1e-6);
+  EXPECT_NEAR(active.pitch_sp_deg, 4.0, 1e-6);
+  EXPECT_NEAR(active.nominal_acceleration_mps2, 0.0, 1e-12);
+  EXPECT_NEAR(active.velocity_pitch_target_deg, 0.0, 1e-6);
+  EXPECT_FALSE(active.trim_learning_allowed);
+  EXPECT_FALSE(active.trim_learning_enabled);
+  EXPECT_EQ(active.trim_learning_block_reason, ComTrimLearningBlockPitchAuthorityDiagnostic);
+
+  ConfigPid::values.drive_max_acceleration_mps2 = 1.25;
+  RateControllerHarness clamped;
+  ASSERT_TRUE(clamped.setPitchAuthorityDiagnostic(true, 4.0, 4.0, 0.10, 43));
+  clamped.setImu(0.0, 0.0, 2500);
+  clamped.tick(1.0 / 400.0, 2500);
+  ASSERT_FALSE(clamped.telemetry().empty());
+  EXPECT_NEAR(clamped.telemetry().back().pitch_target_unclamped_deg, 8.0, 1e-6);
+  EXPECT_NEAR(clamped.telemetry().back().pitch_sp_deg,
+              std::atan2(1.25, 9.81) * 180.0 / M_PI, 1e-6);
+  EXPECT_NE(clamped.telemetry().back().pitch_target_limit_reason & PitchTargetLimitTotalPitch, 0u);
+
+  RateControllerHarness watchdog;
+  ASSERT_TRUE(watchdog.setPitchAuthorityDiagnostic(true, -1.0, 0.0, 0.025, 44));
+  watchdog.setImu(0.0, 0.0, 2500);
+  watchdog.tick(1.0 / 400.0, 2500);
+  watchdog.run_steps(10, 1.0 / 400.0);
+  ASSERT_FALSE(watchdog.telemetry().empty());
+  EXPECT_FALSE(watchdog.telemetry().back().pitch_authority_diagnostic_active);
+  EXPECT_NEAR(watchdog.telemetry().back().pitch_authority_diagnostic_remaining_s, 0.0, 1e-6);
+  EXPECT_NEAR(watchdog.runner().lastLeft(), 0.0, 1e-9);
+  EXPECT_NEAR(watchdog.runner().lastRight(), 0.0, 1e-9);
+
+  h.run_steps(80, 1.0 / 400.0);
+  const auto& expired = h.telemetry().back();
+  EXPECT_FALSE(expired.pitch_authority_diagnostic_active);
+  EXPECT_NEAR(expired.pitch_authority_diagnostic_target_deg, 0.0, 1e-6);
+  EXPECT_NEAR(expired.pitch_authority_diagnostic_remaining_s, 0.0, 1e-6);
+  EXPECT_EQ(expired.pitch_authority_diagnostic_request_id, 0u);
+  EXPECT_NEAR(expired.pitch_authority_diagnostic_command_age_ms, 0.0, 1e-6);
+
+  RateControllerHarness request_sequence;
+  ASSERT_TRUE(request_sequence.setPitchAuthorityDiagnostic(true, 1.0, 0.0, 0.20, 100));
+  EXPECT_FALSE(request_sequence.setPitchAuthorityDiagnostic(true, 1.0, 0.0, 0.20, 99));
+  request_sequence.setImu(0.0, 0.0, 2500);
+  request_sequence.tick(1.0 / 400.0, 2500);
+  ASSERT_FALSE(request_sequence.telemetry().empty());
+  EXPECT_FALSE(request_sequence.telemetry().back().pitch_authority_diagnostic_active);
+  EXPECT_NEAR(request_sequence.telemetry().back().pitch_sp_deg, 0.0, 1e-6);
+}
+
+TEST(RateControllerCoreTest, PitchAuthorityDiagnosticPreservesFalloverAndActuatorSafety) {
+  ScopedConfigPidRestore restore;
+  set_zeroed_gain_audit_config();
+  ConfigPid::values.pitch_gain = 6000.0;
+  ConfigPid::values.pitch_rate_gain = 350.0;
+
+  RateControllerHarness fallover;
+  ASSERT_TRUE(fallover.setPitchAuthorityDiagnostic(true, 4.0, 0.0, 0.5, 45));
+  fallover.setImu(30.0 * M_PI / 180.0, 0.0, 2500);
+  fallover.tick(1.0 / 400.0, 2500);
+  ASSERT_FALSE(fallover.telemetry().empty());
+  EXPECT_NE(fallover.telemetry().back().controller_fault_flags & ControllerFaultFallover, 0u);
+  EXPECT_NEAR(fallover.runner().lastLeft(), 0.0, 1e-9);
+  EXPECT_NEAR(fallover.runner().lastRight(), 0.0, 1e-9);
+
+  RateControllerHarness actuator;
+  ASSERT_TRUE(actuator.setPitchAuthorityDiagnostic(true, -4.0, 0.0, 0.5, 46));
+  actuator.setActuatorFault(true);
+  actuator.setImu(0.0, 0.0, 2500);
+  actuator.tick(1.0 / 400.0, 2500);
+  ASSERT_FALSE(actuator.telemetry().empty());
+  EXPECT_NE(actuator.telemetry().back().controller_fault_flags & ControllerFaultActuator, 0u);
+  EXPECT_NEAR(actuator.runner().lastLeft(), 0.0, 1e-9);
+  EXPECT_NEAR(actuator.runner().lastRight(), 0.0, 1e-9);
+}
+
 TEST(RateControllerCoreTest, CommandPitchClampsWithoutWindingComTrim) {
   ScopedConfigPidRestore restore;
   set_zeroed_gain_audit_config();
-  ConfigPid::drive_max_acceleration_mps2 = 1.5;
-  ConfigPid::velocity_damping_per_s = 200.0;
-  ConfigPid::velocity_I = 1.0;
-  ConfigPid::velocity_I_limit_deg = 2.0;
+  ConfigPid::values.drive_max_acceleration_mps2 = 1.5;
+  ConfigPid::values.velocity_damping_per_s = 200.0;
+  ConfigPid::values.velocity_I = 1.0;
+  ConfigPid::values.velocity_I_limit_deg = 2.0;
 
   RateControllerHarness h;
   h.setJoystick(1.0, 0.0);
   h.runner().setActualSpeedSps(4000.0);
   h.run_steps(400, 1.0 / 400.0);
   const double expected_limit_deg =
-      std::atan2(ConfigPid::drive_max_acceleration_mps2, Config::g0) * 180.0 / M_PI;
-  EXPECT_NEAR(std::abs(h.telemetry().back().pitch_sp_deg), expected_limit_deg, 1e-6);
-  EXPECT_NE(h.telemetry().back().controller_saturation_flags & ControllerSaturationPitch, 0u);
+      std::atan2(ConfigPid::values.drive_max_acceleration_mps2, Config::g0) * 180.0 / M_PI;
+  EXPECT_NEAR(std::abs(h.telemetry().back().pitch_sp_deg), 4.0, 1e-6);
+  EXPECT_TRUE(h.telemetry().back().velocity_authority_limited);
+  EXPECT_NE(h.telemetry().back().pitch_target_limit_reason &
+                PitchTargetLimitVelocityAuthority,
+            0u);
+  EXPECT_GT(expected_limit_deg, 4.0);
   EXPECT_NEAR(h.telemetry().back().vel_i_term_deg, 0.0, 1e-6);
 }
 
 TEST(RateControllerCoreTest, StaleImuCommandsZeroAndPreservesComTrim) {
   ScopedConfigPidRestore restore;
   set_zeroed_gain_audit_config();
-  ConfigPid::rate_P = 1.0;
-  ConfigPid::angle_P = 100.0;
-  ConfigPid::velocity_I = 0.01;
+  ConfigPid::values.pitch_gain = 100000.0;
+  ConfigPid::values.velocity_I = 0.01;
 
   RateControllerHarness h;
   h.setJoystick(0.0, 0.0);
@@ -1163,7 +1309,7 @@ TEST(RateControllerCoreTest, StaleImuCommandsZeroAndPreservesComTrim) {
 TEST(RateControllerCoreTest, FalloverResetPreservesComTrimUntilRearm) {
   ScopedConfigPidRestore restore;
   set_zeroed_gain_audit_config();
-  ConfigPid::velocity_I = 0.01;
+  ConfigPid::values.velocity_I = 0.01;
 
   RateControllerHarness h;
   h.setJoystick(0.0, 0.0);
@@ -1187,8 +1333,7 @@ TEST(RateControllerCoreTest, FalloverResetPreservesComTrimUntilRearm) {
 TEST(RateControllerCoreTest, FutureImuBeyondClockToleranceCommandsZero) {
   ScopedConfigPidRestore restore;
   set_zeroed_gain_audit_config();
-  ConfigPid::rate_P = 1.0;
-  ConfigPid::angle_P = 100.0;
+  ConfigPid::values.pitch_gain = 100000.0;
 
   RateControllerHarness h;
   h.setImu(1.0 * M_PI / 180.0, 0.0, 2500);
@@ -1206,8 +1351,7 @@ TEST(RateControllerCoreTest, FutureImuBeyondClockToleranceCommandsZero) {
 TEST(RateControllerCoreTest, FalloverAndActuatorFaultCommandZero) {
   ScopedConfigPidRestore restore;
   set_zeroed_gain_audit_config();
-  ConfigPid::rate_P = 1.0;
-  ConfigPid::angle_P = 100.0;
+  ConfigPid::values.pitch_gain = 100000.0;
 
   RateControllerHarness h;
   h.setImu(1.0 * M_PI / 180.0, 0.0, 2500);
@@ -1246,8 +1390,7 @@ TEST(RateControllerCoreTest, FalloverAndActuatorFaultCommandZero) {
 TEST(RateControllerCoreTest, FalloverRecoveryRequiresLiveForwardCommand) {
   ScopedConfigPidRestore restore;
   set_zeroed_gain_audit_config();
-  ConfigPid::rate_P = 0.20;
-  ConfigPid::angle_P = 32.0;
+  ConfigPid::values.pitch_gain = 10000.0;
 
   for (const double pitch_deg : {26.0, -26.0, 67.0, -67.0}) {
     RateControllerHarness h;
@@ -1272,8 +1415,7 @@ TEST(RateControllerCoreTest, FalloverRecoveryRequiresLiveForwardCommand) {
 TEST(RateControllerCoreTest, ForwardCommandEnablesSymmetricFalloverRecoveryAuthority) {
   ScopedConfigPidRestore restore;
   set_zeroed_gain_audit_config();
-  ConfigPid::rate_P = 0.20;
-  ConfigPid::angle_P = 32.0;
+  ConfigPid::values.pitch_gain = 10000.0;
 
   const auto recovery_output = [](double direction) {
     RateControllerHarness h;
@@ -1294,8 +1436,7 @@ TEST(RateControllerCoreTest, ForwardCommandEnablesSymmetricFalloverRecoveryAutho
 TEST(RateControllerCoreTest, FalloverRecoveryRequiresLowRateAndStopsOnRelease) {
   ScopedConfigPidRestore restore;
   set_zeroed_gain_audit_config();
-  ConfigPid::rate_P = 0.20;
-  ConfigPid::angle_P = 32.0;
+  ConfigPid::values.pitch_gain = 10000.0;
 
   RateControllerHarness moving;
   moving.setJoystick(0.10, 0.0);
@@ -1321,8 +1462,7 @@ TEST(RateControllerCoreTest, FalloverRecoveryRequiresLowRateAndStopsOnRelease) {
 TEST(RateControllerCoreTest, ImuAndActuatorFaultsOverrideFalloverRecoveryCommand) {
   ScopedConfigPidRestore restore;
   set_zeroed_gain_audit_config();
-  ConfigPid::rate_P = 0.20;
-  ConfigPid::angle_P = 32.0;
+  ConfigPid::values.pitch_gain = 10000.0;
 
   RateControllerHarness stale;
   stale.setJoystick(0.10, 0.0);
@@ -1376,8 +1516,44 @@ TEST(RateControllerCoreTest, LargeResidualVelocityIsBrakedWithoutCommand) {
   EXPECT_LT(h.telemetry().back().vel_p_term_deg, 0.0);
   EXPECT_GT(std::abs(h.telemetry().back().pitch_sp_deg), 1e-3);
   const double drive_limit_deg =
-      std::atan2(ConfigPid::drive_max_acceleration_mps2, Config::g0) * 180.0 / M_PI;
+      std::atan2(ConfigPid::values.drive_max_acceleration_mps2, Config::g0) * 180.0 / M_PI;
   EXPECT_LE(std::abs(h.telemetry().back().pitch_sp_deg), drive_limit_deg + 0.1);
+}
+
+TEST(RateControllerCoreTest, VelocityPitchAuthorityIsExplicitAndSymmetric) {
+  ScopedConfigPidRestore restore;
+  set_zeroed_gain_audit_config();
+  ConfigPid::values.velocity_damping_per_s = 16.0;
+  ConfigPid::values.velocity_pitch_limit_deg = 4.0;
+
+  const auto observe = [](double speed_sps) {
+    RateControllerHarness h;
+    h.setJoystick(0.0, 0.0);
+    h.run_steps(40, 1.0 / 400.0);
+    h.runner().setActualSpeedSps(speed_sps);
+    h.run_steps(80, 1.0 / 400.0);
+    return h.telemetry().back();
+  };
+
+  const auto positive = observe(4000.0);
+  const auto negative = observe(-4000.0);
+  const double expected_unclamped_deg =
+      std::atan2(-ConfigPid::values.velocity_damping_per_s *
+                     positive.corrected_axle_velocity_sps * Config::meters_per_step,
+                 Config::g0) *
+      180.0 / M_PI;
+  EXPECT_NEAR(positive.velocity_pitch_request_unclamped_deg, expected_unclamped_deg, 1e-6);
+  EXPECT_NEAR(negative.velocity_pitch_request_unclamped_deg, -expected_unclamped_deg, 1e-6);
+  EXPECT_NEAR(positive.velocity_pitch_request_limited_deg, -4.0, 1e-6);
+  EXPECT_NEAR(negative.velocity_pitch_request_limited_deg, 4.0, 1e-6);
+  EXPECT_TRUE(positive.velocity_authority_limited);
+  EXPECT_TRUE(negative.velocity_authority_limited);
+  EXPECT_NE(positive.trim_learning_block_reason,
+            ComTrimLearningBlockNone);
+  EXPECT_NE(negative.trim_learning_block_reason,
+            ComTrimLearningBlockNone);
+  EXPECT_NE(positive.pitch_target_limit_reason & PitchTargetLimitVelocityAuthority, 0u);
+  EXPECT_NE(negative.pitch_target_limit_reason & PitchTargetLimitVelocityAuthority, 0u);
 }
 
 TEST(RateControllerCoreTest, NegativeResidualVelocityProducesPositiveCatchPitchRef) {
@@ -1583,7 +1759,6 @@ TEST(ControlServiceTest, TelemetryCarriesOuterLoopBreakdownAndMotorFeedback) {
   const auto& t = h.telemetry().back();
   EXPECT_GT(t.nominal_acceleration_mps2, 0.0);
   EXPECT_NEAR(t.com_trim_deg, 0.0, 1e-9);
-  EXPECT_NE(t.rate_setpoint_dps, 0.0);
   EXPECT_NE(t.pitch_error_deg, 0.0);
   EXPECT_NEAR(t.left_slewed_sps, 160.0, 1e-3);
   EXPECT_NEAR(t.right_slewed_sps, 120.0, 1e-3);

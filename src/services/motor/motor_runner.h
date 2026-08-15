@@ -245,6 +245,29 @@ class MotorRunner {
     actuator_fault_ = false;
   }
 
+  // Simulator-only transient reset. Step counters remain physical history;
+  // queued pulses, slew phase, and velocity-estimator history do not.
+  void resetTransientStateForSimulation() {
+    std::lock_guard<std::mutex> lock(mu_);
+    backend_.stop();
+    frame_count_ = 0;
+    next_frame_start_us_ = 0;
+    last_command_left_sps_ = 0.0;
+    last_command_right_sps_ = 0.0;
+    phase_left_ = 0.0;
+    phase_right_ = 0.0;
+    measured_avg_sps_ = 0.0;
+    actuator_saturation_flags_ = ActuatorSaturationNone;
+    velocity_history_count_ = 0;
+    velocity_history_head_ = 0;
+    have_last_call_time_ = false;
+    last_completed_frame_us_ = 0;
+    last_update_dt_s_ = 0.0;
+    actuator_fault_ = false;
+    target_left_sps_.store(0.0, std::memory_order_relaxed);
+    target_right_sps_.store(0.0, std::memory_order_relaxed);
+  }
+
   int64_t getLeftSteps() const {
     return actual_steps_left_.load(std::memory_order_relaxed);
   }

@@ -84,7 +84,7 @@ The simulator can run through its scenario-control wrapper on UDP port `9001`, o
 in-process summary. The wrapper is a transport around the deterministic engine; it is not another
 production `UdpBridge` and it is not the SIL application.
 
-The transfer catalog contains ten scenarios. Each run records a complete deterministic timeline and
+The transfer catalog contains seven scenarios. Each run records a complete deterministic timeline and
 is judged using explicit checks such as finite values, no fall, peak pitch, tail RMS, continuous
 saturation, actuator faults, and controller faults. The [testing strategy](../testing/strategy.md)
 explains which runs are acceptance evidence and where their artifacts live.

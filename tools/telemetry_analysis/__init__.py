@@ -5,14 +5,28 @@ from .frames import (
     write_telemetry_csv,
 )
 from .metrics import actuator_stage_metrics, band_frequency_response
+from .pitch_authority import (
+    PITCH_AUTHORITY_HARDWARE_ENVELOPES,
+    analyze_pitch_authority_sweep,
+    compare_pitch_authority_sweeps,
+    lagged_correlation,
+    reconstruct_final_pitch_target,
+    validate_pitch_authority_hardware_envelope,
+)
 from .plotting import write_multiplot_svg
 
 __all__ = [
     "actuator_stage_metrics",
     "band_frequency_response",
+    "PITCH_AUTHORITY_HARDWARE_ENVELOPES",
+    "analyze_pitch_authority_sweep",
+    "compare_pitch_authority_sweeps",
     "canonicalize_telemetry_frame",
     "band_rms_equivalent",
     "read_telemetry_csv",
     "write_multiplot_svg",
     "write_telemetry_csv",
+    "lagged_correlation",
+    "reconstruct_final_pitch_target",
+    "validate_pitch_authority_hardware_envelope",
 ]

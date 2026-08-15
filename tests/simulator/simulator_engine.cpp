@@ -79,6 +79,30 @@ ipc::JoystickCommandPayload joystickAt(const SimulatorScenario& scenario, double
   return command;
 }
 
+struct PitchAuthorityValue {
+  bool active{false};
+  double target_deg{0.0};
+  double com_trim_deg{0.0};
+};
+
+PitchAuthorityValue pitchAuthorityAt(const SimulatorScenario& scenario, double time_s) {
+  if (scenario.pitch_authority_segments.empty()) return {};
+
+  // Keep the diagnostic path active for the entire run, including between
+  // pulses, so the ordinary drive/velocity/COM paths cannot contaminate a
+  // direct-target measurement. The first segment chooses the frozen trim;
+  // later segments may explicitly repeat or change it for a documented test.
+  PitchAuthorityValue value{true, 0.0, scenario.pitch_authority_segments.front().com_trim_deg};
+  for (const auto& segment : scenario.pitch_authority_segments) {
+    if (time_s < segment.start_s) continue;
+    value.com_trim_deg = segment.com_trim_deg;
+    if (segment.duration_s > 0.0 && time_s < segment.start_s + segment.duration_s) {
+      value.target_deg = segment.target_deg;
+    }
+  }
+  return value;
+}
+
 double rawPitchDeg(const std::array<double, 3>& acc) {
   return std::atan2(-acc[0], -acc[2]) * 180.0 / kPi;
 }
@@ -156,9 +180,19 @@ struct EnginePipeline {
   ipc::MessageBus bus;
   EngineServices services;
 
-  explicit EnginePipeline(const SimulatorScenario& scenario)
-      : bus(this, &EnginePipeline::dispatch), services(bus) {
-    (void)scenario;
+  double rolling_residual_velocity_mps = 0.0;
+  double rolling_residual_steps = 0.0;
+
+  EnginePipeline() : bus(this, &EnginePipeline::dispatch), services(bus) {
+    // Seed the production observer at the physical zero-time wheel position.
+    // Initial chassis velocity is then represented by the first subsequent
+    // rolling displacement rather than being silently invisible to control.
+    ipc::MotorFeedbackPayload initial_feedback{};
+    services.control.on_message<MsgId::MotorFeedback>(initial_feedback);
+  }
+
+  void setRollingResidualVelocity(double velocity_mps) {
+    rolling_residual_velocity_mps = velocity_mps;
   }
 
   static void dispatch(void* context, MsgId id, const void* payload) {
@@ -168,8 +202,19 @@ struct EnginePipeline {
 
     if (id == MsgId::MotorFeedback) {
       const auto feedback = unpack_payload<MsgId::MotorFeedback>(payload);
-      self->services.control.on_message<MsgId::MotorFeedback>(feedback);
+      // The observer records the physical feedback. Only the controller-facing
+      // copy is delivered after the plant/actuator has published it, so the
+      // telemetry remains a ground truth.
       self->services.observer.on_message<MsgId::MotorFeedback>(feedback);
+      const double dt_s = std::max(1e-6, feedback.update_dt_ms) / 1000.0;
+      self->rolling_residual_steps += self->rolling_residual_velocity_mps * dt_s /
+                                      BalancerSimulator::HardwareNominal::meters_per_step;
+      auto ground_feedback = feedback;
+      ground_feedback.left_actual_steps +=
+          static_cast<int64_t>(std::llround(self->rolling_residual_steps));
+      ground_feedback.right_actual_steps +=
+          static_cast<int64_t>(std::llround(self->rolling_residual_steps));
+      self->services.control.on_message<MsgId::MotorFeedback>(ground_feedback);
       return;
     }
 
@@ -195,6 +240,7 @@ struct SimulatorEngine::Impl {
   std::uniform_real_distribution<double> jitter_unit{-1.0, 1.0};
   std::uniform_real_distribution<double> loss_unit{0.0, 1.0};
   std::deque<DelayedImu> delayed_imu;
+  std::deque<std::pair<double, double>> velocity_history;
   ipc::ImuRawPayload latest_raw{};
   ipc::JoystickCommandPayload external_joystick{};
   bool use_external_joystick{false};
@@ -205,7 +251,7 @@ struct SimulatorEngine::Impl {
   explicit Impl(const SimulatorScenario& input)
       : scenario(input),
         simulator(makeSimulatorConfig(input)),
-        pipeline(input),
+        pipeline(),
         rng(input.imu_noise_seed),
         accel_noise(0.0, input.accel_noise_std_mps2 > 0.0 ? input.accel_noise_std_mps2 : 1.0),
         gyro_noise(0.0, input.gyro_noise_std_rad_s > 0.0 ? input.gyro_noise_std_rad_s : 1.0) {
@@ -213,6 +259,7 @@ struct SimulatorEngine::Impl {
     // plant, matching the hardware filter's first-sample initialization.
     latest_raw = simulator.make_raw_imu_payload(0);
     pipeline.bus.publish<MsgId::ImuRawData>(latest_raw);
+    velocity_history.emplace_back(0.0, simulator.state().velocity);
   }
 
   static BalancerSimulator::Config makeSimulatorConfig(const SimulatorScenario& input) {
@@ -220,10 +267,12 @@ struct SimulatorEngine::Impl {
     config.com_angle_offset_rad = input.com_angle_offset_rad;
     config.initial_pitch_deg = input.initial_pitch_deg;
     config.initial_pitch_rate_dps = input.initial_pitch_rate_dps;
+    config.initial_velocity_mps = input.initial_velocity_mps;
     config.physics_profile = input.physics_profile;
     config.physics_override = input.physics_override;
     config.total_mass_scale = input.total_mass_scale;
     config.pitch_inertia_scale = input.pitch_inertia_scale;
+    config.first_mass_moment_scale = input.first_mass_moment_scale;
     return config;
   }
 
@@ -253,6 +302,13 @@ struct SimulatorEngine::Impl {
       raw.gyr[axis] += scenario.gyro_bias_rad_s[axis];
       if (scenario.accel_noise_std_mps2 > 0.0) raw.acc[axis] += accel_noise(rng);
       if (scenario.gyro_noise_std_rad_s > 0.0) raw.gyr[axis] += gyro_noise(rng);
+      if (axis == 1 && scenario.gyro_pitch_disturbance_frequency_hz > 0.0 &&
+          scenario.gyro_pitch_disturbance_amplitude_rad_s != 0.0) {
+        const double time_s = static_cast<double>(base_timestamp_us) / 1e6;
+        raw.gyr[axis] += scenario.gyro_pitch_disturbance_amplitude_rad_s *
+                         std::sin(2.0 * M_PI * scenario.gyro_pitch_disturbance_frequency_hz *
+                                  time_s);
+      }
       raw.acc[axis] = std::round(raw.acc[axis] / kAccelQuantum) * kAccelQuantum;
       raw.gyr[axis] = std::round(raw.gyr[axis] / kGyroQuantum) * kGyroQuantum;
     }
@@ -266,6 +322,38 @@ struct SimulatorEngine::Impl {
     const uint64_t lag_us =
         static_cast<uint64_t>(std::llround(std::max(0.0, scenario.imu_pitch_lag_s) * 1e6));
     delayed_imu.push_back(DelayedImu{base_timestamp_us + lag_us, raw});
+  }
+
+  void recordVelocitySample(double time_s) {
+    velocity_history.emplace_back(time_s, simulator.state().velocity);
+    while (velocity_history.size() > 20001) velocity_history.pop_front();
+  }
+
+  double delayedPhysicalVelocity(double time_s) const {
+    const double requested_time =
+        time_s - std::max(0.0, scenario.velocity_estimator_latency_s);
+    if (velocity_history.empty() || requested_time <= velocity_history.front().first) {
+      return velocity_history.empty() ? simulator.state().velocity : velocity_history.front().second;
+    }
+    for (std::size_t index = 1; index < velocity_history.size(); ++index) {
+      const auto& previous = velocity_history[index - 1];
+      const auto& next = velocity_history[index];
+      if (requested_time > next.first) continue;
+      const double span = next.first - previous.first;
+      if (span <= 0.0) return next.second;
+      const double alpha = std::clamp((requested_time - previous.first) / span, 0.0, 1.0);
+      return previous.second + (next.second - previous.second) * alpha;
+    }
+    return velocity_history.back().second;
+  }
+
+  void setControllerVelocityEstimate(double time_s) {
+    const double estimated_velocity_mps =
+        scenario.velocity_estimator_bias_mps +
+        scenario.velocity_estimator_bias_drift_mps_per_s * time_s +
+        scenario.velocity_estimator_scale * delayedPhysicalVelocity(time_s);
+    pipeline.setRollingResidualVelocity(
+        estimated_velocity_mps - simulator.diagnostics().target_wheel_velocity);
   }
 
   void advancePlantTo(double target_time_us) {
@@ -296,12 +384,37 @@ struct SimulatorEngine::Impl {
   SimulatorTimelineRow step() {
     const uint64_t start_us = pipeline.services.time.current_time_us();
     const uint64_t end_us = start_us + static_cast<uint64_t>(std::llround(kControlDtS * 1e6));
+    setControllerVelocityEstimate(plant_time_us / 1e6);
     advancePlantTo(static_cast<double>(end_us));
-
+    // Keep the residual current for the next control interval.  It represents
+    // the difference between physical ground displacement and the commanded
+    // wheel-step displacement in the no-slip reference.
+    recordVelocitySample(plant_time_us / 1e6);
+    setControllerVelocityEstimate(plant_time_us / 1e6);
     const auto joystick = use_external_joystick
                               ? external_joystick
                               : joystickAt(scenario, static_cast<double>(end_us) / 1e6);
     pipeline.bus.publish<MsgId::JoystickCommand>(joystick);
+    const auto pitch_authority =
+        pitchAuthorityAt(scenario, static_cast<double>(end_us) / 1e6);
+    const double end_time_s = static_cast<double>(end_us) / 1e6;
+    const bool refresh_dropout =
+        scenario.pitch_authority_refresh_dropout_duration_s > 0.0 &&
+        end_time_s >= scenario.pitch_authority_refresh_dropout_start_s &&
+        end_time_s < scenario.pitch_authority_refresh_dropout_start_s +
+                          scenario.pitch_authority_refresh_dropout_duration_s;
+    if (pitch_authority.active && !refresh_dropout) {
+      // Refresh before the deterministic PhysicsTick. The controller's
+      // watchdog is intentionally short-lived so a future hardware client
+      // cannot leave a diagnostic target latched after disconnect.
+      ipc::PitchAuthorityDiagnosticCommandPayload command{};
+      command.request_id = static_cast<uint32_t>(end_us / 1000U);
+      command.active = 1;
+      command.target_deg = pitch_authority.target_deg;
+      command.com_trim_deg = pitch_authority.com_trim_deg;
+      command.duration_s = 0.050;
+      pipeline.bus.publish<MsgId::PitchAuthorityDiagnosticCommand>(command);
+    }
     pipeline.services.time.advance(kControlDtS);
 
     if (pipeline.services.observer.have_feedback) {
@@ -330,11 +443,18 @@ struct SimulatorEngine::Impl {
     row.velocity_error = diagnostics.velocity_error;
     row.f_cmd = diagnostics.f_cmd;
     row.f_app = diagnostics.f_app;
+    row.desired_drive_force = diagnostics.desired_drive_force;
+    row.limited_drive_force = diagnostics.limited_drive_force;
+    row.applied_drive_force = diagnostics.applied_drive_force;
+    row.desired_tire_force = diagnostics.desired_tire_force;
     row.external_force_n = diagnostics.external_force_n;
     row.external_com_bias_rad = diagnostics.external_com_bias_rad;
     row.x_ddot = diagnostics.x_ddot;
     row.theta_ddot = diagnostics.theta_ddot;
     row.force_saturated = diagnostics.command_saturated ? 1.0 : 0.0;
+    row.phase_saturated = diagnostics.phase_saturated ? 1.0 : 0.0;
+    row.motor_force_saturated = diagnostics.motor_force_saturated ? 1.0 : 0.0;
+    row.traction_saturated = diagnostics.traction_saturated ? 1.0 : 0.0;
     row.phase_error_steps = diagnostics.phase_error_steps;
     row.missed_steps = diagnostics.missed_steps;
     row.traction_limit_n = diagnostics.traction_limit_n;
@@ -372,12 +492,55 @@ struct SimulatorEngine::Impl {
       row.turn_sps = telemetry.turn_sps;
       row.nominal_acceleration_mps2 = telemetry.nominal_acceleration_mps2;
       row.raw_completed_velocity_sps = telemetry.raw_completed_velocity_sps;
+      row.completed_step_acceleration_sps2 = telemetry.completed_step_acceleration_sps2;
       row.corrected_axle_velocity_sps = telemetry.corrected_axle_velocity_sps;
+      row.velocity_control_sps = telemetry.velocity_control_sps;
       row.velocity_damping_acceleration_mps2 = telemetry.velocity_damping_acceleration_mps2;
       row.com_trim_deg = telemetry.com_trim_deg;
+      row.trim_learning_enabled = telemetry.trim_learning_enabled ? 1.0 : 0.0;
+      row.trim_learning_block_reason = telemetry.trim_learning_block_reason;
       row.pitch_error_deg = telemetry.pitch_error_deg;
-      row.rate_setpoint_dps = telemetry.rate_setpoint_dps;
-      row.rate_error_dps = telemetry.rate_error_dps;
+      row.pitch_feedback_sps = telemetry.pitch_feedback_sps;
+      row.pitch_rate_feedback_sps = telemetry.pitch_rate_feedback_sps;
+      row.pitch_accel_feedback_sps = telemetry.pitch_accel_feedback_sps;
+      row.velocity_pitch_target_deg = telemetry.velocity_pitch_target_deg;
+      row.balance_unclamped_sps = telemetry.balance_unclamped_sps;
+      row.active_pitch_gain_sps_per_rad = telemetry.active_pitch_gain_sps_per_rad;
+      row.active_pitch_rate_gain_sps_per_rad_s = telemetry.active_pitch_rate_gain_sps_per_rad_s;
+      row.active_pitch_accel_gain_sps_per_rad_s2 =
+          telemetry.active_pitch_accel_gain_sps_per_rad_s2;
+      row.active_velocity_pitch_gain_rad_per_sps =
+          telemetry.active_velocity_pitch_gain_rad_per_sps;
+      row.active_velocity_control_cutoff_hz = telemetry.active_velocity_control_cutoff_hz;
+      row.active_velocity_observer_cutoff_hz = telemetry.active_velocity_observer_cutoff_hz;
+      row.active_com_trim_gain_deg_per_sps_s = telemetry.active_com_trim_gain_deg_per_sps_s;
+      row.active_com_trim_limit_deg = telemetry.active_com_trim_limit_deg;
+      row.active_velocity_pitch_limit_deg = telemetry.active_velocity_pitch_limit_deg;
+      row.active_accel_lpf_hz = telemetry.active_accel_lpf_hz;
+      row.active_gyro_lpf_hz = telemetry.active_gyro_lpf_hz;
+      row.active_gyro_derivative_lpf_hz = telemetry.active_gyro_derivative_lpf_hz;
+      row.active_config_generation = telemetry.active_config_generation;
+      row.velocity_pitch_request_unclamped_deg =
+          telemetry.velocity_pitch_request_unclamped_deg;
+      row.velocity_pitch_request_limited_deg = telemetry.velocity_pitch_request_limited_deg;
+      row.velocity_authority_limited = telemetry.velocity_authority_limited ? 1.0 : 0.0;
+      row.pitch_target_unclamped_deg = telemetry.pitch_target_unclamped_deg;
+      row.pitch_target_limit_reason = telemetry.pitch_target_limit_reason;
+      row.trim_trusted = telemetry.trim_trusted ? 1.0 : 0.0;
+      row.trim_learning_allowed = telemetry.trim_learning_allowed ? 1.0 : 0.0;
+      row.trim_quiet_rate_rms_dps = telemetry.trim_quiet_rate_rms_dps;
+      row.pitch_authority_diagnostic_active =
+          telemetry.pitch_authority_diagnostic_active ? 1.0 : 0.0;
+      row.pitch_authority_diagnostic_target_deg =
+          telemetry.pitch_authority_diagnostic_target_deg;
+      row.pitch_authority_diagnostic_com_trim_deg =
+          telemetry.pitch_authority_diagnostic_com_trim_deg;
+      row.pitch_authority_diagnostic_remaining_s =
+          telemetry.pitch_authority_diagnostic_remaining_s;
+      row.pitch_authority_diagnostic_request_id =
+          static_cast<double>(telemetry.pitch_authority_diagnostic_request_id);
+      row.pitch_authority_diagnostic_command_age_ms =
+          telemetry.pitch_authority_diagnostic_command_age_ms;
       row.command_saturated = telemetry.command_saturated;
       row.controller_fault_flags = telemetry.controller_fault_flags;
       row.controller_saturation_flags = telemetry.controller_saturation_flags;

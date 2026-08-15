@@ -17,20 +17,14 @@
 
 namespace {
 
-// This is deliberately a closed-loop search, not a staged prerequisite tree.
-// The measured low-inertia plant couples pitch recovery, wheel damping, and
-// rate authority tightly enough that independently qualifying those loops
-// rejects every useful starting point.
 struct Gains {
-  double rate_p{};
-  double rate_i{};
-  double rate_d{};
-  double angle_p{};
-  double angle_d{};
-  double pitch_rate_max_sps{};
+  double pitch_gain{};
+  double pitch_rate_gain{};
+  double pitch_accel_gain{};
   double velocity_damping_per_s{};
   double drive_max_acceleration_mps2{};
   double velocity_i{};
+  double velocity_control_cutoff_hz{};
 };
 
 struct CaseResult {
@@ -56,34 +50,30 @@ struct Candidate {
 
 Gains loaded_gains() {
   return {
-      .rate_p = ConfigPid::rate_P,
-      .rate_i = ConfigPid::rate_I,
-      .rate_d = ConfigPid::rate_D,
-      .angle_p = ConfigPid::angle_P,
-      .angle_d = ConfigPid::angle_D,
-      .pitch_rate_max_sps = ConfigPid::pitch_rate_max_sps,
-      .velocity_damping_per_s = ConfigPid::velocity_damping_per_s,
-      .drive_max_acceleration_mps2 = ConfigPid::drive_max_acceleration_mps2,
-      .velocity_i = ConfigPid::velocity_I,
+      .pitch_gain = ConfigPid::values.pitch_gain,
+      .pitch_rate_gain = ConfigPid::values.pitch_rate_gain,
+      .pitch_accel_gain = ConfigPid::values.pitch_accel_gain,
+      .velocity_damping_per_s = ConfigPid::values.velocity_damping_per_s,
+      .drive_max_acceleration_mps2 = ConfigPid::values.drive_max_acceleration_mps2,
+      .velocity_i = ConfigPid::values.velocity_I,
+      .velocity_control_cutoff_hz = ConfigPid::values.velocity_control_cutoff_hz,
   };
 }
 
 void apply_gains(const Gains& gains) {
-  ConfigPid::rate_P = gains.rate_p;
-  ConfigPid::rate_I = gains.rate_i;
-  ConfigPid::rate_D = gains.rate_d;
-  ConfigPid::rate_FF = 0.0;
-  ConfigPid::rate_I_lim = 0.15;
-  ConfigPid::angle_P = gains.angle_p;
-  ConfigPid::angle_D = gains.angle_d;
-  ConfigPid::pitch_rate_max_sps = gains.pitch_rate_max_sps;
-  ConfigPid::velocity_damping_per_s = gains.velocity_damping_per_s;
-  ConfigPid::drive_max_acceleration_mps2 = gains.drive_max_acceleration_mps2;
-  ConfigPid::velocity_I = gains.velocity_i;
-  ConfigPid::velocity_I_limit_deg = 4.0;
-  ConfigPid::balance_max_sps = 8000.0;
-  ConfigPid::drive_max_sps = 1200.0;
-  ConfigPid::turn_max_sps = 1600.0;
+  ConfigPidValues values = ConfigPid::values;
+  values.pitch_gain = gains.pitch_gain;
+  values.pitch_rate_gain = gains.pitch_rate_gain;
+  values.pitch_accel_gain = gains.pitch_accel_gain;
+  values.velocity_damping_per_s = gains.velocity_damping_per_s;
+  values.drive_max_acceleration_mps2 = gains.drive_max_acceleration_mps2;
+  values.velocity_I = gains.velocity_i;
+  values.velocity_I_limit_deg = 4.0;
+  values.balance_max_sps = 8000.0;
+  values.drive_max_sps = 1200.0;
+  values.turn_max_sps = 1600.0;
+  values.velocity_control_cutoff_hz = gains.velocity_control_cutoff_hz;
+  ConfigPid::values = values;
 }
 
 double case_cost(const SimulatorRunResult& result, const TransferAcceptance& acceptance,
@@ -147,27 +137,33 @@ void rank(std::vector<Candidate>& candidates) {
 
 std::string gains_key(const Gains& gains) {
   std::ostringstream output;
-  output << std::setprecision(12) << gains.rate_p << ':' << gains.rate_i << ':' << gains.rate_d
-         << ':' << gains.angle_p << ':' << gains.angle_d << ':' << gains.pitch_rate_max_sps << ':'
-         << gains.velocity_damping_per_s << ':' << gains.drive_max_acceleration_mps2 << ':'
-         << gains.velocity_i;
+  output << std::setprecision(12) << gains.pitch_gain << ':' << gains.pitch_rate_gain << ':'
+         << gains.pitch_accel_gain << ':' << gains.velocity_damping_per_s << ':'
+         << gains.drive_max_acceleration_mps2 << ':'
+         << gains.velocity_i << ':' << gains.velocity_control_cutoff_hz;
   return output.str();
 }
 
 Gains clamp_gains(Gains gains) {
-  gains.rate_p = std::clamp(gains.rate_p, 0.01, 0.50);
-  gains.rate_i = std::clamp(gains.rate_i, 0.0, 0.05);
-  gains.rate_d = std::clamp(gains.rate_d, 0.0, 0.05);
-  gains.angle_p = std::clamp(gains.angle_p, 4.0, 120.0);
-  gains.angle_d = std::clamp(gains.angle_d, 0.0, 0.60);
-  gains.pitch_rate_max_sps = std::clamp(gains.pitch_rate_max_sps, 800.0, 3200.0);
+  gains.pitch_gain = std::clamp(gains.pitch_gain, 0.0, 200000.0);
+  gains.pitch_rate_gain = std::clamp(gains.pitch_rate_gain, 0.0, 5000.0);
+  gains.pitch_accel_gain = std::clamp(gains.pitch_accel_gain, 0.0, 200.0);
   gains.velocity_damping_per_s = std::clamp(gains.velocity_damping_per_s, 0.0, 16.0);
   gains.drive_max_acceleration_mps2 = std::clamp(gains.drive_max_acceleration_mps2, 0.50, 3.0);
   gains.velocity_i = std::clamp(gains.velocity_i, 0.0, 0.005);
+  gains.velocity_control_cutoff_hz = std::clamp(gains.velocity_control_cutoff_hz, 0.5, 10.0);
   return gains;
 }
 
-enum class Field { RateP, RateI, RateD, AngleP, AngleD, Authority, Damping, Accel, VelocityI };
+enum class Field {
+  PitchGain,
+  PitchRateGain,
+  PitchAccelGain,
+  Damping,
+  Accel,
+  VelocityI,
+  VelocityCutoff
+};
 
 struct Move {
   Field field;
@@ -176,15 +172,13 @@ struct Move {
 
 Gains apply_move(Gains gains, const Move& move) {
   switch (move.field) {
-    case Field::RateP: gains.rate_p += move.delta; break;
-    case Field::RateI: gains.rate_i += move.delta; break;
-    case Field::RateD: gains.rate_d += move.delta; break;
-    case Field::AngleP: gains.angle_p += move.delta; break;
-    case Field::AngleD: gains.angle_d += move.delta; break;
-    case Field::Authority: gains.pitch_rate_max_sps += move.delta; break;
+    case Field::PitchGain: gains.pitch_gain += move.delta; break;
+    case Field::PitchRateGain: gains.pitch_rate_gain += move.delta; break;
+    case Field::PitchAccelGain: gains.pitch_accel_gain += move.delta; break;
     case Field::Damping: gains.velocity_damping_per_s += move.delta; break;
     case Field::Accel: gains.drive_max_acceleration_mps2 += move.delta; break;
     case Field::VelocityI: gains.velocity_i += move.delta; break;
+    case Field::VelocityCutoff: gains.velocity_control_cutoff_hz += move.delta; break;
   }
   return clamp_gains(gains);
 }
@@ -198,34 +192,19 @@ std::vector<Gains> coarse_candidates(const Gains& base) {
   std::vector<Gains> candidates;
   std::set<std::string> seen;
   add_unique(candidates, seen, base);
-  for (double value : {0.04, 0.06, 0.08, 0.10, 0.12, 0.14, 0.16, 0.18, 0.20, 0.24, 0.28}) {
+  for (double value : {4000.0, 6000.0, 8000.0, 10000.0, 14000.0, 20000.0}) {
     auto gains = base;
-    gains.rate_p = value;
+    gains.pitch_gain = value;
     add_unique(candidates, seen, gains);
   }
-  for (double value : {0.0, 0.001, 0.002, 0.005, 0.010, 0.020}) {
+  for (double value : {250.0, 400.0, 500.0, 700.0, 1000.0, 1400.0}) {
     auto gains = base;
-    gains.rate_i = value;
+    gains.pitch_rate_gain = value;
     add_unique(candidates, seen, gains);
   }
-  for (double value : {0.0, 0.001, 0.002, 0.005, 0.010, 0.020}) {
+  for (double value : {0.0, 2.0, 4.0, 8.0, 16.0, 32.0}) {
     auto gains = base;
-    gains.rate_d = value;
-    add_unique(candidates, seen, gains);
-  }
-  for (double value : {12.0, 16.0, 20.0, 24.0, 28.0, 32.0, 40.0, 48.0, 56.0, 64.0, 80.0}) {
-    auto gains = base;
-    gains.angle_p = value;
-    add_unique(candidates, seen, gains);
-  }
-  for (double value : {0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.35}) {
-    auto gains = base;
-    gains.angle_d = value;
-    add_unique(candidates, seen, gains);
-  }
-  for (double value : {800.0, 1200.0, 1600.0, 2000.0, 2400.0, 2800.0, 3200.0}) {
-    auto gains = base;
-    gains.pitch_rate_max_sps = value;
+    gains.pitch_accel_gain = value;
     add_unique(candidates, seen, gains);
   }
   for (double value : {0.0, 2.0, 3.0, 5.0, 7.0, 8.0, 10.0, 12.0, 15.0}) {
@@ -243,6 +222,11 @@ std::vector<Gains> coarse_candidates(const Gains& base) {
     gains.velocity_i = value;
     add_unique(candidates, seen, gains);
   }
+  for (double value : {1.0, 2.0, 3.0, 5.0}) {
+    auto gains = base;
+    gains.velocity_control_cutoff_hz = value;
+    add_unique(candidates, seen, gains);
+  }
   return candidates;
 }
 
@@ -250,15 +234,13 @@ std::vector<Gains> local_candidates(const std::vector<Candidate>& seeds, size_t 
                                     size_t limit, bool fine) {
   const double scale = fine ? 0.5 : 1.0;
   const std::vector<Move> moves = {
-      {Field::RateP, -0.02 * scale}, {Field::RateP, 0.02 * scale},
-      {Field::RateI, -0.002 * scale}, {Field::RateI, 0.002 * scale},
-      {Field::RateD, -0.002 * scale}, {Field::RateD, 0.002 * scale},
-      {Field::AngleP, -8.0 * scale}, {Field::AngleP, 8.0 * scale},
-      {Field::AngleD, -0.05 * scale}, {Field::AngleD, 0.05 * scale},
-      {Field::Authority, -400.0 * scale}, {Field::Authority, 400.0 * scale},
+      {Field::PitchGain, -1000.0 * scale}, {Field::PitchGain, 1000.0 * scale},
+      {Field::PitchRateGain, -50.0 * scale}, {Field::PitchRateGain, 50.0 * scale},
+      {Field::PitchAccelGain, -4.0 * scale}, {Field::PitchAccelGain, 4.0 * scale},
       {Field::Damping, -2.0 * scale}, {Field::Damping, 2.0 * scale},
       {Field::Accel, -0.25 * scale}, {Field::Accel, 0.25 * scale},
       {Field::VelocityI, -0.0005 * scale}, {Field::VelocityI, 0.0005 * scale},
+      {Field::VelocityCutoff, -0.5 * scale}, {Field::VelocityCutoff, 0.5 * scale},
   };
   std::vector<Gains> candidates;
   std::set<std::string> seen;
@@ -288,8 +270,8 @@ std::string failures(const TransferAcceptance& acceptance) {
 
 void write_artifacts(const std::filesystem::path& output_dir, const std::vector<Candidate>& candidates) {
   std::ofstream summary(output_dir / "candidate_summary.csv");
-  summary << "rank,candidate_id,round,rate_P,rate_I,rate_D,angle_P,angle_D,pitch_rate_max_sps,"
-             "velocity_damping_per_s,drive_max_acceleration_mps2,velocity_I,passed_cases,"
+  summary << "rank,candidate_id,round,pitch_gain,pitch_rate_gain,pitch_accel_gain,"
+             "velocity_damping_per_s,drive_max_acceleration_mps2,velocity_I,velocity_control_cutoff_hz,passed_cases,"
              "hard_failures,score\n";
   std::ofstream validation(output_dir / "validation_results.csv");
   validation << "rank,candidate_id,scenario,accepted,failures,peak_pitch_deg,tail_rms_pitch_deg,"
@@ -300,10 +282,11 @@ void write_artifacts(const std::filesystem::path& output_dir, const std::vector<
     const auto& candidate = candidates[rank_index];
     const auto& gains = candidate.gains;
     summary << rank_index + 1 << ',' << candidate.id << ',' << candidate.round << ','
-            << std::setprecision(12) << gains.rate_p << ',' << gains.rate_i << ',' << gains.rate_d << ','
-            << gains.angle_p << ',' << gains.angle_d << ',' << gains.pitch_rate_max_sps << ','
+            << std::setprecision(12) << gains.pitch_gain << ',' << gains.pitch_rate_gain << ','
+            << gains.pitch_accel_gain << ','
             << gains.velocity_damping_per_s << ',' << gains.drive_max_acceleration_mps2 << ','
-            << gains.velocity_i << ',' << candidate.passed_cases << ',' << candidate.hard_failures << ','
+            << gains.velocity_i << ',' << gains.velocity_control_cutoff_hz << ','
+            << candidate.passed_cases << ',' << candidate.hard_failures << ','
             << candidate.score << '\n';
     for (const auto& result : candidate.cases) {
       validation << rank_index + 1 << ',' << candidate.id << ',' << result.name << ','

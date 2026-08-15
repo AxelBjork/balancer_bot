@@ -4,48 +4,67 @@ const MIN_WINDOW_S = 5;
 const MAX_POINTS = 6000;
 const FRAME_INTERVAL_MS = 1000 / 30;
 const DISPLAY_SAMPLE_HZ = 50;
+const PERFORMANCE_WINDOW_S = 1.5;
 const JOYSTICK_REPEAT_MS = 100;
 const PID_FIELDS = [
-  ["rate_P", "Rate P"],
-  ["rate_I", "Rate I"],
-  ["rate_D", "Rate D"],
-  ["rate_I_lim", "Rate I limit"],
-  ["rate_FF", "Rate feed-forward"],
+  ["pitch_gain", "Pitch gain (SPS/rad)"],
+  ["pitch_rate_gain", "Pitch-rate gain (SPS/(rad/s))"],
+  ["pitch_accel_gain", "Pitch-acceleration gain (SPS/(rad/s²))"],
   ["drive_max_acceleration_mps2", "Drive acceleration (m/s²)"],
   ["velocity_damping_per_s", "Velocity damping (1/s)"],
-  ["velocity_I", "Velocity I"],
+  ["velocity_pitch_limit_deg", "Velocity pitch authority limit (deg)"],
+  ["velocity_I", "Velocity I (deg/(SPS·s))"],
   ["velocity_I_limit_deg", "Velocity I limit (deg)"],
-  ["angle_P", "Angle P"],
-  ["angle_D", "Angle D"],
-  ["pitch_rate_max_sps", "Pitch rate limit (steps/s)"],
+  ["velocity_control_cutoff_hz", "Velocity control cutoff (Hz)"],
   ["drive_max_sps", "Drive limit (steps/s)"],
   ["turn_max_sps", "Turn limit (steps/s)"],
   ["balance_max_sps", "Balance limit (steps/s)"],
 ];
 const groups = [
-  { id:"attitude", title:"Attitude", unit:"deg", series:[
-    {id:"pitch",label:"Pitch",path:"attitude.pitch_deg",decimals:2},
-    {id:"setpoint",label:"Setpoint",path:"attitude.pitch_setpoint_deg",decimals:2},
+  { id:"performance", title:"Balance performance", unit:"% reference", help:"1.5 s rolling windows. Pitch error is referenced to 1°, rate to 30°/s, command and velocity to 1000 SPS; lower is quieter.", series:[
+    {id:"composite",label:"Composite activity",derived:"performance.composite",decimals:1,width:3},
+    {id:"pitch",label:"Pitch error RMS",derived:"performance.pitch",decimals:1},
+    {id:"rate",label:"Rate RMS",derived:"performance.rate",decimals:1},
+    {id:"command",label:"Command RMS",derived:"performance.command",decimals:1},
+    {id:"velocity",label:"Velocity RMS",derived:"performance.velocity",decimals:1},
+    {id:"saturation",label:"Saturation",derived:"performance.saturation",decimals:1},
   ]},
-  { id:"rate", title:"Pitch rate", unit:"deg/s", series:[
-    {id:"gyro",label:"Gyro",path:"rate.gyro_pitch_rate_dps",decimals:2},
-    {id:"setpoint",label:"Setpoint",path:"rate.rate_setpoint_dps",decimals:2},
+  { id:"attitude", title:"Attitude", unit:"deg", help:"Fused body pitch versus the total target", series:[
+    {id:"fused",label:"Fused pitch",path:"attitude.fused_pitch_deg",decimals:2},
+    {id:"target",label:"Pitch target",path:"attitude.pitch_setpoint_deg",decimals:2},
   ]},
-  { id:"motion", title:"Motion", unit:"steps/s", series:[
+  { id:"rate", title:"Pitch rate / gyro diagnostics", unit:"deg/s", help:"Optional diagnostic view: compare the noisy raw gyro with the filtered control rate.", series:[
+    {id:"filtered",label:"Filtered control rate",path:"rate.filtered_pitch_rate_dps",decimals:2},
+    {id:"raw",label:"Raw gyro",path:"rate.gyro_pitch_rate_dps",decimals:2},
+  ]},
+  { id:"contributions", title:"Balance contributions", unit:"SPS", help:"Signed inner-loop terms and final balance command", series:[
+    {id:"pitch",label:"Pitch",path:"controller.pitch_feedback_sps",decimals:1},
+    {id:"rate",label:"Rate",path:"controller.pitch_rate_feedback_sps",decimals:1},
+    {id:"accel",label:"Acceleration",path:"controller.pitch_accel_feedback_sps",decimals:1},
     {id:"command",label:"Command",path:"controller.command_sps",decimals:1},
-    {id:"measured",label:"Measured",path:"motion.measured_velocity_sps",decimals:1},
   ]},
-  { id:"wheel-steps", title:"Wheel position", unit:"steps", series:[
+  { id:"outer-loop", title:"Outer loop / trim", unit:"deg", help:"Velocity and COM terms that shape the pitch target", series:[
+    {id:"target",label:"Pitch target",path:"attitude.pitch_setpoint_deg",decimals:2},
+    {id:"velocity-unclamped",label:"Velocity request",path:"controller.velocity_pitch_request_unclamped_deg",decimals:2},
+    {id:"velocity-limited",label:"Velocity limited",path:"controller.velocity_pitch_request_limited_deg",decimals:2},
+    {id:"total-unclamped",label:"Total target request",path:"controller.pitch_target_unclamped_deg",decimals:2},
+    {id:"trim",label:"COM trim",path:"controller.com_trim_deg",decimals:2},
+  ]},
+  { id:"motion", title:"Motion feedback", unit:"steps/s", help:"Commanded motion versus completed-step feedback", series:[
+    {id:"command",label:"Command",path:"controller.command_sps",decimals:1},
+    {id:"applied-left",label:"Applied left",path:"motion.left_slewed_sps",decimals:1},
+    {id:"applied-right",label:"Applied right",path:"motion.right_slewed_sps",decimals:1},
+    {id:"corrected",label:"Corrected velocity",path:"motion.corrected_axle_velocity_sps",decimals:1},
+    {id:"control-filtered",label:"Control-filtered velocity",path:"motion.velocity_control_sps",decimals:1},
+    {id:"completed",label:"Completed steps",path:"motion.raw_completed_velocity_sps",decimals:1},
+  ]},
+  { id:"wheel-steps", title:"Wheel position", unit:"steps", help:"Completed wheel-step counters", series:[
     {id:"left",label:"Left actual",path:"motion.left_actual_steps",decimals:0},
     {id:"right",label:"Right actual",path:"motion.right_actual_steps",decimals:0},
   ]},
-  { id:"controller", title:"Controller", unit:"deg", series:[
-    {id:"pitch",label:"Pitch error",path:"controller.pitch_error_deg",decimals:2},
-    {id:"damping",label:"Velocity damping",path:"controller.velocity_damping_acceleration_mps2",decimals:2},
-    {id:"trim",label:"COM trim",path:"controller.com_trim_deg",decimals:2},
-  ]},
 ];
-const paths = [...new Set(groups.flatMap(group => group.series.map(series => series.path)))];
+const derivedSeries = groups.flatMap(group => group.series.filter(series => series.derived));
+const paths = [...new Set(groups.flatMap(group => group.series.map(series => series.path).filter(Boolean)))];
 const colors = ["#5db6ff", "#ffbf5b", "#54d6a0", "#ff7f8a", "#cb9bff", "#63d7db"];
 const $ = selector => document.querySelector(selector);
 const numberAt = (value, path) => {
@@ -54,12 +73,13 @@ const numberAt = (value, path) => {
 };
 const store = {
   samples:[], plotSamples:[], x:[], values:new Map(),
+  derived:new Map(derivedSeries.map(series => [series.derived, []])),
   earliest:null, latest:null, origin:null,
   cacheStart:null, cacheEnd:null, decimated:false,
 };
 const state = {
   charts:new Map(), observers:[],
-  visible:new Set(groups.filter(group => group.id !== "wheel-steps").map(group => group.id)),
+  visible:new Set(["performance","attitude","contributions","outer-loop"]),
   seconds:DEFAULT_WINDOW_S, end:null, follow:true, source:null,
   events:null, paused:false, displayRun:0,
   navigator:null,
@@ -95,6 +115,58 @@ function isTelemetryGap(previous, current) {
   const cadence=state.source?.sample_cadence_s??1/DISPLAY_SAMPLE_HZ;
   return current.received_at-previous.received_at>Math.max(.1,cadence*5);
 }
+function rms(values) {
+  return values.length ? Math.sqrt(values.reduce((sum,value) => sum + value * value, 0) / values.length) : null;
+}
+function performanceValuesAt(index) {
+  const sample = store.plotSamples[index];
+  if (!sample) return null;
+  const end = sample.received_at;
+  const pitchErrors = [], rates = [], commands = [], velocities = [];
+  let saturationSamples = 0, samples = 0;
+  for (let cursor = index; cursor >= 0; cursor--) {
+    const candidate = store.plotSamples[cursor];
+    if (!candidate) break;
+    if (end - candidate.received_at > PERFORMANCE_WINDOW_S) break;
+    const pitchError = numberAt(candidate,"controller.pitch_error_deg") ??
+      ((numberAt(candidate,"attitude.fused_pitch_deg") ?? 0) -
+       (numberAt(candidate,"attitude.pitch_setpoint_deg") ?? 0));
+    const rate = numberAt(candidate,"rate.filtered_pitch_rate_dps");
+    const command = numberAt(candidate,"controller.command_sps");
+    const velocity = numberAt(candidate,"motion.corrected_axle_velocity_sps");
+    if (pitchError != null) pitchErrors.push(pitchError);
+    if (rate != null) rates.push(rate);
+    if (command != null) commands.push(command);
+    if (velocity != null) velocities.push(velocity);
+    const controllerSaturation = numberAt(candidate,"flags.saturation") ?? 0;
+    const actuatorSaturation = numberAt(candidate,"flags.actuator_saturation") ?? 0;
+    if (controllerSaturation !== 0 || actuatorSaturation !== 0) saturationSamples++;
+    samples++;
+  }
+  const pitch = rms(pitchErrors);
+  const rate = rms(rates);
+  const command = rms(commands);
+  const velocity = rms(velocities);
+  const normalized = [pitch == null ? null : pitch / 1.0 * 100,
+    rate == null ? null : rate / 30.0 * 100,
+    command == null ? null : command / 1000.0 * 100,
+    velocity == null ? null : velocity / 1000.0 * 100].filter(value => value != null);
+  return {
+    "performance.pitch": pitch == null ? null : pitch / 1.0 * 100,
+    "performance.rate": rate == null ? null : rate / 30.0 * 100,
+    "performance.command": command == null ? null : command / 1000.0 * 100,
+    "performance.velocity": velocity == null ? null : velocity / 1000.0 * 100,
+    "performance.composite": normalized.length ? rms(normalized) : null,
+    "performance.saturation": samples ? saturationSamples / samples * 100 : null,
+  };
+}
+function rebuildDerivedArrays() {
+  store.derived = new Map(derivedSeries.map(series => [series.derived, []]));
+  for (let index = 0; index < store.plotSamples.length; index++) {
+    const values = performanceValuesAt(index);
+    for (const series of derivedSeries) store.derived.get(series.derived).push(values?.[series.derived] ?? null);
+  }
+}
 function rebuildArrays(samples) {
   store.samples=samples;
   store.plotSamples=[]; store.x=[]; store.values=new Map(paths.map(path=>[path,[]]));
@@ -108,6 +180,7 @@ function rebuildArrays(samples) {
   });
   store.cacheStart=samples[0]?.received_at??null;
   store.cacheEnd=samples.at(-1)?.received_at??null;
+  rebuildDerivedArrays();
 }
 function replaceStore(body) {
   store.earliest=body.earliest;
@@ -140,9 +213,12 @@ function append(sample) {
   if(previous&&isTelemetryGap(previous,sample)){
     store.plotSamples.push(null);store.x.push(sample.received_at-.000001);
     for(const values of store.values.values())values.push(null);
+    for(const values of store.derived.values())values.push(null);
   }
   store.plotSamples.push(sample);store.x.push(sample.received_at);
   for (const path of paths) store.values.get(path).push(numberAt(sample,path));
+  const derivedValues = performanceValuesAt(store.plotSamples.length - 1);
+  for (const series of derivedSeries) store.derived.get(series.derived).push(derivedValues?.[series.derived] ?? null);
   store.earliest=store.earliest??sample.received_at;
   store.latest=store.cacheEnd=sample.received_at;
   store.cacheStart=store.samples[0]?.received_at??sample.received_at;
@@ -153,7 +229,11 @@ function append(sample) {
   updateMetrics(sample);
   scheduleRender();
 }
-function chartData(group) { return [store.x, ...group.series.map(series=>store.values.get(series.path))]; }
+function chartData(group) {
+  return [store.x, ...group.series.map(series => series.derived
+    ? store.derived.get(series.derived)
+    : store.values.get(series.path))];
+}
 function viewRange() {
   const origin=store.origin??0;
   const latest=store.latest??origin;
@@ -167,16 +247,20 @@ function viewRange() {
 }
 function updateMetrics(sample) {
   const status=state.status??{};
+  const statusNumber = name => typeof status[name]==="number" && Number.isFinite(status[name]) ? status[name] : null;
+  const sampleOrStatus = (path,statusName) => numberAt(sample,path) ?? statusNumber(statusName);
   const metrics = [
-    ["Pitch",numberAt(sample,"attitude.pitch_deg"),"deg",2],
-    ["Velocity",numberAt(sample,"motion.measured_velocity_sps"),"steps/s",1],
-    ["IMU age",typeof status.imu_age_ms==="number"?status.imu_age_ms:null,"ms",1],
-    ["Feedback age",typeof status.feedback_age_ms==="number"?status.feedback_age_ms:null,"ms",1],
-    ["UDP telemetry rate",typeof status.raw_packet_rate_hz==="number"?status.raw_packet_rate_hz:null,"Hz",1],
-    ["Plot sample rate",typeof status.display_rate_hz==="number"?status.display_rate_hz:null,"Hz",1],
+    ["Pitch",numberAt(sample,"attitude.fused_pitch_deg"),"deg",2],
+    ["Pitch rate",numberAt(sample,"rate.filtered_pitch_rate_dps"),"deg/s",1],
+    ["Balance command",numberAt(sample,"controller.command_sps"),"SPS",0],
+    ["Velocity",numberAt(sample,"motion.corrected_axle_velocity_sps"),"steps/s",0],
+    ["IMU age",sampleOrStatus("timing.imu_age_ms","imu_age_ms"),"ms",1],
+    ["Feedback age",sampleOrStatus("timing.feedback_age_ms","feedback_age_ms"),"ms",1],
   ];
   $("#metrics").innerHTML=metrics.map(([name,value,unit,decimals])=>`<div class="metric"><small>${name}</small><strong>${value==null?"—":`${value.toFixed(decimals)} ${unit}`}</strong></div>`).join("");
-  $("#events-text").textContent=`controller 0x${sample.flags.controller.toString(16)} · saturation 0x${sample.flags.saturation.toString(16)} · actuator 0x${sample.flags.actuator.toString(16)}`;
+  $("#events-text").textContent=sample?.flags
+    ? `controller 0x${sample.flags.controller.toString(16)} · saturation 0x${sample.flags.saturation.toString(16)} · actuator 0x${sample.flags.actuator.toString(16)}`
+    : "No telemetry received.";
 }
 function render() {
   const [start,end]=viewRange();
@@ -251,27 +335,37 @@ async function loadDetail(start, end) {
   mergeStore(body);
   scheduleRender();
 }
-function cursor(group, sample, card) {
+function cursor(group, sample, index, card) {
   if(!sample)return;
-  const values=group.series.map(series=>`<span class="cursor-value"><b>${series.label}</b><output>${(numberAt(sample,series.path)??0).toFixed(series.decimals)}</output></span>`).join("");
+  const values=group.series.map(series=>{
+    const value = series.derived
+      ? store.derived.get(series.derived)?.[index]
+      : numberAt(sample,series.path);
+    return `<span class="cursor-value"><b>${series.label}</b><output>${(value??0).toFixed(series.decimals)}</output></span>`;
+  }).join("");
   (card.querySelector(".cursor")).innerHTML=`<span class="cursor-time">${formatCursorTime(sample.received_at)}</span><span class="cursor-values">${values}</span>`;
 }
 function create(group) {
   const card=document.createElement("article"); card.className="plot-card";
-  card.innerHTML=`<div class="plot-title"><div><h2>${group.title}</h2><span>${group.unit}</span></div><div class="legend">${group.series.map((series,index)=>`<span><i style="background:${colors[index]}"></i>${series.label}</span>`).join("")}</div></div><div class="chart" aria-label="${group.title} chart"></div><div class="cursor"><span class="cursor-time">—</span><span>Move across chart to compare values.</span></div>`;
+  card.dataset.plotGroup=group.id;
+  card.innerHTML=`<div class="plot-title"><div class="plot-heading"><h2>${group.title}</h2><span>${group.unit}</span>${group.help?`<small>${group.help}</small>`:""}</div><div class="legend">${group.series.map((series,index)=>`<span><i style="background:${colors[index]}"></i>${series.label}</span>`).join("")}</div></div><div class="chart" aria-label="${group.title} chart"></div><div class="cursor"><span class="cursor-time">—</span><span>Move across chart to compare values.</span></div>`;
   $("#plots").append(card);
   const root=card.querySelector(".chart");
+  const chartHeight=group.id==="performance"?250:278;
   const chart=new uPlot({
-    width:Math.max(root.clientWidth,1),height:278,scales:{x:{time:false}},
+    width:Math.max(root.clientWidth,1),height:chartHeight,scales:{x:{time:false}},
     axes:[
       {stroke:"#d5deea",grid:{stroke:"#42566e",width:1},values:(_u,values)=>values.map(formatAxisTime)},
       {stroke:"#d5deea",grid:{stroke:"#42566e",width:1},label:group.unit,labelFont:"12px system-ui"},
     ],
-    series:[{},...group.series.map((series,index)=>({label:series.label,stroke:colors[index],width:2}))],
+    series:[{},...group.series.map((series,index)=>({label:series.label,stroke:colors[index],width:series.width??2,show:series.show!==false}))],
     cursor:{sync,drag:{x:false,y:false}},
-    hooks:{setCursor:[plot=>cursor(group,store.plotSamples[plot.cursor.idx??-1]??undefined,card)]},
+    hooks:{setCursor:[plot=>{
+      const index=plot.cursor.idx??-1;
+      cursor(group,store.plotSamples[index]??undefined,index,card);
+    }]},
   },chartData(group),root);
-  const observer=new ResizeObserver(()=>chart.setSize({width:Math.max(root.clientWidth,1),height:278}));
+  const observer=new ResizeObserver(()=>chart.setSize({width:Math.max(root.clientWidth,1),height:chartHeight}));
   observer.observe(root); state.observers.push(observer); state.charts.set(group.id,chart);
 }
 function rebuild() {
@@ -478,7 +572,7 @@ function stream() {
     }
     if(typeof status.display_run==="number"&&status.display_run!==state.displayRun)resetForDisplayRun(status.display_run);
     if(state.source)setStatus({...state.source,connection_state:String(status.connection_state??""),connection_message:String(status.connection_message??"")});
-    if(store.samples.length)updateMetrics(store.samples.at(-1));
+    updateMetrics(store.samples.at(-1)??null);
   });
   state.events.onerror=()=>{state.events?.close();state.events=null;if(!state.paused&&!document.hidden)window.setTimeout(stream,2000);};
 }
@@ -526,6 +620,7 @@ function navigatorFinish() {
 }
 function layout() {
   $("#app").innerHTML = `<div class="dashboard-shell"><aside class="left-rail"><div class="brand"><div class="brand-mark"><img src="/balancer-mark.svg" alt="Balancer Bot"></div><div><span class="brand-kicker">LOCAL CONSOLE</span><h1>Balancer</h1><p id="source" class="subtle">Live source · rpi4</p></div></div><div class="source-actions"><span class="rail-label">Data source</span><label class="file-button source-file">${icon("upload")}<span>Open CSV capture</span><input id="csv-file" type="file" accept=".csv,text/csv"></label></div><div class="rail-signature"><span></span>LOCAL TELEMETRY</div></aside><main class="dashboard-main"><section id="metrics" class="metrics"></section><section class="workspace"><div class="workspace-head"><div class="workspace-title">${icon("activity")}<h2>Telemetry</h2></div><div class="plot-controls"><div class="tabs">${groups.map(group=>`<button data-group="${group.id}" class="${state.visible.has(group.id)?"active":""}">${group.title}</button>`).join("")}</div><div class="toolbar-divider"></div><div class="ranges"><span id="timeline-state">Following latest</span><button id="follow" class="primary" disabled>Follow latest</button></div></div></div><div class="navigator"><div class="navigator-labels"><span id="navigator-start">0.0 s</span><strong>History window · <em id="window-duration">15 s</em></strong><span id="navigator-end">15.0 s</span></div><div id="navigator-track" class="navigator-track"><div id="navigator-fill" class="navigator-fill"></div><div id="navigator-window" class="navigator-window"><i class="handle left-handle"></i><span>DRAG</span><i class="handle right-handle"></i></div></div></div><div id="plots" class="plot-grid"></div></section></main><aside class="right-rail"><section class="run-controls" aria-label="Run controls"><div class="run-label"><span>${icon("radio")}Run control</span><strong id="connection" class="connection offline">Idle · waiting</strong></div><div class="run-buttons"><button id="deploy" class="secondary">${icon("rocket")}Deploy</button><button id="start" class="primary">${icon("play")}Start</button><button id="abort" class="danger">${icon("abort")}Abort</button></div><output id="operation-result" class="operation-result" aria-live="polite">Ready.</output></section><section class="run-notes"><span class="rail-label">Session</span><p>Start begins a new raw capture file and clears the display clock. Abort freezes presentation while capture stays passive.</p></section><section class="events"><strong>Latched flags</strong><span id="events-text">No telemetry received.</span></section></aside></div>`;
+  updateMetrics(null);
   document.querySelectorAll("[data-group]").forEach(button=>button.onclick=()=>{const id=button.dataset.group;state.visible.has(id)?state.visible.delete(id):state.visible.add(id);button.classList.toggle("active");rebuild();});
   $("#follow").addEventListener("click",()=>{state.follow=true;state.end=null;scheduleRender();if(store.decimated){const [start,end]=viewRange();void loadDetail(start,end);}});
   (["deploy","start","abort"]).forEach(id=>$("#"+id).addEventListener("click",()=>void operation(id)));

@@ -45,7 +45,24 @@ struct DOC_DESC(
 };
 
 struct DOC_DESC(
-    "Complete in-memory PID override from the dashboard. This message intentionally excludes the "
+    "User-supervised pitch-authority diagnostic command. When active, the controller disables "
+    "drive and velocity pitch contributions, freezes COM learning at the supplied trim, and "
+    "feeds the validated direct target through the normal final pitch-target and safety path. "
+    "Targets are limited to 0, +/-1, +/-2, or +/-4 degrees.")
+    PitchAuthorityDiagnosticCommandPayload {
+  uint32_t request_id;
+  uint8_t active;
+  uint8_t reserved0;
+  uint16_t reserved1;
+  double target_deg;
+  double com_trim_deg;
+  // Active commands expire unless refreshed. A bounded duration keeps a lost
+  // diagnostic client from leaving a direct target selected indefinitely.
+  double duration_s;
+};
+
+struct DOC_DESC(
+    "Complete in-memory controller override from the dashboard. This message intentionally excludes the "
     "file schema version and controller enable mode.") PidConfigOverridePayload {
   uint32_t request_id;
   uint32_t reserved;
@@ -71,7 +88,9 @@ struct DOC_DESC(
     "Detailed controller telemetry streamed to the active UDP runtime peer and used by the "
     "telemetry "
     "server for logging and live visibility. "
-    "Actuator saturation bit 0 is left slew limiting and bit 1 is right slew limiting.")
+    "Actuator saturation bit 0 is left slew limiting and bit 1 is right slew limiting. "
+    "trim_learning_block_reason is zero when COM-trim learning is enabled; otherwise it uses "
+    "the ComTrimLearningBlockReason enum.")
     SystemTelemetryPayload {
   uint32_t run_id;
   uint32_t controller_fault_flags;
@@ -94,8 +113,6 @@ struct DOC_DESC(
   float com_trim_deg;
   float pitch_error_deg;
   float pitch_sp_deg;
-  float rate_setpoint_dps;
-  float rate_error_dps;
   float left_target_sps;
   float right_target_sps;
   float left_slewed_sps;
@@ -107,6 +124,48 @@ struct DOC_DESC(
   uint32_t actuator_saturation_flags;
   bool command_saturated;
   bool actuator_fault;
+  uint8_t trim_learning_enabled;
+  uint8_t trim_learning_block_reason;
+  uint16_t trim_learning_reserved;
+  float pitch_feedback_sps;
+  float pitch_rate_feedback_sps;
+  float pitch_accel_feedback_sps;
+  float velocity_pitch_target_deg;
+  float balance_unclamped_sps;
+  float active_pitch_gain_sps_per_rad;
+  float active_pitch_rate_gain_sps_per_rad_s;
+  float active_pitch_accel_gain_sps_per_rad_s2;
+  float active_velocity_pitch_gain_rad_per_sps;
+  float active_velocity_control_cutoff_hz;
+  float active_velocity_observer_cutoff_hz;
+  float active_com_trim_gain_deg_per_sps_s;
+  float active_com_trim_limit_deg;
+  float active_accel_lpf_hz;
+  float active_gyro_lpf_hz;
+  float active_gyro_derivative_lpf_hz;
+  uint64_t active_config_generation;
+  // Outer-loop authority and COM acquisition diagnostics appended after the
+  // established telemetry payload for compatibility with older readers.
+  float velocity_pitch_request_unclamped_deg;
+  float velocity_pitch_request_limited_deg;
+  float pitch_target_unclamped_deg;
+  float active_velocity_pitch_limit_deg;
+  float trim_quiet_rate_rms_dps;
+  bool velocity_authority_limited;
+  bool trim_trusted;
+  bool trim_learning_allowed;
+  uint8_t pitch_target_limit_reason;
+  float velocity_control_sps;
+  // Direct pitch-authority diagnostic state appended for future capture
+  // reconstruction. Existing target/contribution fields remain the
+  // production path and are not repurposed for this mode.
+  bool pitch_authority_diagnostic_active;
+  float pitch_authority_diagnostic_target_deg;
+  float pitch_authority_diagnostic_com_trim_deg;
+  float pitch_authority_diagnostic_remaining_s;
+  uint32_t pitch_authority_diagnostic_request_id;
+  float pitch_authority_diagnostic_command_age_ms;
+  float completed_step_acceleration_sps2;
 };
 
 struct SimulatorTelemetryPayload {
@@ -165,6 +224,7 @@ constexpr uint8_t kSimDisturbanceStep = 0;
 constexpr uint8_t kSimDisturbanceRamp = 1;
 constexpr uint8_t kSimDisturbanceHoldBias = 2;
 inline constexpr std::size_t kMaxSimJoySegments = 4;
+inline constexpr std::size_t kMaxSimPitchAuthoritySegments = 12;
 
 struct DOC_DESC("One deterministic joystick segment scheduled on the simulator timeline.")
     SimJoySegmentPayload {
@@ -189,12 +249,25 @@ struct DOC_DESC(
   double duration_s;
   double force_n;
   double com_bias_rad;
-  double force_n_end;
+    double force_n_end;
   double com_bias_rad_end;
 };
 
 struct DOC_DESC(
-    "Request from Python to start a single simulator run. Only one run may be active at a time.")
+    "One scheduled direct pitch-authority diagnostic segment. The simulator refreshes the "
+    "short-lived diagnostic command while this segment is active so the production safety and "
+    "attitude-target path is exercised without enabling drive, velocity, or COM learning.")
+    SimPitchAuthoritySegmentPayload {
+  double start_s;
+  double duration_s;
+  double target_deg;
+  double com_trim_deg;
+};
+
+struct DOC_DESC(
+    "Request from Python to start a single simulator run. Only one run may be active at a time. "
+    "The optional velocity-estimator impairment fields affect only the controller-facing "
+    "velocity feedback; plant telemetry remains ground truth.")
     SimStartRunPayload {
   uint32_t run_id;
   uint8_t physics_profile;
@@ -229,6 +302,20 @@ struct DOC_DESC(
   std::array<ipc::SimDisturbancePayload, kMaxSimDisturbances> disturbances;
   std::array<ipc::SimJoySegmentPayload, kMaxSimJoySegments> joy_segments;
   std::array<char, 128> pid_config_path;
+  double initial_velocity_mps;
+  double velocity_estimator_bias_mps;
+  double velocity_estimator_bias_drift_mps_per_s;
+  double velocity_estimator_scale;
+  double velocity_estimator_latency_s;
+  // Initial body rate is simulator-only state used for reproducing measured
+  // startup/recovery transients. It has no hardware wire consumer.
+  double initial_pitch_rate_dps;
+  std::array<ipc::SimPitchAuthoritySegmentPayload, kMaxSimPitchAuthoritySegments>
+      pitch_authority_segments;
+  // Test-only deterministic refresh dropout used to verify the diagnostic
+  // watchdog. A zero duration leaves the scheduled refresh path intact.
+  double pitch_authority_refresh_dropout_start_s;
+  double pitch_authority_refresh_dropout_duration_s;
 };
 
 struct DOC_DESC("Immediate simulator reply indicating whether a start request was accepted.")
@@ -285,6 +372,11 @@ struct MessageTraits<MsgId::JoystickCommand> {
 template <>
 struct MessageTraits<MsgId::ExternalJoystickCommand> {
   using Payload = ipc::JoystickCommandPayload;
+};
+
+template <>
+struct MessageTraits<MsgId::PitchAuthorityDiagnosticCommand> {
+  using Payload = ipc::PitchAuthorityDiagnosticCommandPayload;
 };
 
 template <>
