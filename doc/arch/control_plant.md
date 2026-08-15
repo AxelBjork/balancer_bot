@@ -18,6 +18,15 @@ The authoritative nominal mass, geometry, and inertia values are defined by
 from the physical-pendulum procedure documented in the Pi runtime guide; these values are
 intentionally not duplicated here.
 
+The controller-design reference simulator uses `J = 0.0045 kg m^2`, `cart_damping = 1 N s/m`,
+and direct applied-force authority. Its purpose is to evaluate the controller against the
+identified rigid-body dynamics without assigning unmeasured phase-position parameters physical
+meaning. The `simple_force` profile adds a declared first-order force-response approximation for
+historical comparison. The richer phase/tire profile remains a diagnostic stress model: its
+`motor_tau_s`, phase envelope, queued pulses, tire, and force-limit parameters are not currently
+calibrated well enough to select production gains. In particular, an aggregate 20 ms response
+must not be interpreted as the measured approximately 1.95 ms electrical motor time constant.
+
 The variables and equations through the transfer-function section form a compact, linearized audit
 model. The implementation mapping below describes the richer nonlinear simulator and controller;
 assumptions in the compact model should not be read as claims that the simulator has no slip,
@@ -42,12 +51,12 @@ actuator lag, or left/right asymmetry.
 - $a_{\mathrm{nominal}}$: jerk-limited requested forward acceleration;
   $v_{\mathrm{axle}}$: corrected axle velocity derived from completed motor steps
 - $k_v$: corrected-velocity damping gain
-- $\theta_{\mathrm{ref}}$, $\dot{\theta}_{\mathrm{ref}}$: requested pitch angle and pitch rate;
-  $\theta_{\mathrm{COM}}$: bounded center-of-mass trim
-- $\theta_f$, $\dot{\theta}_f$: filtered pitch angle and rate; $k_{\mathrm{pitch}}$ and
-  $k_{\mathrm{pitch\_rate}}$: inner attitude-shaping gains
-- $u_{\mathrm{norm}}$, $u_{\mathrm{sps}}$, $k_{\mathrm{output}}$: normalized PX4 output,
-  wheel command in steps/s, and its conversion scale
+- $\theta_{\mathrm{ref}}$: requested pitch angle; $\theta_{\mathrm{COM}}$: bounded
+  center-of-mass trim
+- $\theta_f$, $\dot{\theta}_f$, $\ddot{\theta}_f$: filtered pitch, rate, and acceleration
+  signals used by the explicit attitude controller
+- $K_{\mathrm{pitch}}$, $K_{\mathrm{rate}}$, $K_{\mathrm{accel}}$: independent state-feedback
+  gains; $u_{\mathrm{sps}}$: common wheel command in steps/s
 - $\psi$: absolute wheel angle; $u_{wheel} = r\psi$: absolute circumferential wheel motion;
   $q_m$: rotor motion relative to the chassis; $q_{steps,L/R}$: completed motor-step counts used
   by the observer; $\theta_0$: configured initial pitch
@@ -211,8 +220,9 @@ The project has several intentional rates rather than one universal loop rate:
 - `PhysicsTick` and the inner rate controller run at the nominal 400 Hz control cadence.
 - The completed-step axle-velocity observer, velocity filter update, jerk limiter, and COM-trim
   integration run in the 100 Hz outer-loop interval.
-- The configured velocity low-pass has a 10 Hz cutoff; that is a filter characteristic, not a
-  separate scheduler.
+- The completed-step observer retains its 10 Hz measurement filter; the production controller
+  adds a separate configurable velocity-control pole, currently 3 Hz, so observer bandwidth and
+  translational-control bandwidth are not conflated.
 - The motor runner keeps a separate 50 ms completed-step average for actuator diagnostics; the
   controller does not use that diagnostic average as its feedback observer.
 
@@ -246,29 +256,31 @@ The drive-generated portion is bounded by the configured acceleration equilibriu
 `atan2(drive_max_acceleration_mps2, g)`: this is the nonlinear form of the small-angle
 condition `theta_ddot = 0`. The bounded COM trim remains available at zero drive command.
 
-Inner attitude shaping:
+Explicit attitude state feedback:
+
+The production controller keeps pitch stiffness, pitch-rate damping, and optional acceleration
+feedback independent:
 
 > $$
-> \dot\theta_{\mathrm{ref}} = k_{\mathrm{pitch}}(\theta_{\mathrm{ref}} - \theta) - k_{\mathrm{pitch\_rate}}\dot\theta_f
+> e_\theta = \theta - \theta_{\mathrm{ref}},\\
+> u_{\mathrm{sps}} = K_{\mathrm{pitch}}e_\theta
+> + K_{\mathrm{rate}}\dot\theta_f
+> + K_{\mathrm{accel}}\ddot\theta_f.
 > $$
 
-PX4 rate loop:
+The plus signs are the robot-forward motor-boundary form: positive wheel acceleration produces
+negative initial body pitch acceleration. They are equivalent to negative feedback after including
+that mechanical polarity. `pitch_gain`, `pitch_rate_gain`, and `pitch_accel_gain` are expressed in
+SPS/rad, SPS/(rad/s), and SPS/(rad/s²). Acceleration feedback is supported but zero in the checked-in
+default. The separate `velocity_control_cutoff_hz` pole keeps translational feedback below the fast
+attitude path.
 
-- it tracks `theta_dot_ref` and produces the normalized motor command
+Motor scaling and safety:
 
-Motor scaling:
-
-- the outer loop requests motion only through pitch; it adds no direct wheel-speed feed-forward
-- the normalized PX4 output is converted to wheel command using the fixed drivetrain conversion
-  `Config::steps_per_rev`, so `1.0` is one wheel revolution per second
-
-> $$
-> u_{\mathrm{sps}} = -u_{\mathrm{norm}}\,\mathrm{steps\_per\_rev}
-> $$
-
-- `pitch_rate_max_sps` bounds the attitude loop's pitch-rate request after conversion through the
-  configured steps-per-revolution; `balance_max_sps` is the independent hard actuator clamp, then
-  turn allocation consumes only the remaining balance authority
+- the outer loop requests motion only through the pitch reference; it adds no direct wheel-speed
+  feed-forward
+- `balance_max_sps` is the hard common-mode clamp, then turn allocation consumes only remaining
+  balance authority; `drive_max_sps` and `turn_max_sps` remain explicit safety/allocation limits
 - the motor runner limits command slope to 200,000 SPS/s and applies pulses through two synchronous
   2.5 ms frames (one active and one queued); telemetry separates the target, continuous post-slew
   command, and quantized active-frame rate

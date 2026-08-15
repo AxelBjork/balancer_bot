@@ -384,7 +384,6 @@ def summarize_rows(rows: list[dict[str, Any]], metadata: dict[str, Any] | None =
         "pitch_rate_dps",
         "u_sps",
         "vel_error",
-        "rate_setpoint_dps",
         "f_cmd",
         "f_app",
     ):

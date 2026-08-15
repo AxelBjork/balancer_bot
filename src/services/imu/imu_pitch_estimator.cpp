@@ -11,6 +11,12 @@ namespace {
 using Settings = ImuPitchEstimator::Settings;
 using TimePoint = ImuPitchEstimator::TimePoint;
 
+// Locked inner-loop vibration rejection.  This is deliberately an IMU
+// implementation detail rather than a live PID/configuration parameter: the
+// controller should always receive the same conditioned pitch-rate signal.
+constexpr double kProductionGyroNotchHz = 29.0;
+constexpr double kProductionGyroNotchBandwidthHz = 10.0;
+
 double seconds_between(TimePoint newer, TimePoint older) {
   return std::chrono::duration<double>(newer - older).count();
 }
@@ -95,8 +101,8 @@ ImuPitchEstimator::Settings ImuPitchEstimator::Settings::production() {
       .gyro_derivative_lpf_hz = Config::imu_gyro_derivative_lpf_hz,
       .attitude_correction_hz = Config::imu_attitude_correction_hz,
       .gravity_innovation_limit_rad = Config::imu_gravity_innovation_limit_rad,
-      .gyro_notch_hz = Config::imu_gyro_notch_hz,
-      .gyro_notch_bandwidth_hz = Config::imu_gyro_notch_bandwidth_hz,
+      .gyro_notch_hz = kProductionGyroNotchHz,
+      .gyro_notch_bandwidth_hz = kProductionGyroNotchBandwidthHz,
       .max_sample_gap_periods = Config::imu_max_sample_gap_periods,
       .imu_height_m = Config::imu_height_m,
       .specific_force_min_mps2 = Config::imu_specific_force_min_mps2,

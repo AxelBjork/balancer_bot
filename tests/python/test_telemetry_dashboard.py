@@ -92,6 +92,13 @@ def test_dashboard_decodes_generated_payload_and_latches_flags():
         controller_saturation_flags=0x04,
         actuator_saturation_flags=0x03,
         actuator_fault=1.0,
+        trim_learning_enabled=1,
+        trim_learning_block_reason=0,
+        pitch_feedback_sps=11.0,
+        pitch_rate_feedback_sps=12.0,
+        active_pitch_gain_sps_per_rad=6000.0,
+        active_pitch_rate_gain_sps_per_rad_s=500.0,
+        active_config_generation=99,
     )
 
     assert state.accept(packet, received_at=10.0)
@@ -101,6 +108,12 @@ def test_dashboard_decodes_generated_payload_and_latches_flags():
     assert telemetry["motion"]["left_actual_steps"] == 123
     assert telemetry["motion"]["right_actual_steps"] == 87
     assert telemetry["controller"]["command_sps"] == 123.5
+    assert telemetry["controller"]["trim_learning_enabled"] is True
+    assert telemetry["controller"]["trim_learning_block_reason"] == 0
+    assert telemetry["controller"]["pitch_feedback_sps"] == 11.0
+    assert telemetry["controller"]["pitch_rate_feedback_sps"] == 12.0
+    assert telemetry["controller"]["active_pitch_gain_sps_per_rad"] == 6000.0
+    assert telemetry["controller"]["active_config_generation"] == 99
     assert "raw" not in telemetry
     assert status["latched_flags"] == {
         "controller": 0x12,
@@ -130,17 +143,31 @@ def test_pid_session_exposes_numeric_fields_and_applies_complete_snapshot():
     assert not state.run_active
 
     initial = controller.snapshot()
+    assert PID_CONFIG_FIELDS == (
+        "pitch_gain",
+        "pitch_rate_gain",
+        "pitch_accel_gain",
+        "drive_max_acceleration_mps2",
+        "velocity_damping_per_s",
+        "velocity_pitch_limit_deg",
+        "velocity_I",
+        "velocity_I_limit_deg",
+        "velocity_control_cutoff_hz",
+        "drive_max_sps",
+        "turn_max_sps",
+        "balance_max_sps",
+    )
     assert set(initial["values"]) == set(PID_CONFIG_FIELDS)
     assert set(initial["baseline"]) == set(PID_CONFIG_FIELDS)
     values = dict(initial["values"])
-    values["rate_P"] = 0.23
+    values["pitch_gain"] = 6000.0
     result = controller.update(values)
     assert result["ok"] and result["sent"]
     message_id, encoded = receiver.send_message.call_args.args
     assert message_id == 3012
     payload = PidConfigOverridePayload.unpack(encoded)
     assert payload.request_id == result["request_id"]
-    assert payload.values.rate_P == 0.23
+    assert payload.values.pitch_gain == 6000.0
 
     controller.accept_status(
         PidConfigStatusPayload(
@@ -153,7 +180,7 @@ def test_pid_session_exposes_numeric_fields_and_applies_complete_snapshot():
     )
     snapshot = controller.snapshot()
     assert snapshot["last_status"]["state"] == "applied"
-    assert snapshot["values"]["rate_P"] == 0.23
+    assert snapshot["values"]["pitch_gain"] == 6000.0
     assert state.snapshot(0.0)[1]["pid_status"]["accepted"] is True
     assert "values" not in state.snapshot(0.0)[1]["pid_status"]
     assert "values" not in snapshot["last_status"]
@@ -164,14 +191,14 @@ def test_pid_session_exposes_numeric_fields_and_applies_complete_snapshot():
         controller.update(invalid)
 
 
-def test_pid_payloads_share_nested_block_without_changing_wire_size():
+def test_controller_payloads_share_nested_block_with_current_wire_size():
     values = ConfigPidValuesPayload(**{name: float(index + 1) for index, name in enumerate(PID_CONFIG_FIELDS)})
     override = PidConfigOverridePayload(request_id=9, reserved=0, values=values)
     status = PidConfigStatusPayload(request_id=9, accepted=1, result_code=0, reserved=0, values=values)
 
-    assert ConfigPidValuesPayload.WIRE_SIZE == 120
-    assert len(override.pack()) == 128
-    assert len(status.pack()) == 128
+    assert ConfigPidValuesPayload.WIRE_SIZE == 96
+    assert len(override.pack()) == 104
+    assert len(status.pack()) == 104
     assert PidConfigOverridePayload.unpack(override.pack()).values == values
     assert PidConfigStatusPayload.unpack(status.pack()).values == values
 
@@ -806,6 +833,12 @@ def test_dashboard_serves_assets_and_sse_to_multiple_clients():
         script = script.read()
         assert b"EventSource" in script
         assert b"setData" in script
+        assert b"updateMetrics(null)" in script
+        assert b"updateMetrics(store.samples.at(-1)??null)" in script
+        assert b'numberAt(sample,"motion.corrected_axle_velocity_sps")' in script
+        assert b'sampleOrStatus("timing.imu_age_ms","imu_age_ms")' in script
+        assert b'sampleOrStatus("timing.feedback_age_ms","feedback_age_ms")' in script
+        assert b'motion.measured_velocity_sps' not in script
         assert b"function liveConnection(status)" in script
         assert b"telemetry_connected===true" in script
         assert b"pi_ready===true" in script
@@ -827,7 +860,14 @@ def test_dashboard_serves_assets_and_sse_to_multiple_clients():
         assert b'id="pid-load"' in script
         assert b">Load<" in script
         assert b'title:"Command"' not in script
-        assert b'group.id !== "wheel-steps"' in script
+        assert b'new Set(["performance","attitude","contributions","outer-loop"])' in script
+        assert b'Balance performance' in script
+        assert b'Composite activity' in script
+        assert b'PERFORMANCE_WINDOW_S = 1.5' in script
+        assert b'Filtered control rate' in script
+        assert b'Balance contributions' in script
+        assert b'Pitch rate / gyro diagnostics' in script
+        assert b'Raw sensor angle' not in script
         assert b"PID_MIN_STEP = 0.0001" in script
         assert b"Math.round(raw/magnitude)" in script
         assert b'<div class="pid-actions"><button id="pid-apply"' in script

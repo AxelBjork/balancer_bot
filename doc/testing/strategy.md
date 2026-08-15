@@ -13,8 +13,8 @@ These terms refer to different layers of the same validation workflow:
 
 - **Scenario catalog** — the canonical named scenario definitions used by direct tests, the
   simulator service, tuning, and fuzzing.
-- **Transfer matrix** — the current ten-case catalog used for transfer validation: four nominal
-  cases plus six conservative margin cases.
+- **Transfer matrix** — the current seven-case catalog used for transfer validation: four nominal
+  cases plus three actuator-stress cases.
 - **Acceptance function** — the shared pass/fail decision applied to one completed scenario. It
   checks hard failures such as falls, faults, non-finite values, excessive pitch, tail RMS, and
   continuous saturation.
@@ -24,12 +24,12 @@ These terms refer to different layers of the same validation workflow:
   passes.
 - **Direct-versus-UDP equivalence** — a separate focused protocol check. The current Python test
   compares the direct engine and simulator UDP wrapper tick-for-tick for transfer catalog index `1`;
-  it is not an all-ten-case equivalence proof. The test’s inline scenario comment currently names a
+  it is not an all-seven-case equivalence proof. The test’s inline scenario comment currently names a
   different case than the catalog order, so use the numeric index until that source comment is
   corrected.
 
 When other pages say “acceptance set,” “transfer matrix,” or “acceptance catalog,” they mean the
-same canonical ten-case transfer workflow unless they explicitly describe a different focused test
+same canonical seven-case transfer workflow unless they explicitly describe a different focused test
 set. The [control and simulator notes](../notes/control_and_simulator.md) explain how to interpret
 the resulting artifacts; the [current status](../status.md) reports confidence rather than
 redefining the gate.
@@ -55,7 +55,7 @@ redefining the gate.
 - `control_loop_test.cpp`
   controller v2 equations, signs, cadence, saturation, reset paths, and completed-pulse feedback
 - `simulator_runner_test.cpp`
-  sign conventions, engine equivalence, all ten transfer scenarios, plant/IMU parameter A/B
+  sign conventions, engine equivalence, all seven transfer scenarios, plant/IMU parameter A/B
   coverage, and physical invariants
 - `time_service_test.cpp`
   exact tick publication and runtime monotonicity
@@ -142,7 +142,7 @@ Key files:
 
 ## Transfer Acceptance and Artifacts
 
-The focused four-nominal-plus-six-conservative transfer matrix runs in-process in `balancer_tests`.
+The focused four-nominal-plus-three-actuator-stress transfer matrix runs in-process in `balancer_tests`.
 Direct tests, the simulator service, tuner, and fuzz harnesses obtain scenarios from
 `transfer_scenario_set()`; direct
 tests, the tuner, and UDP transfer runs use `evaluate_transfer_scenario()` for the hard acceptance
@@ -153,16 +153,15 @@ The human-readable matrix is:
 | Profile | Release cases | Push case | Drive case | Duration |
 | --- | --- | --- | --- | --- |
 | Nominal | `nominal_release_pos`, `nominal_release_neg` | `nominal_push_symmetric` | `nominal_drive_bidirectional` | 20 s for release/push; 23 s for drive |
-| Slow/weak margin | `slow_weak_release` | `slow_weak_push_symmetric` | `slow_weak_drive_bidirectional` | 20 s for release/push; 23 s for drive |
-| Fast/strong margin | `fast_strong_release` | `fast_strong_push_symmetric` | `fast_strong_drive_bidirectional` | 20 s for release/push; 23 s for drive |
+| Actuator stress | `actuator_stress_release` | `actuator_stress_push_symmetric` | `actuator_stress_drive_bidirectional` | 20 s for release/push; 23 s for drive |
 
 The source of truth is [`transfer_scenario_set()`](../../tests/simulator/simulator_runner.cpp), and
 the shared hard decision is [`evaluate_transfer_scenario()`](../../tests/simulator/simulator_runner.cpp).
 The separate `simulator_scenario_set()` APIs contain required, capability, slow-push, and tuning
 scenarios; they are not additional transfer-matrix cases.
 
-The direct C++ tests evaluate all ten cases with the shared acceptance function. The
-`run_transfer_validation.py` report runs all ten through the UDP wrapper, but its per-case `passed`
+The direct C++ tests evaluate all seven cases with the shared acceptance function. The
+`run_transfer_validation.py` report runs all seven through the UDP wrapper, but its per-case `passed`
 field comes from a separate direct-summary acceptance call; an unexpected UDP completion reason is
 also recorded as a failure. That report therefore combines UDP transport evidence with direct-model
 acceptance and should not be described as an all-tick direct/UDP equivalence result. The focused

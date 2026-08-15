@@ -397,8 +397,8 @@ TEST(ImuPitchEstimatorTest, ProductionDefaultLeavesLeverArmCorrectionDisabled) {
   EXPECT_DOUBLE_EQ(settings.attitude_correction_hz, 0.5);
   EXPECT_NEAR(rad2deg(settings.gravity_innovation_limit_rad), 2.5, 1e-12);
   ASSERT_FALSE(settings.lever_arm_correction_enabled);
-  EXPECT_EQ(settings.gyro_notch_hz, 0.0);
-  EXPECT_EQ(settings.gyro_notch_bandwidth_hz, 0.0);
+  EXPECT_DOUBLE_EQ(settings.gyro_notch_hz, 29.0);
+  EXPECT_DOUBLE_EQ(settings.gyro_notch_bandwidth_hz, 10.0);
   ImuPitchEstimator estimator;
   constexpr double angular_accel = 20.0;
   const auto specific_force = imu_accel(0.0, 0.0, angular_accel);
@@ -414,6 +414,27 @@ TEST(ImuPitchEstimatorTest, ProductionDefaultLeavesLeverArmCorrectionDisabled) {
   EXPECT_NEAR(result.sample.angle_rad,
               std::atan2(-specific_force[0], -specific_force[2]), 1e-5);
   EXPECT_GT(std::abs(result.sample.angle_rad), deg2rad(5.0));
+}
+
+TEST(ImuPitchEstimatorTest, ProductionNotchSuppressesLockedHardwareBand) {
+  const auto settings = ImuPitchEstimator::Settings::production();
+  ImuPitchEstimator notched(settings);
+
+  auto unnotched_settings = settings;
+  unnotched_settings.gyro_notch_hz = 0.0;
+  unnotched_settings.gyro_notch_bandwidth_hz = 0.0;
+  ImuPitchEstimator unnotched(unnotched_settings);
+
+  const auto with_notch = measure_sine(
+      notched, 29.0, 1.0, gyro_input(),
+      [](const ImuSample& sample) { return sample.gyro_rad_s; });
+  const auto without_notch = measure_sine(
+      unnotched, 29.0, 1.0, gyro_input(),
+      [](const ImuSample& sample) { return sample.gyro_rad_s; });
+
+  EXPECT_TRUE(with_notch.finite);
+  EXPECT_TRUE(without_notch.finite);
+  EXPECT_LT(with_notch.gain, 0.1 * without_notch.gain);
 }
 
 TEST(ImuPitchEstimatorTest, EnabledLeverArmCorrectionRemovesSteadyRateTerm) {

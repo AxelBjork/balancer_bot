@@ -134,7 +134,8 @@ void print_profile_audit(PhysicsProfile profile) {
 }
 
 void print_usage(const char* argv0) {
-  std::cout << "Usage: " << argv0 << " [--all] [--profile simplified|realistic]\n";
+  std::cout << "Usage: " << argv0
+            << " [--all] [--profile simplified|realistic|actuator_stress|ideal_force|simple_force]\n";
 }
 
 }  // namespace
@@ -162,6 +163,12 @@ int main(int argc, char** argv) {
         selected_profile = PhysicsProfile::Simplified;
       } else if (value == "realistic") {
         selected_profile = PhysicsProfile::Realistic;
+      } else if (value == "actuator_stress") {
+        selected_profile = PhysicsProfile::ActuatorStress;
+      } else if (value == "ideal_force") {
+        selected_profile = PhysicsProfile::IdealForce;
+      } else if (value == "simple_force") {
+        selected_profile = PhysicsProfile::SimpleForce;
       } else {
         print_usage(argv[0]);
         return EXIT_FAILURE;
@@ -176,6 +183,9 @@ int main(int argc, char** argv) {
   if (all_profiles) {
     print_profile_audit(PhysicsProfile::Simplified);
     print_profile_audit(PhysicsProfile::Realistic);
+    print_profile_audit(PhysicsProfile::ActuatorStress);
+    print_profile_audit(PhysicsProfile::IdealForce);
+    print_profile_audit(PhysicsProfile::SimpleForce);
     return EXIT_SUCCESS;
   }
 

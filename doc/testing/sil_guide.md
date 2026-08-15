@@ -84,7 +84,7 @@ pytest --build
 ## Important Boundaries
 
 - `sil_app` plus the Python SIL client form a smoke/integration path for the production UDP boundary, not the main stability benchmark
-- the primary balance/stability gate is the in-process ten-scenario transfer matrix
+- the primary balance/stability gate is the in-process seven-scenario transfer matrix
 - focused UDP coverage verifies exact all-tick equivalence for transfer catalog index `1` between
   the direct engine and the simulator-wrapper UDP endpoint on port `9001`, plus terminal summary
   independence from telemetry stride

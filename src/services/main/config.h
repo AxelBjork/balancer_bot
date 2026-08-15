@@ -28,8 +28,6 @@ struct Config {
   // Gravity anchors DC pitch while the gyro carries short-term motion.
   static constexpr double imu_attitude_correction_hz = 0.5;
   static constexpr double imu_gravity_innovation_limit_rad = 2.5 * M_PI / 180.0;
-  static constexpr double imu_gyro_notch_hz = 0.0;
-  static constexpr double imu_gyro_notch_bandwidth_hz = 0.0;
   static constexpr double imu_max_sample_gap_periods = 4.0;
   static constexpr double imu_height_m = 0.070;
   static constexpr bool imu_lever_arm_correction_enabled = false;
@@ -71,11 +69,6 @@ static_assert(Config::imu_attitude_correction_hz > 0.0 &&
               Config::imu_attitude_correction_hz < Config::sampling_hz / 2.0);
 static_assert(Config::imu_gravity_innovation_limit_rad > 0.0 &&
               Config::imu_gravity_innovation_limit_rad < M_PI);
-static_assert((Config::imu_gyro_notch_hz == 0.0 &&
-               Config::imu_gyro_notch_bandwidth_hz == 0.0) ||
-              (Config::imu_gyro_notch_hz > 0.0 &&
-               Config::imu_gyro_notch_hz < Config::sampling_hz / 2.0 &&
-               Config::imu_gyro_notch_bandwidth_hz > 0.0));
 static_assert(Config::imu_max_sample_gap_periods > 1.0);
 static_assert(Config::imu_height_m >= 0.0);
 static_assert(Config::imu_specific_force_min_mps2 > 0.0);

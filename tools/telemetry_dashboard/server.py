@@ -47,39 +47,35 @@ PID_CONFIG_OVERRIDE_ID = 3012
 PID_CONFIG_STATUS_ID = 3013
 JOYSTICK_PULSE_S = 0.100
 PID_CONFIG_FIELDS = (
-    "rate_P",
-    "rate_I",
-    "rate_D",
-    "rate_I_lim",
-    "rate_FF",
+    "pitch_gain",
+    "pitch_rate_gain",
+    "pitch_accel_gain",
     "drive_max_acceleration_mps2",
     "velocity_damping_per_s",
+    "velocity_pitch_limit_deg",
     "velocity_I",
     "velocity_I_limit_deg",
-    "angle_P",
-    "angle_D",
-    "pitch_rate_max_sps",
+    "velocity_control_cutoff_hz",
     "drive_max_sps",
     "turn_max_sps",
     "balance_max_sps",
 )
 PID_CONFIG_NONNEGATIVE_FIELDS = frozenset(
     {
-        "rate_P",
-        "rate_I",
-        "rate_D",
-        "rate_I_lim",
-        "rate_FF",
         "drive_max_acceleration_mps2",
         "velocity_damping_per_s",
+        "velocity_pitch_limit_deg",
         "velocity_I",
         "velocity_I_limit_deg",
-        "angle_P",
-        "angle_D",
         "turn_max_sps",
+        "pitch_gain",
+        "pitch_rate_gain",
+        "pitch_accel_gain",
     }
 )
-PID_CONFIG_POSITIVE_FIELDS = frozenset({"pitch_rate_max_sps", "drive_max_sps", "balance_max_sps"})
+PID_CONFIG_POSITIVE_FIELDS = frozenset(
+    {"drive_max_sps", "balance_max_sps", "velocity_control_cutoff_hz"}
+)
 PID_CONFIG_LIMIT_FIELDS = frozenset({"drive_max_sps", "turn_max_sps", "balance_max_sps"})
 DISPLAY_HZ = 50.0
 DISPLAY_HISTORY_SECONDS = 120.0
@@ -216,6 +212,15 @@ def _validate_pid_values(values: dict[str, Any], *, require_complete: bool = Tru
     for name in PID_CONFIG_LIMIT_FIELDS:
         if name in normalized and normalized[name] > 12000.0:
             raise ValueError(f"PID field {name} exceeds the supported 12000 limit.")
+    for name in (
+        "pitch_gain_sps_per_rad",
+        "pitch_rate_gain_sps_per_rad_s",
+        "pitch_accel_gain_sps_per_rad_s2",
+    ):
+        if name in normalized and normalized[name] > 1.0e6:
+            raise ValueError(f"PID field {name} exceeds the supported range.")
+    if normalized.get("velocity_pitch_limit_deg", 0.0) > 90.0:
+        raise ValueError("PID field velocity_pitch_limit_deg exceeds the supported 90 degree range.")
     return normalized
 
 
@@ -279,11 +284,11 @@ def telemetry_view(sample: SystemTelemetryPayload, sequence: int, received_at: f
             "pitch_rate_dps": sample.pitch_rate_dps,
             "filtered_pitch_rate_dps": sample.filtered_pitch_rate_dps,
             "gyro_pitch_rate_dps": sample.gyro_pitch_rate_dps,
-            "rate_setpoint_dps": sample.rate_setpoint_dps,
         },
         "motion": {
             "raw_completed_velocity_sps": sample.raw_completed_velocity_sps,
             "corrected_axle_velocity_sps": sample.corrected_axle_velocity_sps,
+            "velocity_control_sps": sample.velocity_control_sps,
             "left_target_sps": sample.left_target_sps,
             "right_target_sps": sample.right_target_sps,
             "left_slewed_sps": sample.left_slewed_sps,
@@ -295,8 +300,36 @@ def telemetry_view(sample: SystemTelemetryPayload, sequence: int, received_at: f
             "command_sps": sample.u_sps,
             "nominal_acceleration_mps2": sample.nominal_acceleration_mps2,
             "pitch_error_deg": sample.pitch_error_deg,
+            "pitch_feedback_sps": sample.pitch_feedback_sps,
+            "pitch_rate_feedback_sps": sample.pitch_rate_feedback_sps,
+            "pitch_accel_feedback_sps": sample.pitch_accel_feedback_sps,
+            "balance_unclamped_sps": sample.balance_unclamped_sps,
             "velocity_damping_acceleration_mps2": sample.velocity_damping_acceleration_mps2,
+            "velocity_pitch_target_deg": sample.velocity_pitch_target_deg,
+            "velocity_pitch_request_unclamped_deg": sample.velocity_pitch_request_unclamped_deg,
+            "velocity_pitch_request_limited_deg": sample.velocity_pitch_request_limited_deg,
+            "velocity_authority_limited": bool(sample.velocity_authority_limited),
+            "pitch_target_unclamped_deg": sample.pitch_target_unclamped_deg,
+            "pitch_target_limit_reason": sample.pitch_target_limit_reason,
             "com_trim_deg": sample.com_trim_deg,
+            "trim_learning_enabled": bool(sample.trim_learning_enabled),
+            "trim_learning_block_reason": sample.trim_learning_block_reason,
+            "trim_trusted": bool(sample.trim_trusted),
+            "trim_learning_allowed": bool(sample.trim_learning_allowed),
+            "trim_quiet_rate_rms_dps": sample.trim_quiet_rate_rms_dps,
+            "active_pitch_gain_sps_per_rad": sample.active_pitch_gain_sps_per_rad,
+            "active_pitch_rate_gain_sps_per_rad_s": sample.active_pitch_rate_gain_sps_per_rad_s,
+            "active_pitch_accel_gain_sps_per_rad_s2": sample.active_pitch_accel_gain_sps_per_rad_s2,
+            "active_velocity_pitch_gain_rad_per_sps": sample.active_velocity_pitch_gain_rad_per_sps,
+            "active_velocity_control_cutoff_hz": sample.active_velocity_control_cutoff_hz,
+            "active_velocity_observer_cutoff_hz": sample.active_velocity_observer_cutoff_hz,
+            "active_com_trim_gain_deg_per_sps_s": sample.active_com_trim_gain_deg_per_sps_s,
+            "active_com_trim_limit_deg": sample.active_com_trim_limit_deg,
+            "active_velocity_pitch_limit_deg": sample.active_velocity_pitch_limit_deg,
+            "active_accel_lpf_hz": sample.active_accel_lpf_hz,
+            "active_gyro_lpf_hz": sample.active_gyro_lpf_hz,
+            "active_gyro_derivative_lpf_hz": sample.active_gyro_derivative_lpf_hz,
+            "active_config_generation": sample.active_config_generation,
         },
         "timing": {"imu_age_ms": sample.age_ms, "feedback_age_ms": sample.motor_feedback_age_ms},
         "flags": {
@@ -830,7 +863,6 @@ def load_playback_csv(path: Path) -> list[tuple[float, dict[str, Any]]]:
                 "pitch_rate_dps": _number(row, "pitch_rate_dps", "plant_pitch_rate_dps"),
                 "filtered_pitch_rate_dps": _number(row, "filtered_pitch_rate_dps", "pitch_rate_dps"),
                 "gyro_pitch_rate_dps": _number(row, "gyro_pitch_rate_dps"),
-                "rate_setpoint_dps": _number(row, "rate_setpoint_dps"),
             },
             "motion": {
                 "raw_completed_velocity_sps": _number(row, "raw_completed_velocity_sps", "vel_error"),

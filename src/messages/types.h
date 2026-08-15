@@ -34,15 +34,45 @@ enum ControllerFaultFlag : uint32_t {
 enum ControllerSaturationFlag : uint32_t {
   ControllerSaturationNone = 0,
   ControllerSaturationPitch = 1u << 0,
-  ControllerSaturationRate = 1u << 1,
   ControllerSaturationBalance = 1u << 2,
   ControllerSaturationTurn = 1u << 3,
+};
+
+// Bitmask explaining why the total pitch target was limited. A velocity bit
+// means the dedicated velocity contribution was limited before composition;
+// the total bit means the final pitch safety envelope was also reached.
+enum PitchTargetLimitReason : uint8_t {
+  PitchTargetLimitNone = 0,
+  PitchTargetLimitVelocityAuthority = 1u << 0,
+  PitchTargetLimitTotalPitch = 1u << 1,
 };
 
 enum ActuatorSaturationFlag : uint32_t {
   ActuatorSaturationNone = 0,
   ActuatorSaturationLeftSlew = 1u << 0,
   ActuatorSaturationRightSlew = 1u << 1,
+};
+
+// Why COM-trim learning is currently disabled.  A value of None means that
+// learning is enabled for the current controller cycle.
+enum ComTrimLearningBlockReason : uint8_t {
+  ComTrimLearningBlockNone = 0,
+  ComTrimLearningBlockCommand = 1,
+  ComTrimLearningBlockNominalAcceleration = 2,
+  ComTrimLearningBlockPreviousControllerSaturation = 3,
+  ComTrimLearningBlockPitchSetpointSaturation = 4,
+  // Legacy value retained so older telemetry captures remain decodable. The
+  // explicit state-feedback controller has no rate-setpoint stage.
+  ComTrimLearningBlockLegacyRateSetpointSaturation = 5,
+  ComTrimLearningBlockMoving = 6,
+  ComTrimLearningBlockQuietDwell = 7,
+  ComTrimLearningBlockBalanceSaturation = 8,
+  // Value 9 remains reserved for compatibility with older diagnostic captures.
+  ComTrimLearningBlockFault = 10,
+  // The velocity loop requested more pitch than its dedicated authority limit.
+  ComTrimLearningBlockVelocityAuthorityLimited = 11,
+  // Direct pitch-authority diagnostics explicitly freeze COM learning.
+  ComTrimLearningBlockPitchAuthorityDiagnostic = 12,
 };
 
 // ---- Telemetry (controller diagnostics) ----
@@ -59,10 +89,11 @@ struct Telemetry {
   double nominal_acceleration_mps2{};
   double raw_completed_velocity_sps{};
   double corrected_axle_velocity_sps{};
+  double velocity_control_sps{};
   double velocity_damping_acceleration_mps2{};
   double com_trim_deg{};
-  // Compatibility aliases for in-process test harnesses.  Wire payloads use
-  // only the v4 names above.
+  // Compatibility aliases for in-process test harnesses. Wire payloads use
+  // the current telemetry names above.
   double target_vel_sps{};
   double vel_error{};
   double vel_p_term_deg{};
@@ -70,12 +101,51 @@ struct Telemetry {
   double measured_vel_sps{};
   double pitch_error_deg{};
   double pitch_sp_deg{};
-  double rate_sp_dps{};
-  double rate_error_dps{};
   bool command_saturated{};
   bool actuator_fault{};
   uint32_t controller_fault_flags{};
   uint32_t controller_saturation_flags{};
+  bool trim_learning_enabled{};
+  uint8_t trim_learning_block_reason{ComTrimLearningBlockFault};
+  // Explicit attitude/contribution diagnostics for the production
+  // pitch/rate/acceleration state-feedback controller.
+  double pitch_feedback_sps{};
+  double pitch_rate_feedback_sps{};
+  double pitch_accel_feedback_sps{};
+  double velocity_pitch_target_deg{};
+  double balance_unclamped_sps{};
+  double active_pitch_gain_sps_per_rad{};
+  double active_pitch_rate_gain_sps_per_rad_s{};
+  double active_pitch_accel_gain_sps_per_rad_s2{};
+  double active_velocity_pitch_gain_rad_per_sps{};
+  double active_velocity_control_cutoff_hz{};
+  double active_velocity_observer_cutoff_hz{};
+  double active_com_trim_gain_deg_per_sps_s{};
+  double active_com_trim_limit_deg{};
+  double active_velocity_pitch_limit_deg{};
+  double active_accel_lpf_hz{};
+  double active_gyro_lpf_hz{};
+  double active_gyro_derivative_lpf_hz{};
+  uint64_t active_config_generation{};
+  // Outer-loop diagnostics. These fields make velocity authority and COM-trim
+  // acquisition state reconstructable from hardware telemetry.
+  double velocity_pitch_request_unclamped_deg{};
+  double velocity_pitch_request_limited_deg{};
+  bool velocity_authority_limited{};
+  double pitch_target_unclamped_deg{};
+  uint8_t pitch_target_limit_reason{};
+  bool trim_trusted{};
+  bool trim_learning_allowed{};
+  double trim_quiet_rate_rms_dps{};
+  // Future direct pitch-authority captures explicitly identify the diagnostic
+  // target and the frozen trim used to compose the final attitude target.
+  bool pitch_authority_diagnostic_active{};
+  double pitch_authority_diagnostic_target_deg{};
+  double pitch_authority_diagnostic_com_trim_deg{};
+  double pitch_authority_diagnostic_remaining_s{};
+  uint32_t pitch_authority_diagnostic_request_id{};
+  double pitch_authority_diagnostic_command_age_ms{};
+  double completed_step_acceleration_sps2{};
 };
 
 using ConfigPidValues = ipc::ConfigPidValuesPayload;
@@ -88,40 +158,24 @@ enum class ConfigPidValidationCode : uint8_t {
   OutOfRange = 4,
 };
 
-// ---- PID Configuration ----
-// Runtime-configurable PID gains loaded from pid.conf
-// Default values are set here, can be overridden at runtime by load()
+// ---- Controller Configuration ----
+// Runtime-configurable controller values loaded from pid.conf. The process starts with a
+// zero-initialized block; the application must load pid.conf before enabling control.
 #define BALANCER_STRINGIFY_DETAIL(value) #value
 #define BALANCER_STRINGIFY(value) BALANCER_STRINGIFY_DETAIL(value)
-#define BALANCER_PID_CONFIG_VERSION 6
+#define BALANCER_PID_CONFIG_VERSION 10
 
 struct ConfigPid {
   inline static constexpr int config_version = BALANCER_PID_CONFIG_VERSION;
   inline static constexpr char config_version_marker[] =
       "BALANCER_PID_CONFIG_VERSION=" BALANCER_STRINGIFY(BALANCER_PID_CONFIG_VERSION);
 
-  // PX4 Rate PID (inner loop, pitch axis only)
-  inline static double rate_P = 0.25;
-  inline static double rate_I = 0.0;
-  inline static double rate_D = 0.0;
-  inline static double rate_I_lim = 0.15;
-  inline static double rate_FF = 0.0;
-
-  // Acceleration command / corrected-velocity damping / stationary COM trim
-  // (100 Hz with a 10 Hz velocity filter), angle-to-rate, and allocation.
-  // velocity_I is learned only at a stationary command and remains the COM trim limit.
-  inline static double drive_max_acceleration_mps2 = 1.5;
-  inline static double velocity_damping_per_s = 8.0;
-  inline static double velocity_I = 0.0010;
-  inline static double velocity_I_limit_deg = 4.0;
-  inline static double angle_P = 12.0;
-  inline static double angle_D = 0.25;
-  inline static double pitch_rate_max_sps = 2000.0;
-  inline static double drive_max_sps = 1200.0;
-  inline static double turn_max_sps = 1600.0;
-  inline static double balance_max_sps = 12000.0;
-  // Optional safety mode for passive IMU/telemetry measurements.
-  inline static bool controller_enabled = true;
+  // One complete runtime snapshot avoids a second set of scalar storage and makes
+  // configuration updates atomic at the configuration-block boundary.
+  inline static ConfigPidValues values{};
+  // Optional safety mode for passive IMU/telemetry measurements. This is intentionally
+  // separate because it is not part of the numeric live-override payload.
+  inline static bool controller_enabled{};
 
   static std::string resolve_path(const std::string& default_path) {
     if (const char* env = std::getenv("BALANCER_PID_CONF")) {

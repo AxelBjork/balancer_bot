@@ -10,10 +10,12 @@ The control pipeline is:
 
 1. joystick forward input becomes a bounded, jerk-limited nominal acceleration
 2. a 100 Hz observer corrects common completed motor steps for chassis pitch, filters velocity at
-   10 Hz, then applies velocity damping and a smooth speed-envelope taper to form the pitch setpoint
-3. the pitch error plus filtered pitch-rate damping become a pitch-rate setpoint
-4. the 400 Hz PX4 `RateControl` produces the normalized balance correction
-5. the balance correction becomes the common wheel command in steps per second
+   10 Hz, then applies a separate 3 Hz velocity-control filter, velocity damping, and a smooth
+   speed-envelope taper to form the translational pitch request
+3. the velocity pitch request is bounded by `velocity_pitch_limit_deg`; the bounded request,
+   joystick lean target, and COM trim are summed into one pitch target
+4. explicit pitch, pitch-rate, and filtered pitch-acceleration feedback produces the balance command
+5. the balance command becomes the common wheel command in steps per second
 6. balance-priority turn allocation produces the left/right stepper commands
 
 Important details:
@@ -28,11 +30,12 @@ Important details:
 - missing, stale, or future IMU data, fallover, and actuator faults reset all controller state,
   command zero, and publish the corresponding controller-fault bitmask
 - electrical direction inversion exists only inside the stepper boundary
-- the active outer-loop parameters are `drive_max_acceleration_mps2`,
-  `velocity_damping_per_s`, `velocity_I`, `angle_P`, and `angle_D`; in the compact model,
-  `velocity_damping_per_s` supplies `k_v`, `angle_P`/`angle_D` represent the inner pitch-shaping
-  terms, and `velocity_I` is the bounded stationary COM-trim integrator; jerk limiting is a fixed
-  internal safety value, and maximum drive lean is derived from the configured acceleration
+- the active controller parameters are `pitch_gain`, `pitch_rate_gain`, `pitch_accel_gain`,
+  `velocity_damping_per_s`, `velocity_pitch_limit_deg`, `velocity_control_cutoff_hz`, and
+  `velocity_I`; the three attitude
+  gains are independently expressed in SPS/rad, SPS/(rad/s), and SPS/(rad/s²), while `velocity_I`
+  is the bounded stationary COM-trim integrator; jerk limiting is a fixed internal safety value,
+  and maximum drive lean is derived from the configured acceleration
 
 ## Why Tick-Driven Control Matters
 
@@ -58,12 +61,38 @@ The deterministic simulator consists of:
 - `balancer_simulator`
   the CLI/front-end for manual runs and artifact generation
 
-The plant model exposes two named profiles and aggregate hardware-nominal parameters:
+The plant model exposes a nominal profile, an explicit actuator-stress profile, and direct-force
+reference profiles used for controller architecture validation:
 
 - `simplified`
   tuned to be a fast sanity/stability baseline
 - `realistic`
-  closer to the current hardware-oriented assumptions and used for the main representative ladder
+  the nominal hardware-oriented phase/tire plant retained for diagnostic stress reporting
+- `ideal_force`
+  the primary controller-design reference: direct applied wheel force with the current physical
+  body model, bypassing the unidentified phase-position actuator layer
+- `simple_force`
+  a secondary direct-force reference with a declared aggregate force lag for historical comparison
+- `actuator_stress`
+  the same low-damping physical baseline with a 20 ms aggregate actuator response for robustness
+  diagnostics; it is not the measured electrical motor time constant and is not a second PID target
+
+The nominal physical baseline is `J = 0.0045 kg m^2` and `cart_damping = 1 N s/m`. The inertia is
+the current passive-pendulum estimate in `HardwareNominal`; cart damping remains the original
+baseline because no hardware identification justifies replacing it. The nominal actuator response
+is provisionally `motor_tau_s = 0.002 s`, anchored to the approximately 1.95 ms electrical time
+constant. Pulse-frame scheduling, slew limiting, phase error, and tire coupling are modeled
+separately. The stress profile uses `0.020 s` only as an end-to-end aggregate robustness case;
+its high phase/motor saturation duty cycle is diagnostic evidence of model uncertainty, not a
+physical motor constant. The phase/tire profile is not the tuning authority for the shared
+controller default.
+
+The pure `actuator_stress` profile with this nominal damping is intentionally diagnostic rather
+than a hard acceptance target: the 20 ms aggregate lag can still drive the current common
+controller beyond the plausible actuator envelope. The maintained stress scenarios add modest
+mass, inertia, traction, and damping variation to exercise robustness without redefining the
+nominal plant. If the pure profile remains unstable, that is recorded as an actuator-model
+contradiction to resolve, not a reason to create a second PID default.
 
 The plant equations use total translating mass `T`, first mass moment about the axle `H`, and pitch
 inertia about the axle `J`. Their authoritative nominal values and supported scenario scales live
@@ -77,12 +106,39 @@ quantization enters through scheduled emitted position. This keeps the two actua
 separate instead of applying frame quantization twice.
 Feedback semantics are mode-specific: hardware uses actual completed steps, the direct simulator
 uses quantized simulated completed steps, and SIL uses a commanded-speed proxy because it has no
-plant or motor runner. The corrected-axle outer reference is the clamped `theta_ref` used by the
-controller:
+plant or motor runner. The corrected-axle outer-loop equations are:
 
 > $$
-> \theta_{ref} = \operatorname{clamp}\left(\operatorname{atan2}(a_{nominal} - k_v v_{axle},g) + \theta_{COM}\right).
+> v_c = \operatorname{LPF}_{3\,Hz}\left(\operatorname{LPF}_{10\,Hz}\left(\frac{\Delta q + N\Delta\theta}{\Delta t}\right)\right)
 > $$
+>
+> $$
+> a_v = -D_v\,v_c\,s_{step},\qquad
+> \theta_v = \operatorname{clamp}\left(\operatorname{atan2}(a_v,g),\ \pm\theta_{v,max}\right)
+> $$
+>
+> $$
+> \theta_{target} = \operatorname{clamp}\left(
+> \operatorname{atan2}(a_{nominal},g) + \theta_v + \theta_{COM},\ \pm\theta_{max}\right).
+> $$
+
+Here `D_v` is `velocity_damping_per_s`, `s_step` is `Config::meters_per_step`, and
+`theta_v,max` is the dedicated `velocity_pitch_limit_deg` authority boundary. A zero dedicated
+limit is retained only as an explicit diagnostic escape hatch; the checked-in default is 4°.
+The final `theta_max` remains the independently derived total pitch safety limit (about 7.26° at
+the current 1.25 m/s² drive-acceleration limit).
+
+COM trim is updated in degrees as
+
+> $$\Delta\theta_{COM} = -I_v\,v_{axle}\,\Delta t.$$
+
+Learning requires neutral command and zero nominal acceleration, and is blocked by velocity
+authority limiting, total pitch-target or balance saturation, prior-cycle controller saturation,
+or the motion state. An untrusted trim can acquire while the body is gently settling, but a
+substantial velocity/rate/pitch excursion pauses acquisition as well. Once a quiet dwell has
+established `trim_trusted`, motion freezes the estimate and a later quiet dwell re-enables slow
+maintenance learning. Quiet rate is a 2 Hz low-frequency RMS metric for this state machine only;
+it does not alter fused pitch, rate feedback, or the locked 29 Hz attitude notch.
 
 Because the inverted-pendulum plant has an inverse response, a forward command may initially
 reduce or reverse motor output to acquire positive lean before settling into forward travel.
@@ -151,11 +207,11 @@ contains a second plant or wall-clock joystick path.
 
 ### One checked-in baseline, separate tuning outputs
 
-The checked-in `pid.conf` is the default profile loaded by both the hardware runtime and the
-simulator. Simulator-oriented tuning can select another input or write candidate profiles under
-`build/sim`, which lets an experiment preserve its own provenance without silently changing the
-hardware default. A simulator candidate is never an authorization to apply that profile to the
-physical robot; hardware validation remains a separate step.
+The checked-in `pid.conf` is the single preliminary state-feedback controller profile loaded by
+both the hardware runtime and the simulator. Simulator-oriented tuning can select another input or
+write candidate profiles under `build/sim`, which lets an experiment preserve its provenance
+without silently changing the shared default. A simulator candidate is never an authorization to
+apply that profile to the physical robot; hardware validation remains a separate step.
 
 ### Real motor feedback matters on hardware
 
@@ -173,8 +229,8 @@ The rewritten simulator/controller path no longer treats "did not fall" as the m
 ## What to Watch During Future Tuning
 
 - avoid claiming simulator success from SIL smoke tests alone
-- score the complete ten-case matrix (four nominal plus six conservative margin cases) and reject
-  any candidate with a hard safety failure
+- select gains on the direct-force/reference profiles, then report the phase/tire profile as a
+  diagnostic stress result rather than silently tuning around its unidentified parameters
 - preserve artifact generation whenever changing controller or plant behavior
 
 For the current confidence level and remaining caveats, read [Current Status](../status.md).

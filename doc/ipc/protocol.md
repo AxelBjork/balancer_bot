@@ -11,8 +11,8 @@ This document is generated from the balancer runtime message registry and the re
 It describes the reflected runtime message bus used by the balancer services, including the production
 UDP runtime API and the internal-only messages exchanged between services.
 
-- Documented balancer message count: `15`
-- Protocol hash: `92b394fbbd835ff2`
+- Documented balancer message count: `16`
+- Protocol hash: `21d92c4c4f07766c`
 - UDP ingress/egress gateway: `UdpBridge`
 
 ## System Architecture
@@ -33,7 +33,7 @@ The architecture is divided into three logical areas:
 
 > Consumes raw accelerometer/gyroscope samples and publishes `ImuData` samples that represent the controller's current view of body pitch, angular motion, and sample time.
 >
-> The hardware reader converts synchronized sensor samples into SI-valued robot axes and publishes `ImuRawData`. This service applies 15 Hz accelerometer and 30 Hz gyro two-pole low-pass filters plus a 10 Hz filtered gyro derivative. Full-circle gravity pitch corrects short-term gyro prediction at 0.5 Hz, with each innovation limited symmetrically to 2.5 degrees so translation and motor vibration cannot abruptly steer attitude. The optional fixed notch and 70 mm lever-arm correction are disabled by default. It never learns gyro bias, mounting, gravity recovery modes, or COM correction, and marks invalid input invalid.
+> The hardware reader converts synchronized sensor samples into SI-valued robot axes and publishes `ImuRawData`. This service applies a locked 29 Hz gyro notch with 10 Hz bandwidth, followed by 15 Hz accelerometer and 30 Hz gyro two-pole low-pass filters, plus a 10 Hz filtered gyro derivative. Full-circle gravity pitch corrects short-term gyro prediction at 0.5 Hz, with each innovation limited symmetrically to 2.5 degrees so translation and motor vibration cannot abruptly steer attitude. The fixed notch is part of the IMU path; 70 mm lever-arm correction remains disabled. It never learns gyro bias, mounting, gravity recovery modes, or COM correction, and marks invalid input invalid.
 >
 > SIL can disable the hardware reader and inject `ImuRawData` through `UdpBridge` while using the same estimator. `ImuData` remains an internal controller-facing contract.
 
@@ -53,18 +53,20 @@ The architecture is divided into three logical areas:
 
 ### `ControlService`
 
-> Owns the balancing control pipeline that converts `PhysicsTick`, `ImuData`, and `JoystickCommand`, and `MotorFeedback` inputs into wheel-speed targets and streaming controller telemetry.
+> Owns the balancing control pipeline that converts `PhysicsTick`, `ImuData`, and `JoystickCommand`, `PitchAuthorityDiagnosticCommand`, and `MotorFeedback` inputs into wheel-speed targets and streaming controller telemetry.
 >
-> At 100 Hz, completed common-mode steps are corrected for chassis pitch to observe axle velocity and filtered at 10 Hz. A jerk-limited acceleration request plus corrected-velocity damping form the pitch reference, while a bounded integral term learns only stationary center-of-mass trim:
+> At 100 Hz, completed common-mode steps are corrected for chassis pitch to observe axle velocity and filtered at 10 Hz. A separate configurable velocity-control filter can add a slower pole without changing that observer. A jerk-limited acceleration request plus corrected-velocity damping form the pitch reference, while a bounded integral term acquires center-of-mass trim during neutral startup settling and only maintains it after a quiet dwell:
 >
 > $$ \theta_{sp} = \operatorname{atan2}(a_{nominal} - k_v v_{axle},g) + \theta_{COM} $$
 >
-> $$ \omega_{sp} = k_{pitch}(\theta_{sp} - \theta) - k_{pitch\_rate}\dot{\theta} $$
+> The attitude controller uses independently configured state feedback at the robot-forward motor boundary:
 >
-> The pitch-rate controller supplies the wheel command before turn allocation. Motor output can initially reduce or reverse to acquire lean. Faults clear dynamic state but preserve bounded COM trim. Telemetry reports the pitch-reference terms, target/post-slew/applied commands, feedback, saturation, and faults. In `actuator_saturation_flags`, bit 0 is left slew limiting and bit 1 is right slew limiting.
+> $$ u = K_{pitch}(\theta-\theta_{sp}) + K_{rate}\dot{\theta} + K_{accel}\ddot{\theta} $$
+>
+> The signs above account for the electrical/motor-boundary polarity; they are equivalent to the public negative-feedback form in the controller's internal rate convention. The explicit terms are independently tunable and reported in telemetry. The attitude controller supplies the wheel command before turn allocation. Motor output can initially reduce or reverse to acquire lean. Faults clear dynamic state but preserve bounded COM trim. Telemetry reports the pitch-reference terms, target/post-slew/applied commands, feedback, saturation, and faults. In `actuator_saturation_flags`, bit 0 is left slew limiting and bit 1 is right slew limiting.
 
 - Publishes: `MotorTargets`, `SystemTelemetry`, `PidConfigStatus`
-- Subscribes: `PhysicsTick`, `ImuData`, `JoystickCommand`, `MotorFeedback`, `PidConfigOverride`
+- Subscribes: `PhysicsTick`, `ImuData`, `JoystickCommand`, `PitchAuthorityDiagnosticCommand`, `MotorFeedback`, `PidConfigOverride`
 
 ### `MotorService`
 
@@ -100,7 +102,7 @@ The architecture is divided into three logical areas:
 >
 > This makes the UDP contract symmetric with the generated Python bindings and keeps the external runtime API aligned with the reflected C++ message definitions. The dashboard receives and logs `SystemTelemetry`; deployment and process control remain separate SSH operations. The simulator scenario service uses a separate UDP endpoint on port `9001` and is not this bridge.
 
-- Publishes: `PhysicsTick`, `ExternalJoystickCommand`, `ImuRawData`, `SimStartRun`, `SimStopRun`, `PidConfigOverride`
+- Publishes: `PhysicsTick`, `ExternalJoystickCommand`, `ImuRawData`, `SimStartRun`, `SimStopRun`, `PidConfigOverride`, `PitchAuthorityDiagnosticCommand`
 - Subscribes: `MotorTargets`, `SystemTelemetry`, `SimulatorTelemetry`, `SimStartAck`, `SimRunDone`, `PidConfigStatus`
 
 ---
@@ -178,7 +180,7 @@ documented messages reuse their message section.
 - Numeric ID: `3003`
 - Payload type: `SystemTelemetryPayload`
 - Python type: `SystemTelemetryPayload`
-- Wire size: `144` bytes
+- Wire size: `264` bytes
 - Published by: `ControlService`
 - Consumed by: `UdpBridge`
 
@@ -205,19 +207,54 @@ documented messages reuse their message section.
 | `com_trim_deg` | `float` | `float` | 4 | 80 |  |
 | `pitch_error_deg` | `float` | `float` | 4 | 84 |  |
 | `pitch_sp_deg` | `float` | `float` | 4 | 88 |  |
-| `rate_setpoint_dps` | `float` | `float` | 4 | 92 |  |
-| `rate_error_dps` | `float` | `float` | 4 | 96 |  |
-| `left_target_sps` | `float` | `float` | 4 | 100 |  |
-| `right_target_sps` | `float` | `float` | 4 | 104 |  |
-| `left_slewed_sps` | `float` | `float` | 4 | 108 |  |
-| `right_slewed_sps` | `float` | `float` | 4 | 112 |  |
-| `motor_update_dt_ms` | `float` | `float` | 4 | 116 |  |
-| `motor_feedback_age_ms` | `float` | `float` | 4 | 120 |  |
-| `left_actual_steps` | `int32_t` | `int` | 4 | 124 |  |
-| `right_actual_steps` | `int32_t` | `int` | 4 | 128 |  |
-| `actuator_saturation_flags` | `uint32_t` | `int` | 4 | 132 |  |
-| `command_saturated` | `bool` | `bool` | 1 | 136 |  |
-| `actuator_fault` | `bool` | `bool` | 1 | 137 |  |
+| `left_target_sps` | `float` | `float` | 4 | 92 |  |
+| `right_target_sps` | `float` | `float` | 4 | 96 |  |
+| `left_slewed_sps` | `float` | `float` | 4 | 100 |  |
+| `right_slewed_sps` | `float` | `float` | 4 | 104 |  |
+| `motor_update_dt_ms` | `float` | `float` | 4 | 108 |  |
+| `motor_feedback_age_ms` | `float` | `float` | 4 | 112 |  |
+| `left_actual_steps` | `int32_t` | `int` | 4 | 116 |  |
+| `right_actual_steps` | `int32_t` | `int` | 4 | 120 |  |
+| `actuator_saturation_flags` | `uint32_t` | `int` | 4 | 124 |  |
+| `command_saturated` | `bool` | `bool` | 1 | 128 |  |
+| `actuator_fault` | `bool` | `bool` | 1 | 129 |  |
+| `trim_learning_enabled` | `uint8_t` | `int` | 1 | 130 |  |
+| `trim_learning_block_reason` | `uint8_t` | `int` | 1 | 131 |  |
+| `trim_learning_reserved` | `uint16_t` | `int` | 2 | 132 |  |
+| `pitch_feedback_sps` | `float` | `float` | 4 | 136 |  |
+| `pitch_rate_feedback_sps` | `float` | `float` | 4 | 140 |  |
+| `pitch_accel_feedback_sps` | `float` | `float` | 4 | 144 |  |
+| `velocity_pitch_target_deg` | `float` | `float` | 4 | 148 |  |
+| `balance_unclamped_sps` | `float` | `float` | 4 | 152 |  |
+| `active_pitch_gain_sps_per_rad` | `float` | `float` | 4 | 156 |  |
+| `active_pitch_rate_gain_sps_per_rad_s` | `float` | `float` | 4 | 160 |  |
+| `active_pitch_accel_gain_sps_per_rad_s2` | `float` | `float` | 4 | 164 |  |
+| `active_velocity_pitch_gain_rad_per_sps` | `float` | `float` | 4 | 168 |  |
+| `active_velocity_control_cutoff_hz` | `float` | `float` | 4 | 172 |  |
+| `active_velocity_observer_cutoff_hz` | `float` | `float` | 4 | 176 |  |
+| `active_com_trim_gain_deg_per_sps_s` | `float` | `float` | 4 | 180 |  |
+| `active_com_trim_limit_deg` | `float` | `float` | 4 | 184 |  |
+| `active_accel_lpf_hz` | `float` | `float` | 4 | 188 |  |
+| `active_gyro_lpf_hz` | `float` | `float` | 4 | 192 |  |
+| `active_gyro_derivative_lpf_hz` | `float` | `float` | 4 | 196 |  |
+| `active_config_generation` | `uint64_t` | `int` | 8 | 200 |  |
+| `velocity_pitch_request_unclamped_deg` | `float` | `float` | 4 | 208 |  |
+| `velocity_pitch_request_limited_deg` | `float` | `float` | 4 | 212 |  |
+| `pitch_target_unclamped_deg` | `float` | `float` | 4 | 216 |  |
+| `active_velocity_pitch_limit_deg` | `float` | `float` | 4 | 220 |  |
+| `trim_quiet_rate_rms_dps` | `float` | `float` | 4 | 224 |  |
+| `velocity_authority_limited` | `bool` | `bool` | 1 | 228 |  |
+| `trim_trusted` | `bool` | `bool` | 1 | 229 |  |
+| `trim_learning_allowed` | `bool` | `bool` | 1 | 230 |  |
+| `pitch_target_limit_reason` | `uint8_t` | `int` | 1 | 231 |  |
+| `velocity_control_sps` | `float` | `float` | 4 | 232 |  |
+| `pitch_authority_diagnostic_active` | `bool` | `bool` | 1 | 236 |  |
+| `pitch_authority_diagnostic_target_deg` | `float` | `float` | 4 | 240 |  |
+| `pitch_authority_diagnostic_com_trim_deg` | `float` | `float` | 4 | 244 |  |
+| `pitch_authority_diagnostic_remaining_s` | `float` | `float` | 4 | 248 |  |
+| `pitch_authority_diagnostic_request_id` | `uint32_t` | `int` | 4 | 252 |  |
+| `pitch_authority_diagnostic_command_age_ms` | `float` | `float` | 4 | 256 |  |
+| `completed_step_acceleration_sps2` | `float` | `float` | 4 | 260 |  |
 
 ### `MsgId::MotorFeedback`
 
@@ -245,7 +282,7 @@ documented messages reuse their message section.
 - Numeric ID: `3005`
 - Payload type: `SimStartRunPayload`
 - Python type: `SimStartRunPayload`
-- Wire size: `1120` bytes
+- Wire size: `1568` bytes
 - Published by: `UdpBridge`
 - Consumed by: _None_
 
@@ -284,6 +321,15 @@ documented messages reuse their message section.
 | `disturbances` | `std::array<SimDisturbancePayload, 10>` | `list[SimDisturbancePayload]` | 560 | 240 |  |
 | `joy_segments` | `std::array<SimJoySegmentPayload, 4>` | `list[SimJoySegmentPayload]` | 192 | 800 |  |
 | `pid_config_path` | `std::array<char, 128>` | `bytes` | 128 | 992 |  |
+| `initial_velocity_mps` | `double` | `float` | 8 | 1120 |  |
+| `velocity_estimator_bias_mps` | `double` | `float` | 8 | 1128 |  |
+| `velocity_estimator_bias_drift_mps_per_s` | `double` | `float` | 8 | 1136 |  |
+| `velocity_estimator_scale` | `double` | `float` | 8 | 1144 |  |
+| `velocity_estimator_latency_s` | `double` | `float` | 8 | 1152 |  |
+| `initial_pitch_rate_dps` | `double` | `float` | 8 | 1160 |  |
+| `pitch_authority_segments` | `std::array<SimPitchAuthoritySegmentPayload, 12>` | `list[SimPitchAuthoritySegmentPayload]` | 384 | 1168 |  |
+| `pitch_authority_refresh_dropout_start_s` | `double` | `float` | 8 | 1552 |  |
+| `pitch_authority_refresh_dropout_duration_s` | `double` | `float` | 8 | 1560 |  |
 
 #### Sub-struct: `SimDisturbancePayload`
 
@@ -321,6 +367,21 @@ documented messages reuse their message section.
 | `turn` | `double` | `float` | 8 | 24 |  |
 | `forward_end` | `double` | `float` | 8 | 32 |  |
 | `turn_end` | `double` | `float` | 8 | 40 |  |
+
+#### Sub-struct: `SimPitchAuthoritySegmentPayload`
+
+> One scheduled direct pitch-authority diagnostic segment. The simulator refreshes the short-lived diagnostic command while this segment is active so the production safety and attitude-target path is exercised without enabling drive, velocity, or COM learning.
+
+- C++ type: `SimPitchAuthoritySegmentPayload`
+- Python type: `SimPitchAuthoritySegmentPayload`
+- Wire size: `32` bytes
+
+| Field | C++ Type | Python Type | Bytes | Offset | Description |
+|---|---|---|---:|---:|---|
+| `start_s` | `double` | `float` | 8 | 0 |  |
+| `duration_s` | `double` | `float` | 8 | 8 |  |
+| `target_deg` | `double` | `float` | 8 | 16 |  |
+| `com_trim_deg` | `double` | `float` | 8 | 24 |  |
 
 ### `MsgId::SimStartAck`
 
@@ -400,45 +461,45 @@ documented messages reuse their message section.
 - Numeric ID: `3010`
 - Payload type: `SimulatorTelemetryPayload`
 - Python type: `SimulatorTelemetryPayload`
-- Wire size: `272` bytes
+- Wire size: `392` bytes
 - Published by: _None_
 - Consumed by: `UdpBridge`
 
 | Field | C++ Type | Python Type | Bytes | Offset | Description |
 |---|---|---|---:|---:|---|
-| `system` | `SystemTelemetryPayload` | `SystemTelemetryPayload` | 144 | 0 |  |
-| `seed` | `uint32_t` | `int` | 4 | 144 |  |
-| `plant_pitch_deg` | `float` | `float` | 4 | 148 |  |
-| `plant_pitch_rate_dps` | `float` | `float` | 4 | 152 |  |
-| `plant_position_m` | `float` | `float` | 4 | 156 |  |
-| `plant_velocity_mps` | `float` | `float` | 4 | 160 |  |
-| `target_wheel_velocity` | `float` | `float` | 4 | 164 |  |
-| `actual_wheel_velocity` | `float` | `float` | 4 | 168 |  |
-| `plant_velocity_error` | `float` | `float` | 4 | 172 |  |
-| `f_cmd` | `float` | `float` | 4 | 176 |  |
-| `f_app` | `float` | `float` | 4 | 180 |  |
-| `external_force_n` | `float` | `float` | 4 | 184 |  |
-| `external_com_bias_rad` | `float` | `float` | 4 | 188 |  |
-| `x_ddot` | `float` | `float` | 4 | 192 |  |
-| `theta_ddot` | `float` | `float` | 4 | 196 |  |
-| `phase_error_steps` | `float` | `float` | 4 | 200 |  |
-| `missed_steps` | `float` | `float` | 4 | 204 |  |
-| `traction_limit_n` | `float` | `float` | 4 | 208 |  |
-| `motor_force_limit_n` | `float` | `float` | 4 | 212 |  |
-| `total_mass_scale` | `float` | `float` | 4 | 216 |  |
-| `pitch_inertia_scale` | `float` | `float` | 4 | 220 |  |
-| `motor_max_force_n` | `float` | `float` | 4 | 224 |  |
-| `motor_no_load_speed_mps` | `float` | `float` | 4 | 228 |  |
-| `motor_velocity_damping` | `float` | `float` | 4 | 232 |  |
-| `motor_tau_s` | `float` | `float` | 4 | 236 |  |
-| `traction_coefficient` | `float` | `float` | 4 | 240 |  |
-| `pitch_damping` | `float` | `float` | 4 | 244 |  |
-| `cart_damping` | `float` | `float` | 4 | 248 |  |
-| `phase_error_limit_steps` | `float` | `float` | 4 | 252 |  |
-| `tire_stiffness_n_per_m` | `float` | `float` | 4 | 256 |  |
-| `tire_damping_n_s_per_m` | `float` | `float` | 4 | 260 |  |
-| `wheel_equivalent_mass_kg` | `float` | `float` | 4 | 264 |  |
-| `force_saturated` | `bool` | `bool` | 1 | 268 |  |
+| `system` | `SystemTelemetryPayload` | `SystemTelemetryPayload` | 264 | 0 |  |
+| `seed` | `uint32_t` | `int` | 4 | 264 |  |
+| `plant_pitch_deg` | `float` | `float` | 4 | 268 |  |
+| `plant_pitch_rate_dps` | `float` | `float` | 4 | 272 |  |
+| `plant_position_m` | `float` | `float` | 4 | 276 |  |
+| `plant_velocity_mps` | `float` | `float` | 4 | 280 |  |
+| `target_wheel_velocity` | `float` | `float` | 4 | 284 |  |
+| `actual_wheel_velocity` | `float` | `float` | 4 | 288 |  |
+| `plant_velocity_error` | `float` | `float` | 4 | 292 |  |
+| `f_cmd` | `float` | `float` | 4 | 296 |  |
+| `f_app` | `float` | `float` | 4 | 300 |  |
+| `external_force_n` | `float` | `float` | 4 | 304 |  |
+| `external_com_bias_rad` | `float` | `float` | 4 | 308 |  |
+| `x_ddot` | `float` | `float` | 4 | 312 |  |
+| `theta_ddot` | `float` | `float` | 4 | 316 |  |
+| `phase_error_steps` | `float` | `float` | 4 | 320 |  |
+| `missed_steps` | `float` | `float` | 4 | 324 |  |
+| `traction_limit_n` | `float` | `float` | 4 | 328 |  |
+| `motor_force_limit_n` | `float` | `float` | 4 | 332 |  |
+| `total_mass_scale` | `float` | `float` | 4 | 336 |  |
+| `pitch_inertia_scale` | `float` | `float` | 4 | 340 |  |
+| `motor_max_force_n` | `float` | `float` | 4 | 344 |  |
+| `motor_no_load_speed_mps` | `float` | `float` | 4 | 348 |  |
+| `motor_velocity_damping` | `float` | `float` | 4 | 352 |  |
+| `motor_tau_s` | `float` | `float` | 4 | 356 |  |
+| `traction_coefficient` | `float` | `float` | 4 | 360 |  |
+| `pitch_damping` | `float` | `float` | 4 | 364 |  |
+| `cart_damping` | `float` | `float` | 4 | 368 |  |
+| `phase_error_limit_steps` | `float` | `float` | 4 | 372 |  |
+| `tire_stiffness_n_per_m` | `float` | `float` | 4 | 376 |  |
+| `tire_damping_n_s_per_m` | `float` | `float` | 4 | 380 |  |
+| `wheel_equivalent_mass_kg` | `float` | `float` | 4 | 384 |  |
+| `force_saturated` | `bool` | `bool` | 1 | 388 |  |
 
 ### `MsgId::ExternalJoystickCommand`
 
@@ -459,7 +520,7 @@ documented messages reuse their message section.
 - Numeric ID: `3012`
 - Payload type: `PidConfigOverridePayload`
 - Python type: `PidConfigOverridePayload`
-- Wire size: `128` bytes
+- Wire size: `104` bytes
 - Published by: `UdpBridge`
 - Consumed by: `ControlService`
 
@@ -467,40 +528,37 @@ documented messages reuse their message section.
 |---|---|---|---:|---:|---|
 | `request_id` | `uint32_t` | `int` | 4 | 0 |  |
 | `reserved` | `uint32_t` | `int` | 4 | 4 |  |
-| `values` | `ConfigPidValuesPayload` | `ConfigPidValuesPayload` | 120 | 8 |  |
+| `values` | `ConfigPidValuesPayload` | `ConfigPidValuesPayload` | 96 | 8 |  |
 
 #### Sub-struct: `ConfigPidValuesPayload`
 
-> The shared numeric PID configuration block carried by override and status messages.
+> The shared numeric controller configuration block carried by override and status messages.
 
 - C++ type: `ConfigPidValuesPayload`
 - Python type: `ConfigPidValuesPayload`
-- Wire size: `120` bytes
+- Wire size: `96` bytes
 
 | Field | C++ Type | Python Type | Bytes | Offset | Description |
 |---|---|---|---:|---:|---|
-| `rate_P` | `double` | `float` | 8 | 0 |  |
-| `rate_I` | `double` | `float` | 8 | 8 |  |
-| `rate_D` | `double` | `float` | 8 | 16 |  |
-| `rate_I_lim` | `double` | `float` | 8 | 24 |  |
-| `rate_FF` | `double` | `float` | 8 | 32 |  |
-| `drive_max_acceleration_mps2` | `double` | `float` | 8 | 40 |  |
-| `velocity_damping_per_s` | `double` | `float` | 8 | 48 |  |
-| `velocity_I` | `double` | `float` | 8 | 56 |  |
-| `velocity_I_limit_deg` | `double` | `float` | 8 | 64 |  |
-| `angle_P` | `double` | `float` | 8 | 72 |  |
-| `angle_D` | `double` | `float` | 8 | 80 |  |
-| `pitch_rate_max_sps` | `double` | `float` | 8 | 88 |  |
-| `drive_max_sps` | `double` | `float` | 8 | 96 |  |
-| `turn_max_sps` | `double` | `float` | 8 | 104 |  |
-| `balance_max_sps` | `double` | `float` | 8 | 112 |  |
+| `drive_max_acceleration_mps2` | `double` | `float` | 8 | 0 |  |
+| `velocity_damping_per_s` | `double` | `float` | 8 | 8 |  |
+| `velocity_pitch_limit_deg` | `double` | `float` | 8 | 16 |  |
+| `velocity_I` | `double` | `float` | 8 | 24 |  |
+| `velocity_I_limit_deg` | `double` | `float` | 8 | 32 |  |
+| `drive_max_sps` | `double` | `float` | 8 | 40 |  |
+| `turn_max_sps` | `double` | `float` | 8 | 48 |  |
+| `balance_max_sps` | `double` | `float` | 8 | 56 |  |
+| `pitch_gain` | `double` | `float` | 8 | 64 |  |
+| `pitch_rate_gain` | `double` | `float` | 8 | 72 |  |
+| `pitch_accel_gain` | `double` | `float` | 8 | 80 |  |
+| `velocity_control_cutoff_hz` | `double` | `float` | 8 | 88 |  |
 
 ### `MsgId::PidConfigStatus`
 
 - Numeric ID: `3013`
 - Payload type: `PidConfigStatusPayload`
 - Python type: `PidConfigStatusPayload`
-- Wire size: `128` bytes
+- Wire size: `104` bytes
 - Published by: `ControlService`
 - Consumed by: `UdpBridge`
 
@@ -510,7 +568,26 @@ documented messages reuse their message section.
 | `accepted` | `uint8_t` | `int` | 1 | 4 |  |
 | `result_code` | `uint8_t` | `int` | 1 | 5 |  |
 | `reserved` | `uint16_t` | `int` | 2 | 6 |  |
-| `values` | `ConfigPidValuesPayload` | `ConfigPidValuesPayload` | 120 | 8 |  |
+| `values` | `ConfigPidValuesPayload` | `ConfigPidValuesPayload` | 96 | 8 |  |
+
+### `MsgId::PitchAuthorityDiagnosticCommand`
+
+- Numeric ID: `3014`
+- Payload type: `PitchAuthorityDiagnosticCommandPayload`
+- Python type: `PitchAuthorityDiagnosticCommandPayload`
+- Wire size: `32` bytes
+- Published by: `UdpBridge`
+- Consumed by: `ControlService`
+
+| Field | C++ Type | Python Type | Bytes | Offset | Description |
+|---|---|---|---:|---:|---|
+| `request_id` | `uint32_t` | `int` | 4 | 0 |  |
+| `active` | `uint8_t` | `int` | 1 | 4 |  |
+| `reserved0` | `uint8_t` | `int` | 1 | 5 |  |
+| `reserved1` | `uint16_t` | `int` | 2 | 6 |  |
+| `target_deg` | `double` | `float` | 8 | 8 |  |
+| `com_trim_deg` | `double` | `float` | 8 | 16 |  |
+| `duration_s` | `double` | `float` | 8 | 24 |  |
 
 ---
 

@@ -20,6 +20,7 @@ for import_root in (REPO_ROOT, REPO_ROOT / "tests/python"):
 from tests.python.support.simulator_service import (
     DONE_ACCEPTANCE_FAILED,
     DONE_COMPLETED,
+    PHYSICS_ACTUATOR_STRESS,
     PHYSICS_REALISTIC,
     run_scenario_live,
 )
@@ -68,8 +69,8 @@ def main() -> int:
     catalog = json.loads(
         subprocess.check_output([str(args.sim_bin), "--catalog-json"], cwd=REPO_ROOT, text=True)
     )
-    if len(catalog) != 10:
-        raise RuntimeError(f"Expected 10 transfer scenarios, got {len(catalog)}")
+    if len(catalog) != 7:
+        raise RuntimeError(f"Expected 7 transfer scenarios, got {len(catalog)}")
     scenario_names = [str(scenario["name"]) for scenario in catalog]
 
     cross_status = "not run"
@@ -99,7 +100,11 @@ def main() -> int:
                     udp,
                     run_id=10_000 + index,
                     output_dir=output / name,
-                    physics_profile=PHYSICS_REALISTIC,
+                    physics_profile=(
+                        PHYSICS_ACTUATOR_STRESS
+                        if scenario["physics_profile"] == "actuator_stress"
+                        else PHYSICS_REALISTIC
+                    ),
                     duration_s=float(scenario["duration_s"]),
                     telemetry_stride=args.telemetry_stride,
                     transfer_scenario_index=index,

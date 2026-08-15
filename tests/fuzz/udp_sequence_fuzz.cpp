@@ -24,6 +24,8 @@ std::size_t payload_size_for(MsgId id) {
       return sizeof(PhysicsTickPayload);
     case MsgId::ExternalJoystickCommand:
       return sizeof(ipc::JoystickCommandPayload);
+    case MsgId::PitchAuthorityDiagnosticCommand:
+      return sizeof(ipc::PitchAuthorityDiagnosticCommandPayload);
     case MsgId::ImuRawData:
       return sizeof(ipc::ImuRawPayload);
     default:
@@ -72,6 +74,11 @@ struct ServiceHarness {
       case MsgId::JoystickCommand:
         self->control.on_message<MsgId::JoystickCommand>(
             *static_cast<const ipc::JoystickCommandPayload*>(payload));
+        ++self->messages_processed;
+        break;
+      case MsgId::PitchAuthorityDiagnosticCommand:
+        self->control.on_message<MsgId::PitchAuthorityDiagnosticCommand>(
+            *static_cast<const ipc::PitchAuthorityDiagnosticCommandPayload*>(payload));
         ++self->messages_processed;
         break;
       case MsgId::MotorFeedback:

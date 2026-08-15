@@ -8,6 +8,7 @@ from pathlib import Path
 from generated_balancer import (
     BalancerMsgId,
     SimRunDonePayload,
+    SimPitchAuthoritySegmentPayload,
     SimStartAckPayload,
     SimStartRunPayload,
     SimStopRunPayload,
@@ -18,6 +19,11 @@ from tests.python.support.run_artifacts import RunRecorder
 
 PHYSICS_SIMPLIFIED = 0
 PHYSICS_REALISTIC = 1
+PHYSICS_ACTUATOR_STRESS = 2
+# Offline-only direct-force references. They bypass the uncalibrated
+# phase-position actuator and are the controller-validation profiles.
+PHYSICS_IDEAL_FORCE = 3
+PHYSICS_SIMPLE_FORCE = 4
 
 ACK_ACCEPTED = 0
 ACK_BUSY = 1
@@ -35,6 +41,7 @@ DISTURBANCE_HOLD_BIAS = 2
 
 _PHYSICS_DEFAULTS = {
     PHYSICS_SIMPLIFIED: {
+        "motor_max_force_n": 22.5,
         "motor_no_load_speed_mps": 1.6,
         "traction_coefficient": 1.2,
         "motor_velocity_damping": 30.0,
@@ -47,12 +54,52 @@ _PHYSICS_DEFAULTS = {
         "wheel_equivalent_mass_kg": 0.10,
     },
     PHYSICS_REALISTIC: {
+        "motor_max_force_n": 22.5,
         "motor_no_load_speed_mps": 1.2,
         "traction_coefficient": 1.0,
         "motor_velocity_damping": 40.0,
         "cart_damping": 1.0,
         "pitch_damping": 0.02,
-        "motor_tau_s": 0.008,
+        "motor_tau_s": 0.002,
+        "phase_error_limit_steps": 16.0,
+        "tire_stiffness_n_per_m": 3000.0,
+        "tire_damping_n_s_per_m": 35.0,
+        "wheel_equivalent_mass_kg": 0.10,
+    },
+    PHYSICS_ACTUATOR_STRESS: {
+        "motor_max_force_n": 22.5,
+        "motor_no_load_speed_mps": 1.2,
+        "traction_coefficient": 1.0,
+        "motor_velocity_damping": 40.0,
+        "cart_damping": 1.0,
+        "pitch_damping": 0.02,
+        "motor_tau_s": 0.020,
+        "phase_error_limit_steps": 16.0,
+        "tire_stiffness_n_per_m": 3000.0,
+        "tire_damping_n_s_per_m": 35.0,
+        "wheel_equivalent_mass_kg": 0.10,
+    },
+    PHYSICS_IDEAL_FORCE: {
+        "motor_max_force_n": 22.5,
+        "motor_no_load_speed_mps": 1.2,
+        "traction_coefficient": 1.0,
+        "motor_velocity_damping": 0.0,
+        "cart_damping": 1.0,
+        "pitch_damping": 0.02,
+        "motor_tau_s": 0.0,
+        "phase_error_limit_steps": 16.0,
+        "tire_stiffness_n_per_m": 3000.0,
+        "tire_damping_n_s_per_m": 35.0,
+        "wheel_equivalent_mass_kg": 0.10,
+    },
+    PHYSICS_SIMPLE_FORCE: {
+        "motor_max_force_n": 22.5,
+        "motor_no_load_speed_mps": 1.2,
+        "traction_coefficient": 1.0,
+        "motor_velocity_damping": 0.0,
+        "cart_damping": 1.0,
+        "pitch_damping": 0.02,
+        "motor_tau_s": 0.150,
         "phase_error_limit_steps": 16.0,
         "tire_stiffness_n_per_m": 3000.0,
         "tire_damping_n_s_per_m": 35.0,
@@ -92,6 +139,8 @@ def make_start_payload(
     telemetry_stride: int = 80,
     transfer_scenario_index: int = 0xFFFF,
     initial_pitch_deg: float = 0.0,
+    initial_pitch_rate_dps: float = 0.0,
+    initial_velocity_mps: float = 0.0,
     com_angle_offset_rad: float = 0.0,
     total_mass_scale: float = 1.0,
     pitch_inertia_scale: float = 1.0,
@@ -104,16 +153,26 @@ def make_start_payload(
     imu_sample_loss_rate: float = 0.0,
     accel_bias_mps2: list[float] | None = None,
     gyro_bias_rad_s: list[float] | None = None,
+    velocity_estimator_bias_mps: float = 0.0,
+    velocity_estimator_bias_drift_mps_per_s: float = 0.0,
+    velocity_estimator_scale: float = 1.0,
+    velocity_estimator_latency_s: float = 0.0,
     disturbances: list[dict] | None = None,
     joy_segments: list[dict] | None = None,
+    pitch_authority_segments: list[dict] | None = None,
+    pitch_authority_refresh_dropout: dict | None = None,
     pid_config_path: str = "",
 ) -> SimStartRunPayload:
     disturbances = list(disturbances or [])
     joy_segments = list(joy_segments or [])
+    pitch_authority_segments = list(pitch_authority_segments or [])
+    pitch_authority_refresh_dropout = dict(pitch_authority_refresh_dropout or {})
     if len(disturbances) > 10:
         raise ValueError("SimStartRunPayload supports at most 10 disturbance segments")
     if len(joy_segments) > 4:
         raise ValueError("SimStartRunPayload supports at most 4 joystick segments")
+    if len(pitch_authority_segments) > 12:
+        raise ValueError("SimStartRunPayload supports at most 12 pitch-authority segments")
     accel_bias_mps2 = list(accel_bias_mps2 or [0.0, 0.0, 0.0])
     gyro_bias_rad_s = list(gyro_bias_rad_s or [0.0, 0.0, 0.0])
     if len(accel_bias_mps2) != 3 or len(gyro_bias_rad_s) != 3:
@@ -162,6 +221,17 @@ def make_start_payload(
             "forward_end": float(segment.get("forward_end", segment.get("forward", 0.0))),
             "turn_end": float(segment.get("turn_end", segment.get("turn", 0.0))),
         }
+    wire_pitch_authority = [
+        {"start_s": 0.0, "duration_s": 0.0, "target_deg": 0.0, "com_trim_deg": 0.0}
+        for _ in range(12)
+    ]
+    for idx, segment in enumerate(pitch_authority_segments):
+        wire_pitch_authority[idx] = {
+            "start_s": float(segment.get("start_s", 0.0)),
+            "duration_s": float(segment.get("duration_s", 0.0)),
+            "target_deg": float(segment.get("target_deg", 0.0)),
+            "com_trim_deg": float(segment.get("com_trim_deg", 0.0)),
+        }
     override = dict(_PHYSICS_DEFAULTS[physics_profile])
     override.update(physics_override or {})
 
@@ -174,11 +244,11 @@ def make_start_payload(
         reserved1=0,
         duration_s=duration_s,
         initial_pitch_deg=initial_pitch_deg,
+        initial_velocity_mps=initial_velocity_mps,
         com_angle_offset_rad=com_angle_offset_rad,
         total_mass_scale=total_mass_scale,
         pitch_inertia_scale=pitch_inertia_scale,
-        # Retained in the wire layout for compatibility; simulator profiles own this constant.
-        motor_max_force_n=0.0,
+        motor_max_force_n=float(override["motor_max_force_n"]),
         motor_no_load_speed_mps=float(override["motor_no_load_speed_mps"]),
         motor_velocity_damping=float(override["motor_velocity_damping"]),
         motor_tau_s=float(override["motor_tau_s"]),
@@ -197,8 +267,20 @@ def make_start_payload(
         imu_sample_loss_rate=imu_sample_loss_rate,
         accel_bias_mps2=accel_bias_mps2,
         gyro_bias_rad_s=gyro_bias_rad_s,
+        velocity_estimator_bias_mps=velocity_estimator_bias_mps,
+        velocity_estimator_bias_drift_mps_per_s=velocity_estimator_bias_drift_mps_per_s,
+        velocity_estimator_scale=velocity_estimator_scale,
+        velocity_estimator_latency_s=velocity_estimator_latency_s,
+        initial_pitch_rate_dps=initial_pitch_rate_dps,
         disturbances=wire_disturbances,
         joy_segments=wire_joy,
+        pitch_authority_segments=[SimPitchAuthoritySegmentPayload(**item) for item in wire_pitch_authority],
+        pitch_authority_refresh_dropout_start_s=float(
+            pitch_authority_refresh_dropout.get("start_s", 0.0)
+        ),
+        pitch_authority_refresh_dropout_duration_s=float(
+            pitch_authority_refresh_dropout.get("duration_s", 0.0)
+        ),
         pid_config_path=_fixed_bytes(pid_config_path, 128),
     )
 
@@ -243,6 +325,8 @@ def run_scenario_live(
     telemetry_stride: int = 80,
     transfer_scenario_index: int = 0xFFFF,
     initial_pitch_deg: float = 0.0,
+    initial_pitch_rate_dps: float = 0.0,
+    initial_velocity_mps: float = 0.0,
     com_angle_offset_rad: float = 0.0,
     total_mass_scale: float = 1.0,
     pitch_inertia_scale: float = 1.0,
@@ -255,8 +339,14 @@ def run_scenario_live(
     imu_sample_loss_rate: float = 0.0,
     accel_bias_mps2: list[float] | None = None,
     gyro_bias_rad_s: list[float] | None = None,
+    velocity_estimator_bias_mps: float = 0.0,
+    velocity_estimator_bias_drift_mps_per_s: float = 0.0,
+    velocity_estimator_scale: float = 1.0,
+    velocity_estimator_latency_s: float = 0.0,
     disturbances: list[dict] | None = None,
     joy_segments: list[dict] | None = None,
+    pitch_authority_segments: list[dict] | None = None,
+    pitch_authority_refresh_dropout: dict | None = None,
     pid_config_path: str = "",
     fail_fast_pitch_deg: float = 75.0,
     done_timeout: float = 15.0,
@@ -267,12 +357,20 @@ def run_scenario_live(
     metadata = {
         "run_id": str(run_id),
         "scenario_name": output_dir.name,
-        "physics_profile": "realistic" if physics_profile == PHYSICS_REALISTIC else "simplified",
+        "physics_profile": {
+            PHYSICS_SIMPLIFIED: "simplified",
+            PHYSICS_REALISTIC: "realistic",
+            PHYSICS_ACTUATOR_STRESS: "actuator_stress",
+            PHYSICS_IDEAL_FORCE: "ideal_force",
+            PHYSICS_SIMPLE_FORCE: "simple_force",
+        }.get(physics_profile, f"unknown:{physics_profile}"),
         "pid_profile": pid_config_path or "pid.conf",
         "duration_s": duration_s,
         "telemetry_stride": telemetry_stride,
         "transfer_scenario_index": transfer_scenario_index,
         "initial_pitch_deg": initial_pitch_deg,
+        "initial_pitch_rate_dps": initial_pitch_rate_dps,
+        "initial_velocity_mps": initial_velocity_mps,
         "com_angle_offset_rad": com_angle_offset_rad,
         "total_mass_scale": total_mass_scale,
         "pitch_inertia_scale": pitch_inertia_scale,
@@ -284,11 +382,19 @@ def run_scenario_live(
         "imu_sample_loss_rate": imu_sample_loss_rate,
         "accel_bias_mps2": accel_bias_mps2 or [0.0, 0.0, 0.0],
         "gyro_bias_rad_s": gyro_bias_rad_s or [0.0, 0.0, 0.0],
+        "velocity_estimator_bias_mps": velocity_estimator_bias_mps,
+        "velocity_estimator_bias_drift_mps_per_s": velocity_estimator_bias_drift_mps_per_s,
+        "velocity_estimator_scale": velocity_estimator_scale,
+        "velocity_estimator_latency_s": velocity_estimator_latency_s,
     }
     if disturbances:
         metadata["disturbances"] = disturbances
     if joy_segments:
         metadata["joy_segments"] = joy_segments
+    if pitch_authority_segments:
+        metadata["pitch_authority_segments"] = pitch_authority_segments
+    if pitch_authority_refresh_dropout:
+        metadata["pitch_authority_refresh_dropout"] = pitch_authority_refresh_dropout
     if physics_override is not None:
         metadata["physics_override"] = physics_override
     recorder.begin_run(metadata)
@@ -301,6 +407,8 @@ def run_scenario_live(
         telemetry_stride=telemetry_stride,
         transfer_scenario_index=transfer_scenario_index,
         initial_pitch_deg=initial_pitch_deg,
+        initial_pitch_rate_dps=initial_pitch_rate_dps,
+        initial_velocity_mps=initial_velocity_mps,
         com_angle_offset_rad=com_angle_offset_rad,
         total_mass_scale=total_mass_scale,
         pitch_inertia_scale=pitch_inertia_scale,
@@ -313,8 +421,14 @@ def run_scenario_live(
         imu_sample_loss_rate=imu_sample_loss_rate,
         accel_bias_mps2=accel_bias_mps2,
         gyro_bias_rad_s=gyro_bias_rad_s,
+        velocity_estimator_bias_mps=velocity_estimator_bias_mps,
+        velocity_estimator_bias_drift_mps_per_s=velocity_estimator_bias_drift_mps_per_s,
+        velocity_estimator_scale=velocity_estimator_scale,
+        velocity_estimator_latency_s=velocity_estimator_latency_s,
         disturbances=disturbances,
         joy_segments=joy_segments,
+        pitch_authority_segments=pitch_authority_segments,
+        pitch_authority_refresh_dropout=pitch_authority_refresh_dropout,
         pid_config_path=pid_config_path,
     )
     udp.send(BalancerMsgId.SimStartRun, start.pack())
@@ -335,7 +449,10 @@ def run_scenario_live(
                 continue
             # Keep simulator artifacts flat while the wire API remains a single,
             # nested simulator frame.
-            row = {field.name: getattr(telemetry.system, field.name) for field in fields(telemetry.system)}
+            row = {
+                field.name: getattr(telemetry.system, field.name)
+                for field in fields(telemetry.system)
+            }
             row.update(
                 {
                     field.name: getattr(telemetry, field.name)
