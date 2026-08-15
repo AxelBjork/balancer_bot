@@ -75,18 +75,19 @@ inline void app_dispatcher(void* ctx, MsgId id, const void* payload) {
         const ipc::SystemTelemetryPayload& p = unpack_payload<MsgId::SystemTelemetry>(payload);
         const bool motor_dt_warning =
             p.motor_update_dt_ms > (1500.0f / static_cast<float>(Config::control_hz));
-        const float applied_avg_sps = 0.5f * (p.left_applied_sps + p.right_applied_sps);
         std::printf(
             "t=%7.3f  th=%6.2f deg  dth=%7.2f dps  u=%6.0f%s  "
             "sp=%6.2f (%+5.2f/%+5.2f)  perr=%6.2f  v=%7.1f/%7.1f  "
-            "ap=%6.0f%s  trn=%6.0f\n",
+            "steps=(%d/%d)%s  trn=%6.0f\n",
             static_cast<double>(p.t_sec), static_cast<double>(p.pitch_deg),
             static_cast<double>(p.pitch_rate_dps), static_cast<double>(p.u_sps),
             (std::abs(p.u_sps) >= 0.99f * static_cast<float>(kMaxSps)) ? "*" : "",
-            static_cast<double>(p.pitch_sp_deg), static_cast<double>(p.velocity_p_term_deg),
-            static_cast<double>(p.velocity_i_term_deg), static_cast<double>(p.pitch_error_deg),
-            static_cast<double>(p.vel_error), static_cast<double>(p.measured_vel_sps),
-            static_cast<double>(applied_avg_sps), motor_dt_warning ? "  MOTOR_DT!" : "",
+            static_cast<double>(p.pitch_sp_deg),
+            static_cast<double>(p.velocity_damping_acceleration_mps2),
+            static_cast<double>(p.com_trim_deg), static_cast<double>(p.pitch_error_deg),
+            static_cast<double>(p.nominal_acceleration_mps2),
+            static_cast<double>(p.corrected_axle_velocity_sps), p.left_actual_steps,
+            p.right_actual_steps, motor_dt_warning ? "  MOTOR_DT!" : "",
             static_cast<double>(p.turn_sps));
       }
     }

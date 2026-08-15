@@ -4,24 +4,24 @@
 
 #include "messages/balancer_msgs.h"
 #include "publisher.h"
-#include "services/imu/pitch_lpf.h"
 
 class Ism330IioReader;
+class ImuPitchEstimator;
 
 namespace sil {
 
 inline constexpr char kImuServiceDoc[] =
     "Consumes raw accelerometer/gyroscope samples and publishes `ImuData` samples that represent "
-    "the controller's current view of body pitch, specific force, angular rate, and sample "
-    "time.\n\n"
-    "When hardware reading is enabled, the service owns an `Ism330IioReader` that discovers the "
-    "split accel/gyro IIO devices, converts raw sensor counts into SI units, timestamps each "
-    "sample, and publishes `ImuRawData` onto the internal message bus. The raw accelerometer and "
-    "gyroscope vectors are then fused by a complementary filter before `ImuData` reaches "
-    "control.\n\n"
-    "In SIL mode the hardware reader can be disabled entirely, but Python can still inject "
-    "`ImuRawData` through `UdpBridge` to exercise the same filter path. `ImuData` remains an "
-    "internal controller-facing contract rather than a UDP payload.";
+    "the controller's current view of body pitch, angular motion, and sample time.\n\n"
+    "The hardware reader converts synchronized sensor samples into SI-valued robot axes and "
+    "publishes `ImuRawData`. This service applies 15 Hz accelerometer and 30 Hz gyro two-pole "
+    "low-pass filters plus a 10 Hz filtered gyro derivative. Full-circle gravity pitch corrects "
+    "short-term gyro prediction at 0.5 Hz, with each innovation limited symmetrically to 2.5 "
+    "degrees so translation and motor vibration cannot abruptly steer attitude. The optional "
+    "fixed notch and 70 mm lever-arm correction are disabled by default. It never learns gyro "
+    "bias, mounting, gravity recovery modes, or COM correction, and marks invalid input invalid.\n\n"
+    "SIL can disable the hardware reader and inject `ImuRawData` through `UdpBridge` while using "
+    "the same estimator. `ImuData` remains an internal controller-facing contract.";
 
 class DOC_DESC(kImuServiceDoc) ImuService {
  public:
@@ -43,9 +43,8 @@ class DOC_DESC(kImuServiceDoc) ImuService {
 
  private:
   void handle_raw_imu(const ipc::ImuRawPayload& p);
-
   ipc::TypedPublisher<ImuService> bus_;
-  PitchComplementaryFilter filter_{};
+  std::unique_ptr<ImuPitchEstimator> estimator_;
   std::unique_ptr<Ism330IioReader> reader_;
 };
 

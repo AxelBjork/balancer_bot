@@ -145,6 +145,7 @@ if (BUILD_TESTS)
     ${TEST_DIR}/simulator/balancer_simulator.cpp
     ${TEST_DIR}/simulator/simulator_engine.cpp
     ${TEST_DIR}/simulator/simulator_runner.cpp
+    ${TEST_DIR}/simulator/tuner_support.cpp
   )
   target_link_libraries(balancer_sim_support PRIVATE balancer_common)
   target_include_directories(balancer_sim_support PUBLIC
@@ -199,6 +200,9 @@ if (BUILD_TESTS)
     ${TEST_DIR}/stubs/pigpiod_stub.cpp
   )
   target_link_libraries(balancer_simulator_tuner PRIVATE balancer_common balancer_sim_support)
+  # Building the standalone simulator is the normal host simulation workflow.
+  # Keep the companion tuner current for that workflow as well.
+  add_dependencies(balancer_simulator balancer_simulator_tuner)
 
   # 5) sil_app (Hardware-in-the-loop simulation/testing)
   add_executable(sil_app

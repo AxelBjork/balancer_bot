@@ -91,7 +91,7 @@ telemetry-analysis inspect data/server/telemetry.csv
 # Get compact one-second summaries without writing a file.
 telemetry-analysis bins data/server/telemetry.csv \
   --time 7:17 --width 1s \
-  --signals pitch_deg,raw_acc_pitch_deg,pitch_rate_dps,u_sps,measured_vel_sps
+  --signals pitch_deg,raw_acc_pitch_deg,pitch_rate_dps,u_sps,corrected_axle_velocity_sps
 
 # Export an exact normalized window for free-form pandas work.
 telemetry-analysis rows data/server/telemetry.csv \
@@ -100,7 +100,7 @@ telemetry-analysis rows data/server/telemetry.csv \
 
 # Compare two aligned signals using common lag, scale, correlation, and residual definitions.
 telemetry-analysis relate build/sim/run/timeline.csv \
-  --source u_sps --response measured_vel_sps --max-lag 1s
+  --source u_sps --response corrected_axle_velocity_sps --max-lag 1s
 ```
 
 `inspect`, `stats`, `bins`, `events`, `plateaus`, `relate`, and `spectrum` should emit JSON by
@@ -229,7 +229,7 @@ All commands should share one selection object supporting:
 - session number
 - exact flag value or bit mask for controller faults and saturation
 - a pandas-style conjunction of simple comparisons, such as
-  `abs(pitch_rate_dps) < 5 and abs(measured_vel_sps) < 200`
+  `abs(pitch_rate_dps) < 5 and abs(corrected_axle_velocity_sps) < 200`
 - detected constant-command plateau and plateau sign
 
 Arbitrary Python evaluation is not acceptable in the CLI. Implement `--where` using a small safe
@@ -432,6 +432,20 @@ Return dominant peaks with configurable frequency separation rather than simply 
 bins from one broad peak. Cross-spectral phase and magnitude-squared coherence can be implemented
 with a documented NumPy Welch calculation; SciPy must remain optional. Never interpolate across a
 session reset or material capture gap.
+
+### Actuator-stage metrics
+
+`actuator_stage_metrics()` operates on the same canonical pandas frame used by simulator artifacts
+and hardware CSV analysis. When the corresponding fields are available it reports:
+
+- independent and combined requested-to-slewed, slewed-to-applied, and requested-to-applied RMS
+  errors in SPS
+- RMS, 95th-percentile absolute, and maximum target/post-slew/applied command slopes in SPS/s
+- any/left/right slew-limited sample fractions and the longest continuous limited interval
+- dominant requested-to-applied magnitude, lag, and phase in the 6–12 Hz band for each motor
+
+The frequency calculation uses only the longest contiguous selected segment and reports why it is
+unavailable when fields, cadence, sample count, or in-band source energy are insufficient.
 
 ### Safe JSON conversion
 

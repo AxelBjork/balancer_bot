@@ -6,9 +6,12 @@ The nonlinear simulator uses aggregate rigid-body parameters rather than an arbi
 cart and body mass: total translating mass `T`, first mass moment `H` about the axle, and pitch
 inertia `J` about the axle. Its mass matrix is
 
-> $$
-> \begin{bmatrix}T&H\cos\theta\\H\cos\theta&J\end{bmatrix}.
-> $$
+$$
+\begin{bmatrix}
+T & H\cos\theta \\
+H\cos\theta & J
+\end{bmatrix}.
+$$
 
 The authoritative nominal mass, geometry, and inertia values are defined by
 [`HardwareNominal`](../../tests/simulator/balancer_simulator.h). Pitch inertia should be updated
@@ -17,22 +20,32 @@ intentionally not duplicated here.
 
 ## Variables
 
-- `x`: forward position of the wheel axle
-- `x_dot`: forward velocity
-- `x_ddot`: forward acceleration
-- `theta`: body pitch angle from upright
-- `theta_dot`: pitch rate
-- `theta_ddot`: pitch angular acceleration
-- `n`: wheel speed in RPM
-- `n_dot`: wheel RPM rate in RPM/s
-- `r`: wheel radius
-- `m`: body mass
-- `l`: distance from wheel axle to body center of mass
-- `I`: body pitch inertia about the body center of mass
-- `g`: gravitational acceleration
-- `X(s)`: Laplace transform of `x(t)`
-- `Theta(s)`: Laplace transform of `theta(t)`
-- `N(s)`: Laplace transform of `n(t)`
+- $x$, $\dot{x}$, $\ddot{x}$: forward wheel-axle position, velocity, and acceleration
+- $\theta$, $\dot{\theta}$, $\ddot{\theta}$: body pitch angle from upright, pitch rate, and
+  pitch angular acceleration
+- $n$, $\dot{n}$: common wheel speed in RPM and its rate in RPM/s
+- $r$: wheel radius
+- $g$: gravitational acceleration
+- $T$: total translating mass
+- $H$: first mass moment about the axle
+- $J$: pitch inertia about the axle
+- $m$: body mass; $l$: axle-to-body-COM distance; $I$: body pitch inertia about its COM. These
+  are the equivalent lumped parameters used only in the compact small-angle model.
+- $k$, $a$, $b$: compact-model constants defined below
+- $s$: Laplace variable; $X(s)$, $\Theta(s)$, and $N(s)$: Laplace transforms of $x(t)$,
+  $\theta(t)$, and $n(t)$
+- $a_{\mathrm{nominal}}$: jerk-limited requested forward acceleration;
+  $v_{\mathrm{axle}}$: corrected axle velocity derived from completed motor steps
+- $k_v$: corrected-velocity damping gain
+- $\theta_{\mathrm{ref}}$, $\dot{\theta}_{\mathrm{ref}}$: requested pitch angle and pitch rate;
+  $\theta_{\mathrm{COM}}$: bounded center-of-mass trim
+- $\theta_f$, $\dot{\theta}_f$: filtered pitch angle and rate; $k_{\mathrm{pitch}}$ and
+  $k_{\mathrm{pitch\_rate}}$: inner attitude-shaping gains
+- $u_{\mathrm{norm}}$, $u_{\mathrm{sps}}$, $k_{\mathrm{output}}$: normalized PX4 output,
+  wheel command in steps/s, and its conversion scale
+- $\psi$: absolute wheel angle; $u = r\psi$: absolute circumferential wheel motion;
+  $q$: rotor motion relative to the chassis; $\theta_0$: configured initial pitch
+- $F_m$, $F_t$: motor and tire/contact forces
 
 Assumptions:
 
@@ -187,18 +200,31 @@ The equations above are the compact small-angle audit model. The current code ad
 
 Current controller structure in code:
 
-Outer velocity feedback and acceleration feed-forward at 50 Hz, with a bounded integral term that
-learns only the stationary center-of-mass trim:
+At 100 Hz, common completed motor steps are first corrected to axle motion. With
+`q = u - r theta`, the observer is
 
 > $$
-> e_v = v_{\mathrm{ref}} - v_{\mathrm{completed\ pulses}}
+> \Delta u_{\mathrm{steps}} = \frac{\Delta q_L + \Delta q_R}{2}
+> + \frac{N}{2\pi}\mathrm{wrap}(\Delta\theta).
 > $$
 
-> $$
-> \theta_{\mathrm{ref}} = \operatorname{clamp}\left(
-> K_{pv}e_v + \operatorname{atan2}(a_{\mathrm{ref}}s_m,g) + \theta_{\mathrm{COM}}
-> \right)
-> $$
+The velocity is calculated from the elapsed observer interval and passed through the configured
+10 Hz single-pole filter. Filtering, jerk limiting, and COM-trim integration all use that measured
+outer-loop interval, including under control-tick jitter. `MotorRunner` also maintains a separate
+50 ms completed-step average for actuator diagnostics; that field is not controller feedback.
+
+The jerk-limited nominal acceleration and corrected-velocity damping then form the pitch reference;
+a bounded integral term still learns only stationary center-of-mass trim:
+
+$$
+\theta_{\mathrm{ref}} = \mathrm{clamp}\left(
+\mathrm{atan2}(a_{\mathrm{nominal}} - k_v v_{\mathrm{axle}}, g) + \theta_{\mathrm{COM}}
+\right)
+$$
+
+The drive-generated portion is bounded by the configured acceleration equilibrium,
+`atan2(drive_max_acceleration_mps2, g)`: this is the nonlinear form of the small-angle
+condition `theta_ddot = 0`. The bounded COM trim remains available at zero drive command.
 
 Inner attitude shaping:
 
@@ -212,28 +238,36 @@ PX4 rate loop:
 
 Motor scaling:
 
-- `v_ref` remains the requested trajectory used by velocity feedback and acceleration preview
-- the normalized PX4 output is converted to wheel command with fixed
+- the outer loop requests motion only through pitch; it adds no direct wheel-speed feed-forward
+- the normalized PX4 output is converted to wheel command using the fixed drivetrain conversion
+  `Config::steps_per_rev`, so `1.0` is one wheel revolution per second
 
 > $$
-> u_{\mathrm{sps}} = -u_{\mathrm{norm}}\,k_{\mathrm{output}}
+> u_{\mathrm{sps}} = -u_{\mathrm{norm}}\,\mathrm{steps\_per\_rev}
 > $$
 
-- the result is clamped by `balance_max_sps`, then turn allocation consumes only the remaining
-  balance authority
+- `pitch_rate_max_sps` bounds the attitude loop's pitch-rate request after conversion through the
+  configured steps-per-revolution; `balance_max_sps` is the independent hard actuator clamp, then
+  turn allocation consumes only the remaining balance authority
+- the motor runner limits command slope to 200,000 SPS/s and applies pulses through two synchronous
+  2.5 ms frames (one active and one queued); telemetry separates the target, continuous post-slew
+  command, and quantized active-frame rate
 - positive wheel acceleration produces negative initial pitch acceleration, while sustained
   positive vehicle acceleration requires positive equilibrium pitch; motor output may therefore
   initially reduce or reverse while acquiring a forward lean
 
 Notes:
 
-- `theta_dot_f` is the filtered pitch-rate signal from the complementary filter, not the raw gyro debug signal
+- `theta_dot_f` is the 30 Hz two-pole filtered pitch gyro rate, not the raw gyro debug signal;
+  its controller derivative input is filtered separately at 10 Hz
 - the simulator now applies disturbances as exogenous plant inputs:
   external horizontal force and optional COM bias
 - the simulator plant is intentionally richer than the cheat-sheet model: scheduled pulses advance
   commanded motor phase; completed pulses supply controller feedback; a separate rotor/wheel state,
   torque-speed limit, actuator lag, missed-step estimate, and traction-limited tire coupling produce
   force on the nonlinear cart-pole
+- the simulator's continuous field-speed term consumes the post-slew command; exact pulse-frame
+  quantization enters separately through emitted motor position and is not applied twice
 
 ### Simulator wheel and motor coordinates
 

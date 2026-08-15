@@ -8,8 +8,9 @@ This is the maintainer-facing notebook for the balancing stack. It captures the 
 
 The control pipeline is:
 
-1. joystick forward input becomes a bounded target wheel velocity
-2. a 50 Hz velocity PI turns completed-pulse speed error into a bounded pitch setpoint
+1. joystick forward input becomes a bounded, jerk-limited nominal acceleration
+2. a 100 Hz observer corrects common completed motor steps for chassis pitch, filters velocity at
+   10 Hz, then applies velocity damping and a smooth speed-envelope taper to form the pitch setpoint
 3. the pitch error plus filtered pitch-rate damping become a pitch-rate setpoint
 4. the 400 Hz PX4 `RateControl` produces the normalized balance correction
 5. the balance correction becomes the common wheel command in steps per second
@@ -19,11 +20,17 @@ Important details:
 
 - control is tick-driven by `PhysicsTick`
 - the controller uses fused pitch plus filtered pitch-rate for control; raw gyro stays diagnostic-only
-- velocity feedback always comes from completed pulses in `MotorFeedback`; plant truth is telemetry only
+- axle velocity uses common completed-step position corrected as
+  `Δu = (ΔqL + ΔqR)/2 + steps_per_rad * wrap(Δpitch)`; the motor-rate estimate remains
+  a separate 50 ms diagnostic-only signal and differential turning cannot enter the observer
+- the observer, velocity filter, jerk limiter, and COM-trim integrator use the elapsed 100 Hz
+  interval so control-tick jitter does not change their continuous-time behavior
 - missing, stale, or future IMU data, fallover, and actuator faults reset all controller state,
   command zero, and publish the corresponding controller-fault bitmask
 - electrical direction inversion exists only inside the stepper boundary
-- the active outer-loop gains are `velocity_P`, `velocity_I`, `angle_P`, and `angle_D`
+- the active outer-loop parameters are `drive_max_acceleration_mps2`,
+  `velocity_damping_per_s`, `velocity_I`, `angle_P`, and `angle_D`; jerk limiting is a fixed
+  internal safety value, and maximum drive lean is derived from the configured acceleration
 
 ## Why Tick-Driven Control Matters
 
@@ -63,17 +70,20 @@ in the simulator code. Use the physical-pendulum procedure in the Pi guide when 
 The actuator model advances requested motor position from scheduled pulses, tracks a separate
 rotor/wheel state, limits motor force with a torque-speed envelope, estimates missed steps from
 excess phase error, and transmits force to the cart-pole through a traction-limited tire coupling.
-The controller sees only completed-pulse feedback. Its outer reference is
+Its continuous motor field-speed term uses the post-slew command, while exact pulse-frame
+quantization enters through scheduled emitted position. This keeps the two actuator effects
+separate instead of applying frame quantization twice.
+The controller sees only completed-pulse feedback. Its corrected-axle outer reference is
 
 > $$
-> \theta_{sp} = K_{vp}(v_{ref}-v)
-> + \operatorname{atan2}(a_{ref}s_m,g) + \theta_{COM}.
+> \theta_{sp} = \operatorname{atan2}(a_{nominal} - k_v v_{axle},g) + \theta_{COM}.
 > $$
 
 Because the inverted-pendulum plant has an inverse response, a forward command may initially
 reduce or reverse motor output to acquire positive lean before settling into forward travel.
-The requested velocity drives velocity error and acceleration preview. Removing `theta_COM` from
-both measured and requested pitch prevents physical trim from being interpreted as drive lean.
+The requested acceleration drives lean, while corrected axle velocity supplies immediate braking.
+Removing `theta_COM` from both measured and requested pitch prevents physical trim from being
+interpreted as drive lean.
 
 The simulator applies disturbances as exogenous plant inputs rather than controller references:
 
@@ -141,7 +151,12 @@ validation can adjust its configuration without changing the simulation baseline
 
 ### Real motor feedback matters on hardware
 
-The hardware runtime now republishes applied wheel rates and actual step counts from `MotorRunner` as `MotorFeedback`. The controller should not assume the last command was achieved, especially because motor ramping and step application are not instantaneous.
+The hardware runtime now republishes requested targets, continuous post-slew wheel commands,
+pulse-frame-applied wheel rates, independent slew-limit flags, and actual step counts. The
+production motor slew is 200,000 SPS/s. Pulse generation retains an active plus synchronously
+queued frame at 2.5 ms per frame, so requested, post-slew, and quantized applied stages remain
+distinguishable in telemetry. The separate 50 ms average-speed estimate is diagnostic only; the
+controller uses its own 10 ms completed-step observer.
 
 ### Drift is now treated as the main realism target
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import csv
 import dataclasses
-import hashlib
 import json
 import logging
 import logging.handlers
@@ -162,24 +161,27 @@ def telemetry_view(sample: SystemTelemetryPayload, sequence: int, received_at: f
             "rate_setpoint_dps": sample.rate_setpoint_dps,
         },
         "motion": {
-            "target_velocity_sps": sample.target_velocity_sps,
-            "measured_velocity_sps": sample.measured_vel_sps,
+            "raw_completed_velocity_sps": sample.raw_completed_velocity_sps,
+            "corrected_axle_velocity_sps": sample.corrected_axle_velocity_sps,
             "left_target_sps": sample.left_target_sps,
             "right_target_sps": sample.right_target_sps,
-            "left_applied_sps": sample.left_applied_sps,
-            "right_applied_sps": sample.right_applied_sps,
+            "left_slewed_sps": sample.left_slewed_sps,
+            "right_slewed_sps": sample.right_slewed_sps,
+            "left_actual_steps": sample.left_actual_steps,
+            "right_actual_steps": sample.right_actual_steps,
         },
         "controller": {
             "command_sps": sample.u_sps,
-            "velocity_error": sample.vel_error,
+            "nominal_acceleration_mps2": sample.nominal_acceleration_mps2,
             "pitch_error_deg": sample.pitch_error_deg,
-            "velocity_p_term_deg": sample.velocity_p_term_deg,
-            "velocity_i_term_deg": sample.velocity_i_term_deg,
+            "velocity_damping_acceleration_mps2": sample.velocity_damping_acceleration_mps2,
+            "com_trim_deg": sample.com_trim_deg,
         },
         "timing": {"imu_age_ms": sample.age_ms, "feedback_age_ms": sample.motor_feedback_age_ms},
         "flags": {
             "controller": sample.controller_fault_flags,
             "saturation": sample.controller_saturation_flags,
+            "actuator_saturation": sample.actuator_saturation_flags,
             "actuator": int(sample.actuator_fault),
         },
     }
@@ -294,7 +296,12 @@ class TelemetryState:
         self.last_packet_at: float | None = None
         self.malformed_packets = 0
         self.packet_times: deque[float] = deque()
-        self.latched_flags = {"controller": 0, "saturation": 0, "actuator": 0}
+        self.latched_flags = {
+            "controller": 0,
+            "saturation": 0,
+            "actuator_saturation": 0,
+            "actuator": 0,
+        }
         self.telemetry_gap_count = 0
         self.last_telemetry_gap: dict[str, Any] | None = None
 
@@ -365,7 +372,12 @@ class TelemetryState:
 
     def clear_latched_flags(self) -> None:
         with self.lock:
-            self.latched_flags = {"controller": 0, "saturation": 0, "actuator": 0}
+            self.latched_flags = {
+                "controller": 0,
+                "saturation": 0,
+                "actuator_saturation": 0,
+                "actuator": 0,
+            }
 
     def accept_view(self, telemetry: dict[str, Any], received_at: float) -> None:
         """Publish a normalized playback sample without writing a new CSV log."""
@@ -619,24 +631,27 @@ def load_playback_csv(path: Path) -> list[tuple[float, dict[str, Any]]]:
                 "rate_setpoint_dps": _number(row, "rate_setpoint_dps"),
             },
             "motion": {
-                "target_velocity_sps": _number(row, "target_velocity_sps"),
-                "measured_velocity_sps": _number(row, "measured_vel_sps"),
+                "raw_completed_velocity_sps": _number(row, "raw_completed_velocity_sps", "vel_error"),
+                "corrected_axle_velocity_sps": _number(row, "corrected_axle_velocity_sps", "measured_vel_sps"),
                 "left_target_sps": _number(row, "left_target_sps"),
                 "right_target_sps": _number(row, "right_target_sps"),
-                "left_applied_sps": _number(row, "left_applied_sps"),
-                "right_applied_sps": _number(row, "right_applied_sps"),
+                "left_slewed_sps": _number(row, "left_slewed_sps", "left_target_sps"),
+                "right_slewed_sps": _number(row, "right_slewed_sps", "right_target_sps"),
+                "left_actual_steps": _number(row, "left_actual_steps"),
+                "right_actual_steps": _number(row, "right_actual_steps"),
             },
             "controller": {
                 "command_sps": _number(row, "u_sps"),
-                "velocity_error": _number(row, "vel_error"),
+                "nominal_acceleration_mps2": _number(row, "nominal_acceleration_mps2", "target_velocity_sps"),
                 "pitch_error_deg": _number(row, "pitch_error_deg"),
-                "velocity_p_term_deg": _number(row, "velocity_p_term_deg"),
-                "velocity_i_term_deg": _number(row, "velocity_i_term_deg"),
+                "velocity_damping_acceleration_mps2": _number(row, "velocity_damping_acceleration_mps2", "velocity_p_term_deg"),
+                "com_trim_deg": _number(row, "com_trim_deg", "velocity_i_term_deg"),
             },
             "timing": {"imu_age_ms": _number(row, "age_ms"), "feedback_age_ms": _number(row, "motor_feedback_age_ms")},
             "flags": {
                 "controller": int(_number(row, "controller_fault_flags")),
                 "saturation": int(_number(row, "controller_saturation_flags")),
+                "actuator_saturation": int(_number(row, "actuator_saturation_flags")),
                 "actuator": int(_number(row, "actuator_fault")),
             },
         }
@@ -810,26 +825,35 @@ class DeploymentManager:
             raise ValueError(f"Cross-built binary not found: {PI_BINARY}. Run ./build_cmake OFF first.")
         if not PID_CONFIG.is_file():
             raise ValueError(f"PID config not found: {PID_CONFIG}")
-        manifest_path = PI_BINARY.with_name(f"{PI_BINARY.name}.manifest.json")
-        stale_message = "Cross-built binary is stale for pid.conf; run ./build_cmake OFF first."
         try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            config_match = re.search(
+            binary_versions = {
+                int(match)
+                for match in re.findall(
+                    rb"BALANCER_PID_CONFIG_VERSION=(\d+)\x00",
+                    PI_BINARY.read_bytes(),
+                )
+            }
+            config_versions = re.findall(
                 r"^\s*config_version\s*=\s*(\d+)\s*(?:#.*)?$",
                 PID_CONFIG.read_text(encoding="utf-8"),
                 re.MULTILINE,
             )
-            if (
-                not isinstance(manifest, dict)
-                or manifest.get("format_version") != 1
-                or not config_match
-                or manifest.get("binary_sha256") != hashlib.sha256(PI_BINARY.read_bytes()).hexdigest()
-                or manifest.get("pid_config_sha256") != hashlib.sha256(PID_CONFIG.read_bytes()).hexdigest()
-                or manifest.get("pid_config_version") != int(config_match.group(1))
-            ):
-                raise ValueError(stale_message)
-        except (OSError, json.JSONDecodeError, ValueError, TypeError):
-            raise ValueError(stale_message) from None
+        except OSError as exc:
+            raise ValueError(f"Could not validate the cross-built binary and pid.conf: {exc}") from None
+        if len(binary_versions) != 1:
+            raise ValueError(
+                "Cross-built binary has no unambiguous PID config version; "
+                "run ./build_cmake OFF first."
+            )
+        if len(config_versions) != 1:
+            raise ValueError(f"PID config must contain exactly one integer config_version: {PID_CONFIG}")
+        binary_version = next(iter(binary_versions))
+        config_version = int(config_versions[0])
+        if binary_version != config_version:
+            raise ValueError(
+                f"PID config version mismatch: binary expects {binary_version}, "
+                f"but {PID_CONFIG.name} is version {config_version}."
+            )
 
     def deploy_current(self) -> dict[str, Any]:
         self._validate_current_build()
@@ -837,7 +861,6 @@ class DeploymentManager:
         return {"ok": True, "message": output or "Deployed build-pi/balancer_pi and pid.conf to the Pi."}
 
     def start(self) -> dict[str, Any]:
-        self._validate_current_build()
         command = (
             "cd ~ || exit 1; rm -f ~/balancer_pi.pid; : >~/balancer_pi.log; "
             "nohup sudo -n ./balancer_pi </dev/null >~/balancer_pi.log 2>&1 & "

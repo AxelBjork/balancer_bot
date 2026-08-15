@@ -10,16 +10,18 @@
 
 #include <pigpiod_if2.h>
 
+#include "messages/types.h"
 #include "services/motor/stepper.h"
 
 struct MotorFeedbackSample {
-  double left_applied_sps{0.0};
-  double right_applied_sps{0.0};
+  double left_slewed_sps{0.0};
+  double right_slewed_sps{0.0};
   double measured_avg_sps{0.0};
   double update_dt_ms{0.0};
   double feedback_age_ms{0.0};
   int64_t left_actual_steps{0};
   int64_t right_actual_steps{0};
+  uint32_t actuator_saturation_flags{0};
   bool actuator_fault{false};
 };
 
@@ -43,7 +45,7 @@ class WaveFrameBackend {
 
 class DualWave final : public WaveFrameBackend {
  public:
-  static constexpr unsigned kFrameUs = 5000;
+  static constexpr unsigned kFrameUs = 2500;
   static constexpr unsigned kMinPulseUs = 2;
   static constexpr unsigned kMaxScheduledHz = 12000;
   static constexpr unsigned kMinPulse = kMinPulseUs;
@@ -196,7 +198,7 @@ class MotorRunner {
   using FeedbackSample = MotorFeedbackSample;
 
   MotorRunner(Stepper& left, Stepper& right, double control_hz = 1000.0,
-              double max_slew_sps_per_s = 250000.0, WaveFrameBackend* backend = nullptr)
+              double max_slew_sps_per_s = 200000.0, WaveFrameBackend* backend = nullptr)
       : left_(left),
         right_(right),
         pigpio_backend_(left.pi(), left.stepPin(), right.stepPin()),
@@ -236,6 +238,7 @@ class MotorRunner {
     phase_left_ = 0.0;
     phase_right_ = 0.0;
     measured_avg_sps_ = 0.0;
+    actuator_saturation_flags_ = ActuatorSaturationNone;
     velocity_history_count_ = 0;
     velocity_history_head_ = 0;
     have_last_call_time_ = false;
@@ -263,14 +266,8 @@ class MotorRunner {
   FeedbackSample getFeedbackSample() const {
     std::lock_guard<std::mutex> lock(mu_);
     FeedbackSample sample{};
-    if (frame_count_ > 0 && !actuator_fault_) {
-      const ScheduledFrame& active = frames_[0];
-      const double frame_seconds = static_cast<double>(DualWave::kFrameUs) / 1e6;
-      sample.left_applied_sps = active.left_direction *
-                                static_cast<double>(active.left_pulses) / frame_seconds;
-      sample.right_applied_sps = active.right_direction *
-                                 static_cast<double>(active.right_pulses) / frame_seconds;
-    }
+    sample.left_slewed_sps = last_command_left_sps_;
+    sample.right_slewed_sps = last_command_right_sps_;
     sample.update_dt_ms = last_update_dt_s_ * 1000.0;
     const uint64_t now_us = current_time_us_.load(std::memory_order_relaxed);
     if (last_completed_frame_us_ > 0 && now_us >= last_completed_frame_us_) {
@@ -282,6 +279,7 @@ class MotorRunner {
     sample.measured_avg_sps = measured_avg_sps_;
     sample.left_actual_steps = actual_steps_left_.load(std::memory_order_relaxed);
     sample.right_actual_steps = actual_steps_right_.load(std::memory_order_relaxed);
+    sample.actuator_saturation_flags = actuator_saturation_flags_;
     sample.actuator_fault = actuator_fault_;
     return sample;
   }
@@ -454,6 +452,7 @@ class MotorRunner {
 
   void applyOnce(uint64_t now_us) {
     std::lock_guard<std::mutex> lock(mu_);
+    actuator_saturation_flags_ = ActuatorSaturationNone;
     retireCompletedFramesLocked(now_us);
     if (actuator_fault_) {
       return;
@@ -468,10 +467,18 @@ class MotorRunner {
     have_last_call_time_ = true;
 
     const double max_delta = max_slew_sps_per_s_ * dt_s;
-    last_command_left_sps_ = clampDelta(
-        last_command_left_sps_, target_left_sps_.load(std::memory_order_relaxed), max_delta);
-    last_command_right_sps_ = clampDelta(
-        last_command_right_sps_, target_right_sps_.load(std::memory_order_relaxed), max_delta);
+    const double target_left_sps = target_left_sps_.load(std::memory_order_relaxed);
+    const double target_right_sps = target_right_sps_.load(std::memory_order_relaxed);
+    const double next_left_sps = clampDelta(last_command_left_sps_, target_left_sps, max_delta);
+    const double next_right_sps = clampDelta(last_command_right_sps_, target_right_sps, max_delta);
+    if (next_left_sps != target_left_sps) {
+      actuator_saturation_flags_ |= ActuatorSaturationLeftSlew;
+    }
+    if (next_right_sps != target_right_sps) {
+      actuator_saturation_flags_ |= ActuatorSaturationRightSlew;
+    }
+    last_command_left_sps_ = next_left_sps;
+    last_command_right_sps_ = next_right_sps;
 
     handleDirectionChangeLocked(now_us);
     if (velocity_history_count_ == 0) {
@@ -554,4 +561,5 @@ class MotorRunner {
   mutable size_t velocity_history_head_{0};
   mutable size_t velocity_history_count_{0};
   mutable double measured_avg_sps_{0.0};
+  uint32_t actuator_saturation_flags_{ActuatorSaturationNone};
 };

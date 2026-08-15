@@ -27,7 +27,9 @@ struct ImuSynchronizedPair {
 
 class ImuSampleSynchronizer {
  public:
-  static constexpr int64_t kDefaultMaxSkewNs = 2'000'000;
+  // One 833 Hz sample period is about 1.20 ms. Never permit a match to span a
+  // whole period, because that can pair accel and gyro from adjacent epochs.
+  static constexpr int64_t kDefaultMaxSkewNs = 750'000;
 
   explicit ImuSampleSynchronizer(int64_t max_skew_ns = kDefaultMaxSkewNs)
       : max_skew_ns_(max_skew_ns > 0 ? max_skew_ns : kDefaultMaxSkewNs) {

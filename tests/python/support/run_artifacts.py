@@ -11,6 +11,7 @@ from statistics import median
 from typing import Any
 
 from tools.telemetry_analysis.frames import read_telemetry_csv, telemetry_frame, write_telemetry_csv
+from tools.telemetry_analysis.metrics import actuator_stage_metrics
 from tools.telemetry_analysis.plotting import write_multiplot_svg
 
 
@@ -177,10 +178,12 @@ def estimate_lag_scale(
 
 
 def analyze_timeline_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    rows = telemetry_frame(rows).to_dict(orient="records")
+    frame = telemetry_frame(rows)
+    rows = frame.to_dict(orient="records")
     analysis: dict[str, Any] = {
         "time_key": _time_key(rows),
     }
+    analysis["actuator_stages"] = actuator_stage_metrics(frame)
     analysis["estimator_pitch"] = estimate_lag_scale(
         rows,
         "raw_acc_pitch_deg",
@@ -195,17 +198,17 @@ def analyze_timeline_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
         max_lag_s=0.5,
         min_abs_source=5.0,
     )
-    analysis["drive_command_to_measured_velocity"] = estimate_lag_scale(
+    analysis["drive_command_to_corrected_axle_velocity"] = estimate_lag_scale(
         rows,
         "u_sps",
-        "measured_vel_sps",
+        "corrected_axle_velocity_sps",
         max_lag_s=1.0,
         min_abs_source=50.0,
     )
-    analysis["drive_command_to_filtered_velocity"] = estimate_lag_scale(
+    analysis["drive_command_to_raw_completed_velocity"] = estimate_lag_scale(
         rows,
         "u_sps",
-        "filtered_vel_sps",
+        "raw_completed_velocity_sps",
         max_lag_s=1.0,
         min_abs_source=50.0,
     )
@@ -223,17 +226,17 @@ def analyze_timeline_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
         max_lag_s=1.0,
         min_abs_source=50.0,
     )
-    analysis["left_applied_to_measured_velocity"] = estimate_lag_scale(
+    analysis["left_applied_to_corrected_axle_velocity"] = estimate_lag_scale(
         rows,
         "left_applied_sps",
-        "measured_vel_sps",
+        "corrected_axle_velocity_sps",
         max_lag_s=1.0,
         min_abs_source=50.0,
     )
-    analysis["right_applied_to_measured_velocity"] = estimate_lag_scale(
+    analysis["right_applied_to_corrected_axle_velocity"] = estimate_lag_scale(
         rows,
         "right_applied_sps",
-        "measured_vel_sps",
+        "corrected_axle_velocity_sps",
         max_lag_s=1.0,
         min_abs_source=50.0,
     )
@@ -245,10 +248,10 @@ def analyze_timeline_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
         min_abs_source=0.25,
     )
     if any(_to_float(row.get("plant_velocity_mps")) is not None for row in rows):
-        analysis["plant_velocity_to_measured_velocity"] = estimate_lag_scale(
+        analysis["plant_velocity_to_corrected_axle_velocity"] = estimate_lag_scale(
             rows,
             "plant_velocity_mps",
-            "measured_vel_sps",
+            "corrected_axle_velocity_sps",
             max_lag_s=1.0,
             min_abs_source=0.02,
             demean=True,
@@ -257,7 +260,8 @@ def analyze_timeline_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def summarize_rows(rows: list[dict[str, Any]], metadata: dict[str, Any] | None = None) -> dict[str, Any]:
-    rows = telemetry_frame(rows).to_dict(orient="records")
+    frame = telemetry_frame(rows)
+    rows = frame.to_dict(orient="records")
     metadata = dict(metadata or {})
     summary: dict[str, Any] = {
         "run_id": metadata.get("run_id", "run"),
@@ -265,6 +269,7 @@ def summarize_rows(rows: list[dict[str, Any]], metadata: dict[str, Any] | None =
         "sample_count": len(rows),
         "telemetry_continuous": False,
         "fell": False,
+        "actuator_stages": actuator_stage_metrics(frame),
     }
     if not rows:
         summary.update(
@@ -548,6 +553,8 @@ class RunRecorder:
                     "series": [
                         ("u_sps", "#7C3AED", "Pitch command"),
                         ("left_target_sps", "#EA580C", "Left command"),
+                        ("left_slewed_sps", "#059669", "Left post-slew"),
+                        ("left_applied_sps", "#DC2626", "Left applied"),
                         ("right_target_sps", "#0891B2", "Right command"),
                     ],
                     "y_label": "Command (steps/s)",

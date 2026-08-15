@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import csv
 import dataclasses
-import hashlib
 import json
 import logging
 import math
-import re
 import socket
 import subprocess
 import struct
@@ -77,20 +75,30 @@ def test_dashboard_decodes_generated_payload_and_latches_flags():
     state = TelemetryState("pi.local")
     packet = telemetry_packet(
         pitch_deg=-1.25,
-        measured_vel_sps=-50.0,
+        corrected_axle_velocity_sps=-50.0,
+        left_actual_steps=123,
+        right_actual_steps=87,
         u_sps=123.5,
         controller_fault_flags=0x12,
         controller_saturation_flags=0x04,
+        actuator_saturation_flags=0x03,
         actuator_fault=1.0,
     )
 
     assert state.accept(packet, received_at=10.0)
     telemetry, status = state.snapshot(display_rate_hz=25.0)
     assert telemetry["attitude"]["pitch_deg"] == -1.25
-    assert telemetry["motion"]["measured_velocity_sps"] == -50.0
+    assert telemetry["motion"]["corrected_axle_velocity_sps"] == -50.0
+    assert telemetry["motion"]["left_actual_steps"] == 123
+    assert telemetry["motion"]["right_actual_steps"] == 87
     assert telemetry["controller"]["command_sps"] == 123.5
     assert "raw" not in telemetry
-    assert status["latched_flags"] == {"controller": 0x12, "saturation": 0x04, "actuator": 1}
+    assert status["latched_flags"] == {
+        "controller": 0x12,
+        "saturation": 0x04,
+        "actuator_saturation": 0x03,
+        "actuator": 1,
+    }
 
 
 def test_csv_logger_writes_every_raw_field_with_fixed_header(tmp_path):
@@ -104,6 +112,9 @@ def test_csv_logger_writes_every_raw_field_with_fixed_header(tmp_path):
         rows = list(csv.DictReader(handle))
     assert "received_at_unix_s" in rows[0]
     assert "motor_feedback_age_ms" in rows[0]
+    assert "left_slewed_sps" in rows[0]
+    assert "right_slewed_sps" in rows[0]
+    assert "actuator_saturation_flags" in rows[0]
     assert float(rows[0]["pitch_deg"]) == -1.25
     assert len(rows) == 400
     assert float(rows[-1]["pitch_deg"]) == 397.75
@@ -327,29 +338,16 @@ def test_udp_host_falls_back_to_pi_mdns_name_when_ssh_is_unavailable():
         assert resolve_udp_host("rpi4") == "192.168.1.26"
 
 
-def write_build_manifest(binary: Path, config: Path) -> Path:
-    manifest = binary.with_name(f"{binary.name}.manifest.json")
-    version = int(re.search(r"^\s*config_version\s*=\s*(\d+)", config.read_text(), re.MULTILINE).group(1))
-    manifest.write_text(
-        json.dumps(
-            {
-                "format_version": 1,
-                "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
-                "pid_config_sha256": hashlib.sha256(config.read_bytes()).hexdigest(),
-                "pid_config_version": version,
-            }
-        )
-    )
-    return manifest
+def write_versioned_binary(binary: Path, version: int) -> None:
+    binary.write_bytes(b"\x7fELF\0BALANCER_PID_CONFIG_VERSION=" + str(version).encode() + b"\0")
 
 
 def test_deployer_uses_current_build_with_host_scp_and_never_starts_robot(tmp_path, monkeypatch):
     deployer = DeploymentManager("pi@rpi4")
     completed = Mock(returncode=0, stdout="", stderr="")
     binary, config = tmp_path / "balancer_pi", tmp_path / "pid.conf"
-    binary.write_bytes(b"ELF")
+    write_versioned_binary(binary, 3)
     config.write_text("config_version = 3\n")
-    write_build_manifest(binary, config)
     monkeypatch.setattr("tools.telemetry_dashboard.server.PI_BINARY", binary)
     monkeypatch.setattr("tools.telemetry_dashboard.server.PID_CONFIG", config)
     with patch("tools.telemetry_dashboard.server.subprocess.run", return_value=completed) as run:
@@ -361,28 +359,42 @@ def test_deployer_uses_current_build_with_host_scp_and_never_starts_robot(tmp_pa
     assert "ssh" not in command
 
 
-def test_deployer_rejects_missing_or_stale_build_manifest(tmp_path, monkeypatch):
+def test_deployer_checks_embedded_pid_config_version_only_for_deploy(tmp_path, monkeypatch):
     deployer = DeploymentManager("pi@rpi4")
     binary, config = tmp_path / "balancer_pi", tmp_path / "pid.conf"
     binary.write_bytes(b"ELF")
     config.write_text("config_version = 3\n")
     monkeypatch.setattr("tools.telemetry_dashboard.server.PI_BINARY", binary)
     monkeypatch.setattr("tools.telemetry_dashboard.server.PID_CONFIG", config)
-    with pytest.raises(ValueError, match="stale for pid.conf"):
+    with pytest.raises(ValueError, match="no unambiguous PID config version"):
         deployer.deploy_current()
-    write_build_manifest(binary, config)
+    write_versioned_binary(binary, 2)
+    with pytest.raises(ValueError, match="binary expects 2"):
+        deployer.deploy_current()
+    write_versioned_binary(binary, 3)
     config.write_text("config_version = 3\ncontroller_enabled = 1\n")
-    with pytest.raises(ValueError, match="stale for pid.conf"):
-        deployer.start()
+    completed = Mock(returncode=0, stdout="", stderr="")
+    with patch("tools.telemetry_dashboard.server.subprocess.run", return_value=completed):
+        assert deployer.deploy_current()["ok"]
+
+
+def test_deployer_start_does_not_require_a_current_local_build(tmp_path, monkeypatch):
+    deployer = DeploymentManager("pi@rpi4")
+    binary, config = tmp_path / "balancer_pi", tmp_path / "pid.conf"
+    monkeypatch.setattr("tools.telemetry_dashboard.server.PI_BINARY", binary)
+    monkeypatch.setattr("tools.telemetry_dashboard.server.PID_CONFIG", config)
+    completed = Mock(returncode=0, stdout="", stderr="")
+    with patch("tools.telemetry_dashboard.server.subprocess.run", return_value=completed) as run:
+        assert deployer.start()["ok"]
+    assert run.call_args.args[0][0] == "ssh"
 
 
 def test_start_and_abort_use_short_lived_ssh_commands(tmp_path, monkeypatch):
     deployer = DeploymentManager("pi@rpi4")
     completed = Mock(returncode=0, stdout="", stderr="")
     binary, config = tmp_path / "balancer_pi", tmp_path / "pid.conf"
-    binary.write_bytes(b"ELF")
+    write_versioned_binary(binary, 3)
     config.write_text("config_version = 3\n")
-    write_build_manifest(binary, config)
     monkeypatch.setattr("tools.telemetry_dashboard.server.PI_BINARY", binary)
     monkeypatch.setattr("tools.telemetry_dashboard.server.PID_CONFIG", config)
     with patch("tools.telemetry_dashboard.server.subprocess.run", return_value=completed) as run:
@@ -403,9 +415,8 @@ def test_start_and_abort_use_short_lived_ssh_commands(tmp_path, monkeypatch):
 def test_start_surfaces_immediate_remote_failure_log(tmp_path, monkeypatch):
     deployer = DeploymentManager("pi@rpi4")
     binary, config = tmp_path / "balancer_pi", tmp_path / "pid.conf"
-    binary.write_bytes(b"ELF")
+    write_versioned_binary(binary, 3)
     config.write_text("config_version = 3\n")
-    write_build_manifest(binary, config)
     monkeypatch.setattr("tools.telemetry_dashboard.server.PI_BINARY", binary)
     monkeypatch.setattr("tools.telemetry_dashboard.server.PID_CONFIG", config)
     completed = Mock(

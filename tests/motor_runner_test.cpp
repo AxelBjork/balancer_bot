@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cmath>
 #include <thread>
 #include <vector>
 
@@ -48,6 +49,38 @@ class RecordingWaveBackend final : public WaveFrameBackend {
  private:
   int next_id{1};
 };
+
+struct SineFit {
+  double amplitude{0.0};
+  double phase_rad{0.0};
+};
+
+SineFit fitSine(const std::vector<double>& samples, size_t first_sample,
+                double sample_period_s, double frequency_hz) {
+  double sine_sum = 0.0;
+  double cosine_sum = 0.0;
+  const size_t count = samples.size() - first_sample;
+  for (size_t index = first_sample; index < samples.size(); ++index) {
+    const double phase =
+        2.0 * M_PI * frequency_hz * sample_period_s * static_cast<double>(index + 1);
+    sine_sum += samples[index] * std::sin(phase);
+    cosine_sum += samples[index] * std::cos(phase);
+  }
+  const double sine_coefficient = 2.0 * sine_sum / static_cast<double>(count);
+  const double cosine_coefficient = 2.0 * cosine_sum / static_cast<double>(count);
+  return SineFit{std::hypot(sine_coefficient, cosine_coefficient),
+                 std::atan2(cosine_coefficient, sine_coefficient)};
+}
+
+double rmsDifference(const std::vector<double>& lhs, const std::vector<double>& rhs,
+                     size_t first_sample) {
+  double squared_sum = 0.0;
+  for (size_t index = first_sample; index < lhs.size(); ++index) {
+    const double error = lhs[index] - rhs[index];
+    squared_sum += error * error;
+  }
+  return std::sqrt(squared_sum / static_cast<double>(lhs.size() - first_sample));
+}
 
 }  // namespace
 
@@ -264,7 +297,7 @@ TEST_F(MotorRunnerTest, VelocityEstimationAveragesSubFrameSigmaDeltaSteps) {
   EXPECT_NEAR(static_cast<double>(feedback.right_actual_steps), 31.0, 2.0);
 }
 
-TEST_F(MotorRunnerTest, AppliedFeedbackReportsQuantizedFrameAndAccurateWindowAverage) {
+TEST_F(MotorRunnerTest, StepDerivedFeedbackReportsAccurateWindowAverage) {
   Stepper left(1, Stepper::Pins{5, 6, 13});
   Stepper right(1, Stepper::Pins{7, 8, 14});
   MotorRunner runner(left, right, 400.0, 50000.0);
@@ -272,10 +305,6 @@ TEST_F(MotorRunnerTest, AppliedFeedbackReportsQuantizedFrameAndAccurateWindowAve
   RunFor(runner, 125.0, 125.0, std::chrono::milliseconds(60));
 
   const auto feedback = runner.getFeedbackSample();
-  EXPECT_GT(feedback.left_applied_sps, 0.0);
-  EXPECT_GT(feedback.right_applied_sps, 0.0);
-  EXPECT_LE(feedback.left_applied_sps, 200.0);
-  EXPECT_LE(feedback.right_applied_sps, 200.0);
   EXPECT_NEAR(feedback.measured_avg_sps, 125.0, 35.0);
 }
 
@@ -288,15 +317,15 @@ TEST_F(MotorRunnerTest, CountsOnlyCompletedFrames) {
   runner.setTargets(1000.0, 1000.0, 1000);
   EXPECT_EQ(runner.getActualLeftSteps(), 0);
   ASSERT_EQ(backend.frames.size(), 2U);
-  EXPECT_EQ(backend.frames[0].left_pulses, 5U);
+  EXPECT_EQ(backend.frames[0].left_pulses, 2U);
   EXPECT_FALSE(backend.frames[0].synchronous);
   EXPECT_TRUE(backend.frames[1].synchronous);
 
-  runner.setTargets(1000.0, 1000.0, 5999);
+  runner.setTargets(1000.0, 1000.0, 3499);
   EXPECT_EQ(runner.getActualLeftSteps(), 0);
-  runner.setTargets(1000.0, 1000.0, 6000);
-  EXPECT_EQ(runner.getActualLeftSteps(), 5);
-  EXPECT_EQ(runner.getActualRightSteps(), 5);
+  runner.setTargets(1000.0, 1000.0, 3500);
+  EXPECT_EQ(runner.getActualLeftSteps(), 2);
+  EXPECT_EQ(runner.getActualRightSteps(), 2);
 }
 
 TEST_F(MotorRunnerTest, PhysicalPulsePositionAdvancesInsideFrameButFeedbackWaitsForCompletion) {
@@ -308,12 +337,12 @@ TEST_F(MotorRunnerTest, PhysicalPulsePositionAdvancesInsideFrameButFeedbackWaits
   runner.setTargets(1000.0, 1000.0, 1000);
   EXPECT_EQ(runner.getFeedbackSample().left_actual_steps, 0);
   EXPECT_DOUBLE_EQ(runner.getScheduledStepPosition(1001).left_steps, 0.0);
-  EXPECT_DOUBLE_EQ(runner.getScheduledStepPosition(2600).left_steps, 2.0);
+  EXPECT_DOUBLE_EQ(runner.getScheduledStepPosition(2250).left_steps, 1.0);
   EXPECT_EQ(runner.getFeedbackSample().left_actual_steps, 0);
-  EXPECT_DOUBLE_EQ(runner.getScheduledStepPosition(5600).left_steps, 5.0);
+  EXPECT_DOUBLE_EQ(runner.getScheduledStepPosition(3400).left_steps, 2.0);
 
-  runner.setTargets(1000.0, 1000.0, 6000);
-  EXPECT_EQ(runner.getFeedbackSample().left_actual_steps, 5);
+  runner.setTargets(1000.0, 1000.0, 3500);
+  EXPECT_EQ(runner.getFeedbackSample().left_actual_steps, 2);
 }
 
 TEST_F(MotorRunnerTest, FractionalPhaseProducesCorrectLowRatePulseCount) {
@@ -349,8 +378,127 @@ TEST_F(MotorRunnerTest, SupportsOneAndTwelveThousandSps) {
   backend.frames.clear();
   RunDeterministic(runner, 12000.0, 12000.0, now_us, 8);
   ASSERT_FALSE(backend.frames.empty());
-  EXPECT_EQ(backend.frames.front().left_pulses, 60U);
-  EXPECT_EQ(backend.frames.front().right_pulses, 60U);
+  EXPECT_EQ(backend.frames.front().left_pulses, 30U);
+  EXPECT_EQ(backend.frames.front().right_pulses, 30U);
+}
+
+TEST_F(MotorRunnerTest, ProductionSlewAllowsExactlyFiveHundredSpsPerFourHundredHertzTick) {
+  Stepper left(1, Stepper::Pins{5, 6, 13});
+  Stepper right(1, Stepper::Pins{7, 8, 14});
+  RecordingWaveBackend backend;
+  MotorRunner runner(left, right, Config::control_hz, Config::motor_slew_sps_per_s, &backend);
+
+  runner.setTargets(2000.0, -2000.0, 2500);
+  auto feedback = runner.getFeedbackSample();
+  EXPECT_DOUBLE_EQ(feedback.left_slewed_sps, 500.0);
+  EXPECT_DOUBLE_EQ(feedback.right_slewed_sps, -500.0);
+  EXPECT_EQ(feedback.actuator_saturation_flags,
+            ActuatorSaturationLeftSlew | ActuatorSaturationRightSlew);
+
+  runner.setTargets(2000.0, -2000.0, 5000);
+  feedback = runner.getFeedbackSample();
+  EXPECT_DOUBLE_EQ(feedback.left_slewed_sps, 1000.0);
+  EXPECT_DOUBLE_EQ(feedback.right_slewed_sps, -1000.0);
+
+  runner.setTargets(1000.0, -1000.0, 7500);
+  feedback = runner.getFeedbackSample();
+  EXPECT_DOUBLE_EQ(feedback.left_slewed_sps, 1000.0);
+  EXPECT_DOUBLE_EQ(feedback.right_slewed_sps, -1000.0);
+  EXPECT_EQ(feedback.actuator_saturation_flags, ActuatorSaturationNone);
+}
+
+TEST_F(MotorRunnerTest, NewTargetIsQueuedForTheNextTwoPointFiveMillisecondFrame) {
+  Stepper left(1, Stepper::Pins{5, 6, 13});
+  Stepper right(1, Stepper::Pins{7, 8, 14});
+  RecordingWaveBackend backend;
+  MotorRunner runner(left, right, 400.0, 1e9, &backend);
+
+  runner.setTargets(1000.0, 1000.0, 1000);
+  ASSERT_EQ(backend.frames.size(), 2U);
+  runner.setTargets(2000.0, 2000.0, 3500);
+
+  ASSERT_EQ(backend.frames.size(), 3U);
+  EXPECT_EQ(backend.frames.back().left_pulses, 5U);
+  EXPECT_EQ(backend.frames.back().right_pulses, 5U);
+  EXPECT_TRUE(backend.frames.back().synchronous);
+  EXPECT_FALSE(runner.getFeedbackSample().actuator_fault);
+}
+
+TEST_F(MotorRunnerTest, NineHertzThreeThousandSpsTracksWithoutSteadySlewLimiting) {
+  constexpr double kFrequencyHz = 9.0;
+  constexpr double kAmplitudeSps = 3000.0;
+  constexpr double kDtS = 1.0 / 400.0;
+  constexpr int kTicks = 1600;
+  constexpr size_t kFirstMeasuredSample = 400;
+
+  Stepper left(1, Stepper::Pins{5, 6, 13});
+  Stepper right(1, Stepper::Pins{7, 8, 14});
+  RecordingWaveBackend backend;
+  MotorRunner runner(left, right, Config::control_hz, Config::motor_slew_sps_per_s, &backend);
+  std::vector<double> requested;
+  std::vector<double> slewed;
+  requested.reserve(kTicks);
+  slewed.reserve(kTicks);
+  size_t steady_slew_ticks = 0;
+
+  for (int tick = 0; tick < kTicks; ++tick) {
+    const double time_s = static_cast<double>(tick + 1) * kDtS;
+    const double target = kAmplitudeSps * std::sin(2.0 * M_PI * kFrequencyHz * time_s);
+    runner.setTargets(target, target, static_cast<uint64_t>((tick + 1) * 2500));
+    const auto feedback = runner.getFeedbackSample();
+    requested.push_back(target);
+    slewed.push_back(feedback.left_slewed_sps);
+    if (static_cast<size_t>(tick) >= kFirstMeasuredSample &&
+        feedback.actuator_saturation_flags != ActuatorSaturationNone) {
+      ++steady_slew_ticks;
+    }
+  }
+
+  EXPECT_EQ(steady_slew_ticks, 0U);
+  EXPECT_NEAR(rmsDifference(requested, slewed, kFirstMeasuredSample), 0.0, 1e-9);
+  EXPECT_FALSE(runner.getFeedbackSample().actuator_fault);
+  EXPECT_GE(backend.frames.size(), static_cast<size_t>(kTicks));
+}
+
+TEST_F(MotorRunnerTest, NineHertzFourThousandSpsExercisesBothSignedSlewPaths) {
+  constexpr double kFrequencyHz = 9.0;
+  constexpr double kAmplitudeSps = 4000.0;
+  constexpr double kDtS = 1.0 / 400.0;
+  constexpr int kTicks = 1600;
+  constexpr size_t kFirstMeasuredSample = 400;
+
+  Stepper left(1, Stepper::Pins{5, 6, 13});
+  Stepper right(1, Stepper::Pins{7, 8, 14});
+  RecordingWaveBackend backend;
+  MotorRunner runner(left, right, Config::control_hz, Config::motor_slew_sps_per_s, &backend);
+  std::vector<double> requested;
+  std::vector<double> slewed;
+  requested.reserve(kTicks);
+  slewed.reserve(kTicks);
+  bool limited_while_rising = false;
+  bool limited_while_falling = false;
+
+  for (int tick = 0; tick < kTicks; ++tick) {
+    const double time_s = static_cast<double>(tick + 1) * kDtS;
+    const double target = kAmplitudeSps * std::sin(2.0 * M_PI * kFrequencyHz * time_s);
+    runner.setTargets(target, target, static_cast<uint64_t>((tick + 1) * 2500));
+    const auto feedback = runner.getFeedbackSample();
+    requested.push_back(target);
+    slewed.push_back(feedback.left_slewed_sps);
+    if (static_cast<size_t>(tick) >= kFirstMeasuredSample &&
+        (feedback.actuator_saturation_flags & ActuatorSaturationLeftSlew) != 0U) {
+      limited_while_rising |= feedback.left_slewed_sps < target;
+      limited_while_falling |= feedback.left_slewed_sps > target;
+    }
+  }
+
+  const SineFit requested_fit = fitSine(requested, kFirstMeasuredSample, kDtS, kFrequencyHz);
+  const SineFit slewed_fit = fitSine(slewed, kFirstMeasuredSample, kDtS, kFrequencyHz);
+  EXPECT_TRUE(limited_while_rising);
+  EXPECT_TRUE(limited_while_falling);
+  EXPECT_LT(slewed_fit.amplitude, requested_fit.amplitude);
+  EXPECT_GT(rmsDifference(requested, slewed, kFirstMeasuredSample), 1.0);
+  EXPECT_FALSE(runner.getFeedbackSample().actuator_fault);
 }
 
 TEST_F(MotorRunnerTest, WaveFailureLatchesActuatorFaultAndZeroFeedback) {
@@ -363,8 +511,6 @@ TEST_F(MotorRunnerTest, WaveFailureLatchesActuatorFaultAndZeroFeedback) {
   runner.setTargets(500.0, 500.0, 1000);
   const auto feedback = runner.getFeedbackSample();
   EXPECT_TRUE(feedback.actuator_fault);
-  EXPECT_DOUBLE_EQ(feedback.left_applied_sps, 0.0);
-  EXPECT_DOUBLE_EQ(feedback.right_applied_sps, 0.0);
   EXPECT_GT(backend.stop_calls, 0);
 }
 
@@ -427,7 +573,35 @@ TEST_F(MotorRunnerTest, MotorServicePublishesActuatorFault) {
 
   ASSERT_EQ(sink.samples.size(), 1U);
   EXPECT_EQ(sink.samples.back().actuator_fault, 1U);
-  EXPECT_DOUBLE_EQ(sink.samples.back().left_applied_sps, 0.0);
+}
+
+TEST_F(MotorRunnerTest, MotorServicePublishesPostSlewCommandsAndIndependentFlags) {
+  struct FeedbackSink {
+    std::vector<ipc::MotorFeedbackPayload> samples;
+    static void dispatch(void* ctx, MsgId id, const void* payload) {
+      if (id == MsgId::MotorFeedback) {
+        static_cast<FeedbackSink*>(ctx)->samples.push_back(
+            unpack_payload<MsgId::MotorFeedback>(payload));
+      }
+    }
+  } sink;
+
+  Stepper left(1, Stepper::Pins{5, 6, 13});
+  Stepper right(1, Stepper::Pins{7, 8, 14});
+  RecordingWaveBackend backend;
+  MotorRunner runner(left, right, Config::control_hz, Config::motor_slew_sps_per_s, &backend);
+  ipc::MessageBus bus(&sink, FeedbackSink::dispatch);
+  sil::MotorService service(bus, &runner);
+
+  service.on_message<MsgId::PhysicsTick>(PhysicsTickPayload{0.0025, 2500});
+  service.on_message<MsgId::MotorTargets>(ipc::MotorTargetsPayload{2000.0, 100.0});
+
+  ASSERT_EQ(sink.samples.size(), 1U);
+  EXPECT_DOUBLE_EQ(sink.samples.back().left_slewed_sps, 500.0);
+  EXPECT_DOUBLE_EQ(sink.samples.back().right_slewed_sps, 100.0);
+  EXPECT_EQ(sink.samples.back().actuator_saturation_flags,
+            ActuatorSaturationLeftSlew);
+  EXPECT_EQ(sink.samples.back().actuator_fault, 0U);
 }
 
 TEST_F(MotorRunnerTest, FeedbackReportsUpdateTiming) {
@@ -442,7 +616,7 @@ TEST_F(MotorRunnerTest, FeedbackReportsUpdateTiming) {
   EXPECT_GE(feedback.feedback_age_ms, 0.0);
 }
 
-TEST_F(MotorRunnerTest, FeedbackSnapshotReflectsAppliedStateNotRawTarget) {
+TEST_F(MotorRunnerTest, FeedbackSnapshotIncludesActualSteps) {
   Stepper left(1, Stepper::Pins{5, 6, 13});
   Stepper right(1, Stepper::Pins{7, 8, 14});
   MotorRunner runner(left, right, 400.0, 50000.0);
@@ -450,15 +624,11 @@ TEST_F(MotorRunnerTest, FeedbackSnapshotReflectsAppliedStateNotRawTarget) {
   RunFor(runner, 4000.0, 4000.0, std::chrono::milliseconds(50));
 
   const auto feedback = runner.getFeedbackSample();
-  EXPECT_LT(feedback.left_applied_sps, 4000.0);
-  EXPECT_LT(feedback.right_applied_sps, 4000.0);
-  EXPECT_GT(feedback.left_applied_sps, 0.0);
-  EXPECT_GT(feedback.right_applied_sps, 0.0);
   EXPECT_GT(feedback.left_actual_steps, 0);
   EXPECT_GT(feedback.right_actual_steps, 0);
 }
 
-TEST_F(MotorRunnerTest, FeedbackSignMatchesAppliedDirectionWithRightMotorInversion) {
+TEST_F(MotorRunnerTest, FeedbackStepsMatchDirectionWithRightMotorInversion) {
   {
     Stepper left(1, Stepper::Pins{5, 6, 13});
     Stepper right(1, Stepper::Pins{7, 8, 14}, true);
@@ -466,8 +636,6 @@ TEST_F(MotorRunnerTest, FeedbackSignMatchesAppliedDirectionWithRightMotorInversi
 
     RunFor(runner, 800.0, 800.0, std::chrono::milliseconds(80));
     const auto feedback = runner.getFeedbackSample();
-    EXPECT_GT(feedback.left_applied_sps, 0.0);
-    EXPECT_GT(feedback.right_applied_sps, 0.0);
     EXPECT_GT(feedback.left_actual_steps, 0);
     EXPECT_GT(feedback.right_actual_steps, 0);
   }
@@ -479,8 +647,6 @@ TEST_F(MotorRunnerTest, FeedbackSignMatchesAppliedDirectionWithRightMotorInversi
 
     RunFor(runner, -800.0, -800.0, std::chrono::milliseconds(80));
     const auto feedback = runner.getFeedbackSample();
-    EXPECT_LT(feedback.left_applied_sps, 0.0);
-    EXPECT_LT(feedback.right_applied_sps, 0.0);
     EXPECT_LT(feedback.left_actual_steps, 0);
     EXPECT_LT(feedback.right_actual_steps, 0);
   }

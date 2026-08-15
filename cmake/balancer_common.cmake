@@ -47,7 +47,7 @@ function(add_balancer_common_target)
     ${control_dir}/rate_controller_core.cpp
     ${control_dir}/control_service.cpp
     ${imu_dir}/ism330_iio_reader.cpp
-    ${imu_dir}/pitch_lpf.cpp
+    ${imu_dir}/imu_pitch_estimator.cpp
     ${imu_dir}/imu_service.cpp
     ${input_dir}/input_service.cpp
     ${input_dir}/xbox_controller.cpp
