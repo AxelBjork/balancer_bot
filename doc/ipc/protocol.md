@@ -12,7 +12,7 @@ It describes the reflected runtime message bus used by the balancer services, in
 messages consumed by the SIL harness and the internal-only messages exchanged between services.
 
 - Documented balancer message count: `12`
-- Protocol hash: `25cdf09604164fd7`
+- Protocol hash: `75636990e95c6daa`
 - UDP ingress/egress gateway: `UdpBridge`
 
 ## System Architecture
@@ -31,11 +31,11 @@ The architecture is divided into three logical areas:
 
 ### `ImuService`
 
-> Consumes raw accelerometer/gyroscope samples and publishes `ImuData` samples that represent the controller's current view of body pitch, specific force, angular rate, and sample time.
+> Consumes raw accelerometer/gyroscope samples and publishes `ImuData` samples that represent the controller's current view of body pitch, angular motion, and sample time.
 >
-> When hardware reading is enabled, the service owns an `Ism330IioReader` that discovers the split accel/gyro IIO devices, converts raw sensor counts into SI units, timestamps each sample, and publishes `ImuRawData` onto the internal message bus. The raw accelerometer and gyroscope vectors are then fused by a complementary filter before `ImuData` reaches control.
+> The hardware reader converts synchronized sensor samples into SI-valued robot axes and publishes `ImuRawData`. This service applies 15 Hz accelerometer and 30 Hz gyro two-pole low-pass filters plus a 10 Hz filtered gyro derivative. Full-circle gravity pitch corrects short-term gyro prediction at 0.5 Hz, with each innovation limited symmetrically to 2.5 degrees so translation and motor vibration cannot abruptly steer attitude. The optional fixed notch and 70 mm lever-arm correction are disabled by default. It never learns gyro bias, mounting, gravity recovery modes, or COM correction, and marks invalid input invalid.
 >
-> In SIL mode the hardware reader can be disabled entirely, but Python can still inject `ImuRawData` through `UdpBridge` to exercise the same filter path. `ImuData` remains an internal controller-facing contract rather than a UDP payload.
+> SIL can disable the hardware reader and inject `ImuRawData` through `UdpBridge` while using the same estimator. `ImuData` remains an internal controller-facing contract.
 
 - Publishes: `ImuRawData`, `ImuData`
 - Subscribes: `ImuRawData`
@@ -55,13 +55,13 @@ The architecture is divided into three logical areas:
 
 > Owns the balancing control pipeline that converts `PhysicsTick`, `ImuData`, and `JoystickCommand`, and `MotorFeedback` inputs into wheel-speed targets and streaming controller telemetry.
 >
-> A ramped joystick command supplies a governed wheel-speed reference. At 50 Hz, velocity error and target acceleration form the pitch reference, while a bounded integral term learns only the stationary center-of-mass trim:
+> At 100 Hz, completed common-mode steps are corrected for chassis pitch to observe axle velocity and filtered at 10 Hz. A jerk-limited acceleration request plus corrected-velocity damping form the pitch reference, while a bounded integral term learns only stationary center-of-mass trim:
 >
-> $$ \theta_{sp} = k_{vp}(v_{ref} - v) + \operatorname{atan2}(a_{ref}s_m,g) + \theta_{COM} $$
+> $$ \theta_{sp} = \operatorname{atan2}(a_{nominal} - k_v v_{axle},g) + \theta_{COM} $$
 >
 > $$ \omega_{sp} = k_{pitch}(\theta_{sp} - \theta) - k_{pitch\_rate}\dot{\theta} $$
 >
-> The pitch-rate controller supplies the wheel command before turn allocation. Motor output can initially reduce or reverse to acquire lean. Faults clear dynamic state but preserve bounded COM trim. Telemetry reports the pitch-reference terms, commands, feedback, saturation, and faults.
+> The pitch-rate controller supplies the wheel command before turn allocation. Motor output can initially reduce or reverse to acquire lean. Faults clear dynamic state but preserve bounded COM trim. Telemetry reports the pitch-reference terms, target/post-slew/applied commands, feedback, saturation, and faults. In `actuator_saturation_flags`, bit 0 is left slew limiting and bi
 
 - Publishes: `MotorTargets`, `SystemTelemetry`
 - Subscribes: `PhysicsTick`, `ImuData`, `JoystickCommand`, `MotorFeedback`
@@ -74,7 +74,7 @@ The architecture is divided into three logical areas:
 >
 > $$ u_L, u_R \; [\mathrm{steps/s}] \rightarrow \texttt{MotorRunner::setTargets}(u_L, u_R) $$
 >
-> Keeping this service narrow is intentional. Closed-loop balance, velocity estimation, and telemetry all remain in `ControlService` and `RateControllerCore`, while hardware-specific pulse generation, slew limiting, and direction control remain below this layer in the motor runner. The service also listens for `PhysicsTick` so it can keep the runner aligned with the current physics time before forwarding motor targets. When hardware is present the service also republishes the runner's applied rate, steps-derived average speed e
+> Keeping this service narrow is intentional. Closed-loop balance, velocity estimation, and telemetry all remain in `ControlService` and `RateControllerCore`, while hardware-specific pulse generation, slew limiting, and direction control remain below this layer in the motor runner. The service also listens for `PhysicsTick` so it can keep the runner aligned with the current physics time before forwarding motor targets. When hardware is present the service also republishes the runner's continuous post-slew command, pulse-frame-a
 
 - Publishes: `MotorFeedback`
 - Subscribes: `PhysicsTick`, `MotorTargets`
@@ -129,7 +129,7 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 - Numeric ID: `3000`
 - Payload type: `ImuSamplePayload`
 - Python type: `ImuSamplePayload`
-- Wire size: `80` bytes
+- Wire size: `88` bytes
 - Published by: `ImuService`
 - Consumed by: `ControlService`
 
@@ -141,6 +141,7 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 | `acc` | `std::array<double, 3>` | `list[float]` | 24 | 24 |  |
 | `gyr` | `std::array<double, 3>` | `list[float]` | 24 | 48 |  |
 | `timestamp_us` | `uint64_t` | `int` | 8 | 72 |  |
+| `estimate_valid` | `bool` | `bool` | 1 | 80 |  |
 
 ### `MsgId::JoystickCommand`
 
@@ -175,7 +176,7 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 - Numeric ID: `3003`
 - Payload type: `SystemTelemetryPayload`
 - Python type: `SystemTelemetryPayload`
-- Wire size: `136` bytes
+- Wire size: `144` bytes
 - Published by: `ControlService`
 - Consumed by: `UdpBridge`
 
@@ -195,25 +196,26 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 | `filtered_pitch_rate_dps` | `float` | `float` | 4 | 52 |  |
 | `u_sps` | `float` | `float` | 4 | 56 |  |
 | `turn_sps` | `float` | `float` | 4 | 60 |  |
-| `target_velocity_sps` | `float` | `float` | 4 | 64 |  |
-| `vel_error` | `float` | `float` | 4 | 68 |  |
-| `measured_vel_sps` | `float` | `float` | 4 | 72 |  |
-| `velocity_p_term_deg` | `float` | `float` | 4 | 76 |  |
-| `velocity_i_term_deg` | `float` | `float` | 4 | 80 |  |
+| `nominal_acceleration_mps2` | `float` | `float` | 4 | 64 |  |
+| `raw_completed_velocity_sps` | `float` | `float` | 4 | 68 |  |
+| `corrected_axle_velocity_sps` | `float` | `float` | 4 | 72 |  |
+| `velocity_damping_acceleration_mps2` | `float` | `float` | 4 | 76 |  |
+| `com_trim_deg` | `float` | `float` | 4 | 80 |  |
 | `pitch_error_deg` | `float` | `float` | 4 | 84 |  |
 | `pitch_sp_deg` | `float` | `float` | 4 | 88 |  |
 | `rate_setpoint_dps` | `float` | `float` | 4 | 92 |  |
 | `rate_error_dps` | `float` | `float` | 4 | 96 |  |
 | `left_target_sps` | `float` | `float` | 4 | 100 |  |
 | `right_target_sps` | `float` | `float` | 4 | 104 |  |
-| `left_applied_sps` | `float` | `float` | 4 | 108 |  |
-| `right_applied_sps` | `float` | `float` | 4 | 112 |  |
+| `left_slewed_sps` | `float` | `float` | 4 | 108 |  |
+| `right_slewed_sps` | `float` | `float` | 4 | 112 |  |
 | `motor_update_dt_ms` | `float` | `float` | 4 | 116 |  |
 | `motor_feedback_age_ms` | `float` | `float` | 4 | 120 |  |
 | `left_actual_steps` | `int32_t` | `int` | 4 | 124 |  |
 | `right_actual_steps` | `int32_t` | `int` | 4 | 128 |  |
-| `command_saturated` | `bool` | `bool` | 1 | 132 |  |
-| `actuator_fault` | `bool` | `bool` | 1 | 133 |  |
+| `actuator_saturation_flags` | `uint32_t` | `int` | 4 | 132 |  |
+| `command_saturated` | `bool` | `bool` | 1 | 136 |  |
+| `actuator_fault` | `bool` | `bool` | 1 | 137 |  |
 
 ### `MsgId::MotorFeedback`
 
@@ -226,14 +228,15 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 
 | Field | C++ Type | Python Type | Bytes | Offset | Description |
 |---|---|---|---:|---:|---|
-| `left_applied_sps` | `double` | `float` | 8 | 0 |  |
-| `right_applied_sps` | `double` | `float` | 8 | 8 |  |
+| `left_slewed_sps` | `double` | `float` | 8 | 0 |  |
+| `right_slewed_sps` | `double` | `float` | 8 | 8 |  |
 | `measured_avg_sps` | `double` | `float` | 8 | 16 |  |
 | `update_dt_ms` | `double` | `float` | 8 | 24 |  |
 | `feedback_age_ms` | `double` | `float` | 8 | 32 |  |
 | `left_actual_steps` | `int64_t` | `int` | 8 | 40 |  |
 | `right_actual_steps` | `int64_t` | `int` | 8 | 48 |  |
-| `actuator_fault` | `uint8_t` | `int` | 1 | 56 |  |
+| `actuator_saturation_flags` | `uint32_t` | `int` | 4 | 56 |  |
+| `actuator_fault` | `uint8_t` | `int` | 1 | 60 |  |
 
 ### `MsgId::SimStartRun`
 
@@ -358,45 +361,45 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 - Numeric ID: `3010`
 - Payload type: `SimulatorTelemetryPayload`
 - Python type: `SimulatorTelemetryPayload`
-- Wire size: `264` bytes
+- Wire size: `272` bytes
 - Published by: _None_
 - Consumed by: `UdpBridge`
 
 | Field | C++ Type | Python Type | Bytes | Offset | Description |
 |---|---|---|---:|---:|---|
-| `system` | `SystemTelemetryPayload` | `SystemTelemetryPayload` | 136 | 0 |  |
-| `seed` | `uint32_t` | `int` | 4 | 136 |  |
-| `plant_pitch_deg` | `float` | `float` | 4 | 140 |  |
-| `plant_pitch_rate_dps` | `float` | `float` | 4 | 144 |  |
-| `plant_position_m` | `float` | `float` | 4 | 148 |  |
-| `plant_velocity_mps` | `float` | `float` | 4 | 152 |  |
-| `target_wheel_velocity` | `float` | `float` | 4 | 156 |  |
-| `actual_wheel_velocity` | `float` | `float` | 4 | 160 |  |
-| `plant_velocity_error` | `float` | `float` | 4 | 164 |  |
-| `f_cmd` | `float` | `float` | 4 | 168 |  |
-| `f_app` | `float` | `float` | 4 | 172 |  |
-| `external_force_n` | `float` | `float` | 4 | 176 |  |
-| `external_com_bias_rad` | `float` | `float` | 4 | 180 |  |
-| `x_ddot` | `float` | `float` | 4 | 184 |  |
-| `theta_ddot` | `float` | `float` | 4 | 188 |  |
-| `phase_error_steps` | `float` | `float` | 4 | 192 |  |
-| `missed_steps` | `float` | `float` | 4 | 196 |  |
-| `traction_limit_n` | `float` | `float` | 4 | 200 |  |
-| `motor_force_limit_n` | `float` | `float` | 4 | 204 |  |
-| `total_mass_scale` | `float` | `float` | 4 | 208 |  |
-| `pitch_inertia_scale` | `float` | `float` | 4 | 212 |  |
-| `motor_max_force_n` | `float` | `float` | 4 | 216 |  |
-| `motor_no_load_speed_mps` | `float` | `float` | 4 | 220 |  |
-| `motor_velocity_damping` | `float` | `float` | 4 | 224 |  |
-| `motor_tau_s` | `float` | `float` | 4 | 228 |  |
-| `traction_coefficient` | `float` | `float` | 4 | 232 |  |
-| `pitch_damping` | `float` | `float` | 4 | 236 |  |
-| `cart_damping` | `float` | `float` | 4 | 240 |  |
-| `phase_error_limit_steps` | `float` | `float` | 4 | 244 |  |
-| `tire_stiffness_n_per_m` | `float` | `float` | 4 | 248 |  |
-| `tire_damping_n_s_per_m` | `float` | `float` | 4 | 252 |  |
-| `wheel_equivalent_mass_kg` | `float` | `float` | 4 | 256 |  |
-| `force_saturated` | `bool` | `bool` | 1 | 260 |  |
+| `system` | `SystemTelemetryPayload` | `SystemTelemetryPayload` | 144 | 0 |  |
+| `seed` | `uint32_t` | `int` | 4 | 144 |  |
+| `plant_pitch_deg` | `float` | `float` | 4 | 148 |  |
+| `plant_pitch_rate_dps` | `float` | `float` | 4 | 152 |  |
+| `plant_position_m` | `float` | `float` | 4 | 156 |  |
+| `plant_velocity_mps` | `float` | `float` | 4 | 160 |  |
+| `target_wheel_velocity` | `float` | `float` | 4 | 164 |  |
+| `actual_wheel_velocity` | `float` | `float` | 4 | 168 |  |
+| `plant_velocity_error` | `float` | `float` | 4 | 172 |  |
+| `f_cmd` | `float` | `float` | 4 | 176 |  |
+| `f_app` | `float` | `float` | 4 | 180 |  |
+| `external_force_n` | `float` | `float` | 4 | 184 |  |
+| `external_com_bias_rad` | `float` | `float` | 4 | 188 |  |
+| `x_ddot` | `float` | `float` | 4 | 192 |  |
+| `theta_ddot` | `float` | `float` | 4 | 196 |  |
+| `phase_error_steps` | `float` | `float` | 4 | 200 |  |
+| `missed_steps` | `float` | `float` | 4 | 204 |  |
+| `traction_limit_n` | `float` | `float` | 4 | 208 |  |
+| `motor_force_limit_n` | `float` | `float` | 4 | 212 |  |
+| `total_mass_scale` | `float` | `float` | 4 | 216 |  |
+| `pitch_inertia_scale` | `float` | `float` | 4 | 220 |  |
+| `motor_max_force_n` | `float` | `float` | 4 | 224 |  |
+| `motor_no_load_speed_mps` | `float` | `float` | 4 | 228 |  |
+| `motor_velocity_damping` | `float` | `float` | 4 | 232 |  |
+| `motor_tau_s` | `float` | `float` | 4 | 236 |  |
+| `traction_coefficient` | `float` | `float` | 4 | 240 |  |
+| `pitch_damping` | `float` | `float` | 4 | 244 |  |
+| `cart_damping` | `float` | `float` | 4 | 248 |  |
+| `phase_error_limit_steps` | `float` | `float` | 4 | 252 |  |
+| `tire_stiffness_n_per_m` | `float` | `float` | 4 | 256 |  |
+| `tire_damping_n_s_per_m` | `float` | `float` | 4 | 260 |  |
+| `wheel_equivalent_mass_kg` | `float` | `float` | 4 | 264 |  |
+| `force_saturated` | `bool` | `bool` | 1 | 268 |  |
 
 ---
 

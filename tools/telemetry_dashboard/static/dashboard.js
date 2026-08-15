@@ -16,8 +16,10 @@ const groups = [
   { id:"motion", title:"Motion", unit:"steps/s", series:[
     {id:"command",label:"Command",path:"controller.command_sps",decimals:1},
     {id:"measured",label:"Measured",path:"motion.measured_velocity_sps",decimals:1},
-    {id:"left",label:"Left applied",path:"motion.left_applied_sps",decimals:1},
-    {id:"right",label:"Right applied",path:"motion.right_applied_sps",decimals:1},
+  ]},
+  { id:"wheel-steps", title:"Wheel position", unit:"steps", series:[
+    {id:"left",label:"Left actual",path:"motion.left_actual_steps",decimals:0},
+    {id:"right",label:"Right actual",path:"motion.right_actual_steps",decimals:0},
   ]},
   { id:"command", title:"Command", unit:"steps/s", series:[
     {id:"command",label:"Command",path:"controller.command_sps",decimals:1},
@@ -25,8 +27,8 @@ const groups = [
   ]},
   { id:"controller", title:"Controller", unit:"deg", series:[
     {id:"pitch",label:"Pitch error",path:"controller.pitch_error_deg",decimals:2},
-    {id:"p",label:"Velocity P",path:"controller.velocity_p_term_deg",decimals:2},
-    {id:"i",label:"Velocity I",path:"controller.velocity_i_term_deg",decimals:2},
+    {id:"damping",label:"Velocity damping",path:"controller.velocity_damping_acceleration_mps2",decimals:2},
+    {id:"trim",label:"COM trim",path:"controller.com_trim_deg",decimals:2},
   ]},
 ];
 const paths = [...new Set(groups.flatMap(group => group.series.map(series => series.path)))];

@@ -34,8 +34,8 @@
 <text text-anchor="start" x="99.5" y="-479.8" font-family="Helvetica,Arial,sans-serif" font-size="24.00" fill="#ffffff">samples and publishes `ImuData`</text>
 <text text-anchor="start" x="140.5" y="-455.8" font-family="Helvetica,Arial,sans-serif" font-size="24.00" fill="#ffffff">samples that represent the</text>
 <text text-anchor="start" x="109" y="-431.8" font-family="Helvetica,Arial,sans-serif" font-size="24.00" fill="#ffffff">controller&#39;s current view of body</text>
-<text text-anchor="start" x="101.5" y="-407.8" font-family="Helvetica,Arial,sans-serif" font-size="24.00" fill="#ffffff">pitch, specific force, angular rate,</text>
-<text text-anchor="start" x="199" y="-383.8" font-family="Helvetica,Arial,sans-serif" font-size="24.00" fill="#ffffff">and sample time.</text>
+<text text-anchor="start" x="97" y="-407.8" font-family="Helvetica,Arial,sans-serif" font-size="24.00" fill="#ffffff">pitch, angular motion, and sample</text>
+<text text-anchor="start" x="273" y="-383.8" font-family="Helvetica,Arial,sans-serif" font-size="24.00" fill="#ffffff">time.</text>
 </g>
 <!-- ImuService&#45;&gt;ImuService -->
 <g id="edge7" class="edge">

@@ -1,0 +1,73 @@
+#pragma once
+
+#include <array>
+#include <chrono>
+#include <optional>
+
+#include <lib/mathlib/math/filter/FilteredDerivative.hpp>
+#include <lib/mathlib/math/filter/LowPassFilter2p.hpp>
+#include <lib/mathlib/math/filter/NotchFilter.hpp>
+
+#include "messages/types.h"
+
+namespace imu_pitch_detail {
+
+// Solves algebraic gravity pitch after the optional IMU lever-arm acceleration
+// has been removed. Exposed so the rigid-body signs and full-circle convention
+// can be tested independently of signal conditioning.
+std::optional<double> solve_pitch(double acc_x, double acc_z, double gyro_rate,
+                                  double gyro_accel);
+
+}  // namespace imu_pitch_detail
+
+struct ImuPitchEstimate {
+  ImuSample sample{};
+  bool valid{false};
+};
+
+class ImuPitchEstimator {
+ public:
+  using Acc3 = std::array<double, 3>;
+  using Gyr3 = std::array<double, 3>;
+  using TimePoint = std::chrono::steady_clock::time_point;
+
+  struct Settings {
+    double sample_hz{0.0};
+    double accel_lpf_hz{0.0};
+    double gyro_lpf_hz{0.0};
+    double gyro_derivative_lpf_hz{0.0};
+    double attitude_correction_hz{0.0};
+    double gravity_innovation_limit_rad{0.0};
+    double gyro_notch_hz{0.0};
+    double gyro_notch_bandwidth_hz{0.0};
+    double max_sample_gap_periods{0.0};
+    double imu_height_m{0.0};
+    double specific_force_min_mps2{0.0};
+    double specific_force_max_mps2{0.0};
+    bool lever_arm_correction_enabled{false};
+
+    static Settings production();
+  };
+
+  ImuPitchEstimator();
+  explicit ImuPitchEstimator(Settings settings);
+
+  ImuPitchEstimate push_sample(const Acc3& acc, const Gyr3& gyr, TimePoint ts);
+  void reset();
+
+ private:
+  static bool finite3(const Acc3& value);
+  ImuPitchEstimate seed(const Acc3& acc, const Gyr3& gyr, TimePoint ts);
+  ImuPitchEstimate make_estimate(double acc_x, double acc_z, double gyro_rate,
+                                 double gyro_accel, double yaw_rate, TimePoint ts);
+
+  Settings settings_;
+  math::LowPassFilter2p<float> accel_x_lpf_;
+  math::LowPassFilter2p<float> accel_z_lpf_;
+  math::NotchFilter<float> gyro_y_notch_;
+  math::LowPassFilter2p<float> gyro_y_lpf_;
+  FilteredDerivative<float> gyro_y_derivative_;
+  TimePoint last_timestamp_{};
+  double pitch_rad_{0.0};
+  bool initialized_{false};
+};

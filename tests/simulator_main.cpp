@@ -264,7 +264,7 @@ struct ScenarioServices {
       : left(pigpio.handle(), Stepper::Pins{12, 19, 13}, false, true),
         right(pigpio.handle(), Stepper::Pins{4, 18, 24}, false, true),
         time(bus, kTickDtS),
-        motors(left, right, Config::control_hz, 250000.0),
+        motors(left, right, Config::control_hz, Config::motor_slew_sps_per_s),
         imu(bus, false),
         control(bus),
         motor_service(bus, &motors) {
@@ -555,11 +555,12 @@ class SimulatorService {
     system.filtered_pitch_rate_dps = static_cast<float>(row.filtered_pitch_rate_dps);
     system.u_sps = static_cast<float>(row.u_sps);
     system.turn_sps = static_cast<float>(row.turn_sps);
-    system.target_velocity_sps = static_cast<float>(row.target_velocity_sps);
-    system.vel_error = static_cast<float>(row.vel_error);
-    system.measured_vel_sps = static_cast<float>(row.measured_vel_sps);
-    system.velocity_p_term_deg = static_cast<float>(row.velocity_p_term_deg);
-    system.velocity_i_term_deg = static_cast<float>(row.velocity_i_term_deg);
+    system.nominal_acceleration_mps2 = static_cast<float>(row.nominal_acceleration_mps2);
+    system.raw_completed_velocity_sps = static_cast<float>(row.raw_completed_velocity_sps);
+    system.corrected_axle_velocity_sps = static_cast<float>(row.corrected_axle_velocity_sps);
+    system.velocity_damping_acceleration_mps2 =
+        static_cast<float>(row.velocity_damping_acceleration_mps2);
+    system.com_trim_deg = static_cast<float>(row.com_trim_deg);
     system.pitch_error_deg = static_cast<float>(row.pitch_error_deg);
     system.pitch_sp_deg = static_cast<float>(row.pitch_sp_deg);
     system.rate_setpoint_dps = static_cast<float>(row.rate_setpoint_dps);
@@ -568,12 +569,13 @@ class SimulatorService {
     system.actuator_fault = row.actuator_fault != 0.0;
     system.left_target_sps = static_cast<float>(row.left_sps);
     system.right_target_sps = static_cast<float>(row.right_sps);
-    system.left_applied_sps = static_cast<float>(row.left_applied_sps);
-    system.right_applied_sps = static_cast<float>(row.right_applied_sps);
+    system.left_slewed_sps = static_cast<float>(row.left_slewed_sps);
+    system.right_slewed_sps = static_cast<float>(row.right_slewed_sps);
     system.motor_update_dt_ms = static_cast<float>(row.motor_update_dt_ms);
     system.motor_feedback_age_ms = static_cast<float>(row.motor_feedback_age_ms);
     system.left_actual_steps = static_cast<int32_t>(row.left_actual_steps);
     system.right_actual_steps = static_cast<int32_t>(row.right_actual_steps);
+    system.actuator_saturation_flags = row.actuator_saturation_flags;
     payload.plant_pitch_deg = static_cast<float>(row.plant_pitch_deg);
     payload.plant_pitch_rate_dps = static_cast<float>(row.plant_pitch_rate_dps);
     payload.plant_position_m = static_cast<float>(row.plant_position);

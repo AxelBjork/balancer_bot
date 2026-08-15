@@ -1,484 +1,552 @@
-#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
+#include <complex>
+#include <limits>
 #include <random>
+#include <vector>
 
+#include "services/imu/imu_pitch_estimator.h"
 #include "services/main/config.h"
-#include "services/imu/pitch_lpf.h"
-#include "services/motor/stepper.h"
 
-// --- Helpers ---
-static inline double deg2rad(double d) {
-  return d * M_PI / 180.0;
-}
-static inline double rad2deg(double r) {
-  return r * 180.0 / M_PI;
+namespace {
+
+constexpr double kTwoPi = 2.0 * M_PI;
+
+double deg2rad(double degrees) {
+  return degrees * M_PI / 180.0;
 }
 
-// Build accel consistent with acc_pitch() = atan2(-ax, -az).
-// For a desired pitch angle, mounted gravity is ax=-sin(pitch), az=-cos(pitch).
-static inline std::array<double, 3> accel_for_pitch_g(double pitch_rad) {
-  const double s = std::sin(pitch_rad), c = std::cos(pitch_rad);
-  return {-s * Config::g0, 0.0, -c * Config::g0};
+double rad2deg(double radians) {
+  return radians * 180.0 / M_PI;
 }
 
-static inline double raw_pitch_from_acc_rad(const std::array<double, 3>& acc) {
-  return std::atan2(-acc[0], -acc[2]);
+double wrap_pi(double angle) {
+  return std::remainder(angle, kTwoPi);
 }
 
-static inline double wrap_pi(double x) {
-  while (x > M_PI) x -= 2 * M_PI;
-  while (x < -M_PI) x += 2 * M_PI;
-  return x;
+double px4_lpf2p_magnitude(double sample_hz, double cutoff_hz,
+                           double signal_hz) {
+  const double ohm = std::tan(M_PI * cutoff_hz / sample_hz);
+  const double c = 1.0 + std::sqrt(2.0) * ohm + ohm * ohm;
+  const double b0 = ohm * ohm / c;
+  const double b1 = 2.0 * b0;
+  const double b2 = b0;
+  const double a1 = 2.0 * (ohm * ohm - 1.0) / c;
+  const double a2 = (1.0 - std::sqrt(2.0) * ohm + ohm * ohm) / c;
+  const double phase = -kTwoPi * signal_hz / sample_hz;
+  const std::complex<double> z1 = std::polar(1.0, phase);
+  const std::complex<double> z2 = z1 * z1;
+  return std::abs((b0 + b1 * z1 + b2 * z2) /
+                  (1.0 + a1 * z1 + a2 * z2));
 }
 
-/*
-TEST(DataPathSanity, StepperStepN_NoDirChange_IsFast) {
-  Stepper step(0, Stepper::Pins{5u, 6u, 13u});
-
-  using clock = std::chrono::steady_clock;
-
-  constexpr unsigned period_us = 50u;
-  constexpr int iterations = 200;
-  const long expected_us =
-      static_cast<long>(iterations) * period_us; // ~10,000 us
-
-  const auto t0 = clock::now();
-  for (int i = 0; i < iterations; ++i) {
-    step.stepN(1u, period_us, true); // no dir flip => no DIR setup delay
-  }
-  const auto us =
-      std::chrono::duration_cast<std::chrono::microseconds>(clock::now() - t0)
-          .count();
-
-  // Accept reasonable runtime overhead, but make sure we’re nowhere near the “2
-  // ms per call” disaster. If we were wrongly sleeping 2 ms per call, we'd see
-  // ~400,000 us here.
-  const long max_reasonable_us = expected_us + 25'000; // expected + 25 ms slack
-  EXPECT_LT(us, max_reasonable_us)
-      << "Cumulative latency too high for fast path (no dir flips): " << us
-      << " us; expected ~" << expected_us << " us";
+double first_order_lpf_magnitude(double sample_hz, double cutoff_hz,
+                                 double signal_hz) {
+  const double pole = std::exp(-kTwoPi * cutoff_hz / sample_hz);
+  const std::complex<double> z1 =
+      std::polar(1.0, -kTwoPi * signal_hz / sample_hz);
+  return std::abs((1.0 - pole) / (1.0 - pole * z1));
 }
-*/
 
-/*
-TEST(DataPathSanity, StepperStepN_DirFlip_PaysSetupDelayOnce) {
-  Stepper::Pins pins{5u, 6u, 13u};
-  Stepper step(0, pins);
-
-  using clock = std::chrono::steady_clock;
-
-  // First call (forward): fast
-  const auto t0 = clock::now();
-  step.stepN(1u, 100, true);
-  const auto t1 = clock::now();
-  const auto first_us =
-      std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
-
-  // Second call (reverse): should incur DIR setup delay (~2000 µs) once
-  const auto t2 = clock::now();
-  step.stepN(1u, 100, false);
-  const auto t3 = clock::now();
-  const auto second_us =
-      std::chrono::duration_cast<std::chrono::microseconds>(t3 - t2).count();
-
-  // Fast path budget (pulse only)
-  EXPECT_LT(first_us, 300) << "First stepN too slow: " << first_us << " us";
-
-  // Expect ≈ 2 ms (+ a little pulse time and scheduler jitter).
-  constexpr int kDirSetupUs = 2000;
-  EXPECT_GE(second_us, kDirSetupUs - 300)
-      << "Dir-flip did not pay expected setup delay.";
-  EXPECT_LE(second_us, kDirSetupUs + 600)
-      << "Dir-flip stepN too slow: " << second_us << " us";
-}
-*/
-
-/*
-TEST(DataPathSanity, StepperStepN_ManyDirFlips_CumulativeMatchesSetupDelay) {
-  Stepper step(0, Stepper::Pins{5u, 6u, 13u});
-
-  using clock = std::chrono::steady_clock;
-  const auto t0 = clock::now();
-
-  const int flips = 200;
-  for (int i = 0; i < flips; ++i) {
-    step.stepN(1u, 50u, (i & 1) == 0);
-  }
-
-  const auto us =
-      std::chrono::duration_cast<std::chrono::microseconds>(clock::now() - t0)
-          .count();
-
-  // Expect around flips * 2000 µs +/- some margin
-  const long expected = flips * 2000L;
-  const long tol = static_cast<long>(expected * 0.1); // 10% tolerance
-  EXPECT_NEAR(us, expected, tol)
-      << "Cumulative latency differs from expected DIR setup total.";
-}
-*/
-
-// ------------------------------------------------------------
-// 2) PitchComplementaryFilter tracks large step (0, to 20°).
-//    A physical attitude change has a matching gyro signal. An accel-only
-//    discontinuity represents linear specific force and must not tilt the
-//    estimate.
-// ------------------------------------------------------------
-TEST(DataPathSanity, ComplementaryFilterTracksRotationAndRejectsAccelOnlyJump) {
-  using clock = std::chrono::steady_clock;
-
-  // ---- Required budgets for this project (tune to your plant)
-
-  // ---- Test setup
-  const double fs_hz = Config::sampling_hz;  // e.g., 833 Hz
-  const auto tick = std::chrono::nanoseconds{std::llround(1e9 / fs_hz)};
-
-  const double target_deg = 20.0;  // keep within reliable range
-  const double target_rad = deg2rad(target_deg);
-
-  auto accel_for_pitch_g = [](double pitch_rad) {
-    const double s = std::sin(pitch_rad), c = std::cos(pitch_rad);
-    return std::array<double, 3>{-s * Config::g0, 0.0, -c * Config::g0};
+std::array<double, 3> imu_accel(double pitch, double gyro_rate = 0.0,
+                                double gyro_accel = 0.0,
+                                double body_x_accel = 0.0) {
+  return {
+      body_x_accel - Config::g0 * std::sin(pitch) +
+          Config::imu_height_m * gyro_accel,
+      0.0,
+      -Config::g0 * std::cos(pitch) -
+          Config::imu_height_m * gyro_rate * gyro_rate,
   };
+}
 
-  PitchComplementaryFilter filt;
-  auto now = clock::now();
-  auto push = [&](double pitch_true, double gyro_y_rps) -> ImuSample {
-    now += tick;
-    filt.push_sample(accel_for_pitch_g(pitch_true), {0.0, gyro_y_rps, 0.0}, now);
-    return filt.read_latest();
+using TimePoint = ImuPitchEstimator::TimePoint;
+
+TimePoint at_seconds(double seconds) {
+  return TimePoint(std::chrono::duration_cast<TimePoint::duration>(
+      std::chrono::duration<double>(seconds)));
+}
+
+ImuPitchEstimate feed_static(ImuPitchEstimator& estimator, double start_s,
+                             double duration_s, double pitch,
+                             double gyro_bias = 0.0) {
+  ImuPitchEstimate result;
+  const int samples =
+      std::max(1, static_cast<int>(std::ceil(duration_s * Config::sampling_hz)));
+  for (int sample = 0; sample <= samples; ++sample) {
+    const double time_s = start_s + static_cast<double>(sample) / Config::sampling_hz;
+    result = estimator.push_sample(imu_accel(pitch), {0.0, gyro_bias, 0.0},
+                                   at_seconds(time_s));
+  }
+  return result;
+}
+
+struct SineMeasurement {
+  double gain{0.0};
+  double phase_rad{0.0};
+  double delay_s{0.0};
+  bool finite{true};
+};
+
+template <typename InputFn, typename OutputFn>
+SineMeasurement measure_sine(ImuPitchEstimator& estimator, double frequency_hz,
+                             double input_amplitude, InputFn input_fn,
+                             OutputFn output_fn) {
+  constexpr double duration_s = 3.0;
+  constexpr double measure_start_s = 2.0;
+  double sin_sum = 0.0;
+  double cos_sum = 0.0;
+  double sin_sq = 0.0;
+  double cos_sq = 0.0;
+  int count = 0;
+  bool finite = true;
+  ImuPitchEstimate result;
+
+  const int sample_count = static_cast<int>(duration_s * Config::sampling_hz);
+  for (int sample = 0; sample <= sample_count; ++sample) {
+    const double time_s = static_cast<double>(sample) / Config::sampling_hz;
+    const double phase = kTwoPi * frequency_hz * time_s;
+    const auto input = input_fn(input_amplitude * std::sin(phase));
+    result = estimator.push_sample(input.first, input.second, at_seconds(time_s));
+    if (time_s < measure_start_s || !result.valid) continue;
+
+    const double output = output_fn(result.sample);
+    finite = finite && std::isfinite(output);
+    const double sine = std::sin(phase);
+    const double cosine = std::cos(phase);
+    sin_sum += output * sine;
+    cos_sum += output * cosine;
+    sin_sq += sine * sine;
+    cos_sq += cosine * cosine;
+    ++count;
+  }
+
+  EXPECT_GT(count, 100);
+  const double sine_coefficient = sin_sum / sin_sq;
+  const double cosine_coefficient = cos_sum / cos_sq;
+  const double output_amplitude =
+      std::hypot(sine_coefficient, cosine_coefficient);
+  const double phase_rad =
+      std::atan2(cosine_coefficient, sine_coefficient);
+  return SineMeasurement{
+      .gain = output_amplitude / input_amplitude,
+      .phase_rad = phase_rad,
+      .delay_s = -phase_rad / (kTwoPi * frequency_hz),
+      .finite = finite,
   };
-
-  // Prime
-  for (int i = 0; i < 5; ++i) (void)push(0.0, 0.0);
-
-  for (int i = 0; i < static_cast<int>(0.25 * fs_hz); ++i) {
-    (void)push(target_rad, 0.0);
-  }
-  EXPECT_LT(std::abs(filt.read_latest().angle_rad), deg2rad(2.0));
-
-  filt.reset();
-  for (int i = 0; i < 5; ++i) (void)push(0.0, 0.0);
-  constexpr double rotation_s = 0.5;
-  const double rate_rad_s = target_rad / rotation_s;
-  const int rotation_samples = static_cast<int>(rotation_s * fs_hz);
-  for (int i = 1; i <= rotation_samples; ++i) {
-    const double physical_pitch = target_rad * static_cast<double>(i) / rotation_samples;
-    (void)push(physical_pitch, rate_rad_s);
-  }
-  for (int i = 0; i < static_cast<int>(0.1 * fs_hz); ++i) {
-    (void)push(target_rad, 0.0);
-  }
-  EXPECT_NEAR(filt.read_latest().angle_rad, target_rad, deg2rad(1.0));
 }
 
-TEST(DataPathSanity, ComplementaryFilterCorrectsLargeGravityErrorGradually) {
-  using clock = std::chrono::steady_clock;
-
-  constexpr double fs_hz = Config::sampling_hz;
-  const auto tick = std::chrono::nanoseconds{std::llround(1e9 / fs_hz)};
-  auto now = clock::now();
-  PitchComplementaryFilter filt;
-
-  now += tick;
-  filt.push_sample(accel_for_pitch_g(deg2rad(40.0)), {0.0, 0.0, 0.0}, now);
-  for (int i = 0; i < static_cast<int>(0.4 * fs_hz); ++i) {
-    now += tick;
-    filt.push_sample(accel_for_pitch_g(0.0), {0.0, 0.0, 0.0}, now);
-  }
-  const double after_short_correction_deg = rad2deg(filt.read_latest().angle_rad);
-  EXPECT_GT(after_short_correction_deg, 35.0);
-  EXPECT_LT(after_short_correction_deg, 40.0);
-
-  // A persistent, low-rate gravity disagreement is an estimator recovery,
-  // not ordinary dynamic accelerometer feedback. It must converge smoothly
-  // on a hardware-useful time scale instead of retaining a false lean for
-  // tens of seconds.
-  for (int i = 0; i < static_cast<int>(5.0 * fs_hz); ++i) {
-    now += tick;
-    filt.push_sample(accel_for_pitch_g(0.0), {0.0, 0.0, 0.0}, now);
-  }
-  EXPECT_NEAR(rad2deg(filt.read_latest().angle_rad), 0.0, 1.0);
-}
-
-TEST(DataPathSanity, ComplementaryFilterReacquiresMeanGravityThroughDynamicAccelPitch) {
-  using clock = std::chrono::steady_clock;
-
-  constexpr double fs_hz = Config::sampling_hz;
-  const auto tick = std::chrono::nanoseconds{std::llround(1e9 / fs_hz)};
-  auto now = clock::now();
-  PitchComplementaryFilter filt;
-
-  now += tick;
-  filt.push_sample(accel_for_pitch_g(deg2rad(15.0)), {0.0, 0.0, 0.0}, now);
-
-  // Approximate the large raw accelerometer-pitch variation seen while the
-  // wheels are active. Its mean still points upright, so the persistent
-  // gravity reference should recover the estimator without following every
-  // apparent tilt cycle.
-  constexpr double apparent_pitch_frequency_hz = 6.0;
-  constexpr double duration_s = 4.0;
-  for (int i = 1; i <= static_cast<int>(duration_s * fs_hz); ++i) {
-    const double t_s = static_cast<double>(i) / fs_hz;
-    const double apparent_pitch_rad =
-        deg2rad(15.0) * std::sin(2.0 * M_PI * apparent_pitch_frequency_hz * t_s);
-    now += tick;
-    filt.push_sample(accel_for_pitch_g(apparent_pitch_rad), {0.0, 0.0, 0.0}, now);
-  }
-
-  EXPECT_NEAR(rad2deg(filt.read_latest().angle_rad), 0.0, 2.0);
-}
-
-TEST(DataPathSanity, ComplementaryFilterTracksRepeatedRotationsWithoutDeadReckoning) {
-  using clock = std::chrono::steady_clock;
-
-  constexpr double fs_hz = Config::sampling_hz;
-  const auto tick = std::chrono::nanoseconds{std::llround(1e9 / fs_hz)};
-  auto now = clock::now();
-  PitchComplementaryFilter filt;
-
-  now += tick;
-  filt.push_sample(accel_for_pitch_g(0.0), {0.0, 0.0, 0.0}, now);
-
-  constexpr double rotation_count = 4.0;
-  constexpr double rotation_duration_s = 4.0;
-  const double rate_rad_s = rotation_count * 2.0 * M_PI / rotation_duration_s;
-  const int rotation_samples = static_cast<int>(rotation_duration_s * fs_hz);
-  double max_wrapped_error_deg = 0.0;
-  for (int i = 1; i <= rotation_samples; ++i) {
-    const double physical_pitch = rate_rad_s * static_cast<double>(i) / fs_hz;
-    now += tick;
-    filt.push_sample(accel_for_pitch_g(physical_pitch), {0.0, rate_rad_s, 0.0}, now);
-    const double estimated = filt.read_latest().angle_rad;
-    EXPECT_GE(estimated, -M_PI);
-    EXPECT_LE(estimated, M_PI);
-    max_wrapped_error_deg =
-        std::max(max_wrapped_error_deg, std::abs(rad2deg(wrap_pi(estimated - physical_pitch))));
-  }
-  EXPECT_LT(max_wrapped_error_deg, 8.0);
-
-  for (int i = 0; i < static_cast<int>(3.0 * fs_hz); ++i) {
-    now += tick;
-    filt.push_sample(accel_for_pitch_g(0.0), {0.0, 0.0, 0.0}, now);
-  }
-  EXPECT_NEAR(rad2deg(filt.read_latest().angle_rad), 0.0, 3.0);
-}
-
-TEST(DataPathSanity, ComplementaryFilterUsesSignedGravityAcrossFullPitchRange) {
-  using clock = std::chrono::steady_clock;
-  const auto tick = std::chrono::nanoseconds{std::llround(1e9 / Config::sampling_hz)};
-
-  for (const double pitch_deg : {0.0, 90.0, -90.0, 135.0, -135.0, 180.0}) {
-    PitchComplementaryFilter filt;
-    const auto now = clock::now() + tick;
-    filt.push_sample(accel_for_pitch_g(deg2rad(pitch_deg)), {0.0, 0.0, 0.0}, now);
-    const double error = wrap_pi(filt.read_latest().angle_rad - deg2rad(pitch_deg));
-    EXPECT_NEAR(rad2deg(error), 0.0, 1e-6) << pitch_deg;
-  }
-}
-
-TEST(DataPathSanity, ComplementaryFilterCrossesWrappedBoundaryAndIgnoresUnreliableAccel) {
-  using clock = std::chrono::steady_clock;
-  constexpr double fs_hz = Config::sampling_hz;
-  const auto tick = std::chrono::nanoseconds{std::llround(1e9 / fs_hz)};
-  auto now = clock::now();
-  PitchComplementaryFilter filt;
-
-  now += tick;
-  filt.push_sample(accel_for_pitch_g(deg2rad(179.0)), {0.0, 0.0, 0.0}, now);
-  const double rate_rad_s = deg2rad(8.0);
-  for (int i = 1; i <= static_cast<int>(0.5 * fs_hz); ++i) {
-    const double physical_pitch = deg2rad(179.0) + rate_rad_s * static_cast<double>(i) / fs_hz;
-    now += tick;
-    filt.push_sample(accel_for_pitch_g(physical_pitch), {0.0, rate_rad_s, 0.0}, now);
-  }
-  const double crossed_pitch = filt.read_latest().angle_rad;
-  EXPECT_GE(crossed_pitch, -M_PI);
-  EXPECT_LE(crossed_pitch, M_PI);
-  EXPECT_NEAR(rad2deg(wrap_pi(crossed_pitch - deg2rad(183.0))), 0.0, 1.0);
-
-  const auto held_pitch = filt.read_latest().angle_rad;
-  for (int i = 0; i < static_cast<int>(2.0 * fs_hz); ++i) {
-    now += tick;
-    filt.push_sample({3.0 * Config::g0, 0.0, 0.0}, {0.0, 0.0, 0.0}, now);
-  }
-  EXPECT_NEAR(rad2deg(wrap_pi(filt.read_latest().angle_rad - held_pitch)), 0.0, 0.1);
-}
-
-TEST(DataPathSanity, ComplementaryFilter_GyroLPF_RiseTime_RateStep) {
-  using clock = std::chrono::steady_clock;
-
-  const double fs_hz = Config::sampling_hz;  // e.g., 833 Hz
-  const double dt_s = 1.0 / fs_hz;
-  const auto tick = std::chrono::nanoseconds{std::llround(1e9 / fs_hz)};
-
-  // Step the Y gyro from 0 to +Ω
-  const double step_dps = 150.0;  // realistic fast rotation
-  const double step_rps = deg2rad(step_dps);
-  const double y10 = 0.10 * step_rps;
-  const double y90 = 0.90 * step_rps;
-
-  // Conservative bound again
-  const double tau_gyro = 1.0 / (2.0 * M_PI * std::max(0.1, Config::fc_gyro_lpf_hz));
-  const int maxN = static_cast<int>(std::ceil(5.0 * tau_gyro * fs_hz));
-
-  auto accel_for_pitch_g = [](double pitch_rad) {
-    const double s = std::sin(pitch_rad), c = std::cos(pitch_rad);
-    return std::array<double, 3>{-s * Config::g0, 0.0, -c * Config::g0};
+auto pitch_input() {
+  return [](double pitch) {
+    return std::pair{imu_accel(pitch), std::array<double, 3>{0.0, 0.0, 0.0}};
   };
+}
 
-  PitchComplementaryFilter filt;
-  auto now = clock::now();
-  auto push = [&](double pitch_true, double gyro_y_rps) -> ImuSample {
-    now += tick;
-    filt.push_sample(accel_for_pitch_g(pitch_true), {0.0, gyro_y_rps, 0.0}, now);
-    return filt.read_latest();
+auto gyro_input() {
+  return [](double gyro_rate) {
+    return std::pair{imu_accel(0.0), std::array<double, 3>{0.0, gyro_rate, 0.0}};
   };
+}
 
-  // Prime at rest
-  for (int i = 0; i < 5; ++i) (void)push(0.0, 0.0);
+}  // namespace
 
-  // Rate step and hold
-  (void)push(0.0, step_rps);
+TEST(ImuPitchAlgebraTest, ReconstructsSignedFullCirclePitchAndLeverArmMotion) {
+  for (const double pitch_deg : {-179.0, -90.0, -25.0, -10.0, 0.0, 10.0, 25.0,
+                                 90.0, 179.0}) {
+    for (const double rate : {-3.0, 0.0, 3.0}) {
+      for (const double accel : {-20.0, 0.0, 20.0}) {
+        const double expected = deg2rad(pitch_deg);
+        const auto specific_force = imu_accel(expected, rate, accel);
+        const auto solved = imu_pitch_detail::solve_pitch(
+            specific_force[0], specific_force[2], rate, accel);
+        ASSERT_TRUE(solved.has_value()) << pitch_deg << " " << rate << " " << accel;
+        EXPECT_NEAR(wrap_pi(*solved - expected), 0.0, 1e-12);
+      }
+    }
+  }
+}
 
-  int k10 = -1, k90 = -1;
-  for (int k = 1; k <= maxN; ++k) {
-    const ImuSample s = push(0.0, step_rps);
-    const double y = s.gyro_rad_s;  // this is the filtered gyro (post-LPF)
-    if (k10 < 0 && y >= y10) k10 = k;
-    if (k90 < 0 && y >= y90) {
-      k90 = k;
+TEST(ImuPitchAlgebraTest, CrossesPlusMinusPiWithoutFolding) {
+  for (const double pitch_deg : {179.999, 180.001, -179.999, -180.001, 540.0}) {
+    const double expected = deg2rad(pitch_deg);
+    const auto specific_force = imu_accel(expected);
+    const auto solved =
+        imu_pitch_detail::solve_pitch(specific_force[0], specific_force[2], 0.0, 0.0);
+    ASSERT_TRUE(solved.has_value());
+    EXPECT_GE(*solved, -M_PI);
+    EXPECT_LE(*solved, M_PI);
+    EXPECT_NEAR(wrap_pi(*solved - expected), 0.0, 1e-12);
+  }
+}
+
+TEST(ImuPitchAlgebraTest, RejectsNonFiniteAndOutOfRangeSpecificForce) {
+  EXPECT_FALSE(imu_pitch_detail::solve_pitch(
+                   std::numeric_limits<double>::quiet_NaN(), -Config::g0, 0.0, 0.0)
+                   .has_value());
+  EXPECT_FALSE(imu_pitch_detail::solve_pitch(0.0, -0.5, 0.0, 0.0).has_value());
+  EXPECT_FALSE(imu_pitch_detail::solve_pitch(0.0, -40.0, 0.0, 0.0).has_value());
+}
+
+TEST(ImuPitchEstimatorTest, FirstValidSamplePublishesImmediately) {
+  ImuPitchEstimator estimator;
+  const double pitch = deg2rad(7.0);
+  const auto result = estimator.push_sample(
+      imu_accel(pitch), {0.0, 0.4, 0.2}, at_seconds(1.0));
+
+  ASSERT_TRUE(result.valid);
+  EXPECT_NEAR(wrap_pi(result.sample.angle_rad - pitch), 0.0, 1e-7);
+  EXPECT_NEAR(result.sample.gyro_rad_s, 0.4, 3e-6);
+  EXPECT_EQ(result.sample.pitch_accel_rad_s2, 0.0);
+  EXPECT_EQ(result.sample.yaw_rate_z, 0.2);
+}
+
+TEST(ImuPitchEstimatorTest, ReconstructsSymmetricStaticPitchWithTimestampJitter) {
+  for (const double pitch_deg : {-25.0, -10.0, 0.0, 10.0, 25.0}) {
+    ImuPitchEstimator estimator;
+    ImuPitchEstimate result;
+    double previous_time_s = 5.0;
+    for (int sample = 0; sample < 400; ++sample) {
+      const double nominal =
+          5.0 + static_cast<double>(sample) / Config::sampling_hz;
+      const double jitter = sample == 0 ? 0.0 : 0.00015 * std::sin(sample * 0.7);
+      const double time_s = std::max(previous_time_s + 1e-6, nominal + jitter);
+      result = estimator.push_sample(imu_accel(deg2rad(pitch_deg)),
+                                     {0.0, 0.0, 0.0}, at_seconds(time_s));
+      previous_time_s = time_s;
+    }
+    ASSERT_TRUE(result.valid) << pitch_deg;
+    EXPECT_NEAR(rad2deg(wrap_pi(result.sample.angle_rad - deg2rad(pitch_deg))),
+                0.0, 1e-4);
+  }
+}
+
+TEST(ImuPitchEstimatorTest, GyroBackedDynamicPitchTracksBothDirections) {
+  ImuPitchEstimator estimator;
+  constexpr double frequency_hz = 5.0;
+  constexpr double amplitude_rad = 10.0 * M_PI / 180.0;
+  double squared_error = 0.0;
+  double positive_peak = 0.0;
+  double negative_peak = 0.0;
+  int count = 0;
+
+  for (int sample = 0; sample <= static_cast<int>(3.0 * Config::sampling_hz);
+       ++sample) {
+    const double time_s = static_cast<double>(sample) / Config::sampling_hz;
+    const double phase = kTwoPi * frequency_hz * time_s;
+    const double pitch = amplitude_rad * std::sin(phase);
+    const double rate = amplitude_rad * kTwoPi * frequency_hz * std::cos(phase);
+    const auto result = estimator.push_sample(
+        imu_accel(pitch), {0.0, rate, 0.0}, at_seconds(time_s));
+    ASSERT_TRUE(result.valid);
+    if (time_s < 1.0) continue;
+
+    const double error = wrap_pi(result.sample.angle_rad - pitch);
+    squared_error += error * error;
+    positive_peak = std::max(positive_peak, result.sample.angle_rad);
+    negative_peak = std::min(negative_peak, result.sample.angle_rad);
+    ++count;
+  }
+
+  ASSERT_GT(count, 100);
+  EXPECT_LT(rad2deg(std::sqrt(squared_error / count)), 2.0);
+  EXPECT_GT(rad2deg(positive_peak), 8.0);
+  EXPECT_LT(rad2deg(negative_peak), -8.0);
+}
+
+TEST(ImuPitchEstimatorTest, StartupHistoryDecaysWithoutLearnedOffset) {
+  ImuPitchEstimator first;
+  ImuPitchEstimator second;
+  (void)feed_static(first, 0.0, 0.05, deg2rad(-20.0), 2.0);
+  (void)feed_static(second, 0.0, 0.05, deg2rad(20.0), -2.0);
+
+  const auto first_result = feed_static(first, 0.06, 3.0, deg2rad(7.0));
+  const auto second_result = feed_static(second, 0.06, 3.0, deg2rad(7.0));
+  ASSERT_TRUE(first_result.valid);
+  ASSERT_TRUE(second_result.valid);
+  EXPECT_NEAR(first_result.sample.angle_rad, second_result.sample.angle_rad, 1e-7);
+  EXPECT_NEAR(rad2deg(first_result.sample.angle_rad), 7.0, 1e-4);
+}
+
+TEST(ImuPitchEstimatorTest, ConstantGyroBiasCannotAccumulatePitchDrift) {
+  ImuPitchEstimator estimator;
+  constexpr double pitch = 5.0 * M_PI / 180.0;
+  ImuPitchEstimate halfway;
+  ImuPitchEstimate result;
+  const int samples = static_cast<int>(120.0 * Config::sampling_hz);
+  for (int sample = 0; sample <= samples; ++sample) {
+    result = estimator.push_sample(
+        imu_accel(pitch), {0.0, 0.01, 0.0},
+        at_seconds(static_cast<double>(sample) / Config::sampling_hz));
+    if (sample == samples / 2) halfway = result;
+  }
+  ASSERT_TRUE(halfway.valid);
+  ASSERT_TRUE(result.valid);
+  EXPECT_LT(std::abs(rad2deg(result.sample.angle_rad) - 5.0), 0.20);
+  EXPECT_NEAR(result.sample.angle_rad, halfway.sample.angle_rad, 1e-8);
+  EXPECT_NEAR(result.sample.gyro_rad_s, 0.01, 1e-5);
+}
+
+TEST(ImuPitchEstimatorTest, TranslationHasNoPersistentEstimatorOffset) {
+  ImuPitchEstimator estimator;
+  ImuPitchEstimate translated;
+  const int samples = static_cast<int>(0.15 * Config::sampling_hz);
+  for (int sample = 0; sample <= samples; ++sample) {
+    translated = estimator.push_sample(
+        imu_accel(0.0, 0.0, 0.0, 2.0), {0.0, 0.0, 0.0},
+        at_seconds(static_cast<double>(sample) / Config::sampling_hz));
+  }
+  ASSERT_TRUE(translated.valid);
+  EXPECT_NEAR(translated.sample.angle_rad, std::atan2(-2.0, Config::g0), 1e-5);
+
+  const auto recovered = feed_static(estimator, 0.16, 0.15, 0.0);
+  ASSERT_TRUE(recovered.valid);
+  EXPECT_NEAR(recovered.sample.angle_rad, 0.0, 1e-5);
+}
+
+TEST(ImuPitchEstimatorTest, NonFiniteSampleResetsAndNextValidSampleSeedsImmediately) {
+  ImuPitchEstimator estimator;
+  ASSERT_TRUE(estimator.push_sample(imu_accel(deg2rad(3.0)), {0.0, 0.0, 0.0},
+                                    at_seconds(0.0))
+                  .valid);
+  const auto invalid = estimator.push_sample(
+      {std::numeric_limits<double>::infinity(), 0.0, -Config::g0},
+      {0.0, 0.0, 0.0}, at_seconds(0.002));
+  EXPECT_FALSE(invalid.valid);
+
+  const auto recovered = estimator.push_sample(
+      imu_accel(deg2rad(-4.0)), {0.0, 0.0, 0.0}, at_seconds(0.004));
+  ASSERT_TRUE(recovered.valid);
+  EXPECT_NEAR(rad2deg(recovered.sample.angle_rad), -4.0, 1e-5);
+  EXPECT_EQ(recovered.sample.pitch_accel_rad_s2, 0.0);
+}
+
+TEST(ImuPitchEstimatorTest, DuplicateAndBackwardTimestampsInvalidateAndReset) {
+  for (const double bad_time_s : {1.0, 0.5}) {
+    ImuPitchEstimator estimator;
+    ASSERT_TRUE(estimator.push_sample(imu_accel(0.0), {0.0, 0.0, 0.0},
+                                      at_seconds(1.0))
+                    .valid);
+    EXPECT_FALSE(estimator.push_sample(imu_accel(0.0), {0.0, 0.0, 0.0},
+                                       at_seconds(bad_time_s))
+                     .valid);
+    const auto recovered = estimator.push_sample(
+        imu_accel(deg2rad(2.0)), {0.0, 0.0, 0.0}, at_seconds(1.01));
+    ASSERT_TRUE(recovered.valid);
+    EXPECT_NEAR(rad2deg(recovered.sample.angle_rad), 2.0, 1e-5);
+  }
+}
+
+TEST(ImuPitchEstimatorTest, LargeGapReseedsCurrentSampleWithZeroDerivative) {
+  ImuPitchEstimator estimator;
+  ASSERT_TRUE(estimator.push_sample(imu_accel(0.0), {0.0, 1.0, 0.0},
+                                    at_seconds(0.0))
+                  .valid);
+  const auto result = estimator.push_sample(
+      imu_accel(deg2rad(-6.0)), {0.0, -2.0, 0.0}, at_seconds(0.010));
+  ASSERT_TRUE(result.valid);
+  EXPECT_NEAR(rad2deg(result.sample.angle_rad), -6.0, 1e-5);
+  EXPECT_NEAR(result.sample.gyro_rad_s, -2.0, 1e-5);
+  EXPECT_EQ(result.sample.pitch_accel_rad_s2, 0.0);
+}
+
+TEST(ImuPitchEstimatorTest, TimestampJitterAndOneDroppedSampleRemainValid) {
+  ImuPitchEstimator estimator;
+  uint64_t timestamp_us = 1;
+  for (int sample = 0; sample < 1000; ++sample) {
+    const uint64_t increment_us =
+        sample == 500 ? 2401 : static_cast<uint64_t>(1200 + (sample % 3));
+    timestamp_us += increment_us;
+    const auto result = estimator.push_sample(
+        imu_accel(deg2rad(1.0)), {0.0, 0.0, 0.0},
+        TimePoint(std::chrono::microseconds(timestamp_us)));
+    EXPECT_TRUE(result.valid) << sample;
+  }
+}
+
+TEST(ImuPitchEstimatorTest, RejectsBroadMagnitudeLimitsAndRecovers) {
+  ImuPitchEstimator estimator;
+  EXPECT_FALSE(estimator.push_sample({0.0, 0.0, -0.5}, {0.0, 0.0, 0.0},
+                                     at_seconds(0.0))
+                   .valid);
+  EXPECT_TRUE(estimator.push_sample(imu_accel(0.0), {0.0, 0.0, 0.0},
+                                    at_seconds(0.01))
+                  .valid);
+  bool rejected_high_force = false;
+  double last_time_s = 0.0112;
+  for (int sample = 0; sample < 60; ++sample) {
+    last_time_s = 0.0112 + static_cast<double>(sample) / Config::sampling_hz;
+    const auto result = estimator.push_sample(
+        {0.0, 0.0, -40.0}, {0.0, 0.0, 0.0},
+        at_seconds(last_time_s));
+    if (!result.valid) {
+      rejected_high_force = true;
       break;
     }
   }
-
-  const double tr_ms = (k10 > 0 && k90 > 0) ? (k90 - k10) * dt_s * 1e3 : maxN * dt_s * 1e3;
-  std::printf(
-      "[Gyro rise] step=%g°/s fs=%.0fHz k10=%d k90=%d rise=%.1f ms "
-      "(bound=%d)\n",
-      step_dps, fs_hz, k10, k90, tr_ms, maxN);
-
-  ASSERT_NE(k10, -1) << "Gyro LPF never crossed 10% within bound.";
-  ASSERT_NE(k90, -1) << "Gyro LPF never crossed 90% within bound.";
-  EXPECT_LE(tr_ms, Config::dpitch_rise_ms) << "Gyro path is too slow for control needs.";
+  EXPECT_TRUE(rejected_high_force);
+  EXPECT_TRUE(estimator.push_sample(imu_accel(0.0), {0.0, 0.0, 0.0},
+                                    at_seconds(last_time_s + 0.01))
+                  .valid);
 }
 
-TEST(DataPathSanity, ComplementaryFilter_HoldsNonzeroPitchUnderNoisyInput) {
-  using clock = std::chrono::steady_clock;
+TEST(ImuPitchEstimatorTest, ProductionDefaultLeavesLeverArmCorrectionDisabled) {
+  const auto settings = ImuPitchEstimator::Settings::production();
+  EXPECT_DOUBLE_EQ(settings.accel_lpf_hz, 15.0);
+  EXPECT_DOUBLE_EQ(settings.gyro_lpf_hz, 30.0);
+  EXPECT_DOUBLE_EQ(settings.gyro_derivative_lpf_hz, 10.0);
+  EXPECT_DOUBLE_EQ(settings.attitude_correction_hz, 0.5);
+  EXPECT_NEAR(rad2deg(settings.gravity_innovation_limit_rad), 2.5, 1e-12);
+  ASSERT_FALSE(settings.lever_arm_correction_enabled);
+  EXPECT_EQ(settings.gyro_notch_hz, 0.0);
+  EXPECT_EQ(settings.gyro_notch_bandwidth_hz, 0.0);
+  ImuPitchEstimator estimator;
+  constexpr double angular_accel = 20.0;
+  const auto specific_force = imu_accel(0.0, 0.0, angular_accel);
+  const auto result = estimator.push_sample(
+      specific_force, {0.0, 0.0, 0.0}, at_seconds(0.0));
 
-  constexpr double fs_hz = Config::sampling_hz;
-  constexpr int total_samples = static_cast<int>(8.0 * fs_hz);
-  constexpr int tail_samples = static_cast<int>(2.0 * fs_hz);
-  const auto tick = std::chrono::nanoseconds{std::llround(1e9 / fs_hz)};
-  const double target_rad = deg2rad(4.0);
+  ASSERT_TRUE(result.valid);
+  EXPECT_NEAR(result.sample.angle_rad,
+              std::atan2(-specific_force[0], -specific_force[2]), 1e-7);
+  EXPECT_GT(std::abs(result.sample.angle_rad), deg2rad(5.0));
+}
 
-  std::mt19937 rng(42);
-  std::normal_distribution<double> accel_noise(0.0, 0.20);
-  std::normal_distribution<double> gyro_noise(0.0, 0.015);
+TEST(ImuPitchEstimatorTest, EnabledLeverArmCorrectionRemovesSteadyRateTerm) {
+  auto settings = ImuPitchEstimator::Settings::production();
+  settings.lever_arm_correction_enabled = true;
+  ImuPitchEstimator estimator(settings);
+  constexpr double pitch = 0.0;
+  constexpr double rate = 3.0;
+  const auto result = estimator.push_sample(
+      imu_accel(pitch, rate, 0.0), {0.0, rate, 0.0}, at_seconds(0.0));
 
-  PitchComplementaryFilter filt;
-  auto now = clock::now();
-  double tail_sum_rad = 0.0;
-  int tail_count = 0;
+  ASSERT_TRUE(result.valid);
+  EXPECT_NEAR(result.sample.angle_rad, pitch, 1e-7);
+}
 
-  for (int i = 0; i < total_samples; ++i) {
-    auto acc = accel_for_pitch_g(target_rad);
-    for (double& axis : acc) {
-      axis += accel_noise(rng);
-    }
-    const std::array<double, 3> gyr{0.0, gyro_noise(rng), 0.0};
-    now += tick;
-    filt.push_sample(acc, gyr, now);
-    const ImuSample out = filt.read_latest();
-    if (i >= total_samples - tail_samples) {
-      tail_sum_rad += out.angle_rad;
-      ++tail_count;
+TEST(ImuPitchEstimatorTest, GravityPathMatchesCompositeResponseAndDelay) {
+  for (const double frequency_hz : {5.0, 30.0, 100.0}) {
+    ImuPitchEstimator estimator;
+    const auto measured = measure_sine(
+        estimator, frequency_hz, deg2rad(1.0), pitch_input(),
+        [](const ImuSample& sample) { return sample.angle_rad; });
+    const double expected =
+        px4_lpf2p_magnitude(Config::sampling_hz, Config::imu_accel_lpf_hz,
+                            frequency_hz) *
+        first_order_lpf_magnitude(Config::sampling_hz,
+                                  Config::imu_attitude_correction_hz,
+                                  frequency_hz);
+    EXPECT_TRUE(measured.finite);
+    EXPECT_NEAR(measured.gain, expected, 0.05 * expected) << frequency_hz;
+    if (frequency_hz == 5.0) {
+      EXPECT_GT(measured.delay_s, 0.0);
+      EXPECT_LT(measured.delay_s, 0.065);
     }
   }
-
-  ASSERT_GT(tail_count, 0);
-  EXPECT_NEAR(rad2deg(tail_sum_rad / tail_count), 4.0, 0.35);
 }
 
-TEST(DataPathSanity, ComplementaryFilter_ReducesRawAccelPitchNoise) {
-  using clock = std::chrono::steady_clock;
+TEST(ImuPitchEstimatorTest, GyroFilterMatchesPx4ResponseAndDelay) {
+  for (const double frequency_hz : {5.0, 60.0, 120.0}) {
+    ImuPitchEstimator estimator;
+    const auto measured = measure_sine(
+        estimator, frequency_hz, 1.0, gyro_input(),
+        [](const ImuSample& sample) { return sample.gyro_rad_s; });
+    const double expected = px4_lpf2p_magnitude(
+        Config::sampling_hz, Config::imu_gyro_lpf_hz, frequency_hz);
+    EXPECT_TRUE(measured.finite);
+    EXPECT_NEAR(measured.gain, expected, 0.05 * expected) << frequency_hz;
+    if (frequency_hz == 5.0) {
+      EXPECT_GT(measured.delay_s, 0.0);
+      EXPECT_LT(measured.delay_s, 0.010);
+    }
+  }
+}
 
-  constexpr double fs_hz = Config::sampling_hz;
-  constexpr int total_samples = static_cast<int>(8.0 * fs_hz);
-  constexpr int warmup_samples = static_cast<int>(2.0 * fs_hz);
-  const auto tick = std::chrono::nanoseconds{std::llround(1e9 / fs_hz)};
-  const double target_rad = deg2rad(3.0);
+TEST(ImuPitchEstimatorTest, DerivativePathIsFiniteAndRejectsHighFrequency) {
+  ImuPitchEstimator low_frequency;
+  const auto low = measure_sine(
+      low_frequency, 5.0, 1.0, gyro_input(),
+      [](const ImuSample& sample) { return sample.pitch_accel_rad_s2; });
+  ImuPitchEstimator high_frequency;
+  const auto high = measure_sine(
+      high_frequency, 100.0, 1.0, gyro_input(),
+      [](const ImuSample& sample) { return sample.pitch_accel_rad_s2; });
 
+  const double normalized_low = low.gain / (kTwoPi * 5.0);
+  const double normalized_high = high.gain / (kTwoPi * 100.0);
+  EXPECT_TRUE(low.finite);
+  EXPECT_TRUE(high.finite);
+  EXPECT_GT(normalized_low, 0.8);
+  EXPECT_LT(normalized_high, 0.25 * normalized_low);
+}
+
+TEST(ImuPitchEstimatorTest, ConfiguredNotchSuppressesItsCenterFrequency) {
+  auto settings = ImuPitchEstimator::Settings::production();
+  settings.gyro_notch_hz = 80.0;
+  settings.gyro_notch_bandwidth_hz = 20.0;
+  ImuPitchEstimator notched(settings);
+  ImuPitchEstimator unnotched;
+
+  const auto with_notch = measure_sine(
+      notched, 80.0, 1.0, gyro_input(),
+      [](const ImuSample& sample) { return sample.gyro_rad_s; });
+  const auto without_notch = measure_sine(
+      unnotched, 80.0, 1.0, gyro_input(),
+      [](const ImuSample& sample) { return sample.gyro_rad_s; });
+
+  EXPECT_TRUE(with_notch.finite);
+  EXPECT_TRUE(without_notch.finite);
+  EXPECT_LT(with_notch.gain, 0.1 * without_notch.gain);
+}
+
+TEST(ImuPitchEstimatorTest, AccelAndGyroVibrationAreAttenuatedWithoutMeanShift) {
+  for (const double frequency_hz : {40.0, 100.0}) {
+    ImuPitchEstimator estimator;
+    const auto pitch = measure_sine(
+        estimator, frequency_hz, deg2rad(5.0), pitch_input(),
+        [](const ImuSample& sample) { return sample.angle_rad; });
+    EXPECT_LT(pitch.gain, frequency_hz == 40.0 ? 0.18 : 0.04);
+  }
+
+  ImuPitchEstimator gyro_estimator;
+  const auto gyro = measure_sine(
+      gyro_estimator, 100.0, 1.0, gyro_input(),
+      [](const ImuSample& sample) { return sample.gyro_rad_s; });
+  EXPECT_LT(gyro.gain, 0.12);
+}
+
+TEST(ImuPitchEstimatorTest, LowPassReducesStaticAccelNoiseWithoutBias) {
+  ImuPitchEstimator estimator;
   std::mt19937 rng(77);
-  std::normal_distribution<double> accel_noise(0.0, 0.25);
-  std::normal_distribution<double> gyro_noise(0.0, 0.010);
-
-  PitchComplementaryFilter filt;
-  auto now = clock::now();
+  std::normal_distribution<double> noise(0.0, 0.10);
+  constexpr double pitch = 3.0 * M_PI / 180.0;
   double raw_sq = 0.0;
-  double fused_sq = 0.0;
+  double filtered_sq = 0.0;
+  double filtered_sum = 0.0;
   int count = 0;
 
-  for (int i = 0; i < total_samples; ++i) {
-    auto acc = accel_for_pitch_g(target_rad);
-    for (double& axis : acc) {
-      axis += accel_noise(rng);
-    }
-    const std::array<double, 3> gyr{0.0, gyro_noise(rng), 0.0};
-    now += tick;
-    filt.push_sample(acc, gyr, now);
-    const ImuSample out = filt.read_latest();
-    if (i >= warmup_samples) {
-      const double raw_err = wrap_pi(raw_pitch_from_acc_rad(acc) - target_rad);
-      const double fused_err = wrap_pi(out.angle_rad - target_rad);
-      raw_sq += raw_err * raw_err;
-      fused_sq += fused_err * fused_err;
+  for (int sample = 0; sample < 4000; ++sample) {
+    auto acc = imu_accel(pitch);
+    acc[0] += noise(rng);
+    acc[2] += noise(rng);
+    const auto result = estimator.push_sample(
+        acc, {0.0, 0.0, 0.0},
+        at_seconds(static_cast<double>(sample) / Config::sampling_hz));
+    if (sample > 100 && result.valid) {
+      const double raw_pitch = std::atan2(-acc[0], -acc[2]);
+      raw_sq += std::pow(wrap_pi(raw_pitch - pitch), 2);
+      filtered_sq += std::pow(wrap_pi(result.sample.angle_rad - pitch), 2);
+      filtered_sum += result.sample.angle_rad;
       ++count;
     }
   }
 
-  ASSERT_GT(count, 0);
-  const double raw_rms_deg = rad2deg(std::sqrt(raw_sq / count));
-  const double fused_rms_deg = rad2deg(std::sqrt(fused_sq / count));
-  EXPECT_LT(fused_rms_deg, raw_rms_deg * 0.55);
-}
-
-TEST(DataPathSanity, ComplementaryFilter_GravityBoundsAFixedGyroBias) {
-  using clock = std::chrono::steady_clock;
-
-  constexpr double fs_hz = Config::sampling_hz;
-  constexpr int total_samples = static_cast<int>(12.0 * fs_hz);
-  constexpr int tail_samples = static_cast<int>(2.0 * fs_hz);
-  const auto tick = std::chrono::nanoseconds{std::llround(1e9 / fs_hz)};
-  const double target_rad = deg2rad(5.0);
-
-  std::mt19937 rng(123);
-  std::normal_distribution<double> accel_noise(0.0, 0.15);
-  std::normal_distribution<double> gyro_noise(0.0, 0.006);
-
-  PitchComplementaryFilter filt;
-  auto now = clock::now();
-  double tail_sum_rad = 0.0;
-  int tail_count = 0;
-
-  for (int i = 0; i < total_samples; ++i) {
-    auto acc = accel_for_pitch_g(target_rad);
-    for (double& axis : acc) {
-      axis += accel_noise(rng);
-    }
-    const std::array<double, 3> gyr{0.0, 0.010 + gyro_noise(rng), 0.0};
-    now += tick;
-    filt.push_sample(acc, gyr, now);
-    const ImuSample out = filt.read_latest();
-    if (i >= total_samples - tail_samples) {
-      tail_sum_rad += out.angle_rad;
-      ++tail_count;
-    }
-  }
-
-  ASSERT_GT(tail_count, 0);
-  EXPECT_NEAR(rad2deg(tail_sum_rad / tail_count), 5.0, 2.5);
+  ASSERT_GT(count, 100);
+  EXPECT_LT(std::sqrt(filtered_sq / count), std::sqrt(raw_sq / count));
+  EXPECT_LT(rad2deg(std::sqrt(filtered_sq / count)), 1.0);
+  EXPECT_NEAR(rad2deg(filtered_sum / count), 3.0, 0.1);
 }

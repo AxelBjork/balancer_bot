@@ -11,8 +11,7 @@ public:
   using TimePoint = std::chrono::steady_clock::time_point;
 
   struct IMUConfig {
-    std::function<void(double               /*pitch*/,
-                       std::array<double,3> /*acc*/,
+    std::function<void(std::array<double,3> /*acc*/,
                        std::array<double,3> /*gyr*/,
                        TimePoint            /*ts*/)> on_sample;
   };

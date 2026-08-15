@@ -34,9 +34,10 @@ void ConfigPid::load(const std::string& path) {
   std::vector<ParsedLine> parsed_lines;
   std::unordered_set<std::string> allowed = {
       "config_version", "rate_P", "rate_I", "rate_D", "rate_I_lim", "rate_FF",
-      "velocity_P", "velocity_I", "velocity_I_limit_deg", "angle_P", "angle_D",
-      "drive_max_sps", "turn_max_sps", "pitch_max_deg", "balance_max_sps",
-      "output_scale_sps", "controller_enabled"};
+      "drive_max_acceleration_mps2", "velocity_damping_per_s",
+      "velocity_I", "velocity_I_limit_deg", "angle_P", "angle_D",
+      "pitch_rate_max_sps", "drive_max_sps", "turn_max_sps",
+      "balance_max_sps", "controller_enabled"};
   controller_enabled = true;
   std::string line;
   size_t line_number = 0;
@@ -130,16 +131,16 @@ void ConfigPid::load(const std::string& path) {
     if (values.at(key) < 0.0) throw std::runtime_error(std::string(key) + " must be non-negative");
   };
   for (const char* key : {"rate_P", "rate_I", "rate_D", "rate_I_lim", "rate_FF",
-                          "velocity_P", "velocity_I", "velocity_I_limit_deg", "angle_P",
-                          "angle_D", "turn_max_sps"}) {
+                          "drive_max_acceleration_mps2",
+                          "velocity_damping_per_s", "velocity_I", "velocity_I_limit_deg",
+                          "angle_P", "angle_D", "turn_max_sps"}) {
     nonnegative(key);
   }
-  for (const char* key : {"drive_max_sps", "pitch_max_deg", "balance_max_sps",
-                          "output_scale_sps"}) {
+  for (const char* key : {"pitch_rate_max_sps", "drive_max_sps", "balance_max_sps"}) {
     if (values.at(key) <= 0.0) throw std::runtime_error(std::string(key) + " must be positive");
   }
   if (values.at("drive_max_sps") > 12000.0 || values.at("turn_max_sps") > 12000.0 ||
-      values.at("balance_max_sps") > 12000.0 || values.at("pitch_max_deg") > 45.0) {
+      values.at("balance_max_sps") > 12000.0) {
     throw std::runtime_error("PID configuration limit exceeds the supported range");
   }
 
@@ -148,16 +149,16 @@ void ConfigPid::load(const std::string& path) {
   rate_D = values.at("rate_D");
   rate_I_lim = values.at("rate_I_lim");
   rate_FF = values.at("rate_FF");
-  velocity_P = values.at("velocity_P");
+  drive_max_acceleration_mps2 = values.at("drive_max_acceleration_mps2");
+  velocity_damping_per_s = values.at("velocity_damping_per_s");
   velocity_I = values.at("velocity_I");
   velocity_I_limit_deg = values.at("velocity_I_limit_deg");
   angle_P = values.at("angle_P");
   angle_D = values.at("angle_D");
+  pitch_rate_max_sps = values.at("pitch_rate_max_sps");
   drive_max_sps = values.at("drive_max_sps");
   turn_max_sps = values.at("turn_max_sps");
-  pitch_max_deg = values.at("pitch_max_deg");
   balance_max_sps = values.at("balance_max_sps");
-  output_scale_sps = values.at("output_scale_sps");
   controller_enabled = !values.contains("controller_enabled") || values.at("controller_enabled") == 1.0;
 }
 
@@ -168,7 +169,7 @@ void ConfigPid::save(const std::string& path) {
     f << "# Modifying this file requires application restart (or reload logic)\n\n";
 
     f << "config_version       = " << config_version << "\n\n";
-    f << "# --- Rate Controller (400 Hz) ---\n";
+    f << "# --- Rate Controller (Inner Loop) ---\n";
     write_param(f, "rate_P", rate_P);
     write_param(f, "rate_I", rate_I);
     write_param(f, "rate_D", rate_D);
@@ -176,17 +177,17 @@ void ConfigPid::save(const std::string& path) {
     write_param(f, "rate_FF", rate_FF);
     f << "\n";
 
-    f << "# --- Velocity control / stationary COM trim (50 Hz) and allocation ---\n";
-    write_param(f, "velocity_P", velocity_P);
+    f << "# --- Acceleration control / stationary COM trim (100 Hz), angle loop, and allocation ---\n";
+    write_param(f, "drive_max_acceleration_mps2", drive_max_acceleration_mps2);
+    write_param(f, "velocity_damping_per_s", velocity_damping_per_s);
     write_param(f, "velocity_I", velocity_I);
     write_param(f, "velocity_I_limit_deg", velocity_I_limit_deg);
     write_param(f, "angle_P", angle_P);
     write_param(f, "angle_D", angle_D);
+    write_param(f, "pitch_rate_max_sps", pitch_rate_max_sps);
     write_param(f, "drive_max_sps", drive_max_sps);
     write_param(f, "turn_max_sps", turn_max_sps);
-    write_param(f, "pitch_max_deg", pitch_max_deg);
     write_param(f, "balance_max_sps", balance_max_sps);
-    write_param(f, "output_scale_sps", output_scale_sps);
     write_param(f, "controller_enabled", controller_enabled ? 1.0 : 0.0);
     f << "\n";
   } else {

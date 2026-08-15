@@ -18,7 +18,7 @@ namespace {
 
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kControlDtS = 1.0 / 400.0;
-constexpr double kImuPeriodUs = 1e6 / 833.0;
+constexpr double kImuPeriodUs = 1e6 / Config::sampling_hz;
 constexpr double kAccelQuantum = 0.000598205;
 constexpr double kGyroQuantum = 0.000152716;
 
@@ -209,12 +209,17 @@ struct SimulatorEngine::Impl {
         rng(input.imu_noise_seed),
         accel_noise(0.0, input.accel_noise_std_mps2 > 0.0 ? input.accel_noise_std_mps2 : 1.0),
         gyro_noise(0.0, input.gyro_noise_std_rad_s > 0.0 ? input.gyro_noise_std_rad_s : 1.0) {
+    // Publish the ordinary time-zero sensor sample before integrating the
+    // plant, matching the hardware filter's first-sample initialization.
+    latest_raw = simulator.make_raw_imu_payload(0);
+    pipeline.bus.publish<MsgId::ImuRawData>(latest_raw);
   }
 
   static BalancerSimulator::Config makeSimulatorConfig(const SimulatorScenario& input) {
     BalancerSimulator::Config config;
     config.com_angle_offset_rad = input.com_angle_offset_rad;
     config.initial_pitch_deg = input.initial_pitch_deg;
+    config.initial_pitch_rate_dps = input.initial_pitch_rate_dps;
     config.physics_profile = input.physics_profile;
     config.physics_override = input.physics_override;
     config.total_mass_scale = input.total_mass_scale;
@@ -301,7 +306,11 @@ struct SimulatorEngine::Impl {
 
     if (pipeline.services.observer.have_feedback) {
       const auto& feedback = pipeline.services.observer.feedback;
-      simulator.set_motor_targets(feedback.left_applied_sps, feedback.right_applied_sps);
+      // The continuous post-slew command drives the motor's field-speed term.
+      // Exact pulse-frame quantization already enters the plant independently
+      // through set_emitted_steps(), so using the active-frame average here
+      // would count the same quantization twice.
+      simulator.set_motor_targets(feedback.left_slewed_sps, feedback.right_slewed_sps);
     }
     return timelineRow();
   }
@@ -344,12 +353,13 @@ struct SimulatorEngine::Impl {
             : 0.0;
 
     if (observer.have_feedback) {
-      row.left_applied_sps = observer.feedback.left_applied_sps;
-      row.right_applied_sps = observer.feedback.right_applied_sps;
+      row.left_slewed_sps = observer.feedback.left_slewed_sps;
+      row.right_slewed_sps = observer.feedback.right_slewed_sps;
       row.left_actual_steps = static_cast<double>(observer.feedback.left_actual_steps);
       row.right_actual_steps = static_cast<double>(observer.feedback.right_actual_steps);
       row.motor_update_dt_ms = observer.feedback.update_dt_ms;
       row.motor_feedback_age_ms = observer.feedback.feedback_age_ms;
+      row.actuator_saturation_flags = observer.feedback.actuator_saturation_flags;
     }
     if (observer.have_telemetry) {
       const auto& telemetry = observer.telemetry;
@@ -360,18 +370,19 @@ struct SimulatorEngine::Impl {
       row.pitch_sp_deg = telemetry.pitch_sp_deg;
       row.u_sps = telemetry.u_sps;
       row.turn_sps = telemetry.turn_sps;
-      row.vel_error = telemetry.vel_error;
-      row.target_velocity_sps = telemetry.target_velocity_sps;
-      row.velocity_p_term_deg = telemetry.velocity_p_term_deg;
-      row.velocity_i_term_deg = telemetry.velocity_i_term_deg;
+      row.nominal_acceleration_mps2 = telemetry.nominal_acceleration_mps2;
+      row.raw_completed_velocity_sps = telemetry.raw_completed_velocity_sps;
+      row.corrected_axle_velocity_sps = telemetry.corrected_axle_velocity_sps;
+      row.velocity_damping_acceleration_mps2 = telemetry.velocity_damping_acceleration_mps2;
+      row.com_trim_deg = telemetry.com_trim_deg;
       row.pitch_error_deg = telemetry.pitch_error_deg;
       row.rate_setpoint_dps = telemetry.rate_setpoint_dps;
       row.rate_error_dps = telemetry.rate_error_dps;
       row.command_saturated = telemetry.command_saturated;
       row.controller_fault_flags = telemetry.controller_fault_flags;
       row.controller_saturation_flags = telemetry.controller_saturation_flags;
+      row.actuator_saturation_flags = telemetry.actuator_saturation_flags;
       row.actuator_fault = telemetry.actuator_fault;
-      row.measured_vel_sps = telemetry.measured_vel_sps;
     }
     return row;
   }

@@ -27,7 +27,7 @@ digraph IPC {
     margin=34;
     ImuService [
       fillcolor="#0369A1",
-      label=<<B><FONT POINT-SIZE="30">ImuService</FONT></B><BR/><FONT POINT-SIZE="24">Consumes raw accelerometer/gyroscope<BR/>samples and publishes `ImuData`<BR/>samples that represent the<BR/>controller&apos;s current view of body<BR/>pitch, specific force, angular rate,<BR/>and sample time.</FONT>>
+      label=<<B><FONT POINT-SIZE="30">ImuService</FONT></B><BR/><FONT POINT-SIZE="24">Consumes raw accelerometer/gyroscope<BR/>samples and publishes `ImuData`<BR/>samples that represent the<BR/>controller&apos;s current view of body<BR/>pitch, angular motion, and sample<BR/>time.</FONT>>
     ];
     TimeService [
       fillcolor="#0369A1",

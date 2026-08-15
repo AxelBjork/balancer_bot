@@ -29,11 +29,12 @@ struct SimulatorPhysics {
 struct SimulatorConfig {
   double com_angle_offset_rad = 0.001;
   double initial_pitch_deg = 2.0;
+  double initial_pitch_rate_dps = 0.0;
   PhysicsProfile physics_profile = PhysicsProfile::Realistic;
   std::optional<SimulatorPhysics> physics_override;
   double total_mass_scale = 1.0;
   double pitch_inertia_scale = 1.0;
-  double imu_height_m = 0.06;
+  double imu_height_m = 0.070;
 };
 
 class BalancerSimulator {

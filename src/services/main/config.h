@@ -19,31 +19,32 @@ struct Config {
   static constexpr AxisCfg accel_cfg = {.x = 0, .y = 2, .z = 1, .invert_x = true, .invert_z = true};
   static constexpr AxisCfg gyro_cfg = {.x = 0, .y = 2, .z = 1, .invert_x = true, .invert_z = true};
 
-  // LPFs (angles from accel, magnitude-to-g estimate, final angle LPF)
-  static constexpr double fallback_dt_s = 1.0 / 400.0;  // Sampling + fallbacks
-  static constexpr double fc_gyro_lpf_hz = 100.0;       // Gyro path: low lag while taming sensor noise
-  static constexpr double fc_gyro_accel_lpf_hz = 30.0;  // Gyro derivative path for rate D
-  // Complementary accel correction (slow)
-  // Accelerometer correction must remain slow: wheel acceleration is
-  // indistinguishable from tilt in a two-wheel balancing robot. Gyro carries
-  // the dynamic attitude estimate; accel only removes long-term drift.
-  static constexpr double fc_acc_corr_hz = 0.05;
-  // Completed motor steps are a balance-state input and retain enough
-  // bandwidth to catch the pole. The governed target is fed forward directly.
-  static constexpr double fc_velocity_hz = 50.0;
   static constexpr double g0 = 9.81;
-  static constexpr double g_band_rel = 0.12;  // accept |a| in [g*(1-..), g*(1+..)]
-  // Horizontal specific force is indistinguishable from tilt. Bound each
-  // correction so gravity remains a continuous reference without allowing a
-  // dynamic acceleration to abruptly steer the estimate.
-  static constexpr double accel_correction_max_innovation_deg = 3.0;
-  static constexpr double fc_acc_prefilt_hz = 30.0;  // prefilter on accel (10–20 Hz)
+  // PX4-style signal conditioning followed by bounded gyro/gravity pitch.
+  // No mounting, gyro-bias, gravity-recovery, or COM correction is learned.
+  static constexpr double imu_accel_lpf_hz = 15.0;
+  static constexpr double imu_gyro_lpf_hz = 30.0;
+  static constexpr double imu_gyro_derivative_lpf_hz = 10.0;
+  // Gravity anchors DC pitch while the gyro carries short-term motion.
+  static constexpr double imu_attitude_correction_hz = 0.5;
+  static constexpr double imu_gravity_innovation_limit_rad = 2.5 * M_PI / 180.0;
+  static constexpr double imu_gyro_notch_hz = 0.0;
+  static constexpr double imu_gyro_notch_bandwidth_hz = 0.0;
+  static constexpr double imu_max_sample_gap_periods = 4.0;
+  static constexpr double imu_height_m = 0.070;
+  static constexpr bool imu_lever_arm_correction_enabled = false;
+  static constexpr double imu_specific_force_min_mps2 = 0.1 * g0;
+  static constexpr double imu_specific_force_max_mps2 = 3.5 * g0;
+  // Corrected axle velocity is used only by the 100 Hz outer damping/trim loop.
+  // 10 Hz removes completed-step quantization without the phase lag that made
+  // the proposed 1 Hz filter miss the rocking-disturbance catch.
+  static constexpr double fc_velocity_hz = 10.0;
 
   // ========= Controller rates & limits =========
   static constexpr int control_hz = 400;  // Main control loop frequency
   // Pulse frequency can change much faster than the wheel itself; the phase-
   // error/missed-step plant supplies the physical acceleration limit.
-  static constexpr double motor_slew_sps_per_s = 100000.0;
+  static constexpr double motor_slew_sps_per_s = 200000.0;
 
   static constexpr double max_tilt_rad = 25.0 * (M_PI / 180.0);
 
@@ -57,17 +58,29 @@ struct Config {
   static constexpr bool invert_left = true;
   static constexpr bool invert_right = false;
 
-  // ========= Time Budget =========
-  static constexpr double pitch_rise_ms = 7000.0;
-  static constexpr double dpitch_rise_ms = 6.0;   // gyro path must be <= ~6 ms 10->90
 };
 
-static_assert(Config::fc_acc_corr_hz == 0.0 ||
-                  Config::fc_acc_corr_hz >= 0.35 / (Config::pitch_rise_ms / 1000.0),
-              "fc_acc_corr_hz too low for required rise time budget");
-
-static_assert((2.2 / (2 * M_PI * Config::fc_gyro_lpf_hz)) * 1e3 <= Config::dpitch_rise_ms,
-              "fc_gyro_lpf_hz too low for required gyro rise-time budget");
+static_assert(Config::sampling_hz > 0.0);
+static_assert(Config::imu_accel_lpf_hz > 0.0 &&
+              Config::imu_accel_lpf_hz < Config::sampling_hz / 2.0);
+static_assert(Config::imu_gyro_lpf_hz > 0.0 &&
+              Config::imu_gyro_lpf_hz < Config::sampling_hz / 2.0);
+static_assert(Config::imu_gyro_derivative_lpf_hz > 0.0 &&
+              Config::imu_gyro_derivative_lpf_hz < Config::sampling_hz / 2.0);
+static_assert(Config::imu_attitude_correction_hz > 0.0 &&
+              Config::imu_attitude_correction_hz < Config::sampling_hz / 2.0);
+static_assert(Config::imu_gravity_innovation_limit_rad > 0.0 &&
+              Config::imu_gravity_innovation_limit_rad < M_PI);
+static_assert((Config::imu_gyro_notch_hz == 0.0 &&
+               Config::imu_gyro_notch_bandwidth_hz == 0.0) ||
+              (Config::imu_gyro_notch_hz > 0.0 &&
+               Config::imu_gyro_notch_hz < Config::sampling_hz / 2.0 &&
+               Config::imu_gyro_notch_bandwidth_hz > 0.0));
+static_assert(Config::imu_max_sample_gap_periods > 1.0);
+static_assert(Config::imu_height_m >= 0.0);
+static_assert(Config::imu_specific_force_min_mps2 > 0.0);
+static_assert(Config::imu_specific_force_max_mps2 >
+              Config::imu_specific_force_min_mps2);
 
 // ---------------------------------------------------------------------------
 

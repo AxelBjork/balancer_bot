@@ -97,7 +97,7 @@ class MotorTargetsPayload:
 
 @dataclass
 class SystemTelemetryPayload:
-    WIRE_SIZE = 136
+    WIRE_SIZE = 144
     run_id: int
     controller_fault_flags: int
     controller_saturation_flags: int
@@ -112,29 +112,30 @@ class SystemTelemetryPayload:
     filtered_pitch_rate_dps: float
     u_sps: float
     turn_sps: float
-    target_velocity_sps: float
-    vel_error: float
-    measured_vel_sps: float
-    velocity_p_term_deg: float
-    velocity_i_term_deg: float
+    nominal_acceleration_mps2: float
+    raw_completed_velocity_sps: float
+    corrected_axle_velocity_sps: float
+    velocity_damping_acceleration_mps2: float
+    com_trim_deg: float
     pitch_error_deg: float
     pitch_sp_deg: float
     rate_setpoint_dps: float
     rate_error_dps: float
     left_target_sps: float
     right_target_sps: float
-    left_applied_sps: float
-    right_applied_sps: float
+    left_slewed_sps: float
+    right_slewed_sps: float
     motor_update_dt_ms: float
     motor_feedback_age_ms: float
     left_actual_steps: int
     right_actual_steps: int
+    actuator_saturation_flags: int
     command_saturated: bool
     actuator_fault: bool
 
     def pack_wire(self) -> bytes:
         data = bytearray()
-        data.extend(struct.pack("<III4xQfffffffffffffffffffffffffii??2x", self.run_id, self.controller_fault_flags, self.controller_saturation_flags, self.imu_timestamp_us, self.t_sec, self.age_ms, self.pitch_deg, self.pitch_rate_dps, self.raw_acc_pitch_deg, self.fused_pitch_deg, self.gyro_pitch_rate_dps, self.filtered_pitch_rate_dps, self.u_sps, self.turn_sps, self.target_velocity_sps, self.vel_error, self.measured_vel_sps, self.velocity_p_term_deg, self.velocity_i_term_deg, self.pitch_error_deg, self.pitch_sp_deg, self.rate_setpoint_dps, self.rate_error_dps, self.left_target_sps, self.right_target_sps, self.left_applied_sps, self.right_applied_sps, self.motor_update_dt_ms, self.motor_feedback_age_ms, self.left_actual_steps, self.right_actual_steps, self.command_saturated, self.actuator_fault))
+        data.extend(struct.pack("<III4xQfffffffffffffffffffffffffiiI??6x", self.run_id, self.controller_fault_flags, self.controller_saturation_flags, self.imu_timestamp_us, self.t_sec, self.age_ms, self.pitch_deg, self.pitch_rate_dps, self.raw_acc_pitch_deg, self.fused_pitch_deg, self.gyro_pitch_rate_dps, self.filtered_pitch_rate_dps, self.u_sps, self.turn_sps, self.nominal_acceleration_mps2, self.raw_completed_velocity_sps, self.corrected_axle_velocity_sps, self.velocity_damping_acceleration_mps2, self.com_trim_deg, self.pitch_error_deg, self.pitch_sp_deg, self.rate_setpoint_dps, self.rate_error_dps, self.left_target_sps, self.right_target_sps, self.left_slewed_sps, self.right_slewed_sps, self.motor_update_dt_ms, self.motor_feedback_age_ms, self.left_actual_steps, self.right_actual_steps, self.actuator_saturation_flags, self.command_saturated, self.actuator_fault))
         return bytes(data)
 
     def pack(self) -> bytes:
@@ -143,9 +144,9 @@ class SystemTelemetryPayload:
     @classmethod
     def unpack_wire(cls, data: bytes) -> "SystemTelemetryPayload":
         offset = 0
-        run_id, controller_fault_flags, controller_saturation_flags, imu_timestamp_us, t_sec, age_ms, pitch_deg, pitch_rate_dps, raw_acc_pitch_deg, fused_pitch_deg, gyro_pitch_rate_dps, filtered_pitch_rate_dps, u_sps, turn_sps, target_velocity_sps, vel_error, measured_vel_sps, velocity_p_term_deg, velocity_i_term_deg, pitch_error_deg, pitch_sp_deg, rate_setpoint_dps, rate_error_dps, left_target_sps, right_target_sps, left_applied_sps, right_applied_sps, motor_update_dt_ms, motor_feedback_age_ms, left_actual_steps, right_actual_steps, command_saturated, actuator_fault = struct.unpack_from("<III4xQfffffffffffffffffffffffffii??2x", data, offset)
-        offset += struct.calcsize("<III4xQfffffffffffffffffffffffffii??2x")
-        return cls(run_id=run_id, controller_fault_flags=controller_fault_flags, controller_saturation_flags=controller_saturation_flags, imu_timestamp_us=imu_timestamp_us, t_sec=t_sec, age_ms=age_ms, pitch_deg=pitch_deg, pitch_rate_dps=pitch_rate_dps, raw_acc_pitch_deg=raw_acc_pitch_deg, fused_pitch_deg=fused_pitch_deg, gyro_pitch_rate_dps=gyro_pitch_rate_dps, filtered_pitch_rate_dps=filtered_pitch_rate_dps, u_sps=u_sps, turn_sps=turn_sps, target_velocity_sps=target_velocity_sps, vel_error=vel_error, measured_vel_sps=measured_vel_sps, velocity_p_term_deg=velocity_p_term_deg, velocity_i_term_deg=velocity_i_term_deg, pitch_error_deg=pitch_error_deg, pitch_sp_deg=pitch_sp_deg, rate_setpoint_dps=rate_setpoint_dps, rate_error_dps=rate_error_dps, left_target_sps=left_target_sps, right_target_sps=right_target_sps, left_applied_sps=left_applied_sps, right_applied_sps=right_applied_sps, motor_update_dt_ms=motor_update_dt_ms, motor_feedback_age_ms=motor_feedback_age_ms, left_actual_steps=left_actual_steps, right_actual_steps=right_actual_steps, command_saturated=command_saturated, actuator_fault=actuator_fault)
+        run_id, controller_fault_flags, controller_saturation_flags, imu_timestamp_us, t_sec, age_ms, pitch_deg, pitch_rate_dps, raw_acc_pitch_deg, fused_pitch_deg, gyro_pitch_rate_dps, filtered_pitch_rate_dps, u_sps, turn_sps, nominal_acceleration_mps2, raw_completed_velocity_sps, corrected_axle_velocity_sps, velocity_damping_acceleration_mps2, com_trim_deg, pitch_error_deg, pitch_sp_deg, rate_setpoint_dps, rate_error_dps, left_target_sps, right_target_sps, left_slewed_sps, right_slewed_sps, motor_update_dt_ms, motor_feedback_age_ms, left_actual_steps, right_actual_steps, actuator_saturation_flags, command_saturated, actuator_fault = struct.unpack_from("<III4xQfffffffffffffffffffffffffiiI??6x", data, offset)
+        offset += struct.calcsize("<III4xQfffffffffffffffffffffffffiiI??6x")
+        return cls(run_id=run_id, controller_fault_flags=controller_fault_flags, controller_saturation_flags=controller_saturation_flags, imu_timestamp_us=imu_timestamp_us, t_sec=t_sec, age_ms=age_ms, pitch_deg=pitch_deg, pitch_rate_dps=pitch_rate_dps, raw_acc_pitch_deg=raw_acc_pitch_deg, fused_pitch_deg=fused_pitch_deg, gyro_pitch_rate_dps=gyro_pitch_rate_dps, filtered_pitch_rate_dps=filtered_pitch_rate_dps, u_sps=u_sps, turn_sps=turn_sps, nominal_acceleration_mps2=nominal_acceleration_mps2, raw_completed_velocity_sps=raw_completed_velocity_sps, corrected_axle_velocity_sps=corrected_axle_velocity_sps, velocity_damping_acceleration_mps2=velocity_damping_acceleration_mps2, com_trim_deg=com_trim_deg, pitch_error_deg=pitch_error_deg, pitch_sp_deg=pitch_sp_deg, rate_setpoint_dps=rate_setpoint_dps, rate_error_dps=rate_error_dps, left_target_sps=left_target_sps, right_target_sps=right_target_sps, left_slewed_sps=left_slewed_sps, right_slewed_sps=right_slewed_sps, motor_update_dt_ms=motor_update_dt_ms, motor_feedback_age_ms=motor_feedback_age_ms, left_actual_steps=left_actual_steps, right_actual_steps=right_actual_steps, actuator_saturation_flags=actuator_saturation_flags, command_saturated=command_saturated, actuator_fault=actuator_fault)
 
     @classmethod
     def unpack(cls, data: bytes) -> "SystemTelemetryPayload":
@@ -432,7 +433,7 @@ class ImuRawPayload:
 
 @dataclass
 class SimulatorTelemetryPayload:
-    WIRE_SIZE = 264
+    WIRE_SIZE = 272
     system: SystemTelemetryPayload
     seed: int
     plant_pitch_deg: float
@@ -515,13 +516,13 @@ PAYLOAD_SIZE_BY_ID = {
     MsgId.PhysicsTick: 16,
     MsgId.JoystickCommand: 16,
     MsgId.MotorTargets: 16,
-    MsgId.SystemTelemetry: 136,
+    MsgId.SystemTelemetry: 144,
     MsgId.SimStartRun: 1120,
     MsgId.SimStartAck: 8,
     MsgId.SimStopRun: 4,
     MsgId.SimRunDone: 104,
     MsgId.ImuRawData: 56,
-    MsgId.SimulatorTelemetry: 264,
+    MsgId.SimulatorTelemetry: 272,
 }
 
-PROTOCOL_HASH = "25cdf09604164fd7"
+PROTOCOL_HASH = "75636990e95c6daa"

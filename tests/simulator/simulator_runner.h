@@ -38,6 +38,7 @@ struct SimulatorJoySegment {
 struct SimulatorScenario {
   std::string name;
   double initial_pitch_deg = 0.0;
+  double initial_pitch_rate_dps = 0.0;
   double com_angle_offset_rad = 0.0;
   double duration_s = 5.0;
   PhysicsProfile physics_profile = PhysicsProfile::Simplified;
@@ -46,6 +47,8 @@ struct SimulatorScenario {
   std::vector<SimulatorJoySegment> joy_segments;
   double total_mass_scale = 1.0;
   double pitch_inertia_scale = 1.0;
+  // Additional transport delay after sampling; production estimator filter
+  // latency is already present through ImuService and is not included here.
   double imu_pitch_lag_s = 0.0;
   uint32_t imu_noise_seed = 0;
   double accel_noise_std_mps2 = 0.0;
@@ -69,20 +72,20 @@ struct SimulatorTimelineRow {
   double turn_sps = 0.0;
   double left_sps = 0.0;
   double right_sps = 0.0;
-  double target_velocity_sps = 0.0;
-  double vel_error = 0.0;
-  double velocity_p_term_deg = 0.0;
-  double velocity_i_term_deg = 0.0;
+  double nominal_acceleration_mps2 = 0.0;
+  double raw_completed_velocity_sps = 0.0;
+  double corrected_axle_velocity_sps = 0.0;
+  double velocity_damping_acceleration_mps2 = 0.0;
+  double com_trim_deg = 0.0;
   double pitch_error_deg = 0.0;
   double rate_setpoint_dps = 0.0;
   double rate_error_dps = 0.0;
   double actuator_fault = 0.0;
-  double measured_vel_sps = 0.0;
   double motor_update_dt_ms = 0.0;
   double motor_feedback_age_ms = 0.0;
   uint64_t imu_timestamp_us = 0;
-  double left_applied_sps = 0.0;
-  double right_applied_sps = 0.0;
+  double left_slewed_sps = 0.0;
+  double right_slewed_sps = 0.0;
   double left_actual_steps = 0.0;
   double right_actual_steps = 0.0;
   double plant_pitch_deg = 0.0;
@@ -101,6 +104,7 @@ struct SimulatorTimelineRow {
   double command_saturated = 0.0;
   uint32_t controller_fault_flags = 0;
   uint32_t controller_saturation_flags = 0;
+  uint32_t actuator_saturation_flags = 0;
   double force_saturated = 0.0;
   double phase_error_steps = 0.0;
   double missed_steps = 0.0;
@@ -159,5 +163,10 @@ std::optional<SimulatorScenario> simulator_named_scenario(std::string_view name,
 std::vector<SimulatorScenario> simulator_scenario_set(std::string_view set_name,
                                                       PhysicsProfile physics_profile);
 std::vector<SimulatorScenario> transfer_scenario_set();
+std::vector<SimulatorScenario> tuning_inner_scenario_set();
+std::vector<SimulatorScenario> tuning_authority_scenario_set();
+std::vector<SimulatorScenario> tuning_velocity_scenario_set();
+std::vector<SimulatorScenario> tuning_drive_scenario_set();
+std::vector<SimulatorScenario> tuning_trim_scenario_set();
 TransferAcceptance evaluate_transfer_scenario(const SimulatorRunResult& result);
 uint64_t update_simulator_timeline_hash(uint64_t hash, const SimulatorTimelineRow& row);

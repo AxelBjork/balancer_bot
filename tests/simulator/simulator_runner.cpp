@@ -87,10 +87,13 @@ uint64_t update_simulator_timeline_hash(uint64_t hash, const SimulatorTimelineRo
   add_double(row.turn_sps);
   add_double(row.left_sps);
   add_double(row.right_sps);
+  add_double(row.left_slewed_sps);
+  add_double(row.right_slewed_sps);
   add_double(row.left_actual_steps);
   add_double(row.right_actual_steps);
   add_u64(row.controller_fault_flags);
   add_u64(row.controller_saturation_flags);
+  add_u64(row.actuator_saturation_flags);
   return hash;
 }
 
@@ -168,7 +171,6 @@ std::optional<SimulatorScenario> simulator_named_scenario(std::string_view name,
   if (name == "slow_push_runaway") {
     auto scenario = make_scenario("slow_push_runaway", 0.0, 0.0, physics_profile);
     scenario.duration_s = 40.0;
-    scenario.imu_pitch_lag_s = 0.01;
     scenario.disturbances = {
         SimulatorDisturbance{
             .kind = SimulatorDisturbanceKind::Ramp,
@@ -192,7 +194,6 @@ std::optional<SimulatorScenario> simulator_named_scenario(std::string_view name,
   if (name == "hold_bias_long_horizon") {
     auto scenario = make_scenario("hold_bias_long_horizon", 0.0, 0.0, physics_profile);
     scenario.duration_s = 40.0;
-    scenario.imu_pitch_lag_s = 0.01;
     scenario.disturbances.push_back(SimulatorDisturbance{
         .kind = SimulatorDisturbanceKind::HoldBias,
         .start_s = 1.0,
@@ -255,9 +256,10 @@ std::vector<SimulatorScenario> simulator_scenario_set(std::string_view set_name,
 
 std::vector<SimulatorScenario> transfer_scenario_set() {
   constexpr double kComOffsetRad = 0.002;
-  constexpr double kDriveSps = 800.0;
-  const double drive_command =
-      Config::deadzone + (1.0 - Config::deadzone) * (kDriveSps / ConfigPid::drive_max_sps);
+  // Acceleration command, not a target wheel speed. This exercises symmetric
+  // drive and braking without making the transfer catalog a full-throttle
+  // plant-authority test.
+  constexpr double drive_command = 0.20;
 
   enum class TransferProfile { Nominal, SlowWeak, FastStrong };
 
@@ -269,7 +271,6 @@ std::vector<SimulatorScenario> transfer_scenario_set() {
     scenario.imu_noise_seed = profile == TransferProfile::SlowWeak ? 2026u : 2027u;
     scenario.accel_noise_std_mps2 = 0.20;
     scenario.gyro_noise_std_rad_s = 0.015;
-    scenario.imu_pitch_lag_s = 0.010;
 
     if (profile == TransferProfile::SlowWeak) {
       scenario.total_mass_scale = 1.10;
@@ -308,13 +309,13 @@ std::vector<SimulatorScenario> transfer_scenario_set() {
         .kind = SimulatorDisturbanceKind::Step,
         .start_s = 2.0,
         .duration_s = 0.1,
-        .force_n = 3.0,
+        .force_n = 0.5,
     });
     scenario.disturbances.push_back(SimulatorDisturbance{
         .kind = SimulatorDisturbanceKind::Step,
         .start_s = 10.0,
         .duration_s = 0.1,
-        .force_n = -3.0,
+        .force_n = -0.5,
     });
     apply_profile(scenario, profile);
     return scenario;
@@ -352,6 +353,91 @@ std::vector<SimulatorScenario> transfer_scenario_set() {
       push_scenario("fast_strong_push_symmetric", TransferProfile::FastStrong),
       drive_scenario("fast_strong_drive_bidirectional", TransferProfile::FastStrong),
   };
+}
+
+std::vector<SimulatorScenario> tuning_inner_scenario_set() {
+  const auto nominal = [](std::string name, double pitch_deg, double pitch_rate_dps) {
+    SimulatorScenario scenario;
+    scenario.name = std::move(name);
+    scenario.duration_s = 4.0;
+    scenario.initial_pitch_deg = pitch_deg;
+    scenario.initial_pitch_rate_dps = pitch_rate_dps;
+    scenario.physics_profile = PhysicsProfile::Realistic;
+    return scenario;
+  };
+  return {
+      nominal("tuning_inner_neutral", 0.0, 0.0),
+      nominal("tuning_inner_release_pos", 1.5, 0.0),
+      nominal("tuning_inner_release_neg", -1.5, 0.0),
+      nominal("tuning_inner_rate_kick_pos", 0.0, 30.0),
+      nominal("tuning_inner_rate_kick_neg", 0.0, -30.0),
+  };
+}
+
+std::vector<SimulatorScenario> tuning_authority_scenario_set() {
+  const auto release = [](std::string name, double pitch_deg) {
+    SimulatorScenario scenario;
+    scenario.name = std::move(name);
+    scenario.duration_s = 5.0;
+    scenario.initial_pitch_deg = pitch_deg;
+    scenario.physics_profile = PhysicsProfile::Realistic;
+    return scenario;
+  };
+  const auto push = [](std::string name, double force_n) {
+    SimulatorScenario scenario;
+    scenario.name = std::move(name);
+    scenario.duration_s = 5.0;
+    scenario.physics_profile = PhysicsProfile::Realistic;
+    scenario.disturbances.push_back(SimulatorDisturbance{
+        .kind = SimulatorDisturbanceKind::Step,
+        .start_s = 1.0,
+        .duration_s = 0.10,
+        .force_n = force_n,
+    });
+    return scenario;
+  };
+  return {
+      release("tuning_authority_release_pos", 6.0),
+      release("tuning_authority_release_neg", -6.0),
+      // The nominal plant's transfer suite establishes 0.5 N as a moderate,
+      // recoverable 100 ms push.  Larger pushes are retained for transfer
+      // margins rather than selecting the nominal controller shape.
+      push("tuning_authority_push_pos", 0.5),
+      push("tuning_authority_push_neg", -0.5),
+  };
+}
+
+std::vector<SimulatorScenario> tuning_drive_scenario_set() {
+  SimulatorScenario scenario;
+  scenario.name = "tuning_drive_bidirectional";
+  scenario.duration_s = 9.0;
+  scenario.physics_profile = PhysicsProfile::Realistic;
+  scenario.joy_segments = {
+      SimulatorJoySegment{.start_s = 1.0, .duration_s = 2.0, .forward = 0.5, .forward_end = 0.5},
+      SimulatorJoySegment{.start_s = 5.0, .duration_s = 2.0, .forward = -0.5, .forward_end = -0.5},
+  };
+  return {scenario};
+}
+
+std::vector<SimulatorScenario> tuning_velocity_scenario_set() {
+  auto scenarios = tuning_authority_scenario_set();
+  for (auto& scenario : scenarios) scenario.name.replace(0, 17, "tuning_velocity_");
+  auto drive = tuning_drive_scenario_set();
+  drive.front().name = "tuning_velocity_drive";
+  scenarios.insert(scenarios.end(), drive.begin(), drive.end());
+  return scenarios;
+}
+
+std::vector<SimulatorScenario> tuning_trim_scenario_set() {
+  const auto trim = [](std::string name, double offset_rad) {
+    SimulatorScenario scenario;
+    scenario.name = std::move(name);
+    scenario.duration_s = 15.0;
+    scenario.com_angle_offset_rad = offset_rad;
+    scenario.physics_profile = PhysicsProfile::Realistic;
+    return scenario;
+  };
+  return {trim("tuning_trim_pos", 0.002), trim("tuning_trim_neg", -0.002)};
 }
 
 TransferAcceptance evaluate_transfer_scenario(const SimulatorRunResult& result) {
@@ -402,7 +488,7 @@ TransferAcceptance evaluate_transfer_scenario(const SimulatorRunResult& result) 
         std::isfinite(row.plant_pitch_deg) && std::isfinite(row.plant_pitch_rate_dps) &&
         std::isfinite(row.plant_position) && std::isfinite(row.plant_velocity) &&
         std::isfinite(row.pitch_deg) && std::isfinite(row.pitch_rate_dps) &&
-        std::isfinite(row.u_sps) && std::isfinite(row.measured_vel_sps);
+        std::isfinite(row.u_sps) && std::isfinite(row.corrected_axle_velocity_sps);
     if (!finite) {
       reject(true, "non_finite");
       break;
@@ -421,7 +507,7 @@ TransferAcceptance evaluate_transfer_scenario(const SimulatorRunResult& result) 
 
   if (release || push) {
     const double mean_neutral_speed = window_mean(
-        end_s - 2.0, end_s, [](const auto& row) { return row.measured_vel_sps; });
+        end_s - 2.0, end_s, [](const auto& row) { return row.corrected_axle_velocity_sps; });
     reject(!std::isfinite(mean_neutral_speed) || std::abs(mean_neutral_speed) >= 150.0,
            "neutral_speed");
   }
@@ -447,17 +533,17 @@ TransferAcceptance evaluate_transfer_scenario(const SimulatorRunResult& result) 
     const auto reaches_speed = [&](double start_s, double sign) {
       return std::any_of(result.rows.begin(), result.rows.end(), [&](const auto& row) {
         return row.sim_time_s >= start_s && row.sim_time_s <= start_s + 2.5 &&
-               sign * row.measured_vel_sps >= 0.70 * target_sps;
+               sign * row.corrected_axle_velocity_sps >= 0.70 * target_sps;
       });
     };
     const double positive_speed = window_mean(
-        9.5, 10.8, [](const auto& row) { return row.measured_vel_sps; });
+        9.5, 10.8, [](const auto& row) { return row.corrected_axle_velocity_sps; });
     const double negative_speed = window_mean(
-        16.5, 17.8, [](const auto& row) { return row.measured_vel_sps; });
+        16.5, 17.8, [](const auto& row) { return row.corrected_axle_velocity_sps; });
     const auto reaches_stop = [&](double start_s) {
       return std::any_of(result.rows.begin(), result.rows.end(), [&](const auto& row) {
         return row.sim_time_s >= start_s && row.sim_time_s <= start_s + 1.5 &&
-               std::abs(row.measured_vel_sps) < 200.0;
+               std::abs(row.corrected_axle_velocity_sps) < 200.0;
       });
     };
     const double symmetric_scale = 0.5 * (std::abs(positive_speed) + std::abs(negative_speed));

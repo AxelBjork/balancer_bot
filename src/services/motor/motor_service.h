@@ -20,12 +20,11 @@ inline constexpr char kMotorServiceDoc[] =
     "pulse generation, slew limiting, and direction control remain below this layer in the motor "
     "runner. The service also listens for `PhysicsTick` so it can keep the runner aligned with "
     "the current physics time before forwarding motor targets. When hardware is present the "
-    "service also republishes the runner's applied rate, steps-derived average speed estimate, "
-    "and integrated step state as `MotorFeedback`, which "
-    "lets "
-    "`ControlService` use the real actuator state instead of assuming the last commanded target "
-    "was "
-    "achieved. In SIL or unit-test "
+    "service also republishes the runner's continuous post-slew command, pulse-frame-applied rate, "
+    "slew-limit flags, steps-derived diagnostic speed estimate, and integrated step state as "
+    "`MotorFeedback`; actuator saturation bit 0 is left slew limiting and bit 1 is right slew "
+    "limiting. This feedback lets `ControlService` observe the real actuator stages instead of "
+    "assuming the last commanded target was achieved. In SIL or unit-test "
     "configurations the runner pointer may be null, allowing the bus and controller stack to "
     "execute without requiring a physical motor backend.";
 

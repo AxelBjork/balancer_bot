@@ -1,16 +1,18 @@
 // ism330_iio_reader.cpp
 #include "ism330_iio_reader.h"
 
-#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <poll.h>
 #include <fcntl.h>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -22,9 +24,10 @@
 namespace fs = std::filesystem;
 
 namespace {
-constexpr double kAccelScale = 0.000598205;
-constexpr double kGyroScale  = 0.000152716;
+constexpr double kExpectedAccelScale = 0.000598205;
+constexpr double kExpectedGyroScale  = 0.000152716;
 constexpr const char* kTriggerName = "imu833";
+
 const char* get_iio_root() {
   const char* env = std::getenv("IIO_ROOT");
   return env ? env : "/sys";
@@ -66,6 +69,38 @@ inline void writeOneLineStrict(const fs::path& p, const std::string& value) {
   f << value;
   f.close();
   if (!f) throw std::runtime_error("write failed: " + p.string());
+}
+
+double readDoubleStrict(const fs::path& p) {
+  const std::string text = readOneLineStrict(p);
+  std::size_t consumed = 0;
+  double value = 0.0;
+  try {
+    value = std::stod(text, &consumed);
+  } catch (const std::exception&) {
+    throw std::runtime_error("invalid numeric value in " + p.string() + ": '" + text + "'");
+  }
+  if (consumed != text.size() || !std::isfinite(value)) {
+    throw std::runtime_error("invalid numeric value in " + p.string() + ": '" + text + "'");
+  }
+  return value;
+}
+
+std::string fixedDecimal(double value, int precision) {
+  std::ostringstream text;
+  text << std::fixed << std::setprecision(precision) << value;
+  return text.str();
+}
+
+double writeAndVerifyDouble(const fs::path& p, double requested, int precision,
+                            double tolerance) {
+  writeOneLineStrict(p, fixedDecimal(requested, precision));
+  const double configured = readDoubleStrict(p);
+  if (std::abs(configured - requested) > tolerance) {
+    throw std::runtime_error(p.string() + ": requested " + fixedDecimal(requested, precision) +
+                             ", got " + fixedDecimal(configured, precision));
+  }
+  return configured;
 }
 
 inline std::array<double,3> applyAxisMap(const AxisCfg& c,
@@ -116,6 +151,7 @@ fs::path findTriggerDirByName(const std::string& name) {
   }
   throw std::runtime_error("Failed to create IIO trigger '" + name + "'");
 }
+
 } // namespace
 
 struct Ism330IioReader::Impl {
@@ -126,6 +162,8 @@ struct Ism330IioReader::Impl {
   fs::path gyro_sysfs{};
   int fd_accel{-1};
   int fd_gyro{-1};
+  double accel_scale{kExpectedAccelScale};
+  double gyro_scale{kExpectedGyroScale};
 
   void discoverSplitDevices() {
     const fs::path root{get_iio_root()};
@@ -147,18 +185,29 @@ struct Ism330IioReader::Impl {
   }
 
   void setSamplingHz() {
-    const std::string hz = std::to_string(Config::sampling_hz);
-    tryWrite(accel_sysfs / "sampling_frequency", hz);
-    tryWrite(gyro_sysfs  / "sampling_frequency", hz);
+    const double accel_hz =
+        writeAndVerifyDouble(accel_sysfs / "sampling_frequency", Config::sampling_hz, 6, 0.001);
+    const double gyro_hz =
+        writeAndVerifyDouble(gyro_sysfs / "sampling_frequency", Config::sampling_hz, 6, 0.001);
 
     const fs::path tdir = findTriggerDirByName(kTriggerName);
     const fs::path tf = tdir / "sampling_frequency";
     if (!fs::exists(tf))
       throw std::runtime_error("Trigger '" + std::string(kTriggerName) + "' missing sampling_frequency");
-    tryWrite(tf, hz);
-    const std::string tb = readBack(tf);
-    if (tb != hz) throw std::runtime_error("Failed to set trigger sampling_frequency to " + hz);
-    std::printf("Trigger '%s' sampling_frequency now=%s\n", kTriggerName, tb.c_str());
+    const double trigger_hz = writeAndVerifyDouble(tf, Config::sampling_hz, 6, 0.001);
+    std::printf("IMU ODR: accel=%.3f Hz gyro=%.3f Hz trigger=%s@%.3f Hz\n",
+                accel_hz, gyro_hz, kTriggerName, trigger_hz);
+  }
+
+  void configureScales() {
+    accel_scale = writeAndVerifyDouble(accel_sysfs / "in_accel_scale",
+                                       kExpectedAccelScale, 9,
+                                       kExpectedAccelScale * 0.01);
+    gyro_scale = writeAndVerifyDouble(gyro_sysfs / "in_anglvel_scale",
+                                      kExpectedGyroScale, 9,
+                                      kExpectedGyroScale * 0.01);
+    std::printf("IMU scale: accel=%.9f m/s^2/LSB gyro=%.9f rad/s/LSB\n",
+                accel_scale, gyro_scale);
   }
 
   void setTimestampClock(const fs::path& dev) {
@@ -180,21 +229,19 @@ struct Ism330IioReader::Impl {
   }
 
   void setupBuffer(const fs::path& dev, bool is_accel) {
-    tryWrite(dev / "buffer" / "enable", "0");
+    writeOneLineStrict(dev / "buffer" / "enable", "0");
     const fs::path scan = dev / "scan_elements";
-    tryWrite(scan / "in_accel_x_en", is_accel ? "1" : "0");
-    tryWrite(scan / "in_accel_y_en", is_accel ? "1" : "0");
-    tryWrite(scan / "in_accel_z_en", is_accel ? "1" : "0");
-    tryWrite(scan / "in_anglvel_x_en", is_accel ? "0" : "1");
-    tryWrite(scan / "in_anglvel_y_en", is_accel ? "0" : "1");
-    tryWrite(scan / "in_anglvel_z_en", is_accel ? "0" : "1");
-    tryWrite(scan / "in_timestamp_en", "1");
-    tryWrite(dev / "trigger" / "current_trigger", kTriggerName);
+    const std::string prefix = is_accel ? "in_accel_" : "in_anglvel_";
+    writeOneLineStrict(scan / (prefix + "x_en"), "1");
+    writeOneLineStrict(scan / (prefix + "y_en"), "1");
+    writeOneLineStrict(scan / (prefix + "z_en"), "1");
+    writeOneLineStrict(scan / "in_timestamp_en", "1");
+    writeOneLineStrict(dev / "trigger" / "current_trigger", kTriggerName);
     const std::string rb = readBack(dev / "trigger" / "current_trigger");
     if (rb != kTriggerName)
       throw std::runtime_error("Failed to attach trigger '" + std::string(kTriggerName) + "'");
-    tryWrite(dev / "buffer" / "length", "4096");
-    tryWrite(dev / "buffer" / "enable", "1");
+    writeOneLineStrict(dev / "buffer" / "length", "4096");
+    writeOneLineStrict(dev / "buffer" / "enable", "1");
   }
 
   void teardownBuffer(const fs::path& dev) {
@@ -233,9 +280,8 @@ struct Ism330IioReader::Impl {
     ImuSampleSynchronizer synchronizer;
 
     const auto emit_pair = [this](const ImuSynchronizedPair& pair) {
-      const double pitch = std::atan2(-pair.accel.value[0], -pair.accel.value[2]);
       if (cfg.on_sample) {
-        cfg.on_sample(pitch, pair.accel.value, pair.gyro.value,
+        cfg.on_sample(pair.accel.value, pair.gyro.value,
                       iio_monotonic_ns_to_steady(pair.timestamp_ns()));
       }
     };
@@ -252,12 +298,13 @@ struct Ism330IioReader::Impl {
         ssize_t n = ::read(fd_accel, bufA, sizeof(bufA));
         for (size_t off = 0; n > 0 && off + kStride <= static_cast<size_t>(n); off += kStride) {
           const uint8_t* p = bufA + off;
+          const int64_t timestamp_ns = rd64le_s(p + kOffTS);
           const std::array<double, 3> raw{
-              static_cast<double>(static_cast<int16_t>(rd16le(p + kOffX))) * kAccelScale,
-              static_cast<double>(static_cast<int16_t>(rd16le(p + kOffY))) * kAccelScale,
-              static_cast<double>(static_cast<int16_t>(rd16le(p + kOffZ))) * kAccelScale};
+              static_cast<double>(static_cast<int16_t>(rd16le(p + kOffX))) * accel_scale,
+              static_cast<double>(static_cast<int16_t>(rd16le(p + kOffY))) * accel_scale,
+              static_cast<double>(static_cast<int16_t>(rd16le(p + kOffZ))) * accel_scale};
           if (const auto pair = synchronizer.push_accel(
-                  ImuTimedVector{applyAxisMap(Config::accel_cfg, raw), rd64le_s(p + kOffTS)})) {
+                  ImuTimedVector{applyAxisMap(Config::accel_cfg, raw), timestamp_ns})) {
             emit_pair(*pair);
           }
         }
@@ -266,12 +313,13 @@ struct Ism330IioReader::Impl {
         ssize_t n = ::read(fd_gyro, bufG, sizeof(bufG));
         for (size_t off = 0; n > 0 && off + kStride <= static_cast<size_t>(n); off += kStride) {
           const uint8_t* p = bufG + off;
+          const int64_t timestamp_ns = rd64le_s(p + kOffTS);
           const std::array<double, 3> raw{
-              static_cast<double>(static_cast<int16_t>(rd16le(p + kOffX))) * kGyroScale,
-              static_cast<double>(static_cast<int16_t>(rd16le(p + kOffY))) * kGyroScale,
-              static_cast<double>(static_cast<int16_t>(rd16le(p + kOffZ))) * kGyroScale};
+              static_cast<double>(static_cast<int16_t>(rd16le(p + kOffX))) * gyro_scale,
+              static_cast<double>(static_cast<int16_t>(rd16le(p + kOffY))) * gyro_scale,
+              static_cast<double>(static_cast<int16_t>(rd16le(p + kOffZ))) * gyro_scale};
           if (const auto pair = synchronizer.push_gyro(
-                  ImuTimedVector{applyAxisMap(Config::gyro_cfg, raw), rd64le_s(p + kOffTS)})) {
+                  ImuTimedVector{applyAxisMap(Config::gyro_cfg, raw), timestamp_ns})) {
             emit_pair(*pair);
           }
         }
@@ -288,11 +336,20 @@ Ism330IioReader::Ism330IioReader(IMUConfig cfg) : p_(std::make_unique<Impl>()) {
   p_->setTimestampClock(p_->accel_sysfs);
   p_->setTimestampClock(p_->gyro_sysfs);
   p_->setSamplingHz();
-  p_->setupBuffer(p_->accel_sysfs, true);
-  p_->setupBuffer(p_->gyro_sysfs,  false);
-  p_->openDeviceFds();
-  p_->assertFixedLayout(p_->accel_sysfs, true);
-  p_->assertFixedLayout(p_->gyro_sysfs,  false);
+  p_->configureScales();
+  try {
+    p_->setupBuffer(p_->accel_sysfs, true);
+    p_->setupBuffer(p_->gyro_sysfs, false);
+    p_->openDeviceFds();
+    p_->assertFixedLayout(p_->accel_sysfs, true);
+    p_->assertFixedLayout(p_->gyro_sysfs, false);
+  } catch (...) {
+    p_->teardownBuffer(p_->accel_sysfs);
+    p_->teardownBuffer(p_->gyro_sysfs);
+    if (p_->fd_accel >= 0) ::close(p_->fd_accel);
+    if (p_->fd_gyro >= 0) ::close(p_->fd_gyro);
+    throw;
+  }
   p_->alive.store(true, std::memory_order_relaxed);
   p_->worker = std::thread(&Impl::loop, p_.get());
 }

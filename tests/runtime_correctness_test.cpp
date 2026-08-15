@@ -29,6 +29,17 @@ TEST(ImuSampleSynchronizerTest, SelectsNearestSamplesAndRejectsExcessiveSkew) {
   EXPECT_DOUBLE_EQ(recovered->accel.value[0], 6.0);
 }
 
+TEST(ImuSampleSynchronizerTest, DefaultSkewCannotSpanAn833HzSamplePeriod) {
+  ImuSampleSynchronizer sync;
+  EXPECT_FALSE(sync.push_accel({{1.0, 0.0, 0.0}, 1'000'000}));
+  EXPECT_FALSE(sync.push_gyro({{0.0, 2.0, 0.0}, 1'800'000}));
+
+  const auto recovered = sync.push_accel({{3.0, 0.0, 0.0}, 1'800'001});
+  ASSERT_TRUE(recovered);
+  EXPECT_EQ(recovered->skew_ns(), 1);
+  EXPECT_DOUBLE_EQ(recovered->accel.value[0], 3.0);
+}
+
 struct DispatchProbe {
   ipc::MessageBus* bus{nullptr};
   std::atomic<int> active_top_level{0};

@@ -62,6 +62,7 @@ std::string_view BalancerSimulator::profile_name(PhysicsProfile profile) {
 BalancerSimulator::BalancerSimulator(const Config& cfg) : cfg_(cfg) {
   physics_ = cfg_.physics_override.value_or(physics_for_profile(cfg_.physics_profile));
   state_.pitch = cfg_.initial_pitch_deg * kPi / 180.0;
+  state_.pitch_rate = cfg_.initial_pitch_rate_dps * kPi / 180.0;
 }
 
 void BalancerSimulator::set_motor_targets(double left_sps, double right_sps) {
@@ -155,8 +156,13 @@ void BalancerSimulator::step(double dt_s) {
   const double rhs1 =
       total_force + H * Q_dot * Q_dot * sQ - physics_.cart_damping * state_.velocity;
   const double motor_reaction_torque = applied_drive_force_ * Nominal::wheel_radius;
+  // Disturbances model a horizontal push at the robot COM.  In this 2D plant,
+  // that force creates both a translational force and a pitch moment about the axle.
+  const double com_height_m = Nominal::first_mass_moment_kg_m / Nominal::total_mass_kg;
+  const double external_force_pitch_moment = external_force_n_ * com_height_m * cQ;
   const double rhs2 = Nominal::gravity * H * sQ -
-                      physics_.pitch_damping * state_.pitch_rate - motor_reaction_torque;
+                      physics_.pitch_damping * state_.pitch_rate - motor_reaction_torque +
+                      external_force_pitch_moment;
 
   const double det = d11 * d22 - d12 * d21;
   const double x_ddot = (d22 * rhs1 - d12 * rhs2) / det;
@@ -246,13 +252,17 @@ BalancerSimulator::LinearizedUprightModel BalancerSimulator::linearized_upright_
   const double v_coeff = -(d22 * physics.cart_damping) / det;
   const double theta_coeff = -(d12 * HardwareNominal::gravity * H) / det;
   const double theta_dot_coeff = (d12 * physics.pitch_damping) / det;
-  const double horizontal_force_to_x_ddot = d22 / det;
+  // Horizontal disturbances act at the COM. At upright their lever-arm
+  // moment cancels the axle-force-induced angular acceleration, leaving the
+  // expected translational acceleration of the complete robot mass.
+  const double com_height_m = H / T;
+  const double horizontal_force_to_x_ddot = d22 / det - d12 * com_height_m / det;
   const double motor_force_to_x_ddot = d12 * HardwareNominal::wheel_radius / det;
 
   const double q_v_coeff = (d21 * physics.cart_damping) / det;
   const double q_theta_coeff = (d11 * HardwareNominal::gravity * H) / det;
   const double q_theta_dot_coeff = -(d11 * physics.pitch_damping) / det;
-  const double horizontal_force_to_q_ddot = -d21 / det;
+  const double horizontal_force_to_q_ddot = -d21 / det + d11 * com_height_m / det;
   const double motor_force_to_q_ddot = -d11 * HardwareNominal::wheel_radius / det;
 
   model.A = {{

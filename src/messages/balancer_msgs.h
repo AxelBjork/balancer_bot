@@ -12,25 +12,28 @@ namespace ipc {
 constexpr std::size_t kMaxSimDisturbances = 10;
 
 struct DOC_DESC(
-    "Raw accelerometer and gyroscope sample emitted before attitude fusion. Hardware and "
-    "hardware-like simulation feed this message into `ImuService`, which applies the complementary "
-    "pitch filter and republishes the controller-facing `ImuData`.") ImuRawPayload {
+    "Raw accelerometer and gyroscope sample emitted before chassis-referenced pitch estimation. "
+    "Hardware and hardware-like simulation feed this message into `ImuService`, which performs "
+    "bounded IMU-only signal conditioning and republishes controller-facing `ImuData`.")
+    ImuRawPayload {
   std::array<double, 3> acc;
   std::array<double, 3> gyr;
   uint64_t timestamp_us;
 };
 
 struct DOC_DESC(
-    "Fused IMU sample published by the IMU service and accepted by the SIL harness. The controller "
-    "consumes `pitch_rad`, `pitch_rate_rad_s`, and "
-    "`pitch_accel_rad_s2`; raw accelerometer and gyro vectors are carried alongside them "
-    "for diagnostics.") ImuSamplePayload {
+    "Chassis-referenced IMU sample published by the IMU service and accepted by the SIL harness. "
+    "The controller consumes the pitch fields only while `estimate_valid` is true; an invalid "
+    "sample immediately clears its current IMU. Raw accelerometer and gyro vectors are carried "
+    "alongside the bounded gyro/gravity pitch, rate, and derivative for diagnostics.")
+    ImuSamplePayload {
   double pitch_rad;
   double pitch_rate_rad_s;
   double pitch_accel_rad_s2;
   std::array<double, 3> acc;
   std::array<double, 3> gyr;
   uint64_t timestamp_us;
+  bool estimate_valid;
 };
 
 struct DOC_DESC("Normalized joystick command injected by Python tests or the runtime input layer.")
@@ -46,7 +49,8 @@ struct DOC_DESC("Wheel speed targets emitted by the controller in steps per seco
 };
 
 struct DOC_DESC(
-    "Detailed controller telemetry streamed out over UDP and used for runtime logging/visibility.")
+    "Detailed controller telemetry streamed out over UDP and used for runtime logging/visibility. "
+    "Actuator saturation bit 0 is left slew limiting and bit 1 is right slew limiting.")
     SystemTelemetryPayload {
   uint32_t run_id;
   uint32_t controller_fault_flags;
@@ -62,23 +66,24 @@ struct DOC_DESC(
   float filtered_pitch_rate_dps;
   float u_sps;
   float turn_sps;
-  float target_velocity_sps;
-  float vel_error;
-  float measured_vel_sps;
-  float velocity_p_term_deg;
-  float velocity_i_term_deg;
+  float nominal_acceleration_mps2;
+  float raw_completed_velocity_sps;
+  float corrected_axle_velocity_sps;
+  float velocity_damping_acceleration_mps2;
+  float com_trim_deg;
   float pitch_error_deg;
   float pitch_sp_deg;
   float rate_setpoint_dps;
   float rate_error_dps;
   float left_target_sps;
   float right_target_sps;
-  float left_applied_sps;
-  float right_applied_sps;
+  float left_slewed_sps;
+  float right_slewed_sps;
   float motor_update_dt_ms;
   float motor_feedback_age_ms;
   int32_t left_actual_steps;
   int32_t right_actual_steps;
+  uint32_t actuator_saturation_flags;
   bool command_saturated;
   bool actuator_fault;
 };
@@ -121,15 +126,17 @@ struct SimulatorTelemetryPayload {
 
 struct DOC_DESC(
     "Internal motor feedback sample published by the motor service. It carries the currently "
-    "applied wheel rates after slew limiting, a steps-derived average wheel-speed estimate used by "
-    "closed-loop hardware feedback, and the integrated actual step counts.") MotorFeedbackPayload {
-  double left_applied_sps;
-  double right_applied_sps;
+    "slewed wheel commands, a steps-derived average wheel-speed estimate used by diagnostics, "
+    "and the integrated actual step counts. Actuator saturation bit "
+    "0 is left slew limiting and bit 1 is right slew limiting.") MotorFeedbackPayload {
+  double left_slewed_sps;
+  double right_slewed_sps;
   double measured_avg_sps;
   double update_dt_ms;
   double feedback_age_ms;
   int64_t left_actual_steps;
   int64_t right_actual_steps;
+  uint32_t actuator_saturation_flags;
   uint8_t actuator_fault;
 };
 
