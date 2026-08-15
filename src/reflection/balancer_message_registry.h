@@ -9,30 +9,17 @@
 
 namespace balancer_reflection {
 
-template <::MsgId... Ids>
-constexpr std::size_t message_count(ipc::MsgList<Ids...>) {
-  return sizeof...(Ids);
-}
-
-template <MsgId... Ids, typename Fn>
-constexpr void for_each_message(ipc::MsgList<Ids...>, Fn&& fn) {
-  (fn.template operator()<Ids>(), ...);
-}
-
 template <typename Fn>
 constexpr void for_each_message_enum(Fn&& fn) {
   static_assert(reflected_enum_values_are_unique<MsgId>(),
                 "MsgId enumerators must have unique wire values");
-  constexpr std::size_t N = get_enum_size<MsgId>();
-  [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-    (..., [&] {
-      constexpr auto e = EnumArrHolder<MsgId, N>::arr[Is];
-      constexpr auto id = static_cast<MsgId>([:e:]);
-      static_assert(requires { typename MessageTraits<id>::Payload; },
-                    "every MsgId enumerator must have a MessageTraits Payload binding");
-      fn.template operator()<id>();
-    }());
-  }(std::make_index_sequence<N>{});
+
+  template for (constexpr auto e : reflected_enumerators<MsgId>()) {
+    constexpr auto id = static_cast<MsgId>([:e:]);
+    static_assert(requires { typename MessageTraits<id>::Payload; },
+                  "every MsgId enumerator must have a MessageTraits Payload binding");
+    fn.template operator()<id>();
+  }
 }
 
 template <::MsgId Target, ::MsgId... Ids>
@@ -42,7 +29,11 @@ consteval bool contains_msg(ipc::MsgList<Ids...>) {
 
 template <typename Component, ::MsgId Id>
 consteval bool component_subscribes() {
-  return contains_msg<Id>(typename Component::Subscribes{});
+  if constexpr (requires { typename Component::Subscribes; }) {
+    return contains_msg<Id>(typename Component::Subscribes{});
+  } else {
+    return false;
+  }
 }
 
 template <typename Component, ::MsgId Id>

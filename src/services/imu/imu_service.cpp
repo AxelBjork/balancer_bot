@@ -37,6 +37,10 @@ void ImuService::resetForSimulation() {
   estimator_->reset();
 }
 
+void ImuService::setInitialPitchForSimulation(double pitch_rad) {
+  estimator_->set_initial_pitch_for_simulation(pitch_rad);
+}
+
 void ImuService::handle_raw_imu(const ipc::ImuRawPayload& p) {
   const auto ts = std::chrono::steady_clock::time_point(std::chrono::microseconds(p.timestamp_us));
   const ImuPitchEstimate estimate = estimator_->push_sample(p.acc, p.gyr, ts);

@@ -134,51 +134,46 @@ Metafunctions in `std::meta` are `consteval` functions that process `std::meta::
 ```cpp
 namespace std::meta {
     // Queries
-    consteval string_view name_of(info x);
     consteval string_view identifier_of(info x);
     consteval string_view display_string_of(info x);
     consteval bool has_identifier(info x);
     consteval source_location source_location_of(info x);
     consteval bool is_type(info x);
-    consteval bool is_class(info x);
+    consteval bool is_class_type(info x);
     consteval bool is_function(info x);
-    consteval bool is_enum(info x);
+    consteval bool is_enum_type(info x);
 
     // Retrieving members
-    consteval vector<info> members_of(info x);
-    consteval vector<info> nonstatic_data_members_of(info x);
+    consteval vector<info> members_of(info x, access_context ctx);
+    consteval vector<info> nonstatic_data_members_of(info x, access_context ctx);
     consteval vector<info> enumerators_of(info x);
-    consteval vector<info> base_classes_of(info x);
+    consteval vector<info> bases_of(info x, access_context ctx);
 }
 ```
 
 ### 3. Compile-Time Iteration
 
-C++26 includes `template for` loops (P1306), but the current GCC 16.1.0 implementation used by this
-project does not expose that form in the generator toolchain. The generators therefore use
-`index_sequence` expansion instead.
-
-Instead, you must iterate using standard immediate functions and lambda unrolling across `std::index_sequence`.
+C++26 includes `template for` loops (P1306), and the GCC 16.1.0 reflection toolchain exposes them.
+The member queries return `std::vector`, which cannot be used directly as a `template for` range in
+all constant-evaluation contexts. Convert the query result to compiler-managed static storage with
+`std::define_static_array` first.
 
 **Iterating over an enum safely:**
 ```cpp
 template <typename E>
+consteval auto reflected_enumerators() {
+    return std::define_static_array(std::meta::enumerators_of(^^E));
+}
+
+template <typename E>
 void print_enum(E c) {
-    constexpr auto enumerators = std::meta::enumerators_of(^^E);
-    constexpr size_t N = enumerators.size();
-    
-    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-        (..., [&] {
-             // Extract the specific compile-time array element
-             constexpr auto e = enumerators[Is];
-             if (c == [:e:]) {
-                 std::cout << std::meta::identifier_of(e) << "\n";
-             }
-        }());
-    }(std::make_index_sequence<N>{});
+    template for (constexpr auto e : reflected_enumerators<E>()) {
+        if (c == [:e:]) {
+            std::cout << std::meta::identifier_of(e) << "\n";
+        }
+    }
 }
 ```
-*Note: Because `std::vector` returned from `<meta>` cannot escape a consteval context seamlessly in all template instantiations, it's highly recommended to convert them into `std::array` wrappers first.*
 
 ### 4. Code Generation & Types
 
@@ -186,19 +181,20 @@ You can use the splice operator to automatically generate boilerplate like struc
 
 ```cpp
 template <typename T>
+consteval auto reflected_members() {
+    auto ctx = std::meta::access_context::current();
+    return std::define_static_array(std::meta::nonstatic_data_members_of(^^T, ctx));
+}
+
+template <typename T>
 void generate_struct_fields() {
-    constexpr auto members = std::meta::nonstatic_data_members_of(^^T);
-    // Iterate manually via an index sequence
-    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-        (..., [&] {
-             constexpr auto field = members[Is];
-             constexpr auto type = std::meta::type_of(field);
-             using FieldType = typename [:type:]; // Rehydrate to a real type
-             
-             std::cout << "Field: " << std::meta::identifier_of(field) 
-                       << " Size: " << sizeof(FieldType) << "\n";
-        }());
-    }(std::make_index_sequence<members.size()>{});
+    template for (constexpr auto field : reflected_members<T>()) {
+        constexpr auto type = std::meta::type_of(field);
+        using FieldType = typename[:type:]; // Rehydrate to a real type
+
+        std::cout << "Field: " << std::meta::identifier_of(field)
+                  << " Size: " << sizeof(FieldType) << "\n";
+    }
 }
 ```
 
@@ -220,8 +216,8 @@ We use a custom struct `doc::Desc` to attach human-readable descriptions to mess
   #define DOC_DESC(str)
 #endif
 
-struct [[DOC_DESC("This is a reflected message")]] MyMessage {
-    [[DOC_DESC("Primary key")]] uint32_t id;
+struct DOC_DESC("This is a reflected message") MyMessage {
+    uint32_t id;
 };
 ```
 
@@ -233,13 +229,13 @@ Use `std::meta::annotations_of(info)` to retrieve a vector of handles to the ann
 
 ```cpp
 template <std::meta::info R>
-consteval std::string_view get_description() {
+consteval doc::Desc get_description() {
     for (auto attr : std::meta::annotations_of(R)) {
-        if (std::meta::type_of(attr) == ^^doc::Desc) {
-            return std::meta::extract<doc::Desc>(attr).text;
+        if (std::meta::type_of(attr) == ^^const doc::Desc) {
+            return std::meta::extract<const doc::Desc>(attr);
         }
     }
-    return "";
+    return doc::Desc("");
 }
 ```
 

@@ -45,8 +45,11 @@ constexpr std::size_t kTailWindowSamples = static_cast<std::size_t>(2.0 / kTickD
 constexpr uint8_t kPhysicsSimplified = 0;
 constexpr uint8_t kPhysicsRealistic = 1;
 constexpr uint8_t kPhysicsActuatorStress = 2;
-constexpr uint8_t kPhysicsIdealForce = 3;
-constexpr uint8_t kPhysicsSimpleForce = 4;
+constexpr uint8_t kPhysicsDirectActuator = 3;
+constexpr uint8_t kPhysicsRetiredSimpleForce = 4;
+constexpr uint8_t kPhysicsRetiredNoSlipActuator = 5;
+constexpr uint8_t kPhysicsStepperPhase = 6;
+constexpr uint8_t kPhysicsStepperPhaseElectrical = 7;
 
 constexpr uint8_t kAckAccepted = 0;
 constexpr uint8_t kAckBusy = 1;
@@ -82,11 +85,20 @@ PhysicsProfile parse_profile(uint8_t raw) {
   if (raw == kPhysicsActuatorStress) {
     return PhysicsProfile::ActuatorStress;
   }
-  if (raw == kPhysicsIdealForce) {
-    return PhysicsProfile::IdealForce;
+  if (raw == kPhysicsDirectActuator) {
+    return PhysicsProfile::DirectActuator;
   }
-  if (raw == kPhysicsSimpleForce) {
-    return PhysicsProfile::SimpleForce;
+  if (raw == kPhysicsRetiredSimpleForce) {
+    return PhysicsProfile::RetiredSimpleForce;
+  }
+  if (raw == kPhysicsRetiredNoSlipActuator) {
+    return PhysicsProfile::RetiredNoSlipActuator;
+  }
+  if (raw == kPhysicsStepperPhase) {
+    return PhysicsProfile::StepperPhase;
+  }
+  if (raw == kPhysicsStepperPhaseElectrical) {
+    return PhysicsProfile::StepperPhaseElectrical;
   }
   throw std::runtime_error("invalid physics profile");
 }
@@ -139,7 +151,11 @@ class UdpEndpoint {
 
     int opt = 1;
     ::setsockopt(fd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-    const int send_buffer_bytes = 4 * 1024 * 1024;
+    // Long simulator captures can legitimately queue several thousand
+    // telemetry datagrams while the Python harness serializes artifacts.
+    // Keep the transport from blocking the deterministic simulation thread;
+    // this does not alter the simulated timeline or telemetry sampling.
+    const int send_buffer_bytes = 32 * 1024 * 1024;
     ::setsockopt(fd_, SOL_SOCKET, SO_SNDBUF, &send_buffer_bytes, sizeof(send_buffer_bytes));
 
     sockaddr_in addr{};
@@ -331,6 +347,7 @@ class SimulatorService {
     uint64_t sim_time_us = 0;
     int steps_total = 0;
     int steps_done = 0;
+    uint64_t telemetry_packets_emitted = 0;
     uint16_t telemetry_stride = 1;
     bool transfer_validation = false;
     double max_abs_pitch_deg = 0.0;
@@ -579,6 +596,9 @@ class SimulatorService {
     ipc::SimulatorTelemetryPayload payload{};
     auto& system = payload.system;
     system.run_id = run.run_id;
+    system.packet_seq = ++run.telemetry_packets_emitted;
+    system.loop_seq = static_cast<uint64_t>(run.steps_done);
+    system.sender_monotonic_ns = run.sim_time_us * 1000ULL;
     payload.seed = row.seed;
     system.controller_fault_flags = row.controller_fault_flags;
     system.controller_saturation_flags = row.controller_saturation_flags;
@@ -818,6 +838,12 @@ void print_transfer_catalog_json() {
               << ",\"motor_no_load_speed_mps\":" << physics.no_load_speed_mps
               << ",\"motor_velocity_damping\":" << physics.motor_velocity_damping
               << ",\"motor_tau_s\":" << physics.motor_tau_s
+              << ",\"direct_force_per_sps\":" << physics.direct_force_per_sps
+              << ",\"command_delay_s\":" << physics.command_delay_s
+              << ",\"speed_dependent_force_limit\":"
+              << (physics.speed_dependent_force_limit ? "true" : "false")
+              << ",\"force_from_velocity_error\":"
+              << (physics.force_from_velocity_error ? "true" : "false")
               << ",\"traction_coefficient\":" << physics.traction_coefficient
               << ",\"pitch_damping\":" << physics.pitch_damping
               << ",\"cart_damping\":" << physics.cart_damping

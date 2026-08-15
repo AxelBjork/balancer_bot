@@ -21,11 +21,14 @@ intentionally not duplicated here.
 The controller-design reference simulator uses `J = 0.0045 kg m^2`, `cart_damping = 1 N s/m`,
 and direct applied-force authority. Its purpose is to evaluate the controller against the
 identified rigid-body dynamics without assigning unmeasured phase-position parameters physical
-meaning. The `simple_force` profile adds a declared first-order force-response approximation for
-historical comparison. The richer phase/tire profile remains a diagnostic stress model: its
-`motor_tau_s`, phase envelope, queued pulses, tire, and force-limit parameters are not currently
-calibrated well enough to select production gains. In particular, an aggregate 20 ms response
-must not be interpreted as the measured approximately 1.95 ms electrical motor time constant.
+meaning. Its direct N/SPS authority is an explicit reference scale, independent of wheel STEP
+geometry. `StepperPhaseElectrical` is the maintained physical-actuator profile: it uses timestamped
+1/32 STEP events (6400 STEP/rev), indexed field position, and voltage-limited averaged winding
+currents. The
+older SPS-to-force and phase/tire experiments are historical diagnostics only; their aggregate
+lag, phase envelope, tire, and force-limit parameters are not calibrated well enough to select
+production gains. In particular, an aggregate 20 ms response must not be interpreted as the
+measured approximately 1.95 ms electrical motor time constant.
 
 The variables and equations through the transfer-function section form a compact, linearized audit
 model. The implementation mapping below describes the richer nonlinear simulator and controller;

@@ -1,6 +1,9 @@
 [tool.pytest.ini_options]
 testpaths = ["tests/python"]
-addopts = "-p no:cov -p no:xdist"
+# Live simulator scenarios are independent and use worker-isolated ports/artifacts.
+# Four workers keep full-rate UDP telemetry loss-free on the test host while
+# still running independent simulator processes concurrently.
+addopts = "-p no:cov -n 4"
 cache_dir = "build/.pytest_cache"
 
 [tool.flake8]

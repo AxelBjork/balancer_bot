@@ -30,15 +30,21 @@ constexpr double kVelocityLoopPeriodS = 1.0 / 100.0;
 // mode pass through a static-bias decision without changing attitude feedback.
 constexpr double kComTrimQuietRateMetricLpfHz = 2.0;
 constexpr double kComTrimQuietRateRmsDps = 10.0;
-constexpr double kComTrimMotionVelocityEnterSps = 150.0;
-constexpr double kComTrimMotionVelocityExitSps = 100.0;
-constexpr double kComTrimUntrustedBiasVelocityMaxSps = 250.0;
+// These thresholds represent physical motion, while the observer interface
+// remains in motor SPS.  The verified 1/32 geometry doubles the reported SPS
+// for the same wheel speed compared with the retired 1/16 configuration.
+constexpr double kComTrimMotionVelocityEnterSps = 300.0;
+constexpr double kComTrimMotionVelocityExitSps = 200.0;
+constexpr double kComTrimUntrustedBiasVelocityMaxSps = 500.0;
 constexpr double kComTrimMotionRateEnterDps = 15.0;
 constexpr double kComTrimMotionRateExitDps = 8.0;
 constexpr double kComTrimMotionPitchErrorEnterDeg = 2.0;
 constexpr double kComTrimQuietPitchErrorDeg = 1.0;
 constexpr double kComTrimUntrustedBiasPitchErrorMaxDeg = 3.0;
-constexpr double kComTrimQuietDerivativeDegPerS = 0.10;
+// The derivative is velocity_I multiplied by the SPS-domain velocity
+// estimate. Preserve the same physical quiet threshold after 1/32 doubles
+// the SPS representation of a given wheel speed.
+constexpr double kComTrimQuietDerivativeDegPerS = 0.20;
 constexpr double kComTrimQuietDwellS = 2.0;
 // The equilibrium candidate is the measured body angle after removing the
 // currently commanded drive and velocity contributions.  It is deliberately

@@ -13,6 +13,7 @@ from typing import Any
 from tools.telemetry_analysis.frames import read_telemetry_csv, telemetry_frame, write_telemetry_csv
 from tools.telemetry_analysis.metrics import actuator_stage_metrics
 from tools.telemetry_analysis.plotting import write_multiplot_svg
+from tools.telemetry_analysis.stepper_geometry import METERS_PER_STEP
 
 
 _KV_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=([-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)")
@@ -37,6 +38,69 @@ def _series(rows: list[dict[str, Any]], key: str) -> list[float]:
         if value is not None:
             values.append(value)
     return values
+
+
+def _percentile(values: list[float], percentile: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    position = (len(ordered) - 1) * percentile
+    lower = int(math.floor(position))
+    upper = int(math.ceil(position))
+    if lower == upper:
+        return ordered[lower]
+    fraction = position - lower
+    return ordered[lower] + fraction * (ordered[upper] - ordered[lower])
+
+
+def _rms(values: list[float]) -> float | None:
+    return math.sqrt(sum(value * value for value in values) / len(values)) if values else None
+
+
+def _window_rms_metrics(
+    rows: list[dict[str, Any]],
+    *,
+    pitch_key: str,
+    pitch_rate_key: str,
+) -> dict[str, dict[str, float | None]]:
+    """Summarize early/middle/late envelopes for composite diagnostics."""
+    times = _series(rows, "t_sec")
+    if not times:
+        return {}
+    start = min(times)
+    end = max(times)
+    span = max(end - start, 1e-9)
+    windows: dict[str, dict[str, float | None]] = {}
+    for label, low, high in (
+        ("early", 0.0, 1.0 / 3.0),
+        ("middle", 1.0 / 3.0, 2.0 / 3.0),
+        ("late", 2.0 / 3.0, 1.0),
+    ):
+        window_rows = [
+            row
+            for row in rows
+            if start + low * span <= (_to_float(row.get("t_sec")) or start) <= start + high * span
+        ]
+        windows[label] = {
+            "pitch_rms_deg": _rms(_series(window_rows, pitch_key)),
+            "pitch_rate_rms_dps": _rms(_series(window_rows, pitch_rate_key)),
+            "velocity_rms_mps": _rms(_series(window_rows, "plant_velocity_mps")),
+            "pitch_peak_deg": max(
+                (abs(value) for value in _series(window_rows, pitch_key)),
+                default=None,
+            ),
+            "pitch_rate_peak_dps": max(
+                (abs(value) for value in _series(window_rows, pitch_rate_key)),
+                default=None,
+            ),
+            "velocity_peak_mps": max(
+                (abs(value) for value in _series(window_rows, "plant_velocity_mps")),
+                default=None,
+            ),
+        }
+    return windows
 
 
 def _pitch_key(rows: list[dict[str, Any]]) -> str:
@@ -293,6 +357,50 @@ def summarize_rows(rows: list[dict[str, Any]], metadata: dict[str, Any] | None =
     summary["max_abs_u_sps"] = max(abs(v) for v in u_values) if u_values else None
     summary["fell"] = bool(summary["max_abs_pitch_deg"] is not None and summary["max_abs_pitch_deg"] > 75.0)
 
+    pitch_rate_key = (
+        "plant_pitch_rate_dps"
+        if any("plant_pitch_rate_dps" in row for row in rows)
+        else "pitch_rate_dps"
+    )
+    pitch_rate_values = _series(rows, pitch_rate_key)
+    velocity_values = _series(rows, "plant_velocity_mps")
+    requested_values = _series(rows, "balance_unclamped_sps")
+    applied_values = _series(rows, "u_sps")
+    summary["peak_pitch_rate_dps"] = max(abs(v) for v in pitch_rate_values) if pitch_rate_values else None
+    summary["peak_velocity_mps"] = max(abs(v) for v in velocity_values) if velocity_values else None
+    summary["peak_velocity_sps"] = (
+        summary["peak_velocity_mps"] / METERS_PER_STEP
+        if summary["peak_velocity_mps"] is not None
+        else None
+    )
+    summary["peak_requested_sps"] = max(abs(v) for v in requested_values) if requested_values else None
+    summary["peak_applied_sps"] = max(abs(v) for v in applied_values) if applied_values else None
+    summary["p95_applied_sps"] = _percentile([abs(v) for v in applied_values], 0.95)
+    summary["p99_applied_sps"] = _percentile([abs(v) for v in applied_values], 0.99)
+    oscillation_windows = _window_rms_metrics(
+        rows,
+        pitch_key=pitch_key,
+        pitch_rate_key=pitch_rate_key,
+    )
+    summary["oscillation_windows"] = oscillation_windows
+    middle = oscillation_windows.get("middle", {})
+    late = oscillation_windows.get("late", {})
+    growing = False
+    for key, floor in (
+        ("pitch_rms_deg", 1.5),
+        ("pitch_rate_rms_dps", 100.0),
+        ("velocity_rms_mps", 0.02),
+    ):
+        middle_value = middle.get(key)
+        late_value = late.get(key)
+        if (
+            middle_value is not None
+            and late_value is not None
+            and late_value > max(floor, 1.25 * middle_value)
+        ):
+            growing = True
+    summary["oscillation_trend"] = "growing" if growing else "bounded"
+
     plant_position_values = _series(rows, "plant_position_m")
     plant_velocity_values = _series(rows, "plant_velocity_mps")
     summary["final_position_m"] = plant_position_values[-1] if plant_position_values else None
@@ -329,8 +437,13 @@ def summarize_rows(rows: list[dict[str, Any]], metadata: dict[str, Any] | None =
         tail_velocity = _series(tail_rows, "plant_velocity_mps")
         if tail_velocity:
             summary["tail_mean_abs_velocity_mps"] = sum(abs(v) for v in tail_velocity) / len(tail_velocity)
+            summary["tail_rms_velocity_mps"] = _rms(tail_velocity)
         else:
             summary["tail_mean_abs_velocity_mps"] = None
+            summary["tail_rms_velocity_mps"] = None
+
+        tail_pitch_rate = _series(tail_rows, pitch_rate_key)
+        summary["tail_rms_pitch_rate_dps"] = _rms(tail_pitch_rate)
 
         tail_command_sat = _series(tail_rows, "command_saturated")
         if tail_command_sat:
@@ -360,6 +473,15 @@ def summarize_rows(rows: list[dict[str, Any]], metadata: dict[str, Any] | None =
                 break
         summary["settled_at_s"] = settled_at_s
 
+        saturation_values = _series(tail_rows, "command_saturated")
+        if not saturation_values:
+            saturation_values = _series(tail_rows, "force_saturated")
+        summary["saturation_duty"] = (
+            sum(1.0 for value in saturation_values if value >= 0.5) / len(saturation_values)
+            if saturation_values
+            else None
+        )
+
     if len(time_values) >= 2:
         deltas = [b - a for a, b in zip(time_values, time_values[1:])]
         positive = [dt for dt in deltas if dt > 0.0]
@@ -374,10 +496,16 @@ def summarize_rows(rows: list[dict[str, Any]], metadata: dict[str, Any] | None =
             summary["dt_median_s"] = None
             summary["dt_max_s"] = None
             summary["telemetry_continuous"] = False
+
     else:
         summary["telemetry_continuous"] = True
         summary["dt_median_s"] = None
         summary["dt_max_s"] = None
+
+    if summary.get("saturation_duty") is not None:
+        summary["saturation_duration_s"] = summary["saturation_duty"] * summary["duration_s"]
+    else:
+        summary["saturation_duration_s"] = None
 
     for key in (
         "pitch_deg",
@@ -507,13 +635,18 @@ class RunRecorder:
     def finalize(self) -> dict[str, Any]:
         return summarize_rows(self.rows, self.metadata)
 
-    def write_csv_json_plots(self, output_dir: str | Path) -> dict[str, Any]:
+    def write_csv_json(self, output_dir: str | Path) -> dict[str, Any]:
         output = Path(output_dir)
         output.mkdir(parents=True, exist_ok=True)
         _write_csv(output / "timeline.csv", self.rows)
         write_metadata_json(output / "metadata.json", self.metadata)
         summary = self.finalize()
         write_summary_json(output / "summary.json", summary)
+        return summary
+
+    def write_csv_json_plots(self, output_dir: str | Path) -> dict[str, Any]:
+        output = Path(output_dir)
+        summary = self.write_csv_json(output)
         frame = telemetry_frame(self.rows)
         write_multiplot_svg(
             output / "overview_plot.svg",

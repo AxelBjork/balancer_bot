@@ -109,6 +109,10 @@ void print_profile_audit(PhysicsProfile profile) {
   std::cout << "  cart_damping        = " << physics.cart_damping << "\n";
   std::cout << "  pitch_damping       = " << physics.pitch_damping << "\n";
   std::cout << "  motor_tau_s         = " << physics.motor_tau_s << "\n";
+  std::cout << "  direct_force_per_sps= " << physics.direct_force_per_sps << "\n";
+  std::cout << "  command_delay_s     = " << physics.command_delay_s << "\n";
+  std::cout << "  speed_force_limit   = " << physics.speed_dependent_force_limit << "\n";
+  std::cout << "  force_from_vel_err  = " << physics.force_from_velocity_error << "\n";
   std::cout << "  phase_limit_steps   = " << physics.phase_error_limit_steps << "\n";
   std::cout << "Linearized A:\n";
   for (const auto& row : model.A) {
@@ -135,7 +139,7 @@ void print_profile_audit(PhysicsProfile profile) {
 
 void print_usage(const char* argv0) {
   std::cout << "Usage: " << argv0
-            << " [--all] [--profile simplified|realistic|actuator_stress|ideal_force|simple_force]\n";
+            << " [--all] [--profile simplified|realistic|actuator_stress|direct_actuator|ideal_force(alias)|stepper_phase|stepper_phase_electrical]\n";
 }
 
 }  // namespace
@@ -165,10 +169,12 @@ int main(int argc, char** argv) {
         selected_profile = PhysicsProfile::Realistic;
       } else if (value == "actuator_stress") {
         selected_profile = PhysicsProfile::ActuatorStress;
-      } else if (value == "ideal_force") {
-        selected_profile = PhysicsProfile::IdealForce;
-      } else if (value == "simple_force") {
-        selected_profile = PhysicsProfile::SimpleForce;
+      } else if (value == "direct_actuator" || value == "ideal_force") {
+        selected_profile = PhysicsProfile::DirectActuator;
+      } else if (value == "stepper_phase") {
+        selected_profile = PhysicsProfile::StepperPhase;
+      } else if (value == "stepper_phase_electrical") {
+        selected_profile = PhysicsProfile::StepperPhaseElectrical;
       } else {
         print_usage(argv[0]);
         return EXIT_FAILURE;
@@ -184,8 +190,9 @@ int main(int argc, char** argv) {
     print_profile_audit(PhysicsProfile::Simplified);
     print_profile_audit(PhysicsProfile::Realistic);
     print_profile_audit(PhysicsProfile::ActuatorStress);
-    print_profile_audit(PhysicsProfile::IdealForce);
-    print_profile_audit(PhysicsProfile::SimpleForce);
+    print_profile_audit(PhysicsProfile::DirectActuator);
+    print_profile_audit(PhysicsProfile::StepperPhase);
+    print_profile_audit(PhysicsProfile::StepperPhaseElectrical);
     return EXIT_SUCCESS;
   }
 

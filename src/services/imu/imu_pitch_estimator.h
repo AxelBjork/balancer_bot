@@ -55,6 +55,11 @@ class ImuPitchEstimator {
   ImuPitchEstimate push_sample(const Acc3& acc, const Gyr3& gyr, TimePoint ts);
   void reset();
 
+  // Test-only simulator hook. Hardware and production code never call this;
+  // it lets a recovery experiment start with a known attitude while keeping
+  // the normal first-sample filter initialization and sensor path.
+  void set_initial_pitch_for_simulation(double pitch_rad);
+
  private:
   static bool finite3(const Acc3& value);
   ImuPitchEstimate seed(const Acc3& acc, const Gyr3& gyr, TimePoint ts);
@@ -70,4 +75,5 @@ class ImuPitchEstimator {
   TimePoint last_timestamp_{};
   double pitch_rad_{0.0};
   bool initialized_{false};
+  std::optional<double> initial_pitch_override_rad_;
 };

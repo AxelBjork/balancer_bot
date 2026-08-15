@@ -166,6 +166,13 @@ struct DOC_DESC(
   uint32_t pitch_authority_diagnostic_request_id;
   float pitch_authority_diagnostic_command_age_ms;
   float completed_step_acceleration_sps2;
+  // Source-side timing metadata is appended so the dashboard can distinguish
+  // sender pauses, transport loss, and receiver-side bursts. packet_seq is
+  // assigned when the controller produces a telemetry payload; it therefore
+  // also exposes packets coalesced or dropped by the transport boundary.
+  uint64_t packet_seq;
+  uint64_t loop_seq;
+  uint64_t sender_monotonic_ns;
 };
 
 struct SimulatorTelemetryPayload {

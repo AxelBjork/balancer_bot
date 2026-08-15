@@ -143,6 +143,8 @@ if (BUILD_TESTS)
   set(TEST_DIR ${CMAKE_SOURCE_DIR}/tests)
   add_library(balancer_sim_support STATIC
     ${TEST_DIR}/simulator/balancer_simulator.cpp
+    ${TEST_DIR}/simulator/stepper_phase_actuator.cpp
+    ${TEST_DIR}/simulator/simulator_scheduler.cpp
     ${TEST_DIR}/simulator/simulator_engine.cpp
     ${TEST_DIR}/simulator/simulator_runner.cpp
     ${TEST_DIR}/simulator/tuner_support.cpp
@@ -159,7 +161,10 @@ if (BUILD_TESTS)
     ${TEST_DIR}/motor_runner_test.cpp
     ${TEST_DIR}/control_loop_test.cpp
     ${TEST_DIR}/simulator_runner_test.cpp
+    ${TEST_DIR}/simulator_scheduler_test.cpp
+    ${TEST_DIR}/stepper_phase_actuator_test.cpp
     ${TEST_DIR}/time_service_test.cpp
+    ${TEST_DIR}/udp_bridge_test.cpp
     ${TEST_DIR}/runtime_correctness_test.cpp
     ${TEST_DIR}/latency_test.cpp
     ${TEST_DIR}/stubs/pigpiod_stub.cpp
@@ -306,4 +311,5 @@ if(NOT BUILD_TESTS)
   
   # Install to system (optional)
   install(TARGETS balancer_pi DESTINATION bin)
+
 endif()

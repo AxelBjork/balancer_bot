@@ -210,6 +210,14 @@ void ImuPitchEstimator::reset() {
   gyro_y_derivative_.reset(0.0f);
 }
 
+void ImuPitchEstimator::set_initial_pitch_for_simulation(double pitch_rad) {
+  if (std::isfinite(pitch_rad)) {
+    initial_pitch_override_rad_ = std::remainder(pitch_rad, 2.0 * M_PI);
+  } else {
+    initial_pitch_override_rad_.reset();
+  }
+}
+
 bool ImuPitchEstimator::finite3(const Acc3& value) {
   return std::all_of(value.begin(), value.end(),
                      [](double item) { return std::isfinite(item); });
@@ -243,7 +251,8 @@ ImuPitchEstimate ImuPitchEstimator::seed(const Acc3& acc, const Gyr3& gyr,
   auto result = make_estimate(filtered_acc_x, filtered_acc_z, filtered_gyro_y, 0.0,
                               gyr[2], ts);
   if (result.valid) {
-    pitch_rad_ = 0.0;
+    pitch_rad_ = initial_pitch_override_rad_.value_or(0.0);
+    initial_pitch_override_rad_.reset();
     result.sample.angle_rad = pitch_rad_;
   }
   return result;

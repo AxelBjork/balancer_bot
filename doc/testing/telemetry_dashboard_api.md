@@ -132,6 +132,22 @@ The response includes `earliest`, `latest`, window/cache bounds, `display_run`, 
 Each sample is the browser-facing normalized object emitted by the server, with `attitude`, `rate`,
 `motion`, `controller`, `timing`, and `flags` groups.
 
+Live samples also carry source timing metadata at the top level:
+
+```json
+{
+  "run_id": 123456,
+  "packet_seq": 8123,
+  "loop_seq": 8123,
+  "sender_monotonic_ns": 998877665544
+}
+```
+
+`run_id` changes when the hardware process restarts. `packet_seq` identifies the logical packet
+produced by the controller, `loop_seq` identifies the physics tick, and
+`sender_monotonic_ns` is the sender's clock domain; it must not be subtracted directly from
+`received_at`, which is the dashboard host's monotonic clock.
+
 Examples:
 
 ```bash
@@ -149,11 +165,30 @@ curl -N "$BASE/api/stream"
 
 The stream currently emits two event types:
 
-- `telemetry` — normalized samples containing `sequence`, `received_at`, `t_sec`, and the grouped
-  telemetry values described above.
+- `telemetry` — normalized samples containing `sequence`, `received_at`, `t_sec`, the grouped
+  telemetry values described above, and the sender metadata above.
 - `status` — dashboard and connection state. Relevant fields include `run_active`,
   `telemetry_connected`, `pi_ready`, `last_packet_age_ms`, `connection_state`,
-  `connection_message`, `display_run`, `pid_status`, telemetry gap counters, and latched flags.
+  `connection_message`, `display_run`, `pid_status`, telemetry gap counters, sender identifiers,
+  effective UDP receive-buffer size, CSV writer metrics, dashboard-loop/SSE timing metrics, and
+  latched flags.
+
+The diagnostic status fields are `sender_run_id`, `sender_packet_seq`, `sender_loop_seq`,
+`sender_monotonic_ns`, `sender_time_gap_ms`, `receiver_gap_ms`,
+`telemetry_sender_reset_count`, `telemetry_packet_sequence_gap_count`,
+`telemetry_loop_sequence_gap_count`, and `last_gap_classification`. CSV backpressure is exposed
+as `csv_queue_depth`, `csv_write_stall_count`, and `csv_write_max_ms`; dashboard delivery is
+exposed as `dashboard_display_lateness_max_ms`, `dashboard_display_work_max_ms`,
+`dashboard_display_stall_count`, `dashboard_sse_stall_count`, and `dashboard_sse_flush_max_ms`.
+`udp_receive_buffer_bytes` reports the effective socket receive buffer after applying the 4 MiB
+target.
+
+Gap events retain the existing `udp_receive_pause`, `telemetry_packet_gap`, and `telemetry_gap`
+event names. Their JSON data now includes `classification`, `sender_time_gap_s`, sequence deltas,
+and packet/loop gap counts. Classifications are `receiver_or_network_pause`,
+`sender_control_dispatch_pause`, `packet_or_transport_gap`, `loop_without_packet_gap`, or
+`receiver_and_sender_gap`. A `telemetry_run_reset` event records a sender run boundary and is not
+counted as a freeze.
 
 For a live experiment, use these meanings rather than `connection_state` as an online boolean:
 
@@ -166,6 +201,10 @@ telemetry_connected == false, pi_ready false Pi offline
 `telemetry_connected` becomes false when no valid packet has arrived for one second. `pi_ready` is
 the independent heartbeat result for the Pi's SSH port. `run_active` is the dashboard's run
 lifecycle flag. A fresh status event should be observed before changing PID values.
+
+The dashboard's `Freeze diagnostics` view is an opt-in plot group and is hidden at startup. When
+enabled, it plots receiver interarrival gaps, sender-time gaps, browser SSE gaps, append/render
+durations, and the latest sample age; it is not an always-on status readout.
 
 ## Session-only PID tuning
 
@@ -185,7 +224,7 @@ lifecycle flag. A fresh status event should be observed before changing PID valu
     "velocity_control_cutoff_hz": 3.0,
     "drive_max_sps": 1200.0,
     "turn_max_sps": 1200.0,
-    "balance_max_sps": 8000.0
+    "balance_max_sps": 16000.0
   }
 }
 ```
@@ -193,7 +232,7 @@ lifecycle flag. A fresh status event should be observed before changing PID valu
 The values must be numeric and finite. The server rejects unknown or missing fields, negative values
 where non-negative values are required, non-positive required limits, `velocity_pitch_limit_deg`
 above 90° (zero is the explicit diagnostic no-limit value), and `drive_max_sps`, `turn_max_sps`,
-or `balance_max_sps` above `12000`.
+or `balance_max_sps` above the current verified-1/32 limit of `16000`.
 
 The immediate response reports `request_id`, `sent`, and `pending`. Delivery and validation on the
 Pi are asynchronous. The eventual `pid_status` in a `status` SSE event, or `last_status` from

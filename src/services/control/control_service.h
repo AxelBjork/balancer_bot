@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cmath>
+#include <cstdint>
 
 #include "messages/balancer_msgs.h"
 #include "publisher.h"
@@ -61,6 +62,11 @@ class DOC_DESC(kControlServiceDoc) ControlService {
   ipc::TypedPublisher<ControlService> bus_;
   RateControllerCore core_;
 
+  const uint32_t run_id_;
+  uint64_t loop_seq_ = 0;
+  uint64_t packet_seq_ = 0;
+  uint64_t current_tick_timestamp_us_ = 0;
+
   double last_left_sps_ = 0.0;
   double last_right_sps_ = 0.0;
   ipc::MotorFeedbackPayload latest_motor_feedback_{};
@@ -116,6 +122,8 @@ inline void ControlService::on_message<MsgId::ImuData>(const ipc::ImuSamplePaylo
 
 template <>
 inline void ControlService::on_message<MsgId::PhysicsTick>(const PhysicsTickPayload& p) {
+  ++loop_seq_;
+  current_tick_timestamp_us_ = p.timestamp_us;
   const auto now = std::chrono::steady_clock::time_point(std::chrono::microseconds(p.timestamp_us));
   core_.step(p.dt_s, now);
 }

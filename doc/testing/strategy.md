@@ -4,35 +4,43 @@ The project uses four complementary test layers:
 
 - C++ unit and integration tests
 - Python SIL tests against the production UDP boundary
-- deterministic unified-engine acceptance tests
+- deterministic transfer-validation tests
 - host/AFL fuzz-harness validation
 
 ## Validation vocabulary
 
 These terms refer to different layers of the same validation workflow:
 
-- **Scenario catalog** — the canonical named scenario definitions used by direct tests, the
-  simulator service, tuning, and fuzzing.
-- **Transfer matrix** — the current seven-case catalog used for transfer validation: four nominal
-  cases plus three actuator-stress cases.
+- **Behavioral matrix** — the shared controller-level acceptance slice in
+  `tests/python/test_sim_scenarios.py`. Each scenario is parameterized over both `DirectActuator`
+  and `StepperPhaseElectrical` with explicit PID files. This is the maintained source of truth for
+  cross-model controller behavior; the DirectActuator scope remains in the same Python suite.
+- **DirectActuator** — the current-force reference profile. Renaming `IdealForce` to
+  `DirectActuator` did not remove its behavioral scenarios or its strict 50° boundary xfail.
+- **Transfer matrix** — the legacy seven-case catalog used by the simulator CLI, UDP artifact
+  workflow, tuner, and fuzz harnesses: four nominal cases plus three actuator-stress cases. It is
+  retained for those interfaces and is not cross-model controller acceptance evidence.
 - **Acceptance function** — the shared pass/fail decision applied to one completed scenario. It
   checks hard failures such as falls, faults, non-finite values, excessive pitch, tail RMS, and
   continuous saturation.
-- **Transfer-matrix validation** — running the complete deterministic simulator matrix and
+- **Behavioral-matrix validation** — running each shared controller behavior against both plants
+  and preserving a result row for every execution. Strict model-specific xfails remain visible and
+  are not counted as shared success. The generated Python artifact also records concrete sub-runs
+  from scenarios that sweep signs, disturbances, or uncertainty.
+- **Transfer-matrix validation** — running the legacy deterministic simulator matrix and
   preserving the per-run evidence and manifest. This is a software-model gate, not authorization
-  to run the candidate gains on hardware; a candidate is matrix-qualified only when every case
-  passes.
+  to run candidate gains on hardware.
 - **Direct-versus-UDP equivalence** — a separate focused protocol check. The current Python test
   compares the direct engine and simulator UDP wrapper tick-for-tick for transfer catalog index `1`;
   it is not an all-seven-case equivalence proof. The test’s inline scenario comment currently names a
   different case than the catalog order, so use the numeric index until that source comment is
   corrected.
 
-When other pages say “acceptance set,” “transfer matrix,” or “acceptance catalog,” they mean the
-same canonical seven-case transfer workflow unless they explicitly describe a different focused test
-set. The [control and simulator notes](../notes/control_and_simulator.md) explain how to interpret
-the resulting artifacts; the [current status](../status.md) reports confidence rather than
-redefining the gate.
+When other pages say “transfer matrix” or “acceptance catalog,” they mean the legacy seven-case
+workflow unless they explicitly describe the behavioral matrix. The [simulator behavioral matrix]
+(simulator_behavioral_matrix.md) is the Python cross-model controller-behavior gate. The
+[StepperPhaseElectrical scenario](../arch/stepper_phase_electrical.md) explains plant limits; the
+[current status](../status.md) reports confidence rather than redefining either gate.
 
 ## Component Coverage
 
@@ -41,7 +49,7 @@ redefining the gate.
 | IMU | Axis mapping, circular fusion, wrap, reliability, and timing | Production sampling path with noise, bias, loss, and lag | Restrained orientation, axle rotations, and upright return |
 | Motor feedback | Pulse scheduling, completed steps, reversal, saturation, and faults | Quantized completed-step feedback through actuator/tire dynamics | Restrained direction, step polarity, and missed-step checks |
 | Balance control | Equation signs, cadence, limits, reset, and COM-trim state | Release and symmetric-push recovery across nominal and corner plants | Thirty-second neutral balance and restrained fallover |
-| Joystick/velocity control | Ramp, reversal, command symmetry, stopping, and trim freeze | Bidirectional 800 SPS command and stop scenarios | Equal positive/negative command response and stopping |
+| Joystick/velocity control | Ramp, reversal, command symmetry, stopping, and trim freeze | Cross-model drive/stop/reversal and COM-freeze scenarios; legacy transfer catalog retained separately | Equal positive/negative command response and stopping |
 | Plant physics | Nonlinear/linear small-angle signs and parameter influence | Nonlinear cart-pole, actuator lag, traction, tire, and measured geometry | Parameters come from measured hardware; mismatches become simulator defects |
 | Safety | Fallover, stale IMU, saturation, and actuator-fault paths | Fault-free finite state, pitch margin, and saturation-duration gates | Restrained fallover followed by cautious unrestrained validation |
 | Runtime/telemetry | Message bus, timestamps, schema, and artifact parsing | Production UDP message path plus focused direct/simulator timeline equivalence | Telemetry-server capture used for transfer diagnosis |
@@ -133,20 +141,26 @@ Key files:
 - `tests/python/test_sil_loop.py`
   verifies the `sil_app` control path with injected tick/IMU traffic
 - `tests/python/test_sim_scenarios.py`
-  checks representative downsampled UDP runs and complete physics overrides
+  is the shared behavioral source of truth. It evaluates the maintained scenarios against both
+  explicit model/PID pairs, retains the 50-degree estimator-limited boundary xfail, and keeps
+  transport/actuator-specific tests separate
+- `tests/python/conftest.py`
+  applies centralized strict model-specific xfails and writes the machine-readable and
+  human-readable behavioral matrix under `build/sim/`
 - `tests/python/test_simulator_main_artifacts.py`
   checks protocol behavior, stride-invariant summaries, and exact direct-versus-real-UDP timeline
   hashes for a representative transfer scenario
 - `tests/python/test_run_artifacts.py`
   checks artifact summarization and hardware-log parsing
 
-## Transfer Acceptance and Artifacts
+## Legacy Transfer Acceptance and Artifacts
 
-The focused four-nominal-plus-three-actuator-stress transfer matrix runs in-process in `balancer_tests`.
+The focused four-nominal-plus-three-actuator-stress legacy transfer matrix runs in-process in `balancer_tests`.
 Direct tests, the simulator service, tuner, and fuzz harnesses obtain scenarios from
 `transfer_scenario_set()`; direct
 tests, the tuner, and UDP transfer runs use `evaluate_transfer_scenario()` for the hard acceptance
-decision. This keeps the normal gate fast while retaining focused real-UDP protocol coverage.
+decision. This keeps the existing CLI/protocol workflow stable while the cross-model behavioral
+matrix provides the controller-development comparison.
 
 The human-readable matrix is:
 
@@ -248,4 +262,4 @@ They are not treated as golden replay traces for the simulator.
   timeline equivalence with the direct engine for the representative transfer case they exercise.
 - AFL++ harness validation proves the fuzz targets still build, execute, and produce coverage on their seed corpora without changing the normal pytest gate.
 
-For the deeper simulator and control notes, read [Control and Simulator Notes](../notes/control_and_simulator.md). For the SIL-specific transport path, read [SIL Guide](sil_guide.md).
+For the deeper simulator and control scenario, read [StepperPhaseElectrical](../arch/stepper_phase_electrical.md). For the SIL-specific transport path, read [SIL Guide](sil_guide.md).

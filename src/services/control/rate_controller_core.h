@@ -4,10 +4,11 @@
 #include <functional>
 
 #include "messages/types.h"
+#include "services/main/config.h"
 
 // Fixed scheduling/safety constants. Tunable limits and state-feedback gains
 // live in the v10 ConfigPid schema.
-static constexpr double kMaxSps = 12000.0;
+static constexpr double kMaxSps = Config::max_step_rate_sps;
 static constexpr double kMaxPitchSetpointRad = 45.0 * 3.14159265358979323846 / 180.0;
 
 namespace rate_controller_detail {

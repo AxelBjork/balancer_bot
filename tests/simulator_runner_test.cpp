@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <functional>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <random>
 #include <string>
@@ -20,8 +21,18 @@
 
 namespace {
 
+// Lowest pitch stiffness that passed the physical StepperPhase 1/32 sanity
+// check with the locked 350 SPS/(rad/s) rate feedback. This remains an
+// offline diagnostic reference, not a production or hardware tune.
+constexpr double kOneThirtySecondPitchGain = 12000.0;
+
 std::string sim_pid_path() {
-  return (std::filesystem::path(BALANCER_REPO_ROOT) / "pid.conf").string();
+  // Keep this in-process simulator reference suite on the explicit historical
+  // DirectActuator profile. The production/default pid.conf is now the
+  // StepperPhaseElectrical profile.
+  return (std::filesystem::path(BALANCER_REPO_ROOT) /
+          "tests/data/direct_actuator_pid.conf")
+      .string();
 }
 
 struct ScopedStateFeedbackConfig {
@@ -275,6 +286,157 @@ std::string classify_controller_metrics(const ControllerScenarioMetrics& metrics
   return "well_damped";
 }
 
+double first_time_inside_pitch_band(const SimulatorRunResult& result, double pitch_limit_deg,
+                                    double start_s = 0.0) {
+  if (result.fell) return std::numeric_limits<double>::infinity();
+  for (const auto& row : result.rows) {
+    if (row.sim_time_s < start_s) continue;
+    if (std::abs(row.plant_pitch_deg) <= pitch_limit_deg) {
+      return row.sim_time_s - start_s;
+    }
+  }
+  return std::numeric_limits<double>::infinity();
+}
+
+double peak_force_fraction(const SimulatorRunResult& result) {
+  double peak = 0.0;
+  for (const auto& row : result.rows) {
+    const double available = std::min(std::abs(row.motor_force_limit_n),
+                                      std::abs(row.traction_limit_n));
+    if (available > 1e-9) {
+      peak = std::max(peak, std::abs(row.f_app) / available);
+    }
+  }
+  return peak;
+}
+
+double recovery_margin(const SimulatorRunResult& result) {
+  double margin = 0.0;
+  for (const auto& row : result.rows) {
+    margin = std::max(
+        margin, std::max({std::abs(row.plant_pitch_deg) / 6.0,
+                          std::abs(row.plant_pitch_rate_dps) / 40.0,
+                          std::abs(row.plant_velocity / Config::meters_per_step) / 1000.0}));
+  }
+  return margin;
+}
+
+double first_time_velocity_band_with_dwell(const SimulatorRunResult& result, double start_s,
+                                           double threshold_sps, double dwell_s) {
+  for (size_t index = 0; index < result.rows.size(); ++index) {
+    const auto& candidate = result.rows[index];
+    if (candidate.sim_time_s < start_s ||
+        std::abs(candidate.plant_velocity / Config::meters_per_step) > threshold_sps) {
+      continue;
+    }
+    const double dwell_end_s = candidate.sim_time_s + dwell_s;
+    bool remains_in_band = true;
+    for (size_t dwell_index = index; dwell_index < result.rows.size(); ++dwell_index) {
+      const auto& row = result.rows[dwell_index];
+      if (row.sim_time_s > dwell_end_s) break;
+      if (std::abs(row.plant_velocity / Config::meters_per_step) > threshold_sps * 2.0) {
+        remains_in_band = false;
+        break;
+      }
+    }
+    if (remains_in_band && result.rows.back().sim_time_s >= dwell_end_s) {
+      return candidate.sim_time_s;
+    }
+  }
+  return std::numeric_limits<double>::infinity();
+}
+
+double position_at_or_after(const SimulatorRunResult& result, double time_s) {
+  for (const auto& row : result.rows) {
+    if (row.sim_time_s >= time_s) return row.plant_position;
+  }
+  return result.rows.empty() ? 0.0 : result.rows.back().plant_position;
+}
+
+double maximum_position_displacement(const SimulatorRunResult& result, double start_s,
+                                     double end_s) {
+  const double initial_position = position_at_or_after(result, start_s);
+  double displacement = 0.0;
+  for (const auto& row : result.rows) {
+    if (row.sim_time_s < start_s || row.sim_time_s > end_s) continue;
+    displacement = std::max(displacement, std::abs(row.plant_position - initial_position));
+  }
+  return displacement;
+}
+
+struct EquilibriumAngleReplay {
+  double raw_deg = 0.0;
+  double candidate_deg = 0.0;
+  double estimate_deg = 0.0;
+  double max_candidate_estimate_gap_deg = 0.0;
+  double prototype_trim_deg = 0.0;
+  double quiet_time_s = 0.0;
+};
+
+EquilibriumAngleReplay replay_equilibrium_angle(const SimulatorRunResult& result) {
+  EquilibriumAngleReplay replay;
+  bool seeded = false;
+  constexpr double kOuterDtS = 0.01;
+  for (size_t index = 0; index < result.rows.size(); index += 4) {
+    const auto& row = result.rows[index];
+    // Reconstruct the controller's q_eq_raw from the signals already present
+    // in the simulator timeline.  This is deliberately an offline replay;
+    // it does not replace the production trim state machine.
+    const double drive_pitch_deg = row.pitch_target_unclamped_deg -
+                                    row.velocity_pitch_request_limited_deg - row.com_trim_deg;
+    const double raw_deg = row.pitch_deg - drive_pitch_deg -
+                           row.velocity_pitch_request_limited_deg;
+    if (!seeded) {
+      replay.candidate_deg = raw_deg;
+      replay.estimate_deg = raw_deg;
+      seeded = true;
+    } else {
+      const double candidate_alpha = std::exp(-2.0 * M_PI * 0.5 * kOuterDtS);
+      const double estimate_alpha = std::exp(-2.0 * M_PI * 0.25 * kOuterDtS);
+      replay.candidate_deg += (1.0 - candidate_alpha) * (raw_deg - replay.candidate_deg);
+      replay.estimate_deg += (1.0 - estimate_alpha) *
+                             (replay.candidate_deg - replay.estimate_deg);
+    }
+    const bool quiet = std::abs(row.velocity_control_sps) <= 100.0 &&
+                       row.trim_quiet_rate_rms_dps <= 10.0 &&
+                       std::abs(row.pitch_error_deg) <= 1.0 &&
+                       row.velocity_authority_limited < 0.5 &&
+                       row.trim_learning_block_reason !=
+                           static_cast<uint32_t>(ComTrimLearningBlockCommand) &&
+                       row.controller_saturation_flags == 0;
+    if (quiet) {
+      replay.quiet_time_s += kOuterDtS;
+      const double trim_alpha = std::exp(-2.0 * M_PI * 0.25 * kOuterDtS);
+      replay.prototype_trim_deg += (1.0 - trim_alpha) *
+                                   (replay.estimate_deg - replay.prototype_trim_deg);
+    }
+    replay.raw_deg = raw_deg;
+    replay.max_candidate_estimate_gap_deg =
+        std::max(replay.max_candidate_estimate_gap_deg,
+                 std::abs(replay.candidate_deg - replay.estimate_deg));
+  }
+  return replay;
+}
+
+struct RecoveryInitialState {
+  const char* name;
+  double pitch_deg;
+  double pitch_rate_dps;
+  double velocity_sps;
+};
+
+SimulatorScenario attitude_recovery_scenario(PhysicsProfile profile,
+                                             const RecoveryInitialState& initial) {
+  SimulatorScenario scenario;
+  scenario.name = std::string("attitude_recovery_") + initial.name;
+  scenario.duration_s = 10.0;
+  scenario.physics_profile = profile;
+  scenario.initial_pitch_deg = initial.pitch_deg;
+  scenario.initial_pitch_rate_dps = initial.pitch_rate_dps;
+  scenario.initial_velocity_mps = initial.velocity_sps * Config::meters_per_step;
+  return scenario;
+}
+
 SimulatorScenario attitude_reference_scenario(PhysicsProfile profile, double initial_pitch_deg) {
   SimulatorScenario scenario;
   scenario.name = "attitude_reference";
@@ -335,6 +497,20 @@ SimulatorScenario velocity_reference_scenario(PhysicsProfile profile,
                           .forward = -0.35,
                           .forward_end = -0.35},
   };
+  return scenario;
+}
+
+SimulatorScenario slow_stop_reference_scenario(PhysicsProfile profile) {
+  SimulatorScenario scenario;
+  scenario.name = "slow_stop_reference";
+  scenario.duration_s = 12.0;
+  scenario.physics_profile = profile;
+  scenario.joy_segments.push_back(SimulatorJoySegment{
+      .start_s = 1.0,
+      .duration_s = 1.0,
+      .forward = 0.15,
+      .forward_end = 0.15,
+  });
   return scenario;
 }
 
@@ -470,6 +646,8 @@ TEST(SimulatorRunnerTest, HardwareNominalDerivedValuesStayConsistent) {
                        Nominal::wheel_radius);
   EXPECT_DOUBLE_EQ(Nominal::meters_per_step,
                    2.0 * M_PI * Nominal::wheel_radius / Nominal::steps_per_rev);
+  EXPECT_DOUBLE_EQ(Nominal::stepper_phase_meters_per_step, Config::meters_per_step);
+  EXPECT_DOUBLE_EQ(Nominal::stepper_phase_steps_per_rev, Config::steps_per_rev);
   EXPECT_DOUBLE_EQ(BalancerSimulator::physics_for_profile(PhysicsProfile::Realistic).max_force_n,
                    Nominal::combined_stall_force_n);
 }
@@ -527,6 +705,13 @@ TEST(SimulatorRunnerTest, TuningScenarioCatalogsAreNominalAndSymmetric) {
       EXPECT_DOUBLE_EQ(scenario.gyro_noise_std_rad_s, 0.0);
       for (const auto& segment : scenario.joy_segments) EXPECT_DOUBLE_EQ(segment.turn, 0.0);
     }
+  }
+
+  const auto stepper_velocity =
+      tuning_velocity_scenario_set(PhysicsProfile::StepperPhaseElectrical);
+  for (const auto& scenario : stepper_velocity) {
+    EXPECT_EQ(scenario.physics_profile, PhysicsProfile::StepperPhaseElectrical);
+    EXPECT_FALSE(scenario.physics_override.has_value());
   }
 }
 
@@ -664,6 +849,9 @@ TEST(SimulatorRunnerTest, ScheduledAndUdpStyleJoystickInputsProduceEquivalentTim
 }
 
 TEST(SimulatorRunnerTest, DirectAndUdpStylePathsUseProductionSlewAndPulseFrameTiming) {
+  ScopedStateFeedbackConfig restore;
+  ConfigPid::load(sim_pid_path());
+
   EXPECT_DOUBLE_EQ(Config::motor_slew_sps_per_s, 200000.0);
   EXPECT_EQ(DualWave::kFrameUs, 2500U);
 
@@ -702,7 +890,7 @@ TEST(SimulatorRunnerTest, NineHertzAlternatingForceRecoveryDecaysWithoutRailsOrF
   SimulatorScenario scenario;
   scenario.name = "nine_hertz_alternating_force_recovery";
   scenario.duration_s = 8.0;
-  scenario.physics_profile = PhysicsProfile::IdealForce;
+  scenario.physics_profile = PhysicsProfile::DirectActuator;
   constexpr double kHalfPeriodS = 1.0 / 18.0;
   for (int half_cycle = 0; half_cycle < 18; ++half_cycle) {
     scenario.disturbances.push_back(SimulatorDisturbance{
@@ -1182,8 +1370,8 @@ TEST(SimulatorReferenceTest, StateFeedbackReferenceProfilesExposeArchitectureBou
       {"current_014_035_equivalent", 15680.0, 448.0, 0.0},
   }};
   const std::array<PhysicsProfile, 3> profiles = {{
-      PhysicsProfile::IdealForce,
-      PhysicsProfile::SimpleForce,
+      PhysicsProfile::DirectActuator,
+      PhysicsProfile::RetiredSimpleForce,
       PhysicsProfile::Realistic,
   }};
 
@@ -1220,22 +1408,411 @@ TEST(SimulatorReferenceTest, StateFeedbackReferenceProfilesExposeArchitectureBou
   }
 }
 
-TEST(SimulatorReferenceTest, DirectForceReferenceProfilesAreExplicitlyDistinct) {
-  const auto ideal = BalancerSimulator::physics_for_profile(PhysicsProfile::IdealForce);
-  const auto simple = BalancerSimulator::physics_for_profile(PhysicsProfile::SimpleForce);
+TEST(SimulatorReferenceTest, DirectActuatorReferenceProfileIsExplicitlyDistinct) {
+  const auto ideal = BalancerSimulator::physics_for_profile(PhysicsProfile::DirectActuator);
+  const auto retired_simple =
+      BalancerSimulator::physics_for_profile(PhysicsProfile::RetiredSimpleForce);
+  const auto retired_no_slip =
+      BalancerSimulator::physics_for_profile(PhysicsProfile::RetiredNoSlipActuator);
   const auto stress = BalancerSimulator::physics_for_profile(PhysicsProfile::ActuatorStress);
   const auto nominal = BalancerSimulator::physics_for_profile(PhysicsProfile::Realistic);
 
   EXPECT_TRUE(ideal.direct_force);
-  EXPECT_TRUE(simple.direct_force);
+  EXPECT_TRUE(retired_simple.direct_force);
   EXPECT_FALSE(nominal.direct_force);
   EXPECT_FALSE(stress.direct_force);
+  EXPECT_FALSE(retired_no_slip.direct_force);
+  const auto stepper = BalancerSimulator::physics_for_profile(PhysicsProfile::StepperPhase);
+  EXPECT_FALSE(stepper.direct_force);
+  EXPECT_TRUE(stepper.stepper_phase);
+  EXPECT_DOUBLE_EQ(stepper.max_force_n,
+                   BalancerSimulator::HardwareNominal::stepper_combined_force_n);
+  EXPECT_TRUE(retired_no_slip.stepper_phase);
+  EXPECT_TRUE(retired_no_slip.stepper_phase_electrical);
   EXPECT_DOUBLE_EQ(ideal.motor_tau_s, 0.0);
-  EXPECT_DOUBLE_EQ(simple.motor_tau_s, 0.150);
   EXPECT_DOUBLE_EQ(nominal.motor_tau_s, 0.002);
   EXPECT_DOUBLE_EQ(stress.motor_tau_s, 0.020);
   EXPECT_GT(ideal.direct_force_per_sps, 0.0);
-  EXPECT_DOUBLE_EQ(ideal.direct_force_per_sps, simple.direct_force_per_sps);
+  EXPECT_DOUBLE_EQ(ideal.direct_force_per_sps, retired_simple.direct_force_per_sps);
+  EXPECT_DOUBLE_EQ(retired_no_slip.stepper_current_limit_a,
+                   BalancerSimulator::HardwareNominal::stepper_current_limit_a);
+}
+
+TEST(SimulatorReferenceTest, DirectActuatorKeepsIdealForceCompatibilityAlias) {
+  EXPECT_EQ(static_cast<int>(PhysicsProfile::DirectActuator), 3);
+  EXPECT_EQ(static_cast<int>(PhysicsProfile::IdealForce),
+            static_cast<int>(PhysicsProfile::DirectActuator));
+  EXPECT_EQ(BalancerSimulator::profile_name(PhysicsProfile::DirectActuator), "direct_actuator");
+  EXPECT_EQ(BalancerSimulator::profile_name(PhysicsProfile::IdealForce), "direct_actuator");
+  const auto direct = BalancerSimulator::physics_for_profile(PhysicsProfile::DirectActuator);
+  const auto compatibility = BalancerSimulator::physics_for_profile(PhysicsProfile::IdealForce);
+  EXPECT_EQ(direct.direct_force, compatibility.direct_force);
+  EXPECT_DOUBLE_EQ(direct.direct_force_per_sps, compatibility.direct_force_per_sps);
+}
+
+TEST(SimulatorModelIdentificationTest, RetiredActuatorAliasIsReportedWithoutOldModel) {
+  ScopedStateFeedbackConfig restore;
+  ConfigPid::load(sim_pid_path());
+  ConfigPid::values.velocity_damping_per_s = 0.0;
+  ConfigPid::values.velocity_I = 0.0;
+  ConfigPid::values.velocity_pitch_limit_deg = 0.0;
+  ConfigPid::values.pitch_rate_gain = 350.0;
+  ConfigPid::values.pitch_accel_gain = 0.0;
+
+  const std::array<RecoveryInitialState, 7> states = {{
+      {"small_release", 1.0, 0.0, 0.0},
+      {"low_speed", 2.0, 0.0, 500.0},
+      {"low_speed_negative", -2.0, 0.0, -500.0},
+      {"state_a", 4.3, 0.0, 964.0},
+      {"state_b", 9.0, 0.0, 1800.0},
+      {"state_a_negative", -4.3, 0.0, -964.0},
+      {"state_b_negative", -9.0, 0.0, -1800.0},
+  }};
+  const auto physics =
+      BalancerSimulator::physics_for_profile(PhysicsProfile::RetiredNoSlipActuator);
+  std::cout << "no_slip_parameters max_force_n=" << physics.max_force_n
+            << " no_load_speed_mps=" << physics.no_load_speed_mps
+            << " command_delay_s=" << physics.command_delay_s
+            << " motor_tau_s=" << physics.motor_tau_s
+            << " force_per_sps=" << physics.direct_force_per_sps << '\n';
+
+  struct NoSlipCandidate {
+    const char* name;
+    double force_per_sps;
+    double tau_s;
+    double delay_s;
+    double no_load_speed_mps;
+    bool speed_dependent_force_limit;
+  };
+  for (const auto& candidate : std::array<NoSlipCandidate, 13>{
+           {{"direct40_fast", 40.0 * Config::meters_per_step, 0.002, 0.005, 1.2, true},
+            {"direct40_nominal", 40.0 * Config::meters_per_step, 0.008, 0.0075, 1.2, true},
+            {"direct40_slow", 40.0 * Config::meters_per_step, 0.012, 0.0075, 1.2, true},
+            {"direct80_nominal", 80.0 * Config::meters_per_step, 0.008, 0.0075, 1.2, true},
+            {"direct120_nominal", 120.0 * Config::meters_per_step, 0.008, 0.0075, 1.2, true},
+            {"direct40_low_speed", 40.0 * Config::meters_per_step, 0.008, 0.0075, 0.5, true},
+            {"direct40_high_speed", 40.0 * Config::meters_per_step, 0.008, 0.0075, 2.0, true},
+            {"direct40_short_delay", 40.0 * Config::meters_per_step, 0.008, 0.002, 1.2, true},
+            {"direct40_long_delay", 40.0 * Config::meters_per_step, 0.008, 0.015, 1.2, true},
+            {"direct40_fast_high_speed", 40.0 * Config::meters_per_step, 0.002, 0.005, 2.0, true},
+            {"direct60_fast_high_speed", 60.0 * Config::meters_per_step, 0.002, 0.005, 2.0, true},
+            {"direct80_fast_high_speed", 80.0 * Config::meters_per_step, 0.002, 0.005, 2.0, true},
+            {"direct40_fast_no_speed_limit", 40.0 * Config::meters_per_step, 0.002, 0.005, 2.0, false}}}) {
+    auto candidate_physics = physics;
+    candidate_physics.force_from_velocity_error = false;
+    candidate_physics.direct_force_per_sps = candidate.force_per_sps;
+    candidate_physics.motor_tau_s = candidate.tau_s;
+    candidate_physics.command_delay_s = candidate.delay_s;
+    candidate_physics.no_load_speed_mps = candidate.no_load_speed_mps;
+    candidate_physics.speed_dependent_force_limit = candidate.speed_dependent_force_limit;
+    for (const double pitch_gain : {6000.0, 8000.0}) {
+      ConfigPid::values.pitch_gain = pitch_gain;
+      std::cout << "no_slip_candidate name=" << candidate.name << " kp=" << pitch_gain;
+      for (const auto& initial : std::array<RecoveryInitialState, 3>{
+               {{"small", 1.0, 0.0, 0.0}, {"state_a", 4.3, 0.0, 964.0},
+                {"state_b", 9.0, 0.0, 1800.0}}}) {
+        auto candidate_scenario = attitude_recovery_scenario(PhysicsProfile::RetiredNoSlipActuator,
+                                                              initial);
+        candidate_scenario.physics_override = candidate_physics;
+        const auto candidate_result =
+            run_simulator_scenario_with_loaded_pid(candidate_scenario);
+        std::cout << ' ' << initial.name << "=" << (candidate_result.fell ? "fall" : "hold")
+                  << ":peak=" << candidate_result.max_abs_pitch_deg << ":v="
+                  << candidate_result.rows.back().plant_velocity / Config::meters_per_step;
+      }
+      std::cout << '\n';
+    }
+  }
+
+  {
+    auto reference = attitude_recovery_scenario(PhysicsProfile::DirectActuator, states[0]);
+    reference.physics_override = BalancerSimulator::physics_for_profile(PhysicsProfile::DirectActuator);
+    reference.physics_override->cart_damping = 1.0;
+    ConfigPid::values.pitch_gain = 6000.0;
+    const auto result = run_simulator_scenario_with_loaded_pid(reference);
+    std::cout << "no_slip_control_reference direct_actuator_cart1 fell=" << result.fell
+              << " peak_pitch_deg=" << result.max_abs_pitch_deg << '\n';
+  }
+
+  for (const double pitch_gain : {6000.0, 8000.0}) {
+    ConfigPid::values.pitch_gain = pitch_gain;
+    for (const auto& initial : states) {
+      const auto result = run_simulator_scenario_with_loaded_pid(
+          attitude_recovery_scenario(PhysicsProfile::RetiredNoSlipActuator, initial));
+      ASSERT_FALSE(result.rows.empty());
+      if (pitch_gain == 6000.0 && std::string(initial.name) == "small_release") {
+        for (const double sample_s : {0.0, 0.05, 0.10, 0.20, 0.40, 0.80}) {
+          auto it = std::lower_bound(
+              result.rows.begin(), result.rows.end(), sample_s,
+              [](const auto& row, double time_s) { return row.sim_time_s < time_s; });
+          if (it == result.rows.end()) it = std::prev(result.rows.end());
+          std::cout << "no_slip_trace t=" << it->sim_time_s
+                    << " pitch=" << it->plant_pitch_deg << " rate=" << it->plant_pitch_rate_dps
+                    << " v_sps=" << it->plant_velocity / Config::meters_per_step
+                    << " u=" << it->u_sps << " f=" << it->f_app
+                    << " force_limit=" << it->motor_force_limit_n << '\n';
+        }
+      }
+      if (std::string(initial.name) == "state_a") {
+        for (const double sample_s : {0.0, 0.10, 0.20, 0.40, 0.80, 1.20}) {
+          auto it = std::lower_bound(
+              result.rows.begin(), result.rows.end(), sample_s,
+              [](const auto& row, double time_s) { return row.sim_time_s < time_s; });
+          if (it == result.rows.end()) it = std::prev(result.rows.end());
+          std::cout << "no_slip_state_a_trace kp=" << pitch_gain << " t=" << it->sim_time_s
+                    << " pitch_deg=" << it->plant_pitch_deg
+                    << " rate_dps=" << it->plant_pitch_rate_dps
+                    << " velocity_sps=" << it->plant_velocity / Config::meters_per_step
+                    << " command_sps=" << it->u_sps << " applied_force_n=" << it->f_app
+                    << " force_limit_n=" << it->motor_force_limit_n
+                    << " wheel_accel_mps2=" << it->x_ddot << '\n';
+        }
+      }
+      const double peak_rate = signal_peak_in_window(
+          result, 0.0, result.rows.back().sim_time_s + 1e-9,
+          [](const auto& row) { return row.plant_pitch_rate_dps; });
+      const double peak_force = signal_peak_in_window(
+          result, 0.0, result.rows.back().sim_time_s + 1e-9,
+          [](const auto& row) { return row.f_app; });
+      const double minimum_speed_limit = [&] {
+        double value = std::numeric_limits<double>::infinity();
+        for (const auto& row : result.rows) value = std::min(value, row.motor_force_limit_n);
+        return value;
+      }();
+      std::cout << "no_slip_recovery kp=" << pitch_gain << " state=" << initial.name
+                << " fell=" << result.fell << " fault_flags=" << result.controller_fault_flags
+                << " peak_pitch_deg=" << result.max_abs_pitch_deg
+                << " peak_rate_dps=" << peak_rate << " peak_force_n=" << peak_force
+                << " minimum_speed_force_limit_n=" << minimum_speed_limit
+                << " final_velocity_sps="
+                << result.rows.back().plant_velocity / Config::meters_per_step << '\n';
+    }
+  }
+
+  ConfigPid::values.velocity_damping_per_s = 8.0;
+  ConfigPid::values.velocity_pitch_limit_deg = 4.0;
+  for (const double pitch_gain : {6000.0, 8000.0}) {
+    ConfigPid::values.pitch_gain = pitch_gain;
+    for (const auto& initial : states) {
+      const auto result = run_simulator_scenario_with_loaded_pid(
+          attitude_recovery_scenario(PhysicsProfile::RetiredNoSlipActuator, initial));
+      ASSERT_FALSE(result.rows.empty());
+      std::cout << "no_slip_outer_recovery kp=" << pitch_gain << " state=" << initial.name
+                << " fell=" << result.fell << " fault_flags=" << result.controller_fault_flags
+                << " peak_pitch_deg=" << result.max_abs_pitch_deg
+                << " final_velocity_sps="
+                << result.rows.back().plant_velocity / Config::meters_per_step << '\n';
+    }
+  }
+
+  ConfigPid::values.velocity_damping_per_s = 2.0;
+  ConfigPid::values.velocity_control_cutoff_hz = 0.5;
+  ConfigPid::values.velocity_pitch_limit_deg = 2.0;
+  for (const double pitch_gain : {6000.0, 8000.0}) {
+    ConfigPid::values.pitch_gain = pitch_gain;
+    for (const auto& initial : states) {
+      const auto result = run_simulator_scenario_with_loaded_pid(
+          attitude_recovery_scenario(PhysicsProfile::RetiredNoSlipActuator, initial));
+      ASSERT_FALSE(result.rows.empty());
+      std::cout << "no_slip_conservative_recovery kp=" << pitch_gain
+                << " state=" << initial.name << " fell=" << result.fell
+                << " fault_flags=" << result.controller_fault_flags
+                << " peak_pitch_deg=" << result.max_abs_pitch_deg
+                << " final_velocity_sps="
+                << result.rows.back().plant_velocity / Config::meters_per_step << '\n';
+    }
+  }
+}
+
+TEST(SimulatorModelIdentificationTest, KnownAttitudeColdStartIsMeasuredSeparately) {
+  ScopedStateFeedbackConfig restore;
+  ConfigPid::load(sim_pid_path());
+  ConfigPid::values.velocity_damping_per_s = 0.0;
+  ConfigPid::values.velocity_I = 0.0;
+  ConfigPid::values.velocity_pitch_limit_deg = 0.0;
+  ConfigPid::values.pitch_rate_gain = 350.0;
+  ConfigPid::values.pitch_accel_gain = 0.0;
+
+  for (const double pitch_gain : {6000.0, 8000.0}) {
+    ConfigPid::values.pitch_gain = pitch_gain;
+    auto estimator_limited = attitude_recovery_scenario(
+        PhysicsProfile::DirectActuator, RecoveryInitialState{"cold_start_50deg_estimator_limited", 50.0,
+                                                          0.0, 0.0});
+    const auto limited_result = run_simulator_scenario_with_loaded_pid(estimator_limited);
+    ASSERT_FALSE(limited_result.rows.empty());
+    std::cout << "cold_start_split kp=" << pitch_gain
+              << " estimator_limited_fell=" << limited_result.fell
+              << " estimator_limited_peak_pitch_deg=" << limited_result.max_abs_pitch_deg;
+    for (const double known_pitch_deg : {45.0, 50.0}) {
+      auto known_attitude = estimator_limited;
+      known_attitude.name = "recovery_known_attitude";
+      known_attitude.initial_pitch_deg = known_pitch_deg;
+      known_attitude.initial_fused_pitch_deg = known_pitch_deg;
+      const auto known_result = run_simulator_scenario_with_loaded_pid(known_attitude);
+      ASSERT_FALSE(known_result.rows.empty());
+      std::cout << " known_pitch_deg=" << known_pitch_deg
+                << ":fell=" << known_result.fell
+                << ":fault_flags=" << known_result.controller_fault_flags
+                << ":peak_pitch_deg=" << known_result.max_abs_pitch_deg
+                << ":return_s=" << first_time_inside_pitch_band(known_result, 1.0)
+                << ":fused_initial=" << known_result.rows.front().fused_pitch_deg;
+    }
+    std::cout << '\n';
+    // The normal controller safety envelope disarms a neutral-command run
+    // above the configured fallover limit (25 deg). This is intentionally a
+    // measurement, not a pass/fail claim about 45/50 deg actuator authority.
+    EXPECT_TRUE(limited_result.fell);
+  }
+}
+
+TEST(SimulatorModelIdentificationTest, EstimatorLimitedColdStartBoundaryIsMeasured) {
+  ScopedStateFeedbackConfig restore;
+  ConfigPid::load(sim_pid_path());
+  ConfigPid::values.velocity_damping_per_s = 0.0;
+  ConfigPid::values.velocity_I = 0.0;
+  ConfigPid::values.velocity_pitch_limit_deg = 0.0;
+  ConfigPid::values.pitch_rate_gain = 350.0;
+  ConfigPid::values.pitch_accel_gain = 0.0;
+
+  for (const double pitch_gain : {6000.0, 8000.0}) {
+    ConfigPid::values.pitch_gain = pitch_gain;
+    for (const double initial_pitch_deg : {10.0, 15.0, 18.0, 20.0, 22.0, 24.0, 25.0,
+                                           30.0, 35.0, 40.0, 45.0, 50.0}) {
+      RecoveryInitialState initial{"estimator_limited", initial_pitch_deg, 0.0, 0.0};
+      const auto result = run_simulator_scenario_with_loaded_pid(
+          attitude_recovery_scenario(PhysicsProfile::DirectActuator, initial));
+      ASSERT_FALSE(result.rows.empty());
+      double estimate_convergence_s = std::numeric_limits<double>::infinity();
+      for (const auto& row : result.rows) {
+        if (std::abs(row.fused_pitch_deg - row.plant_pitch_deg) <= 5.0) {
+          estimate_convergence_s = row.sim_time_s;
+          break;
+        }
+      }
+      std::cout << "cold_start_boundary kp=" << pitch_gain
+                << " initial_pitch_deg=" << initial_pitch_deg
+                << " fell=" << result.fell
+                << " controller_fault_flags=" << result.controller_fault_flags
+                << " max_actual_pitch_deg=" << result.max_abs_pitch_deg
+                << " max_rate_dps="
+                << signal_peak_in_window(
+                       result, 0.0, result.rows.back().sim_time_s + 1e-9,
+                       [](const auto& row) { return row.plant_pitch_rate_dps; })
+                << " estimate_within5deg_s=" << estimate_convergence_s
+                << " max_command_sps="
+                << signal_peak_in_window(result, 0.0, result.rows.back().sim_time_s + 1e-9,
+                                         [](const auto& row) { return row.u_sps; })
+                << " max_applied_force_n="
+                << signal_peak_in_window(result, 0.0, result.rows.back().sim_time_s + 1e-9,
+                                         [](const auto& row) { return row.f_app; })
+                << " margin_to70_deg=" << 70.0 - result.max_abs_pitch_deg << '\n';
+    }
+  }
+}
+
+TEST(SimulatorModelIdentificationTest, RetiredNoSlipAliasDoesNotReintroduceOuterModel) {
+  ScopedStateFeedbackConfig restore;
+  ConfigPid::load(sim_pid_path());
+  ConfigPid::values.pitch_rate_gain = 350.0;
+  ConfigPid::values.pitch_accel_gain = 0.0;
+  ConfigPid::values.velocity_I = 0.001;
+
+  struct OuterCandidate {
+    const char* name;
+    double cutoff_hz;
+    double damping_per_s;
+    double pitch_limit_deg;
+  };
+  const std::array<OuterCandidate, 2> candidates = {{
+      {"current_3hz_8_per_s_4deg", 3.0, 8.0, 4.0},
+      {"conservative_0p5hz_2_per_s_2deg", 0.5, 2.0, 2.0},
+  }};
+  for (const auto& candidate : candidates) {
+    ConfigPid::values.velocity_control_cutoff_hz = candidate.cutoff_hz;
+    ConfigPid::values.velocity_damping_per_s = candidate.damping_per_s;
+    ConfigPid::values.velocity_pitch_limit_deg = candidate.pitch_limit_deg;
+    for (const double pitch_gain : {6000.0, 8000.0}) {
+      ConfigPid::values.pitch_gain = pitch_gain;
+      for (const double initial_velocity_sps : {0.0, 250.0, 500.0, 1000.0}) {
+        const auto result = run_simulator_scenario_with_loaded_pid(
+            velocity_reference_scenario(PhysicsProfile::RetiredNoSlipActuator,
+                                         initial_velocity_sps * Config::meters_per_step));
+        ASSERT_FALSE(result.rows.empty());
+        const double peak_velocity = signal_peak_in_window(
+            result, 0.0, result.rows.back().sim_time_s + 1e-9,
+            [](const auto& row) { return row.plant_velocity / Config::meters_per_step; });
+        const double peak_pitch = signal_peak_in_window(
+            result, 0.0, result.rows.back().sim_time_s + 1e-9,
+            [](const auto& row) { return row.plant_pitch_deg; });
+        const double peak_rate = signal_peak_in_window(
+            result, 0.0, result.rows.back().sim_time_s + 1e-9,
+            [](const auto& row) { return row.plant_pitch_rate_dps; });
+        const double authority_time = signal_rms_in_window(
+            result, 0.0, result.rows.back().sim_time_s + 1e-9,
+            [](const auto& row) { return row.velocity_authority_limited; });
+        std::cout << "no_slip_outer_candidate name=" << candidate.name
+                  << " kp=" << pitch_gain << " initial_velocity_sps=" << initial_velocity_sps
+                  << " fell=" << result.fell << " peak_velocity_sps=" << peak_velocity
+                  << " peak_pitch_deg=" << peak_pitch << " peak_rate_dps=" << peak_rate
+                  << " final_velocity_sps="
+                  << result.rows.back().plant_velocity / Config::meters_per_step
+                  << " final_trim_deg=" << result.rows.back().com_trim_deg
+                  << " authority_time_fraction=" << authority_time
+                  << " recovery_margin=" << recovery_margin(result) << '\n';
+      }
+    }
+  }
+}
+
+TEST(SimulatorModelIdentificationTest, ComAcquisitionEnvelopeUsesMaintainedProfilesAndAlias) {
+  ScopedStateFeedbackConfig restore;
+  ConfigPid::load(sim_pid_path());
+  ConfigPid::values.pitch_gain = 8000.0;
+  ConfigPid::values.pitch_rate_gain = 350.0;
+  ConfigPid::values.pitch_accel_gain = 0.0;
+  ConfigPid::values.velocity_control_cutoff_hz = 0.5;
+  ConfigPid::values.velocity_damping_per_s = 2.0;
+  ConfigPid::values.velocity_pitch_limit_deg = 2.0;
+  ConfigPid::values.velocity_I = 0.001;
+
+  for (const auto profile : {PhysicsProfile::DirectActuator,
+                             PhysicsProfile::RetiredNoSlipActuator}) {
+    for (const double offset_rad : {0.002, 0.004, 0.006, 0.008, 0.010, 0.012, 0.015, 0.020,
+                                    -0.002, -0.004, -0.006, -0.008, -0.010, -0.012, -0.015,
+                                    -0.020}) {
+      SimulatorScenario scenario;
+      scenario.name = "com_acquisition_envelope";
+      scenario.duration_s = 30.0;
+      scenario.physics_profile = profile;
+      scenario.com_angle_offset_rad = offset_rad;
+      const auto result = run_simulator_scenario_with_loaded_pid(scenario);
+      ASSERT_FALSE(result.rows.empty());
+      double trust_time_s = std::numeric_limits<double>::infinity();
+      double max_abs_velocity_sps = 0.0;
+      double max_abs_pitch_deg = 0.0;
+      uint32_t block_reason_mask = 0;
+      for (const auto& row : result.rows) {
+        if (row.trim_trusted > 0.5 && !std::isfinite(trust_time_s)) trust_time_s = row.sim_time_s;
+        max_abs_velocity_sps =
+            std::max(max_abs_velocity_sps,
+                     std::abs(row.plant_velocity / Config::meters_per_step));
+        max_abs_pitch_deg = std::max(max_abs_pitch_deg, std::abs(row.plant_pitch_deg));
+        if (row.trim_learning_block_reason < 32) {
+          block_reason_mask |= 1U << row.trim_learning_block_reason;
+        }
+      }
+      std::cout << "com_acquisition profile=" << BalancerSimulator::profile_name(profile)
+                << " offset_mrad=" << offset_rad * 1000.0
+                << " trusted=" << std::isfinite(trust_time_s)
+                << " trust_time_s=" << trust_time_s
+                << " final_trim_deg=" << result.rows.back().com_trim_deg
+                << " final_trim_error_deg="
+                << (result.rows.back().com_trim_deg + offset_rad * 180.0 / M_PI)
+                << " max_pitch_deg=" << max_abs_pitch_deg
+                << " max_velocity_sps=" << max_abs_velocity_sps
+                << " block_reason_mask=" << block_reason_mask << '\n';
+    }
+  }
 }
 
 TEST(SimulatorReferenceTest, VelocityControlCutoffIsSeparateFromObserverAndObservable) {
@@ -1253,7 +1830,7 @@ TEST(SimulatorReferenceTest, VelocityControlCutoffIsSeparateFromObserverAndObser
     SimulatorScenario scenario;
     scenario.name = "velocity_cutoff";
     scenario.duration_s = 8.0;
-    scenario.physics_profile = PhysicsProfile::IdealForce;
+    scenario.physics_profile = PhysicsProfile::DirectActuator;
     scenario.joy_segments = {
         SimulatorJoySegment{.start_s = 1.0, .duration_s = 2.0, .forward = 0.35},
         SimulatorJoySegment{.start_s = 4.0, .duration_s = 2.0, .forward = -0.35},
@@ -1292,7 +1869,7 @@ TEST(SimulatorReferenceTest, AccelerationFeedbackReferenceSweepIsObservable) {
     SimulatorScenario scenario;
     scenario.name = "acceleration_feedback";
     scenario.duration_s = 8.0;
-    scenario.physics_profile = PhysicsProfile::IdealForce;
+    scenario.physics_profile = PhysicsProfile::DirectActuator;
     scenario.disturbances.push_back(SimulatorDisturbance{
         .kind = SimulatorDisturbanceKind::Step,
         .start_s = 1.0,
@@ -1342,7 +1919,7 @@ TEST(SimulatorReferenceTest, GyroDisturbanceSensitivityIsMeasuredAroundHardwareB
       SimulatorScenario scenario;
       scenario.name = candidate.name;
       scenario.duration_s = 3.0;
-      scenario.physics_profile = PhysicsProfile::IdealForce;
+      scenario.physics_profile = PhysicsProfile::DirectActuator;
       scenario.gyro_pitch_disturbance_frequency_hz = frequency_hz;
       scenario.gyro_pitch_disturbance_amplitude_rad_s = 0.10;
       const auto result = run_simulator_scenario_with_loaded_pid(scenario);
@@ -1381,8 +1958,8 @@ TEST(SimulatorReferenceTest, StateFeedbackPitchRateNeighborhoodIsMappedOnReferen
 
   const std::array<double, 5> pitch_gains = {6000.0, 7000.0, 8000.0, 9000.0, 10000.0};
   const std::array<double, 5> rate_gains = {400.0, 500.0, 600.0, 700.0, 800.0};
-  const std::array<PhysicsProfile, 2> profiles = {PhysicsProfile::IdealForce,
-                                                   PhysicsProfile::SimpleForce};
+  const std::array<PhysicsProfile, 2> profiles = {PhysicsProfile::DirectActuator,
+                                                   PhysicsProfile::RetiredSimpleForce};
 
   for (const PhysicsProfile profile : profiles) {
     for (const double pitch_gain : pitch_gains) {
@@ -1425,10 +2002,355 @@ TEST(SimulatorReferenceTest, StateFeedbackPitchRateNeighborhoodIsMappedOnReferen
   }
 }
 
+TEST(SimulatorReferenceTest, PitchGainRecoveryEnvelopeAndColdStartAreMapped) {
+  ScopedStateFeedbackConfig restore;
+  ConfigPid::load(sim_pid_path());
+  // This is an attitude-only experiment.  Zeroing the outer gains keeps the
+  // target at the fixed equilibrium without changing the checked-in config
+  // or the locked attitude/notch dimensions.
+  ConfigPid::values.pitch_rate_gain = 350.0;
+  ConfigPid::values.pitch_accel_gain = 0.0;
+  ConfigPid::values.velocity_damping_per_s = 0.0;
+  ConfigPid::values.velocity_I = 0.0;
+
+  const std::array<RecoveryInitialState, 20> states = {{
+      {"pitch_p1", 1.0, 0.0, 0.0},
+      {"pitch_n1", -1.0, 0.0, 0.0},
+      {"pitch_p2", 2.0, 0.0, 0.0},
+      {"pitch_n2", -2.0, 0.0, 0.0},
+      {"pitch_p4", 4.0, 0.0, 0.0},
+      {"pitch_n4", -4.0, 0.0, 0.0},
+      {"pitch_p6", 6.0, 0.0, 0.0},
+      {"pitch_n6", -6.0, 0.0, 0.0},
+      {"rate_p20", 2.0, 20.0, 0.0},
+      {"rate_n20", 2.0, -20.0, 0.0},
+      {"rate_p40", 2.0, 40.0, 0.0},
+      {"rate_n40", 2.0, -40.0, 0.0},
+      {"velocity_p500", 2.0, 0.0, 500.0},
+      {"velocity_n500", 2.0, 0.0, -500.0},
+      {"velocity_p1000", 2.0, 0.0, 1000.0},
+      {"velocity_n1000", 2.0, 0.0, -1000.0},
+      {"aligned_pitch_rate", 4.0, 40.0, 0.0},
+      {"opposed_pitch_rate", 4.0, -40.0, 0.0},
+      {"aligned_pitch_velocity", 4.0, 0.0, 1000.0},
+      {"opposed_pitch_velocity", 4.0, 0.0, -1000.0},
+  }};
+  const std::array<double, 4> pitch_gains = {6000.0, 8000.0, 10000.0, 12000.0};
+
+  for (const auto profile : {PhysicsProfile::DirectActuator,
+                             PhysicsProfile::RetiredSimpleForce}) {
+    for (const double pitch_gain : pitch_gains) {
+      ConfigPid::values.pitch_gain = pitch_gain;
+      size_t recovered = 0;
+      size_t safety_rejected = 0;
+      double worst_peak_pitch = 0.0;
+      double worst_peak_rate = 0.0;
+      double worst_peak_command = 0.0;
+      double worst_force_fraction = 0.0;
+      double worst_return_s = 0.0;
+      double worst_fast_activity = 0.0;
+      double worst_final_velocity_sps = 0.0;
+      for (const auto& initial : states) {
+        const auto result = run_simulator_scenario_with_loaded_pid(
+            attitude_recovery_scenario(profile, initial));
+        ASSERT_FALSE(result.rows.empty());
+        const double return_s = first_time_inside_pitch_band(result, 1.0);
+        const double peak_rate = signal_peak_in_window(
+            result, 0.0, result.rows.back().sim_time_s + 1e-9,
+            [](const auto& row) { return row.plant_pitch_rate_dps; });
+        const double peak_command = signal_peak_in_window(
+            result, 0.0, result.rows.back().sim_time_s + 1e-9,
+            [](const auto& row) { return row.u_sps; });
+        const double fast_activity = band_rms_signal_in_window(
+            result, 2.0, result.rows.back().sim_time_s + 1e-9, 20, 40,
+            [](const auto& row) { return row.u_sps; });
+        const double final_velocity_sps =
+            result.rows.back().plant_velocity / Config::meters_per_step;
+        if (!result.fell && result.controller_fault_flags == ControllerFaultNone &&
+            std::isfinite(return_s)) {
+          ++recovered;
+        }
+        if ((result.controller_fault_flags & ControllerFaultFallover) != 0U) {
+          ++safety_rejected;
+        }
+        worst_peak_pitch = std::max(worst_peak_pitch, result.max_abs_pitch_deg);
+        worst_peak_rate = std::max(worst_peak_rate, peak_rate);
+        worst_peak_command = std::max(worst_peak_command, peak_command);
+        worst_force_fraction = std::max(worst_force_fraction, peak_force_fraction(result));
+        if (std::isfinite(return_s)) worst_return_s = std::max(worst_return_s, return_s);
+        worst_fast_activity = std::max(worst_fast_activity, fast_activity);
+        worst_final_velocity_sps =
+            std::max(worst_final_velocity_sps, std::abs(final_velocity_sps));
+        std::cout << "recovery_state profile=" << BalancerSimulator::profile_name(profile)
+                  << " kp=" << pitch_gain << " state=" << initial.name
+                  << " fell=" << result.fell << " peak_pitch_deg=" << result.max_abs_pitch_deg
+                  << " controller_fault_flags=" << result.controller_fault_flags
+                  << " peak_rate_dps=" << peak_rate << " peak_command_sps=" << peak_command
+                  << " return_inside_1s=" << return_s << " final_velocity_sps="
+                  << final_velocity_sps << " force_fraction=" << peak_force_fraction(result)
+                  << " command_20_40_rms_sps=" << fast_activity << '\n';
+        if (profile == PhysicsProfile::DirectActuator &&
+            std::string(initial.name) == "pitch_p6") {
+          std::cout << "recovery_terms profile=" << BalancerSimulator::profile_name(profile)
+                    << " kp=" << pitch_gain << " state=" << initial.name
+                    << " pitch_term_peak_sps="
+                    << signal_peak_in_window(
+                           result, 0.0, result.rows.back().sim_time_s + 1e-9,
+                           [](const auto& row) { return row.pitch_feedback_sps; })
+                    << " rate_term_peak_sps="
+                    << signal_peak_in_window(
+                           result, 0.0, result.rows.back().sim_time_s + 1e-9,
+                           [](const auto& row) { return row.pitch_rate_feedback_sps; })
+                    << " command_peak_sps=" << peak_command
+                    << " applied_force_peak_n="
+                    << signal_peak_in_window(
+                           result, 0.0, result.rows.back().sim_time_s + 1e-9,
+                           [](const auto& row) { return row.f_app; })
+                    << " pitch_accel_peak_rad_s2="
+                    << signal_peak_in_window(
+                           result, 0.0, result.rows.back().sim_time_s + 1e-9,
+                           [](const auto& row) { return row.theta_ddot; })
+                    << " wheel_accel_peak_m_s2="
+                    << signal_peak_in_window(
+                           result, 0.0, result.rows.back().sim_time_s + 1e-9,
+                           [](const auto& row) { return row.x_ddot; })
+                    << '\n';
+        }
+      }
+        std::cout << "recovery_envelope profile=" << BalancerSimulator::profile_name(profile)
+                << " kp=" << pitch_gain << " recovered=" << recovered << "/" << states.size()
+                << " safety_rejected=" << safety_rejected
+                << " worst_peak_pitch_deg=" << worst_peak_pitch
+                << " worst_peak_rate_dps=" << worst_peak_rate
+                << " worst_peak_command_sps=" << worst_peak_command
+                << " worst_return_inside_1s=" << worst_return_s
+                << " worst_force_fraction=" << worst_force_fraction
+                << " worst_command_20_40_rms_sps=" << worst_fast_activity
+                << " worst_final_velocity_sps=" << worst_final_velocity_sps << '\n';
+
+      SimulatorScenario neutral;
+      neutral.name = "attitude_recovery_neutral";
+      neutral.duration_s = 180.0;
+      neutral.physics_profile = profile;
+      const auto neutral_result = run_simulator_scenario_with_loaded_pid(neutral);
+      ASSERT_FALSE(neutral_result.rows.empty());
+      const double neutral_rate_rms = signal_rms_in_window(
+          neutral_result, 120.0, 180.0, [](const auto& row) { return row.plant_pitch_rate_dps; });
+      const double neutral_command_rms = signal_rms_in_window(
+          neutral_result, 120.0, 180.0, [](const auto& row) { return row.u_sps; });
+      const double neutral_command_fast = band_rms_signal_in_window(
+          neutral_result, 120.0, 180.0, 20, 40, [](const auto& row) { return row.u_sps; });
+      const double neutral_rate_fast = band_rms_signal_in_window(
+          neutral_result, 120.0, 180.0, 20, 40,
+          [](const auto& row) { return row.plant_pitch_rate_dps; });
+      std::cout << "recovery_neutral profile=" << BalancerSimulator::profile_name(profile)
+                << " kp=" << pitch_gain << " fell=" << neutral_result.fell
+                << " pitch_rms_deg=" << neutral_result.tail_rms_pitch_deg
+                << " rate_rms_dps=" << neutral_rate_rms
+                << " command_rms_sps=" << neutral_command_rms
+                << " command_20_40_rms_sps=" << neutral_command_fast
+                << " rate_20_40_rms_dps=" << neutral_rate_fast << '\n';
+    }
+
+    for (const auto& initial : std::array<RecoveryInitialState, 4>{{
+             {"cold_50deg", 50.0, 0.0, 0.0},
+             {"cold_52deg", 52.0, 0.0, 0.0},
+             {"hardware_state_a", 4.3, 0.0, 964.0},
+             {"hardware_state_b", 9.0, 0.0, 1800.0},
+         }}) {
+      std::cout << "recovery_boundary profile=" << BalancerSimulator::profile_name(profile)
+                << " state=" << initial.name;
+      for (const double pitch_gain : pitch_gains) {
+        ConfigPid::values.pitch_gain = pitch_gain;
+        const auto result = run_simulator_scenario_with_loaded_pid(
+            attitude_recovery_scenario(profile, initial));
+        ASSERT_FALSE(result.rows.empty());
+        const double return_s = first_time_inside_pitch_band(result, 1.0);
+        std::cout << " kp=" << pitch_gain << ":fell=" << result.fell
+                  << ":fault_flags=" << result.controller_fault_flags
+                  << ":peak_pitch=" << result.max_abs_pitch_deg
+                  << ":peak_rate="
+                  << signal_peak_in_window(result, 0.0, result.rows.back().sim_time_s + 1e-9,
+                                           [](const auto& row) { return row.plant_pitch_rate_dps; })
+                  << ":peak_command="
+                  << signal_peak_in_window(result, 0.0, result.rows.back().sim_time_s + 1e-9,
+                                           [](const auto& row) { return row.u_sps; })
+                  << ":return=" << return_s << ":final_velocity_sps="
+                  << result.rows.back().plant_velocity / Config::meters_per_step;
+        if (profile == PhysicsProfile::DirectActuator &&
+            std::string(initial.name) == "cold_52deg") {
+          const std::array<double, 8> trace_times_s = {
+              0.0, 0.025, 0.05, 0.10, 0.20, 0.40, 0.80, 1.20};
+          for (const double trace_time_s : trace_times_s) {
+            auto row_it = std::lower_bound(
+                result.rows.begin(), result.rows.end(), trace_time_s,
+                [](const auto& row, double time_s) { return row.sim_time_s < time_s; });
+            if (row_it == result.rows.end()) row_it = std::prev(result.rows.end());
+            std::cout << "\ncold_start_trace state=" << initial.name << " kp=" << pitch_gain
+                      << " t_s=" << row_it->sim_time_s
+                      << " fused_pitch_deg=" << row_it->fused_pitch_deg
+                      << " actual_pitch_deg=" << row_it->plant_pitch_deg
+                      << " pitch_rate_dps=" << row_it->plant_pitch_rate_dps
+                      << " pitch_error_deg=" << row_it->pitch_error_deg
+                      << " pitch_term_sps=" << row_it->pitch_feedback_sps
+                      << " rate_term_sps=" << row_it->pitch_rate_feedback_sps
+                      << " command_sps=" << row_it->u_sps
+                      << " applied_force_n=" << row_it->f_app
+                      << " pitch_accel_rad_s2=" << row_it->theta_ddot
+                      << " wheel_accel_m_s2=" << row_it->x_ddot
+                      << " fall_margin_deg=" << 70.0 - std::abs(row_it->plant_pitch_deg);
+          }
+          std::cout << '\n';
+        }
+      }
+      std::cout << '\n';
+    }
+  }
+}
+
+TEST(SimulatorReferenceTest, SlowSimpleVelocityBaselineIsMappedInsideRecoveryEnvelope) {
+  ScopedStateFeedbackConfig restore;
+  ConfigPid::load(sim_pid_path());
+  // Use the lowest candidate that materially improved the ordinary recovery
+  // envelope in the attitude-only experiment.  The outer matrix is isolated
+  // from COM adaptation so it measures translation control, not bias learning.
+  ConfigPid::values.pitch_gain = kOneThirtySecondPitchGain;
+  ConfigPid::values.pitch_rate_gain = 350.0;
+  ConfigPid::values.pitch_accel_gain = 0.0;
+  ConfigPid::values.velocity_I = 0.0;
+  ConfigPid::values.velocity_pitch_limit_deg = 2.0;
+
+  for (const double cutoff_hz : {0.5, 1.0, 1.5}) {
+    for (const double damping_per_s : {1.0, 2.0, 3.0, 4.0}) {
+      ConfigPid::values.velocity_control_cutoff_hz = cutoff_hz;
+      ConfigPid::values.velocity_damping_per_s = damping_per_s;
+      for (const auto profile : {PhysicsProfile::DirectActuator,
+                                 PhysicsProfile::RetiredSimpleForce}) {
+        for (const double initial_velocity_sps : {0.0, 500.0, -500.0, 1000.0, -1000.0}) {
+          const auto result = run_simulator_scenario_with_loaded_pid(
+              velocity_reference_scenario(profile,
+                                          initial_velocity_sps * Config::meters_per_step));
+          ASSERT_FALSE(result.rows.empty());
+          const double peak_velocity_sps = signal_peak_in_window(
+              result, 0.0, result.rows.back().sim_time_s + 1e-9,
+              [](const auto& row) { return row.plant_velocity / Config::meters_per_step; });
+          const double peak_pitch = signal_peak_in_window(
+              result, 0.0, result.rows.back().sim_time_s + 1e-9,
+              [](const auto& row) { return row.plant_pitch_deg; });
+          const double peak_rate = signal_peak_in_window(
+              result, 0.0, result.rows.back().sim_time_s + 1e-9,
+              [](const auto& row) { return row.plant_pitch_rate_dps; });
+          const double command_rms = signal_rms_in_window(
+              result, 0.0, result.rows.back().sim_time_s + 1e-9,
+              [](const auto& row) { return row.u_sps; });
+          const double pitch_target_peak = signal_peak_in_window(
+              result, 0.0, result.rows.back().sim_time_s + 1e-9,
+              [](const auto& row) { return row.velocity_pitch_request_limited_deg; });
+          const double authority_fraction = signal_rms_in_window(
+              result, 0.0, result.rows.back().sim_time_s + 1e-9,
+              [](const auto& row) { return row.velocity_authority_limited; });
+          const double margin = recovery_margin(result);
+          std::cout << "velocity_simple profile=" << BalancerSimulator::profile_name(profile)
+                    << " cutoff_hz=" << cutoff_hz << " damping_per_s=" << damping_per_s
+                    << " initial_velocity_sps=" << initial_velocity_sps
+                    << " fell=" << result.fell << " peak_velocity_sps=" << peak_velocity_sps
+                    << " peak_pitch_deg=" << peak_pitch << " peak_rate_dps=" << peak_rate
+                    << " final_velocity_sps="
+                    << result.rows.back().plant_velocity / Config::meters_per_step
+                    << " pitch_request_peak_deg=" << pitch_target_peak
+                    << " authority_fraction=" << authority_fraction
+                    << " command_rms_sps=" << command_rms << " recovery_margin=" << margin
+                    << " final_position_m=" << std::abs(result.rows.back().plant_position)
+                    << '\n';
+          if (profile == PhysicsProfile::DirectActuator) {
+            EXPECT_EQ(result.controller_fault_flags, 0U);
+            EXPECT_EQ(result.actuator_fault_count, 0U);
+            EXPECT_FALSE(result.fell);
+          } else {
+            // Retired model aliases are retained only as compatibility
+            // diagnostics. Their failures are not acceptance criteria for the
+            // slow baseline.
+            EXPECT_FALSE(result.rows.empty());
+          }
+        }
+      }
+
+      const auto stop_result = run_simulator_scenario_with_loaded_pid(
+          slow_stop_reference_scenario(PhysicsProfile::DirectActuator));
+      ASSERT_FALSE(stop_result.rows.empty());
+      const double stop_at_s =
+          first_time_velocity_band_with_dwell(stop_result, 2.0, 50.0, 0.5);
+      const double threshold_crossing_time_s =
+          std::isfinite(stop_at_s) ? stop_at_s - 2.0 : std::numeric_limits<double>::infinity();
+      const double threshold_crossing_distance_m =
+          std::isfinite(stop_at_s)
+              ? maximum_position_displacement(stop_result, 2.0, stop_at_s)
+              : std::numeric_limits<double>::infinity();
+      std::cout << "velocity_threshold_crossing profile=DirectActuator cutoff_hz=" << cutoff_hz
+                << " damping_per_s=" << damping_per_s << " fell=" << stop_result.fell
+                << " threshold_crossing_time_s=" << threshold_crossing_time_s
+                << " threshold_crossing_distance_m=" << threshold_crossing_distance_m
+                << " peak_velocity_sps="
+                << signal_peak_in_window(
+                       stop_result, 0.0, stop_result.rows.back().sim_time_s + 1e-9,
+                       [](const auto& row) {
+                         return row.plant_velocity / Config::meters_per_step;
+                       })
+                << " peak_pitch_deg="
+                << signal_peak_in_window(
+                       stop_result, 0.0, stop_result.rows.back().sim_time_s + 1e-9,
+                       [](const auto& row) { return row.plant_pitch_deg; })
+                << " peak_rate_dps="
+                << signal_peak_in_window(
+                       stop_result, 0.0, stop_result.rows.back().sim_time_s + 1e-9,
+                       [](const auto& row) { return row.plant_pitch_rate_dps; })
+                << " command_rms_sps="
+                << signal_rms_in_window(
+                       stop_result, 2.0, stop_result.rows.back().sim_time_s + 1e-9,
+                       [](const auto& row) { return row.u_sps; })
+                << '\n';
+      if (cutoff_hz == 0.5 && damping_per_s == 2.0) {
+        const auto release_it = std::lower_bound(
+            stop_result.rows.begin(), stop_result.rows.end(), 2.0,
+            [](const auto& row, double time_s) { return row.sim_time_s < time_s; });
+        const auto following_it = release_it == stop_result.rows.end()
+                                      ? std::prev(stop_result.rows.end())
+                                      : release_it;
+        const auto preceding_it = release_it == stop_result.rows.begin()
+                                      ? release_it
+                                      : std::prev(release_it);
+        const double release_velocity_sps =
+            std::abs(preceding_it->plant_velocity / Config::meters_per_step);
+        const double following_velocity_sps =
+            std::abs(following_it->plant_velocity / Config::meters_per_step);
+        const double ideal_tau_s = 1.0 / damping_per_s;
+        const double ideal_50_crossing_s =
+            release_velocity_sps > 50.0
+                ? ideal_tau_s * std::log(release_velocity_sps / 50.0)
+                : 0.0;
+        std::cout << "velocity_stop_metric_audit cutoff_hz=" << cutoff_hz
+                  << " damping_per_s=" << damping_per_s
+                  << " velocity_before_release_sps=" << release_velocity_sps
+                  << " velocity_first_after_release_sps=" << following_velocity_sps
+                  << " control_velocity_first_after_release_sps="
+                  << following_it->velocity_control_sps
+                  << " damping_accel_first_after_release_mps2="
+                  << following_it->velocity_damping_acceleration_mps2
+                  << " actual_accel_first_after_release_mps2=" << following_it->x_ddot
+                  << " ideal_tau_s=" << ideal_tau_s
+                  << " ideal_50_crossing_s=" << ideal_50_crossing_s
+                  << " measured_metric_threshold_s=" << threshold_crossing_time_s
+                  << " metric_definition=abs_velocity<=50_sps_then_abs_velocity<=100_sps_for_0.5s\n";
+      }
+      EXPECT_FALSE(stop_result.fell);
+    }
+  }
+}
+
 TEST(SimulatorReferenceTest, IsolatedVelocitySignIsSymmetricAndDamped) {
   ScopedStateFeedbackConfig restore;
   ConfigPid::load(sim_pid_path());
-  ConfigPid::values.pitch_gain = 6000.0;
+  ConfigPid::values.pitch_gain = kOneThirtySecondPitchGain;
   ConfigPid::values.pitch_rate_gain = 350.0;
   ConfigPid::values.pitch_accel_gain = 0.0;
   ConfigPid::values.velocity_control_cutoff_hz = 3.0;
@@ -1436,9 +2358,9 @@ TEST(SimulatorReferenceTest, IsolatedVelocitySignIsSymmetricAndDamped) {
   ConfigPid::values.velocity_I = 0.0;
 
   const auto positive = run_simulator_scenario_with_loaded_pid(
-      isolated_velocity_sign_scenario(PhysicsProfile::IdealForce, 0.15));
+      isolated_velocity_sign_scenario(PhysicsProfile::DirectActuator, 0.15));
   const auto negative = run_simulator_scenario_with_loaded_pid(
-      isolated_velocity_sign_scenario(PhysicsProfile::IdealForce, -0.15));
+      isolated_velocity_sign_scenario(PhysicsProfile::DirectActuator, -0.15));
   ASSERT_FALSE(positive.rows.empty());
   ASSERT_FALSE(negative.rows.empty());
   const double positive_final = positive.rows.back().plant_velocity;
@@ -1457,7 +2379,7 @@ TEST(SimulatorReferenceTest, IsolatedVelocitySignIsSymmetricAndDamped) {
 TEST(SimulatorReferenceTest, LargerStaticComOffsetsAcquireWithoutDynamicTrimDrift) {
   ScopedStateFeedbackConfig restore;
   ConfigPid::load(sim_pid_path());
-  ConfigPid::values.pitch_gain = 6000.0;
+  ConfigPid::values.pitch_gain = kOneThirtySecondPitchGain;
   ConfigPid::values.pitch_rate_gain = 350.0;
   ConfigPid::values.pitch_accel_gain = 0.0;
   ConfigPid::values.velocity_control_cutoff_hz = 3.0;
@@ -1468,7 +2390,7 @@ TEST(SimulatorReferenceTest, LargerStaticComOffsetsAcquireWithoutDynamicTrimDrif
     SimulatorScenario scenario;
     scenario.name = "larger_static_com_offset";
     scenario.duration_s = 120.0;
-    scenario.physics_profile = PhysicsProfile::IdealForce;
+    scenario.physics_profile = PhysicsProfile::DirectActuator;
     scenario.com_angle_offset_rad = offset_rad;
     const auto result = run_simulator_scenario_with_loaded_pid(scenario);
     ASSERT_FALSE(result.rows.empty());
@@ -1490,6 +2412,80 @@ TEST(SimulatorReferenceTest, LargerStaticComOffsetsAcquireWithoutDynamicTrimDrif
   }
 }
 
+TEST(SimulatorReferenceTest, EquilibriumAngleComEstimatorReplayCoversStaticAndChangedBias) {
+  ScopedStateFeedbackConfig restore;
+  ConfigPid::load(sim_pid_path());
+  ConfigPid::values.pitch_gain = 10000.0;
+  ConfigPid::values.pitch_rate_gain = 350.0;
+  ConfigPid::values.pitch_accel_gain = 0.0;
+  ConfigPid::values.velocity_control_cutoff_hz = 3.0;
+  ConfigPid::values.velocity_damping_per_s = 8.0;
+  ConfigPid::values.velocity_pitch_limit_deg = 4.0;
+  ConfigPid::values.velocity_I = 0.001;
+
+  for (const double offset_rad : {0.002, -0.002, 0.004, -0.004, 0.008, -0.008,
+                                  0.020, -0.020}) {
+    SimulatorScenario scenario;
+    scenario.name = "equilibrium_angle_com_replay";
+    scenario.duration_s = 180.0;
+    scenario.physics_profile = PhysicsProfile::DirectActuator;
+    scenario.com_angle_offset_rad = offset_rad;
+    const auto result = run_simulator_scenario_with_loaded_pid(scenario);
+    ASSERT_FALSE(result.rows.empty());
+    const auto replay = replay_equilibrium_angle(result);
+    const auto trust = std::find_if(
+        result.rows.begin(), result.rows.end(),
+        [](const auto& row) { return row.trim_trusted > 0.5; });
+    const double expected_trim_deg = -offset_rad * 180.0 / M_PI;
+    const double final_trim_deg = result.rows.back().com_trim_deg;
+    std::cout << "equilibrium_com_static offset_rad=" << offset_rad
+              << " fell=" << result.fell << " trust_time_s="
+              << (trust == result.rows.end() ? std::numeric_limits<double>::infinity()
+                                               : trust->sim_time_s)
+              << " final_trim_deg=" << final_trim_deg
+              << " expected_trim_deg=" << expected_trim_deg
+              << " trim_error_deg=" << std::abs(final_trim_deg - expected_trim_deg)
+              << " q_eq_raw_deg=" << replay.raw_deg
+              << " q_eq_candidate_deg=" << replay.candidate_deg
+              << " q_eq_hat_deg=" << replay.estimate_deg
+              << " prototype_trim_deg=" << replay.prototype_trim_deg
+              << " max_q_eq_gap_deg=" << replay.max_candidate_estimate_gap_deg
+              << " quiet_time_s=" << replay.quiet_time_s
+              << " max_position_m=" << std::abs(result.rows.back().plant_position) << '\n';
+    EXPECT_FALSE(result.fell);
+    EXPECT_EQ(result.controller_fault_flags, 0U);
+    EXPECT_EQ(result.actuator_fault_count, 0U);
+    EXPECT_TRUE(std::any_of(result.rows.begin(), result.rows.end(), [](const auto& row) {
+      return row.trim_learning_enabled > 0.5;
+    }));
+    EXPECT_LT(offset_rad * final_trim_deg, 0.0);
+  }
+
+  SimulatorScenario changed;
+  changed.name = "equilibrium_angle_com_replay_changed_bias";
+  changed.duration_s = 180.0;
+  changed.physics_profile = PhysicsProfile::DirectActuator;
+  changed.com_angle_offset_rad = 0.004;
+  changed.disturbances.push_back(SimulatorDisturbance{
+      .kind = SimulatorDisturbanceKind::HoldBias,
+      .start_s = 100.0,
+      .duration_s = 60.0,
+      .com_bias_rad = 0.004,
+  });
+  const auto changed_result = run_simulator_scenario_with_loaded_pid(changed);
+  ASSERT_FALSE(changed_result.rows.empty());
+  const auto changed_replay = replay_equilibrium_angle(changed_result);
+  std::cout << "equilibrium_com_changed fell=" << changed_result.fell
+            << " trim_before_change="
+            << changed_result.rows[39999].com_trim_deg
+            << " final_trim_deg=" << changed_result.rows.back().com_trim_deg
+            << " q_eq_hat_deg=" << changed_replay.estimate_deg
+            << " prototype_trim_deg=" << changed_replay.prototype_trim_deg
+            << " max_position_m=" << std::abs(changed_result.rows.back().plant_position)
+            << '\n';
+  EXPECT_FALSE(changed_result.fell);
+}
+
 TEST(SimulatorReferenceTest, StateFeedbackControllerShapesAreComparedAcrossReferenceProfiles) {
   ScopedStateFeedbackConfig restore;
   ConfigPid::load(sim_pid_path());
@@ -1508,8 +2504,8 @@ TEST(SimulatorReferenceTest, StateFeedbackControllerShapesAreComparedAcrossRefer
       {"current_15680_448_0", 15680.0, 448.0, 0.0},
       {"historical_9600_1000_0", 9600.0, 1000.0, 0.0},
   }};
-  const std::array<PhysicsProfile, 2> profiles = {PhysicsProfile::IdealForce,
-                                                   PhysicsProfile::SimpleForce};
+  const std::array<PhysicsProfile, 2> profiles = {PhysicsProfile::DirectActuator,
+                                                   PhysicsProfile::RetiredSimpleForce};
   for (const auto& candidate : candidates) {
     ConfigPid::values.pitch_gain = candidate.pitch;
     ConfigPid::values.pitch_rate_gain = candidate.rate;
@@ -1553,7 +2549,7 @@ TEST(SimulatorReferenceTest, AccelerationFeedbackSmallGainCheckIsExplicit) {
   for (const double accel_gain : {0.0, 2.0, 4.0, 8.0}) {
     ConfigPid::values.pitch_accel_gain = accel_gain;
     const auto result = run_simulator_scenario_with_loaded_pid(push_reference_scenario(
-        PhysicsProfile::IdealForce));
+        PhysicsProfile::DirectActuator));
     const auto metrics = measure_controller_scenario(result, 1.1);
     const double high_frequency_command = band_rms_signal_in_window(
         result, 2.0, 6.0, 20, 30, [](const auto& row) { return row.u_sps; });
@@ -1578,7 +2574,7 @@ TEST(SimulatorReferenceTest, VelocityControlBandwidthAndDampingMapIsReported) {
       ConfigPid::values.velocity_control_cutoff_hz = cutoff_hz;
       ConfigPid::values.velocity_damping_per_s = damping_per_s;
       const auto result = run_simulator_scenario_with_loaded_pid(
-          velocity_reference_scenario(PhysicsProfile::IdealForce));
+          velocity_reference_scenario(PhysicsProfile::DirectActuator));
       ASSERT_FALSE(result.rows.empty());
       const auto metrics = measure_controller_scenario(result, 1.0);
       const double velocity_rms = signal_rms_in_window(
@@ -1606,7 +2602,7 @@ TEST(SimulatorReferenceTest, VelocityControlBandwidthAndDampingMapIsReported) {
     ConfigPid::values.velocity_control_cutoff_hz = 3.0;
     ConfigPid::values.velocity_damping_per_s = 13.0;
     const auto result = run_simulator_scenario_with_loaded_pid(
-        velocity_reference_scenario(PhysicsProfile::IdealForce, initial_velocity_mps));
+        velocity_reference_scenario(PhysicsProfile::DirectActuator, initial_velocity_mps));
     std::cout << "velocity_initial_state initial_velocity_mps=" << initial_velocity_mps
               << " fell=" << result.fell << " final_velocity_mps="
               << result.rows.back().plant_velocity << " final_position_m="
@@ -1620,9 +2616,9 @@ TEST(SimulatorReferenceTest, VelocityControlBandwidthAndDampingMapIsReported) {
     ConfigPid::values.velocity_control_cutoff_hz = cutoff_hz;
     ConfigPid::values.velocity_damping_per_s = 13.0;
     const auto result = run_simulator_scenario_with_loaded_pid(
-        velocity_reference_scenario(PhysicsProfile::SimpleForce));
+        velocity_reference_scenario(PhysicsProfile::RetiredSimpleForce));
     const auto metrics = measure_controller_scenario(result, 1.0);
-    std::cout << "velocity_reference profile=simple_force cutoff_hz=" << cutoff_hz
+    std::cout << "velocity_reference profile=retired_simple_force_alias cutoff_hz=" << cutoff_hz
               << " fell=" << result.fell << " tail=" << metrics.tail_rms_deg
               << " command_rms_sps=" << metrics.command_rms_sps
               << " final_velocity_mps=" << result.rows.back().plant_velocity << '\n';
@@ -1643,7 +2639,7 @@ TEST(SimulatorReferenceTest, StateFeedbackComTrimAcquisitionFreezeAndMaintenance
   SimulatorScenario scenario;
   scenario.name = "state_feedback_com_acquisition_motion_maintenance";
   scenario.duration_s = 90.0;
-  scenario.physics_profile = PhysicsProfile::IdealForce;
+  scenario.physics_profile = PhysicsProfile::DirectActuator;
   scenario.com_angle_offset_rad = 0.002;
   scenario.joy_segments = {
       SimulatorJoySegment{.start_s = 30.0,
@@ -1714,7 +2710,7 @@ TEST(SimulatorReferenceTest, LowerGainStateFeedbackCandidatesGetVelocityBandwidt
         ConfigPid::values.velocity_control_cutoff_hz = cutoff_hz;
         ConfigPid::values.velocity_damping_per_s = damping_per_s;
         const auto result = run_simulator_scenario_with_loaded_pid(
-            velocity_reference_scenario(PhysicsProfile::IdealForce));
+            velocity_reference_scenario(PhysicsProfile::DirectActuator));
         const auto metrics = measure_controller_scenario(result, 1.0);
         const double velocity_rms = signal_rms_in_window(
             result, 10.0, 14.0, [](const auto& row) { return row.plant_velocity; });
@@ -1749,8 +2745,8 @@ TEST(SimulatorReferenceTest, StateFeedbackRobustnessAndDiagnosticProfilesAreRepo
       {"low_6000_500", 6000.0, 500.0},
       {"mid_6500_450", 6500.0, 450.0},
   }};
-  const std::array<PhysicsProfile, 2> profiles = {PhysicsProfile::IdealForce,
-                                                   PhysicsProfile::SimpleForce};
+  const std::array<PhysicsProfile, 2> profiles = {PhysicsProfile::DirectActuator,
+                                                   PhysicsProfile::RetiredSimpleForce};
 
   struct Variation {
     const char* name;
@@ -1846,7 +2842,7 @@ TEST(SimulatorReferenceTest, StateFeedbackContributionTelemetryMatchesActiveConf
 
   SimulatorScenario scenario;
   scenario.duration_s = 0.25;
-  scenario.physics_profile = PhysicsProfile::IdealForce;
+  scenario.physics_profile = PhysicsProfile::DirectActuator;
   const auto result = run_simulator_scenario_with_loaded_pid(scenario);
   ASSERT_FALSE(result.rows.empty());
   const auto& row = result.rows.back();
@@ -1866,6 +2862,49 @@ TEST(SimulatorReferenceTest, StateFeedbackContributionTelemetryMatchesActiveConf
   EXPECT_TRUE(std::isfinite(row.pitch_target_unclamped_deg));
   EXPECT_TRUE(std::isfinite(row.trim_quiet_rate_rms_dps));
   EXPECT_TRUE(std::isfinite(row.balance_unclamped_sps));
+}
+
+TEST(SimulatorReferenceTest, EndToEndStateScalingPreservesRadiansAtControllerBoundary) {
+  ScopedStateFeedbackConfig restore;
+  ConfigPid::load(sim_pid_path());
+  ConfigPid::values.pitch_gain = 6000.0;
+  ConfigPid::values.pitch_rate_gain = 350.0;
+  ConfigPid::values.pitch_accel_gain = 0.0;
+  ConfigPid::values.velocity_damping_per_s = 0.0;
+  ConfigPid::values.velocity_I = 0.0;
+  ConfigPid::values.velocity_control_cutoff_hz = 3.0;
+  ConfigPid::values.balance_max_sps = Config::max_step_rate_sps;
+
+  SimulatorScenario scenario;
+  scenario.name = "state_scaling_audit";
+  scenario.duration_s = 0.05;
+  scenario.physics_profile = PhysicsProfile::DirectActuator;
+  scenario.initial_pitch_deg = 0.5;
+  scenario.initial_fused_pitch_deg = 0.5;
+  scenario.initial_pitch_rate_dps = 1.0;
+  const auto result = run_simulator_scenario_with_loaded_pid(scenario);
+  ASSERT_FALSE(result.rows.empty());
+
+  bool saw_nonzero_rate = false;
+  for (const auto& row : result.rows) {
+    // The simulator sensor boundary reports radians internally and the
+    // timeline converts only for display.  The raw gyro is the plant rate;
+    // the controller-facing rate is the filtered/notched value.
+    EXPECT_NEAR(row.pitch_deg, row.fused_pitch_deg, 1.0e-12);
+    EXPECT_NEAR(row.pitch_rate_dps, row.filtered_pitch_rate_dps, 1.0e-12);
+    EXPECT_NEAR(row.pitch_feedback_sps,
+                -ConfigPid::values.pitch_gain * row.pitch_error_deg * M_PI / 180.0,
+                1.0e-4);
+    EXPECT_NEAR(row.pitch_rate_feedback_sps,
+                ConfigPid::values.pitch_rate_gain * row.pitch_rate_dps * M_PI / 180.0,
+                1.0e-4);
+    EXPECT_NEAR(row.balance_unclamped_sps,
+                row.pitch_feedback_sps + row.pitch_rate_feedback_sps +
+                    row.pitch_accel_feedback_sps,
+                1.0e-4);
+    saw_nonzero_rate = saw_nonzero_rate || std::abs(row.gyro_pitch_rate_dps) > 0.1;
+  }
+  EXPECT_TRUE(saw_nonzero_rate);
 }
 
 TEST(SimulatorReferenceTest, SelectedStateFeedbackCandidateLongHorizonAndDriveChecksAreReported) {
@@ -1892,7 +2931,7 @@ TEST(SimulatorReferenceTest, SelectedStateFeedbackCandidateLongHorizonAndDriveCh
     SimulatorScenario neutral;
     neutral.name = candidate.name;
     neutral.duration_s = 180.0;
-    neutral.physics_profile = PhysicsProfile::IdealForce;
+    neutral.physics_profile = PhysicsProfile::DirectActuator;
     neutral.com_angle_offset_rad = 0.002;
     const auto neutral_result = run_simulator_scenario_with_loaded_pid(neutral);
     const auto neutral_metrics = measure_controller_scenario(neutral_result, 30.0);
@@ -1980,7 +3019,7 @@ TEST(SimulatorTransferTest, NominalReferenceMeetsGatesAndSecondaryIsDiagnostic) 
     SCOPED_TRACE(scenario.name);
     const auto result = run_simulator_scenario_with_loaded_pid(scenario);
     const auto acceptance = evaluate_transfer_scenario(result);
-    if (scenario.physics_profile == PhysicsProfile::IdealForce) {
+    if (scenario.physics_profile == PhysicsProfile::DirectActuator) {
       EXPECT_TRUE(acceptance.accepted) << [&]() {
         std::string joined;
         for (const auto& failure : acceptance.failures) {
@@ -1990,10 +3029,8 @@ TEST(SimulatorTransferTest, NominalReferenceMeetsGatesAndSecondaryIsDiagnostic) 
         return joined;
       }();
     } else {
-      // SimpleForce deliberately retains a 150 ms aggregate lag. It is a
-      // secondary reference for model sensitivity, not a calibrated acceptance
-      // target for the shared controller. Keep it observable without allowing
-      // that uncertain model to select production gains.
+      // The secondary actuator-stress fixture is a model-sensitivity report,
+      // not a calibrated acceptance target for the shared controller.
       std::cout << "secondary_diagnostic " << scenario.name << " accepted="
                 << acceptance.accepted << " fell=" << result.fell << " failures=";
       for (size_t index = 0; index < acceptance.failures.size(); ++index) {
@@ -2008,7 +3045,7 @@ TEST(SimulatorTransferTest, NominalReferenceMeetsGatesAndSecondaryIsDiagnostic) 
   }
 }
 
-TEST(SimulatorTransferTest, CheckedInDefaultPidWorksOnNominalPlant) {
+TEST(SimulatorTransferTest, DirectActuatorReferencePidWorksOnNominalPlant) {
   ConfigPid::load(sim_pid_path());
   EXPECT_DOUBLE_EQ(ConfigPid::values.pitch_gain, 6000.0);
   EXPECT_DOUBLE_EQ(ConfigPid::values.pitch_rate_gain, 350.0);
@@ -2016,7 +3053,7 @@ TEST(SimulatorTransferTest, CheckedInDefaultPidWorksOnNominalPlant) {
   EXPECT_DOUBLE_EQ(ConfigPid::values.velocity_control_cutoff_hz, 3.0);
   EXPECT_DOUBLE_EQ(ConfigPid::values.velocity_damping_per_s, 8.0);
   EXPECT_DOUBLE_EQ(ConfigPid::values.velocity_I, 0.001);
-  auto scenario = simulator_named_scenario("neutral_hold", PhysicsProfile::IdealForce);
+  auto scenario = simulator_named_scenario("neutral_hold", PhysicsProfile::DirectActuator);
   ASSERT_TRUE(scenario.has_value());
   scenario->duration_s = 180.0;
   scenario->com_angle_offset_rad = 0.001;
@@ -2031,7 +3068,7 @@ TEST(SimulatorTransferTest, CheckedInDefaultPidWorksOnNominalPlant) {
 
 TEST(SimulatorTransferTest, CheckedInDefaultPidAcquiresTrimAndRecoversSmallPush) {
   ConfigPid::load(sim_pid_path());
-  auto scenario = simulator_named_scenario("neutral_hold", PhysicsProfile::IdealForce);
+  auto scenario = simulator_named_scenario("neutral_hold", PhysicsProfile::DirectActuator);
   ASSERT_TRUE(scenario.has_value());
   scenario->name = "default_com_acquisition_small_push";
   scenario->duration_s = 120.0;
@@ -2080,7 +3117,7 @@ TEST(SimulatorReferenceTest, VelocityAuthorityGainAndLimitMatrixIsReported) {
     SimulatorScenario scenario;
     scenario.name = "velocity_authority_disturbance";
     scenario.duration_s = 12.0;
-    scenario.physics_profile = PhysicsProfile::IdealForce;
+    scenario.physics_profile = PhysicsProfile::DirectActuator;
     scenario.disturbances.push_back(SimulatorDisturbance{
         .kind = SimulatorDisturbanceKind::Step,
         .start_s = 0.5,
@@ -2148,7 +3185,8 @@ TEST(SimulatorReferenceTest, VelocityAuthorityGainAndLimitMatrixIsReported) {
   for (const double damping : {4.0, 6.0, 8.0, 10.0, 12.0, 16.0}) {
     ConfigPid::values.velocity_damping_per_s = damping;
     ConfigPid::values.velocity_pitch_limit_deg = 4.0;
-    for (const auto profile : {PhysicsProfile::IdealForce, PhysicsProfile::SimpleForce}) {
+    for (const auto profile : {PhysicsProfile::DirectActuator,
+                               PhysicsProfile::RetiredSimpleForce}) {
       const auto result = run_simulator_scenario_with_loaded_pid(
           velocity_reference_scenario(profile));
       const auto metrics = measure_controller_scenario(result, 1.0);
@@ -2171,7 +3209,7 @@ TEST(SimulatorReferenceTest, VelocityAuthorityGainAndLimitMatrixIsReported) {
 TEST(SimulatorReferenceTest, InterruptedComTrimAcquisitionPausesAndResumes) {
   ScopedStateFeedbackConfig restore;
   ConfigPid::load(sim_pid_path());
-  ConfigPid::values.pitch_gain = 6000.0;
+  ConfigPid::values.pitch_gain = kOneThirtySecondPitchGain;
   ConfigPid::values.pitch_rate_gain = 350.0;
   ConfigPid::values.pitch_accel_gain = 0.0;
   ConfigPid::values.velocity_control_cutoff_hz = 3.0;
@@ -2186,7 +3224,7 @@ TEST(SimulatorReferenceTest, InterruptedComTrimAcquisitionPausesAndResumes) {
   SimulatorScenario scenario;
   scenario.name = "interrupted_com_acquisition";
   scenario.duration_s = 90.0;
-  scenario.physics_profile = PhysicsProfile::IdealForce;
+  scenario.physics_profile = PhysicsProfile::DirectActuator;
   scenario.com_angle_offset_rad = 0.004;
   scenario.joy_segments = {
       SimulatorJoySegment{.start_s = 0.5, .duration_s = 2.0, .forward = 0.45},
@@ -2254,7 +3292,7 @@ TEST(SimulatorReferenceTest, QuietRateMetricRejectsInstantaneousResidualCrossing
   SimulatorScenario scenario;
   scenario.name = "quiet_metric_30hz_residual";
   scenario.duration_s = 8.0;
-  scenario.physics_profile = PhysicsProfile::IdealForce;
+  scenario.physics_profile = PhysicsProfile::DirectActuator;
   scenario.gyro_pitch_disturbance_frequency_hz = 29.0;
   scenario.gyro_pitch_disturbance_amplitude_rad_s = 10.0 * M_PI / 180.0;
   const auto result = run_simulator_scenario_with_loaded_pid(scenario);

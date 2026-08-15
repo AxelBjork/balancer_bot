@@ -7,10 +7,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
+#include <vector>
 
 #include <pigpiod_if2.h>
 
 #include "messages/types.h"
+#include "services/main/config.h"
 #include "services/motor/stepper.h"
 
 struct MotorFeedbackSample {
@@ -30,6 +32,16 @@ struct ScheduledStepPosition {
   double right_steps{0.0};
 };
 
+// A physical STEP edge in the simulator's wave timeline.  The controller
+// still queues 2.5 ms frames, but the simulator can consume these edges at
+// their actual timestamps instead of applying an aggregate frame displacement
+// at the next controller sample.
+struct ScheduledStepEvent {
+  uint64_t timestamp_us{0};
+  int left_step_delta{0};
+  int right_step_delta{0};
+};
+
 inline constexpr size_t kVelocityHistorySize = 64;
 inline constexpr double kVelocityEstimateWindowS = 0.05;
 
@@ -47,7 +59,8 @@ class DualWave final : public WaveFrameBackend {
  public:
   static constexpr unsigned kFrameUs = 2500;
   static constexpr unsigned kMinPulseUs = 2;
-  static constexpr unsigned kMaxScheduledHz = 12000;
+  static constexpr unsigned kMaxScheduledHz =
+      static_cast<unsigned>(Config::max_step_rate_sps);
   static constexpr unsigned kMinPulse = kMinPulseUs;
   static constexpr unsigned kMaxN =
       (kMaxScheduledHz * kFrameUs + 999999u) / 1000000u;
@@ -330,6 +343,52 @@ class MotorRunner {
     return position;
   }
 
+  // Returns all STEP edges in (start_us, end_us].  Events are derived from
+  // the same queued frame schedule used by the production wave backend; no
+  // second SPS integrator is introduced.  The half-open lower bound prevents
+  // an edge already consumed by the preceding simulator interval from being
+  // applied twice.
+  std::vector<ScheduledStepEvent> getScheduledStepEvents(uint64_t start_us,
+                                                         uint64_t end_us) const {
+    std::vector<ScheduledStepEvent> events;
+    getScheduledStepEvents(start_us, end_us, events);
+    return events;
+  }
+
+  void getScheduledStepEvents(uint64_t start_us, uint64_t end_us,
+                              std::vector<ScheduledStepEvent>& events) const {
+    std::lock_guard<std::mutex> lock(mu_);
+    events.clear();
+    if (end_us <= start_us) {
+      return;
+    }
+
+    for (size_t index = 0; index < frame_count_; ++index) {
+      const ScheduledFrame& frame = frames_[index];
+      appendFrameEvents(frame, start_us, end_us, true, events);
+      appendFrameEvents(frame, start_us, end_us, false, events);
+    }
+
+    std::sort(events.begin(), events.end(), [](const ScheduledStepEvent& lhs,
+                                               const ScheduledStepEvent& rhs) {
+      return lhs.timestamp_us < rhs.timestamp_us;
+    });
+
+    // Both motors can have an edge at the same wave timestamp.  Present one
+    // deterministic scheduler event so the plant sees the simultaneous
+    // paired update.
+    size_t merged_size = 0;
+    for (const auto& event : events) {
+      if (merged_size > 0 && events[merged_size - 1].timestamp_us == event.timestamp_us) {
+        events[merged_size - 1].left_step_delta += event.left_step_delta;
+        events[merged_size - 1].right_step_delta += event.right_step_delta;
+      } else {
+        events[merged_size++] = event;
+      }
+    }
+    events.resize(merged_size);
+  }
+
  private:
   struct ScheduledFrame {
     int backend_id{-1};
@@ -340,6 +399,38 @@ class MotorRunner {
     double left_direction{1.0};
     double right_direction{1.0};
   };
+
+  static void appendFrameEvents(const ScheduledFrame& frame, uint64_t start_us,
+                                uint64_t end_us, bool left_channel,
+                                std::vector<ScheduledStepEvent>& events) {
+    const unsigned pulse_count = left_channel ? frame.left_pulses : frame.right_pulses;
+    if (pulse_count == 0) {
+      return;
+    }
+    const int direction = static_cast<int>(left_channel ? frame.left_direction
+                                                         : frame.right_direction);
+    for (unsigned pulse = 0; pulse < pulse_count; ++pulse) {
+      // Match DualWave::scheduleChannel exactly, including its rounded event
+      // placement and the one-microsecond pulse width guard.
+      const double slot = (static_cast<double>(pulse) + 0.5) *
+                          static_cast<double>(DualWave::kFrameUs) /
+                          static_cast<double>(pulse_count);
+      uint64_t offset_us = static_cast<uint64_t>(std::llround(slot));
+      offset_us = std::min<uint64_t>(offset_us,
+                                     DualWave::kFrameUs - DualWave::kMinPulse - 1u);
+      const uint64_t timestamp_us = frame.start_us + offset_us;
+      if (timestamp_us > start_us && timestamp_us <= end_us) {
+        ScheduledStepEvent event{};
+        event.timestamp_us = timestamp_us;
+        if (left_channel) {
+          event.left_step_delta = direction;
+        } else {
+          event.right_step_delta = direction;
+        }
+        events.push_back(event);
+      }
+    }
+  }
 
   static double clampDelta(double from, double to, double max_delta) {
     return std::clamp(to, from - max_delta, from + max_delta);

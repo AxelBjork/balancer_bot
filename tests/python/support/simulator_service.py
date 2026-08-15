@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import fields
+from functools import lru_cache
 from pathlib import Path
 
 from generated_balancer import (
@@ -20,10 +21,16 @@ from tests.python.support.run_artifacts import RunRecorder
 PHYSICS_SIMPLIFIED = 0
 PHYSICS_REALISTIC = 1
 PHYSICS_ACTUATOR_STRESS = 2
-# Offline-only direct-force references. They bypass the uncalibrated
-# phase-position actuator and are the controller-validation profiles.
-PHYSICS_IDEAL_FORCE = 3
-PHYSICS_SIMPLE_FORCE = 4
+# Offline-only direct-force references. They bypass the phase-position
+# actuator and are controller-validation profiles.  The old constant remains
+# as a source-compatible alias for existing Python callers.
+PHYSICS_DIRECT_ACTUATOR = 3
+PHYSICS_IDEAL_FORCE = PHYSICS_DIRECT_ACTUATOR
+# First-stage 1/32 STEP-to-magnetic-field/rotor-phase actuator profile.
+PHYSICS_STEPPER_PHASE = 6
+# First averaged electrical-driver stage: same phase mechanics with
+# voltage-limited R/L/back-EMF current evolution.
+PHYSICS_STEPPER_PHASE_ELECTRICAL = 7
 
 ACK_ACCEPTED = 0
 ACK_BUSY = 1
@@ -38,6 +45,12 @@ DONE_ACCEPTANCE_FAILED = 4
 DISTURBANCE_STEP = 0
 DISTURBANCE_RAMP = 1
 DISTURBANCE_HOLD_BIAS = 2
+
+
+@lru_cache(maxsize=None)
+def _dataclass_fields(value_type):
+    """Cache reflection metadata for the high-rate simulator telemetry path."""
+    return fields(value_type)
 
 _PHYSICS_DEFAULTS = {
     PHYSICS_SIMPLIFIED: {
@@ -79,7 +92,7 @@ _PHYSICS_DEFAULTS = {
         "tire_damping_n_s_per_m": 35.0,
         "wheel_equivalent_mass_kg": 0.10,
     },
-    PHYSICS_IDEAL_FORCE: {
+    PHYSICS_DIRECT_ACTUATOR: {
         "motor_max_force_n": 22.5,
         "motor_no_load_speed_mps": 1.2,
         "traction_coefficient": 1.0,
@@ -92,18 +105,36 @@ _PHYSICS_DEFAULTS = {
         "tire_damping_n_s_per_m": 35.0,
         "wheel_equivalent_mass_kg": 0.10,
     },
-    PHYSICS_SIMPLE_FORCE: {
-        "motor_max_force_n": 22.5,
-        "motor_no_load_speed_mps": 1.2,
+    PHYSICS_STEPPER_PHASE: {
+        # These scalar fields are retained only for common start-payload
+        # compatibility; the StepperPhase actuator uses its own torque/phase
+        # topology and does not interpret SPS as force.
+        "motor_max_force_n": 2 * 0.45 / (0.0824 / 2),
+        "motor_no_load_speed_mps": 0.0,
         "traction_coefficient": 1.0,
         "motor_velocity_damping": 0.0,
         "cart_damping": 1.0,
         "pitch_damping": 0.02,
-        "motor_tau_s": 0.150,
-        "phase_error_limit_steps": 16.0,
-        "tire_stiffness_n_per_m": 3000.0,
-        "tire_damping_n_s_per_m": 35.0,
-        "wheel_equivalent_mass_kg": 0.10,
+        "motor_tau_s": 0.0,
+        "phase_error_limit_steps": 0.0,
+        "tire_stiffness_n_per_m": 0.0,
+        "tire_damping_n_s_per_m": 0.0,
+        "wheel_equivalent_mass_kg": 0.0,
+    },
+    PHYSICS_STEPPER_PHASE_ELECTRICAL: {
+        # The electrical actuator owns its R/L/current/back-EMF parameters;
+        # these common scalar fields keep the start payload compatible.
+        "motor_max_force_n": 2 * 0.45 / (0.0824 / 2),
+        "motor_no_load_speed_mps": 0.0,
+        "traction_coefficient": 1.0,
+        "motor_velocity_damping": 0.0,
+        "cart_damping": 1.0,
+        "pitch_damping": 0.02,
+        "motor_tau_s": 0.0,
+        "phase_error_limit_steps": 0.0,
+        "tire_stiffness_n_per_m": 0.0,
+        "tire_damping_n_s_per_m": 0.0,
+        "wheel_equivalent_mass_kg": 0.0,
     },
 }
 
@@ -348,6 +379,12 @@ def run_scenario_live(
     pitch_authority_segments: list[dict] | None = None,
     pitch_authority_refresh_dropout: dict | None = None,
     pid_config_path: str = "",
+    model_name: str = "",
+    scenario_id: str = "",
+    subrun_id: str = "",
+    scenario_category: str = "",
+    scenario_intent: str = "",
+    write_plots: bool = False,
     fail_fast_pitch_deg: float = 75.0,
     done_timeout: float = 15.0,
 ) -> tuple[dict, dict, SimRunDonePayload]:
@@ -361,8 +398,9 @@ def run_scenario_live(
             PHYSICS_SIMPLIFIED: "simplified",
             PHYSICS_REALISTIC: "realistic",
             PHYSICS_ACTUATOR_STRESS: "actuator_stress",
-            PHYSICS_IDEAL_FORCE: "ideal_force",
-            PHYSICS_SIMPLE_FORCE: "simple_force",
+            PHYSICS_DIRECT_ACTUATOR: "direct_actuator",
+            PHYSICS_STEPPER_PHASE: "stepper_phase",
+            PHYSICS_STEPPER_PHASE_ELECTRICAL: "stepper_phase_electrical",
         }.get(physics_profile, f"unknown:{physics_profile}"),
         "pid_profile": pid_config_path or "pid.conf",
         "duration_s": duration_s,
@@ -387,6 +425,16 @@ def run_scenario_live(
         "velocity_estimator_scale": velocity_estimator_scale,
         "velocity_estimator_latency_s": velocity_estimator_latency_s,
     }
+    if model_name:
+        metadata["model"] = model_name
+    if scenario_id:
+        metadata["scenario_id"] = scenario_id
+    if subrun_id:
+        metadata["subrun_id"] = subrun_id
+    if scenario_category:
+        metadata["scenario_category"] = scenario_category
+    if scenario_intent:
+        metadata["scenario_intent"] = scenario_intent
     if disturbances:
         metadata["disturbances"] = disturbances
     if joy_segments:
@@ -437,6 +485,13 @@ def run_scenario_live(
         raise AssertionError(f"Simulator rejected run_id={run_id} with status={ack.status_code}")
 
     done = None
+    # Drain the UDP stream as cheaply as possible while the simulator is
+    # running.  Expanding every dataclass field and copying it into a row per
+    # packet can make the receiver slower than long high-rate runs, filling
+    # the simulator's UDP send buffer before SimRunDone is emitted.  Keep the
+    # decoded payloads in order, perform the existing row conversion after
+    # the terminal packet, and retain the same artifact contents.
+    received_telemetry: list[SimulatorTelemetryPayload] = []
     deadline = time.monotonic() + done_timeout
     while time.monotonic() < deadline:
         try:
@@ -447,20 +502,7 @@ def run_scenario_live(
             telemetry = SimulatorTelemetryPayload.unpack(payload)
             if telemetry.system.run_id != run_id:
                 continue
-            # Keep simulator artifacts flat while the wire API remains a single,
-            # nested simulator frame.
-            row = {
-                field.name: getattr(telemetry.system, field.name)
-                for field in fields(telemetry.system)
-            }
-            row.update(
-                {
-                    field.name: getattr(telemetry, field.name)
-                    for field in fields(telemetry)
-                    if field.name != "system"
-                }
-            )
-            recorder.record_step(row)
+            received_telemetry.append(telemetry)
             if abs(telemetry.plant_pitch_deg) > fail_fast_pitch_deg:
                 udp.send(BalancerMsgId.SimStopRun, SimStopRunPayload(run_id=run_id).pack())
         elif msg_id == int(BalancerMsgId.SimRunDone):
@@ -471,7 +513,31 @@ def run_scenario_live(
     if done is None:
         raise AssertionError(f"Timed out waiting for SimRunDone for run_id={run_id}")
 
-    summary = recorder.write_csv_json_plots(output_dir)
+    for telemetry in received_telemetry:
+        # Keep simulator artifacts flat while the wire API remains a single,
+        # nested simulator frame.
+        row = {
+            field.name: getattr(telemetry.system, field.name)
+            for field in _dataclass_fields(type(telemetry.system))
+        }
+        row.update(
+            {
+                field.name: getattr(telemetry, field.name)
+                for field in _dataclass_fields(type(telemetry))
+                if field.name != "system"
+            }
+        )
+        recorder.record_step(row)
+
+    # Live pytest scenarios consume the CSV/JSON artifacts and summary metrics;
+    # rendering Matplotlib SVGs for every run is intentionally opt-in because
+    # it dominates the test wall time.  Report-generation tools can request
+    # the full plots explicitly.
+    summary = (
+        recorder.write_csv_json_plots(output_dir)
+        if write_plots
+        else recorder.write_csv_json(output_dir)
+    )
     (output_dir / "done.json").write_text(
         json.dumps(
             {

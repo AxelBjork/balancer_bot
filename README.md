@@ -51,7 +51,8 @@ port `9001`; it is a different endpoint and should not be confused with the prod
 - [Runtime architecture](doc/arch/runtime.md) — how the services are assembled and how a tick moves through them.
 - [Testing strategy](doc/testing/strategy.md) — what the C++ tests, SIL tests, simulator, and fuzzing each prove.
 - [Control and plant model](doc/arch/control_plant.md) — the equations and code mapping.
-- [Control and simulator notes](doc/notes/control_and_simulator.md) — how repeatable simulator experiments are structured.
+- [StepperPhaseElectrical scenario](doc/arch/stepper_phase_electrical.md) — the maintained physical
+  actuator model and reproducible simulator correlation scenario.
 - [IMU attitude design](doc/arch/imu_attitude_design.md) — the estimator and coordinate conventions.
 - [Current status](doc/status.md) — what has strong evidence and what still requires hardware validation.
 - [Running on Raspberry Pi](doc/Running_on_Pi.md) — deployment and physical bring-up.
