@@ -10,11 +10,14 @@
 
 namespace doc {
 struct Desc {
-  char text[1024]{};
+  char text[2048]{};
 
   constexpr Desc(const char* t) {
     int i = 0;
-    while (t[i] != '\0' && i < 1023) {
+    while (t[i] != '\0') {
+      if (i >= static_cast<int>(sizeof(text) - 1)) {
+        throw "doc::Desc exceeds its 2047-character capacity";
+      }
       text[i] = t[i];
       ++i;
     }
@@ -37,6 +40,9 @@ enum class DOC_DESC("Top-level message type selector. The uint16_t wire value is
   SimRunDone = 3008,
   ImuRawData = 3009,
   SimulatorTelemetry = 3010,
+  ExternalJoystickCommand = 3011,
+  PidConfigOverride = 3012,
+  PidConfigStatus = 3013,
 };
 
 template <MsgId Id>

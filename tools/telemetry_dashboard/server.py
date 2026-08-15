@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Serve a read-only live dashboard for the balancer UDP telemetry stream."""
+"""Serve the balancer telemetry dashboard and its run-gated runtime controls."""
 from __future__ import annotations
 
 import argparse
@@ -8,6 +8,7 @@ import dataclasses
 import json
 import logging
 import logging.handlers
+import math
 import queue
 import re
 import socket
@@ -31,10 +32,55 @@ if str(ROOT) not in sys.path:
 if str(GENERATED_BINDINGS) not in sys.path:
     sys.path.insert(0, str(GENERATED_BINDINGS))
 
-from generated_balancer import SystemTelemetryPayload  # noqa: E402
+from generated_balancer import (  # noqa: E402
+    ConfigPidValuesPayload,
+    JoystickCommandPayload,
+    PidConfigOverridePayload,
+    PidConfigStatusPayload,
+    SystemTelemetryPayload,
+)
 
 SYSTEM_TELEMETRY_ID = 3003
 SYSTEM_TELEMETRY_SIZE = SystemTelemetryPayload.WIRE_SIZE
+EXTERNAL_JOYSTICK_COMMAND_ID = 3011
+PID_CONFIG_OVERRIDE_ID = 3012
+PID_CONFIG_STATUS_ID = 3013
+JOYSTICK_PULSE_S = 0.100
+PID_CONFIG_FIELDS = (
+    "rate_P",
+    "rate_I",
+    "rate_D",
+    "rate_I_lim",
+    "rate_FF",
+    "drive_max_acceleration_mps2",
+    "velocity_damping_per_s",
+    "velocity_I",
+    "velocity_I_limit_deg",
+    "angle_P",
+    "angle_D",
+    "pitch_rate_max_sps",
+    "drive_max_sps",
+    "turn_max_sps",
+    "balance_max_sps",
+)
+PID_CONFIG_NONNEGATIVE_FIELDS = frozenset(
+    {
+        "rate_P",
+        "rate_I",
+        "rate_D",
+        "rate_I_lim",
+        "rate_FF",
+        "drive_max_acceleration_mps2",
+        "velocity_damping_per_s",
+        "velocity_I",
+        "velocity_I_limit_deg",
+        "angle_P",
+        "angle_D",
+        "turn_max_sps",
+    }
+)
+PID_CONFIG_POSITIVE_FIELDS = frozenset({"pitch_rate_max_sps", "drive_max_sps", "balance_max_sps"})
+PID_CONFIG_LIMIT_FIELDS = frozenset({"drive_max_sps", "turn_max_sps", "balance_max_sps"})
 DISPLAY_HZ = 50.0
 DISPLAY_HISTORY_SECONDS = 120.0
 DISPLAY_HISTORY_POINTS = 6000
@@ -142,6 +188,81 @@ def resolve_udp_host(target: str) -> str:
     )
 
 
+def _validate_pid_values(values: dict[str, Any], *, require_complete: bool = True) -> dict[str, float]:
+    if not isinstance(values, dict):
+        raise ValueError("PID values must be a JSON object.")
+    unknown = sorted(set(values) - set(PID_CONFIG_FIELDS))
+    if unknown:
+        raise ValueError(f"Unknown PID fields: {', '.join(unknown)}")
+    if require_complete and set(values) != set(PID_CONFIG_FIELDS):
+        missing = sorted(set(PID_CONFIG_FIELDS) - set(values))
+        raise ValueError(f"Missing PID fields: {', '.join(missing)}")
+
+    normalized: dict[str, float] = {}
+    for name, value in values.items():
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"PID field {name} must be numeric.")
+        value = float(value)
+        if not math.isfinite(value):
+            raise ValueError(f"PID field {name} must be finite.")
+        normalized[name] = value
+
+    for name in PID_CONFIG_NONNEGATIVE_FIELDS:
+        if name in normalized and normalized[name] < 0.0:
+            raise ValueError(f"PID field {name} must be non-negative.")
+    for name in PID_CONFIG_POSITIVE_FIELDS:
+        if name in normalized and normalized[name] <= 0.0:
+            raise ValueError(f"PID field {name} must be positive.")
+    for name in PID_CONFIG_LIMIT_FIELDS:
+        if name in normalized and normalized[name] > 12000.0:
+            raise ValueError(f"PID field {name} exceeds the supported 12000 limit.")
+    return normalized
+
+
+def _load_pid_values(path: Path) -> dict[str, float]:
+    if not path.is_file():
+        raise ValueError(f"PID config not found: {path}")
+    values: dict[str, float] = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise ValueError(f"PID config cannot be read: {exc}") from None
+    allowed = set(PID_CONFIG_FIELDS) | {"config_version", "controller_enabled"}
+    for line_number, line in enumerate(lines, start=1):
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if line.count("=") != 1:
+            raise ValueError(f"Malformed PID config line {line_number}.")
+        key, value_text = (part.strip() for part in line.split("=", 1))
+        if key not in allowed:
+            raise ValueError(f"Unknown PID config key: {key}")
+        if key in values:
+            raise ValueError(f"Duplicate PID config key: {key}")
+        try:
+            value = float(value_text)
+        except ValueError:
+            raise ValueError(f"Invalid PID config value for {key}.") from None
+        if not math.isfinite(value):
+            raise ValueError(f"PID config value for {key} must be finite.")
+        values[key] = value
+    missing = [name for name in PID_CONFIG_FIELDS if name not in values]
+    if missing:
+        raise ValueError(f"Missing PID config fields: {', '.join(missing)}")
+    return _validate_pid_values({name: values[name] for name in PID_CONFIG_FIELDS})
+
+
+def _pid_status_message(accepted: bool, result_code: int) -> str:
+    if accepted:
+        return "PID override applied for the current balancer process."
+    return {
+        1: "PID override rejected: a value was not finite.",
+        2: "PID override rejected: a value was negative.",
+        3: "PID override rejected: a required limit was not positive.",
+        4: "PID override rejected: a supported speed limit was exceeded.",
+    }.get(result_code, "PID override rejected by the balancer.")
+
+
 def telemetry_view(sample: SystemTelemetryPayload, sequence: int, received_at: float) -> dict[str, Any]:
     """Return the stable, browser-facing subset of the reflected wire payload."""
     return {
@@ -187,15 +308,24 @@ def telemetry_view(sample: SystemTelemetryPayload, sequence: int, received_at: f
     }
 
 
+@dataclasses.dataclass
+class _CsvRollRequest:
+    completed: threading.Event = dataclasses.field(default_factory=threading.Event)
+    error: BaseException | None = None
+
+
+_CsvRow = tuple[float, float, SystemTelemetryPayload]
+
+
 class CsvLogger:
-    """Append every valid raw packet to bounded, fixed-schema server CSV files."""
+    """Append every valid raw packet to fixed-schema server CSV files."""
     def __init__(self, directory: Path, max_bytes: int = LOG_ROTATE_BYTES, retain_count: int = LOG_RETAIN_COUNT) -> None:
         self.directory, self.max_bytes, self.retain_count = directory, max_bytes, retain_count
         self.file: Any | None = None
         self.writer: csv.writer | None = None
         self.index = 0
         self.bytes_written = 0
-        self.rows: queue.SimpleQueue[list[Any] | None] = queue.SimpleQueue()
+        self.rows: queue.SimpleQueue[_CsvRow | _CsvRollRequest | None] = queue.SimpleQueue()
         self.closed = False
         self.error: BaseException | None = None
         self.worker = threading.Thread(target=self._run, name="telemetry-csv", daemon=True)
@@ -223,7 +353,27 @@ class CsvLogger:
             raise RuntimeError("Cannot write to a closed telemetry CSV logger.")
         if self.error is not None:
             raise RuntimeError("The telemetry CSV writer failed.") from self.error
-        self.rows.put([time.time(), monotonic_s, *(getattr(sample, name) for name in TELEMETRY_FIELDS)])
+        self.rows.put((time.time(), monotonic_s, sample))
+
+    def queue_depth(self) -> int:
+        """Return the approximate number of queued rows and control requests."""
+        return self.rows.qsize()
+
+    def roll(self) -> None:
+        """Finish the current capture before the next accepted telemetry row."""
+        if self.closed:
+            raise RuntimeError("Cannot roll a closed telemetry CSV logger.")
+        if self.error is not None:
+            raise RuntimeError("The telemetry CSV writer failed.") from self.error
+        request = _CsvRollRequest()
+        self.rows.put(request)
+        while not request.completed.wait(0.1):
+            if self.error is not None:
+                raise RuntimeError("The telemetry CSV writer failed.") from self.error
+        if request.error is not None:
+            raise RuntimeError("The telemetry CSV rollover failed.") from request.error
+        if self.error is not None:
+            raise RuntimeError("The telemetry CSV writer failed.") from self.error
 
     def _write_row(self, row: list[Any]) -> None:
         if self.file is None or self.bytes_written >= self.max_bytes:
@@ -235,10 +385,21 @@ class CsvLogger:
     def _run(self) -> None:
         try:
             while True:
-                row = self.rows.get()
-                if row is None:
+                item = self.rows.get()
+                if item is None:
                     break
+                if isinstance(item, _CsvRollRequest):
+                    try:
+                        self._close_file()
+                    except BaseException as exc:
+                        item.error = exc
+                        raise
+                    finally:
+                        item.completed.set()
+                    continue
                 started = time.monotonic()
+                wall_time, monotonic_s, sample = item
+                row = [wall_time, monotonic_s, *(getattr(sample, name) for name in TELEMETRY_FIELDS)]
                 self._write_row(row)
                 write_s = time.monotonic() - started
                 if write_s > TELEMETRY_GAP_S:
@@ -290,6 +451,7 @@ class TelemetryState:
         self.display_run = 0
         self.run_active = False
         self.pi_ready = False
+        self.pid_status: dict[str, Any] | None = None
         self.lock = threading.Lock()
         self.sequence = 0
         self.latest: dict[str, Any] | None = None
@@ -304,8 +466,22 @@ class TelemetryState:
         }
         self.telemetry_gap_count = 0
         self.last_telemetry_gap: dict[str, Any] | None = None
+        self.accept_count = 0
+        self.accept_duration_total_s = 0.0
+        self.accept_duration_max_s = 0.0
 
     def accept(self, datagram: bytes, received_at: float | None = None) -> bool:
+        started = time.monotonic()
+        try:
+            return self._accept(datagram, received_at)
+        finally:
+            duration_s = time.monotonic() - started
+            with self.lock:
+                self.accept_count += 1
+                self.accept_duration_total_s += duration_s
+                self.accept_duration_max_s = max(self.accept_duration_max_s, duration_s)
+
+    def _accept(self, datagram: bytes, received_at: float | None = None) -> bool:
         if len(datagram) != 2 + SYSTEM_TELEMETRY_SIZE:
             with self.lock:
                 self.malformed_packets += 1
@@ -413,10 +589,21 @@ class TelemetryState:
                 "run_active": self.run_active,
                 "telemetry_connected": age is not None and age <= DISCONNECT_AFTER_S,
                 "pi_ready": self.pi_ready,
+                "pid_status": None if self.pid_status is None else dict(self.pid_status),
                 "imu_age_ms": None if self.latest is None else self.latest["timing"]["imu_age_ms"],
                 "feedback_age_ms": None if self.latest is None else self.latest["timing"]["feedback_age_ms"],
                 "telemetry_gap_count": self.telemetry_gap_count,
                 "last_telemetry_gap": self.last_telemetry_gap,
+                "telemetry_accept_count": self.accept_count,
+                "telemetry_accept_avg_ms": (
+                    None
+                    if self.accept_count == 0
+                    else self.accept_duration_total_s / self.accept_count * 1000.0
+                ),
+                "telemetry_accept_max_ms": (
+                    None if self.accept_count == 0 else self.accept_duration_max_s * 1000.0
+                ),
+                "csv_queue_depth": None if self.logger is None else self.logger.queue_depth(),
             }
             return self.latest, status
 
@@ -443,6 +630,8 @@ class TelemetryState:
             self.sample_cadence_s = None
             self.connection_state = "configured"
             self.connection_message = "Waiting to resolve and register with the Pi."
+            self.pi_ready = False
+            self.run_active = False
 
     def set_csv_source(self, name: str, duration_s: float, cadence_s: float | None) -> None:
         with self.lock:
@@ -452,12 +641,21 @@ class TelemetryState:
             self.sample_cadence_s = cadence_s
             self.connection_state = "offline"
             self.connection_message = "CSV replay is local to this dashboard session."
+            self.pi_ready = False
+            self.run_active = False
 
     def reset_display_run(self) -> int:
         """Mark a new browser display run without affecting raw capture."""
         with self.lock:
             self.display_run += 1
             return self.display_run
+
+    def begin_hardware_run(self) -> None:
+        """Roll the raw capture at the start of a live hardware run."""
+        with self.lock:
+            logger = self.logger if self.source_mode == "live" else None
+        if logger is not None:
+            logger.roll()
 
     def set_run_active(self, active: bool) -> None:
         with self.lock:
@@ -466,6 +664,10 @@ class TelemetryState:
     def set_pi_ready(self, ready: bool) -> None:
         with self.lock:
             self.pi_ready = ready
+
+    def set_pid_status(self, status: dict[str, Any] | None) -> None:
+        with self.lock:
+            self.pid_status = None if status is None else dict(status)
 
 
 class SseHub:
@@ -701,40 +903,59 @@ class CsvPlayback:
 
 
 class UdpReceiver:
-    """Receive telemetry while resolving a configured Pi lazily and repeatedly."""
+    """Receive telemetry while resolving a configured Pi lazily."""
     def __init__(self, state: TelemetryState, pi_host: str | None, pi_port: int) -> None:
         self.state, self.pi_port = state, pi_port
         self.target = pi_host
         self.pi_address: tuple[str, int] | None = None
+        self.next_resolution = 0.0
         self.lock = threading.Lock()
+        self.address_listeners: list[Callable[[str], None]] = []
+        self.pid_status_sink: Callable[[PidConfigStatusPayload], None] | None = None
         self.stopping = threading.Event()
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.bind(("0.0.0.0", 0))
         self.socket.settimeout(0.2)
 
     def run(self) -> None:
-        next_registration = next_resolution = 0.0
+        next_registration = 0.0
         while not self.stopping.is_set():
             now = time.monotonic()
             with self.lock:
                 target = self.target
-            if target and (self.pi_address is None or now >= next_resolution):
+                address = self.pi_address
+                next_resolution = self.next_resolution
+            if target and address is None and now >= next_resolution:
                 try:
-                    self.pi_address = (resolve_udp_host(target), self.pi_port)
+                    resolved = resolve_udp_host(target)
+                    with self.lock:
+                        if self.target != target:
+                            continue
+                        self.pi_address = (resolved, self.pi_port)
+                        self.next_resolution = 0.0
+                    self._notify_address_ready(resolved)
                     with self.state.lock:
                         self.state.connection_state = "registering"
-                        self.state.connection_message = f"Resolved {self.pi_address[0]}; waiting for telemetry."
+                        self.state.connection_message = f"Resolved {resolved}; waiting for telemetry."
                 except RuntimeError as exc:
-                    self.pi_address = None
+                    with self.lock:
+                        if self.target != target:
+                            continue
+                        self.pi_address = None
+                        self.next_resolution = now + RESOLVE_RETRY_S
                     with self.state.lock:
                         self.state.connection_state = "resolving"
                         self.state.connection_message = str(exc)
-                next_resolution = now + RESOLVE_RETRY_S
-            if self.pi_address and now >= next_registration:
+            with self.lock:
+                address = self.pi_address
+            if address and now >= next_registration:
                 try:
-                    self.socket.sendto(b"\x00\x00", self.pi_address)
+                    self.socket.sendto(b"\x00\x00", address)
                 except OSError:
-                    self.pi_address = None
+                    with self.lock:
+                        if self.pi_address == address:
+                            self.pi_address = None
+                            self.next_resolution = 0.0
                 next_registration = now + REGISTER_INTERVAL_S
             try:
                 packet, _ = self.socket.recvfrom(4096)
@@ -742,6 +963,17 @@ class UdpReceiver:
                 continue
             except OSError:
                 break
+            if len(packet) >= 2 and struct.unpack_from("<H", packet)[0] == PID_CONFIG_STATUS_ID:
+                if len(packet) != 2 + PidConfigStatusPayload.WIRE_SIZE:
+                    continue
+                try:
+                    status = PidConfigStatusPayload.unpack(packet[2:])
+                except (struct.error, ValueError):
+                    continue
+                sink = self.pid_status_sink
+                if sink is not None:
+                    sink(status)
+                continue
             self.state.accept(packet)
 
     def close(self) -> None:
@@ -752,14 +984,309 @@ class UdpReceiver:
         with self.lock:
             self.target = target
             self.pi_address = None
+            self.next_resolution = 0.0
 
     def retry_now(self) -> None:
         with self.lock:
             self.pi_address = None
+            self.next_resolution = 0.0
+
+    def update_resolved_address(self, address: str) -> None:
+        """Publish a heartbeat-resolved address without blocking UDP reception."""
+        with self.lock:
+            if self.target:
+                self.pi_address = (address, self.pi_port)
+                self.next_resolution = 0.0
+        self._notify_address_ready(address)
 
     def current_target(self) -> str | None:
         with self.lock:
             return self.target
+
+    def add_address_listener(self, listener: Callable[[str], None]) -> None:
+        with self.lock:
+            self.address_listeners.append(listener)
+
+    def set_pid_status_sink(self, sink: Callable[[PidConfigStatusPayload], None] | None) -> None:
+        self.pid_status_sink = sink
+
+    def send_message(self, message_id: int, payload: bytes) -> bool:
+        datagram = struct.pack("<H", message_id) + payload
+        with self.lock:
+            address = self.pi_address
+        if address is None:
+            return False
+        try:
+            self.socket.sendto(datagram, address)
+            return True
+        except OSError:
+            with self.lock:
+                if self.pi_address == address:
+                    self.pi_address = None
+                    self.next_resolution = 0.0
+            return False
+
+    def _notify_address_ready(self, address: str) -> None:
+        with self.lock:
+            listeners = list(self.address_listeners)
+        for listener in listeners:
+            try:
+                listener(address)
+            except Exception:
+                DIAGNOSTIC_LOGGER.exception("dashboard address-ready listener failed")
+
+
+class PidSessionController:
+    """Keep live PID edits in memory and deliver complete snapshots over UDP."""
+
+    def __init__(self, state: TelemetryState, receiver: UdpReceiver) -> None:
+        self.state, self.receiver = state, receiver
+        self.baseline = _load_pid_values(PID_CONFIG)
+        self.values = dict(self.baseline)
+        self.request_id = 0
+        self.pending = False
+        self.override_active = False
+        self.last_address: str | None = None
+        self.last_status: dict[str, Any] | None = None
+        self.lock = threading.Lock()
+        receiver.set_pid_status_sink(self.accept_status)
+        receiver.add_address_listener(self._on_address_ready)
+
+    def snapshot(self) -> dict[str, Any]:
+        with self.lock:
+            return {
+                "ok": True,
+                "values": dict(self.values),
+                "baseline": dict(self.baseline),
+                "override_active": self.override_active,
+                "pending": self.pending,
+                "last_status": None if self.last_status is None else dict(self.last_status),
+            }
+
+    def reset_for_target(self) -> None:
+        with self.lock:
+            self.values = dict(self.baseline)
+            self.override_active = False
+            self.pending = False
+            self.last_status = None
+            self.last_address = None
+        self.state.set_pid_status(None)
+
+    def update(self, values: dict[str, Any]) -> dict[str, Any]:
+        with self.state.lock:
+            if self.state.source_mode != "live":
+                raise ValueError("PID tuning requires a live Pi source.")
+        normalized = _validate_pid_values(values)
+        with self.lock:
+            self.values = normalized
+            self.override_active = normalized != self.baseline
+            self.request_id += 1
+            request_id = self.request_id
+            self.pending = True
+            self.last_status = {
+                "request_id": request_id,
+                "state": "pending",
+                "accepted": None,
+                "result_code": None,
+                "message": "Sending PID override to the Pi.",
+            }
+        self.state.set_pid_status(dict(self.last_status))
+        sent = self._send_current(request_id)
+        with self.lock:
+            pending = self.pending
+        return {
+            "ok": True,
+            "values": dict(normalized),
+            "request_id": request_id,
+            "sent": sent,
+            "pending": pending,
+            "message": "PID override sent." if sent else "PID override queued until the Pi address is available.",
+        }
+
+    def on_start(self) -> None:
+        with self.lock:
+            self.request_id += 1
+            request_id = self.request_id
+            self.pending = True
+            self.last_status = {
+                "request_id": request_id,
+                "state": "pending",
+                "accepted": None,
+                "result_code": None,
+                "message": "Applying the dashboard PID snapshot after Start.",
+            }
+        self.state.set_pid_status(dict(self.last_status))
+        self._send_current(request_id)
+
+    def accept_status(self, payload: PidConfigStatusPayload) -> None:
+        values = {name: float(getattr(payload.values, name)) for name in PID_CONFIG_FIELDS}
+        accepted = bool(payload.accepted)
+        with self.lock:
+            if payload.request_id != self.request_id:
+                return
+            self.values = values
+            self.override_active = self.values != self.baseline
+            self.pending = False
+            status = {
+                "request_id": int(payload.request_id),
+                "state": "applied" if accepted else "rejected",
+                "accepted": accepted,
+                "result_code": int(payload.result_code),
+                "message": _pid_status_message(accepted, int(payload.result_code)),
+            }
+            self.last_status = status
+        self.state.set_pid_status(status)
+
+    def _on_address_ready(self, address: str) -> None:
+        with self.lock:
+            address_changed = address != self.last_address
+            self.last_address = address
+            override_active = self.override_active
+            status_to_publish: dict[str, Any] | None = None
+            if address_changed:
+                self.request_id += 1
+                request_id = self.request_id
+                self.pending = True
+                self.last_status = {
+                    "request_id": request_id,
+                    "state": "pending",
+                    "accepted": None,
+                    "result_code": None,
+                    "message": (
+                        "Reapplying the dashboard PID override to the resolved Pi address."
+                        if override_active
+                        else "Applying the baseline PID snapshot to the resolved Pi address."
+                    ),
+                }
+                status_to_publish = dict(self.last_status)
+            else:
+                request_id = self.request_id
+            pending = self.pending
+        if status_to_publish is not None:
+            self.state.set_pid_status(status_to_publish)
+            self._send_current(request_id)
+        elif pending:
+            self._send_current(request_id)
+
+    def _send_current(self, request_id: int) -> bool:
+        with self.lock:
+            values = dict(self.values)
+        payload = PidConfigOverridePayload(
+            request_id=request_id,
+            reserved=0,
+            values=ConfigPidValuesPayload(**values),
+        ).pack()
+        sent = self.receiver.send_message(PID_CONFIG_OVERRIDE_ID, payload)
+        if not sent:
+            with self.lock:
+                self.last_address = None
+            return False
+        return True
+
+
+class JoystickCommandController:
+    """Validate and send short, run-gated joystick command pulses."""
+
+    def __init__(self, state: TelemetryState, receiver: UdpReceiver) -> None:
+        self.state, self.receiver = state, receiver
+        self.lock = threading.Lock()
+        self.release_timer: threading.Timer | None = None
+        self.generation = 0
+        self.closed = False
+
+    def send(self, body: dict[str, Any]) -> dict[str, Any]:
+        if body.get("release", False) is not False and body.get("release") is not True:
+            raise ValueError("Joystick release must be a boolean.")
+        release = body.get("release", False) is True
+        forward = 0.0 if release else body.get("forward", 0.0)
+        turn = 0.0 if release else body.get("turn", 0.0)
+        if isinstance(forward, bool) or isinstance(turn, bool):
+            raise ValueError("Joystick values must be numeric.")
+        try:
+            forward, turn = float(forward), float(turn)
+        except (TypeError, ValueError):
+            raise ValueError("Joystick values must be numeric.") from None
+        if not math.isfinite(forward) or not math.isfinite(turn):
+            raise ValueError("Joystick values must be finite.")
+        if forward < -1.0 or forward > 1.0 or turn < -1.0 or turn > 1.0:
+            raise ValueError("Joystick values must be between -1 and 1.")
+
+        active = forward != 0.0 or turn != 0.0
+        with self.state.lock:
+            source_mode = self.state.source_mode
+            run_active = self.state.run_active
+        if active and source_mode != "live":
+            raise ValueError("Joystick control requires a live Pi source.")
+        if active and not run_active:
+            raise ValueError("Start the balancer before using joystick control.")
+        if active:
+            with self.lock:
+                if self.closed:
+                    raise RuntimeError("Joystick control is shutting down.")
+
+        if not active:
+            sent = self._send_neutral()
+            return {"ok": True, "sent": sent, "active": False, "forward": 0.0, "turn": 0.0}
+
+        payload = JoystickCommandPayload(forward=forward, turn=turn).pack()
+        sent = self.receiver.send_message(EXTERNAL_JOYSTICK_COMMAND_ID, payload)
+        if not sent:
+            self._cancel_timer()
+            raise RuntimeError("The Pi UDP address is not available yet.")
+        self._arm_timer()
+        return {"ok": True, "sent": True, "active": True, "forward": forward, "turn": turn}
+
+    def release(self) -> None:
+        self._send_neutral()
+
+    def close(self) -> None:
+        with self.lock:
+            self.closed = True
+        self._send_neutral()
+
+    def _send_neutral(self) -> bool:
+        self._cancel_timer()
+        with self.state.lock:
+            live = self.state.source_mode == "live"
+        if not live:
+            return False
+        return self.receiver.send_message(
+            EXTERNAL_JOYSTICK_COMMAND_ID, JoystickCommandPayload(0.0, 0.0).pack()
+        )
+
+    def _cancel_timer(self) -> None:
+        with self.lock:
+            self.generation += 1
+            timer, self.release_timer = self.release_timer, None
+        if timer is not None:
+            timer.cancel()
+
+    def _arm_timer(self) -> None:
+        with self.lock:
+            self.generation += 1
+            generation = self.generation
+            old_timer, self.release_timer = self.release_timer, None
+            timer = None
+            if not self.closed:
+                timer = threading.Timer(JOYSTICK_PULSE_S, self._timer_release, args=(generation,))
+                timer.daemon = True
+                self.release_timer = timer
+        if old_timer is not None:
+            old_timer.cancel()
+        if timer is not None:
+            timer.start()
+
+    def _timer_release(self, generation: int) -> None:
+        with self.lock:
+            if self.closed or generation != self.generation:
+                return
+            self.release_timer = None
+        with self.state.lock:
+            live = self.state.source_mode == "live"
+        if live:
+            self.receiver.send_message(
+                EXTERNAL_JOYSTICK_COMMAND_ID, JoystickCommandPayload(0.0, 0.0).pack()
+            )
 
 
 class PiHeartbeat:
@@ -774,6 +1301,7 @@ class PiHeartbeat:
             return False
         try:
             address = resolve_udp_host(target)
+            self.receiver.update_resolved_address(address)
             with socket.create_connection((address, 22), timeout=1.5):
                 return True
         except (RuntimeError, OSError):
@@ -885,16 +1413,31 @@ class DeploymentManager:
 
 class SourceController:
     """Own the selectable dashboard source and the lifetime of temporary uploads."""
-    def __init__(self, state: TelemetryState, hub: SseHub, receiver: UdpReceiver, pi_port: int, deployer: DeploymentManager | None = None) -> None:
+    def __init__(
+        self,
+        state: TelemetryState,
+        hub: SseHub,
+        receiver: UdpReceiver,
+        pi_port: int,
+        deployer: DeploymentManager | None = None,
+        pid_controller: PidSessionController | None = None,
+        command_controller: JoystickCommandController | None = None,
+    ) -> None:
         self.state, self.hub, self.receiver, self.pi_port = state, hub, receiver, pi_port
         self.temp_path: Path | None = None
         self.lock = threading.Lock()
         self.deployer = deployer
+        self.pid_controller = pid_controller
+        self.command_controller = command_controller
 
     def configure_live(self, target: str) -> dict[str, Any]:
         target = target.strip()
         if not target:
             raise ValueError("Enter a Pi host, SSH alias, or IP address.")
+        if self.command_controller:
+            self.command_controller.release()
+        if self.pid_controller:
+            self.pid_controller.reset_for_target()
         self._remove_temp()
         self.hub.clear_history()
         self.state.configure_pi(target)
@@ -910,6 +1453,10 @@ class SourceController:
             raise ValueError("The selected CSV is empty.")
         if len(data) > MAX_UPLOAD_BYTES:
             raise ValueError(f"CSV is larger than the {MAX_UPLOAD_BYTES // (1024 * 1024)} MiB session limit.")
+        if self.command_controller:
+            self.command_controller.release()
+        if self.pid_controller:
+            self.pid_controller.reset_for_target()
         self._remove_temp()
         handle = tempfile.NamedTemporaryFile(prefix="balancer-dashboard-", suffix=".csv", delete=False)
         try:
@@ -957,10 +1504,19 @@ class SourceController:
                 self.temp_path = None
 
     def close(self) -> None:
+        if self.command_controller:
+            self.command_controller.close()
         self._remove_temp()
 
 
-def make_handler(hub: SseHub, state: TelemetryState, deployer: DeploymentManager | None = None, sources: SourceController | None = None):
+def make_handler(
+    hub: SseHub,
+    state: TelemetryState,
+    deployer: DeploymentManager | None = None,
+    sources: SourceController | None = None,
+    pid_controller: PidSessionController | None = None,
+    command_controller: JoystickCommandController | None = None,
+):
     class DashboardHandler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -1033,6 +1589,12 @@ def make_handler(hub: SseHub, state: TelemetryState, deployer: DeploymentManager
             if self.path == "/api/source":
                 self._json(HTTPStatus.OK, state.source_info())
                 return
+            if self.path == "/api/pid":
+                if pid_controller is None:
+                    self.send_error(HTTPStatus.NOT_IMPLEMENTED)
+                else:
+                    self._json(HTTPStatus.OK, pid_controller.snapshot())
+                return
             if self.path == "/api/deploy-info":
                 self._json(HTTPStatus.OK, deployer.info() if deployer else {"enabled": False})
                 return
@@ -1058,6 +1620,32 @@ def make_handler(hub: SseHub, state: TelemetryState, deployer: DeploymentManager
             self.wfile.write(data)
 
         def do_POST(self) -> None:  # noqa: N802
+            if self.path == "/api/pid":
+                if pid_controller is None:
+                    self.send_error(HTTPStatus.NOT_IMPLEMENTED)
+                    return
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    body = json.loads(self.rfile.read(length) or b"{}")
+                    if not isinstance(body, dict):
+                        raise ValueError("Request body must be a JSON object.")
+                    self._json(HTTPStatus.OK, pid_controller.update(body.get("values", body)))
+                except (ValueError, RuntimeError, json.JSONDecodeError) as exc:
+                    self._json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+                return
+            if self.path == "/api/joystick":
+                if command_controller is None:
+                    self.send_error(HTTPStatus.NOT_IMPLEMENTED)
+                    return
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    body = json.loads(self.rfile.read(length) or b"{}")
+                    if not isinstance(body, dict):
+                        raise ValueError("Request body must be a JSON object.")
+                    self._json(HTTPStatus.OK, command_controller.send(body))
+                except (ValueError, RuntimeError, json.JSONDecodeError) as exc:
+                    self._json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+                return
             if self.path == "/api/source/csv":
                 if sources is None:
                     self.send_error(HTTPStatus.NOT_IMPLEMENTED)
@@ -1101,6 +1689,8 @@ def make_handler(hub: SseHub, state: TelemetryState, deployer: DeploymentManager
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             try:
+                if self.path == "/api/abort" and command_controller:
+                    command_controller.release()
                 if state.source_info()["mode"] == "csv":
                     result = {"ok": True, "message": "CSV source: no SSH command sent."}
                     if self.path == "/api/start":
@@ -1112,9 +1702,12 @@ def make_handler(hub: SseHub, state: TelemetryState, deployer: DeploymentManager
                     return
                 result = action()
                 if self.path == "/api/start":
+                    state.begin_hardware_run()
                     state.set_run_active(True)
                     result["display_run"] = state.reset_display_run()
                     hub.begin_display_run()
+                    if pid_controller:
+                        pid_controller.on_start()
                 elif self.path == "/api/abort":
                     state.set_run_active(False)
                 self._json(HTTPStatus.OK, result)
@@ -1162,6 +1755,7 @@ def make_handler(hub: SseHub, state: TelemetryState, deployer: DeploymentManager
                     status_key = (
                         status.get("run_active"), status.get("telemetry_connected"), status.get("pi_ready"),
                         status.get("connection_state"), status.get("display_run"), status.get("malformed_packets"),
+                        json.dumps(status.get("pid_status"), sort_keys=True),
                         tuple(sorted(status.get("latched_flags", {}).items())),
                     )
                     if status_key != last_status_key or now - last_status_at >= 1.0 / STATUS_HZ:
@@ -1206,9 +1800,19 @@ def main(argv: list[str] | None = None) -> int:
     state = TelemetryState(initial_target or "No Pi configured", logger)
     hub = SseHub(state)
     receiver = UdpReceiver(state, initial_target, args.pi_port)
+    pid_controller = PidSessionController(state, receiver)
+    command_controller = JoystickCommandController(state, receiver)
     heartbeat = PiHeartbeat(state, receiver)
     deployer = DeploymentManager(initial_target)
-    sources = SourceController(state, hub, receiver, args.pi_port, deployer)
+    sources = SourceController(
+        state,
+        hub,
+        receiver,
+        args.pi_port,
+        deployer,
+        pid_controller,
+        command_controller,
+    )
     source_description = f"Pi target {initial_target or 'not configured'}"
     if args.csv:
         sources.upload_csv(args.csv.name, args.csv.read_bytes())
@@ -1220,20 +1824,23 @@ def main(argv: list[str] | None = None) -> int:
     heartbeat_thread.start()
     hub_thread.start()
     host = "0.0.0.0" if args.listen_lan else "127.0.0.1"
-    server = ThreadingHTTPServer((host, args.port), make_handler(hub, state, deployer, sources))
+    server = ThreadingHTTPServer(
+        (host, args.port),
+        make_handler(hub, state, deployer, sources, pid_controller, command_controller),
+    )
     print(f"Dashboard: http://{host}:{args.port} ({source_description})")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        sources.close()
         receiver.close()
         heartbeat.close()
         hub.stop()
         receiver_thread.join(timeout=2.0)
         heartbeat_thread.join(timeout=2.0)
         hub_thread.join(timeout=2.0)
-        sources.close()
         try:
             logger.close()
         finally:

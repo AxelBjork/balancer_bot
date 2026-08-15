@@ -1,4 +1,4 @@
-# Two-Wheel Balancer — Compact Laplace Cheat Sheet
+# Control and Plant Model
 
 ## Aggregate Simulator Parameters
 
@@ -17,6 +17,11 @@ The authoritative nominal mass, geometry, and inertia values are defined by
 [`HardwareNominal`](../../tests/simulator/balancer_simulator.h). Pitch inertia should be updated
 from the physical-pendulum procedure documented in the Pi runtime guide; these values are
 intentionally not duplicated here.
+
+The variables and equations through the transfer-function section form a compact, linearized audit
+model. The implementation mapping below describes the richer nonlinear simulator and controller;
+assumptions in the compact model should not be read as claims that the simulator has no slip,
+actuator lag, or left/right asymmetry.
 
 ## Variables
 
@@ -43,11 +48,12 @@ intentionally not duplicated here.
   $k_{\mathrm{pitch\_rate}}$: inner attitude-shaping gains
 - $u_{\mathrm{norm}}$, $u_{\mathrm{sps}}$, $k_{\mathrm{output}}$: normalized PX4 output,
   wheel command in steps/s, and its conversion scale
-- $\psi$: absolute wheel angle; $u = r\psi$: absolute circumferential wheel motion;
-  $q$: rotor motion relative to the chassis; $\theta_0$: configured initial pitch
+- $\psi$: absolute wheel angle; $u_{wheel} = r\psi$: absolute circumferential wheel motion;
+  $q_m$: rotor motion relative to the chassis; $q_{steps,L/R}$: completed motor-step counts used
+  by the observer; $\theta_0$: configured initial pitch
 - $F_m$, $F_t$: motor and tire/contact forces
 
-Assumptions:
+Compact audit-model assumptions:
 
 - no gearbox
 - no slipping
@@ -198,13 +204,27 @@ The transfer function also has a zero at
 
 The equations above are the compact small-angle audit model. The current code adds damping, actuator lag, and estimator filtering on top of this idealized plant.
 
+### Rate hierarchy
+
+The project has several intentional rates rather than one universal loop rate:
+
+- `PhysicsTick` and the inner rate controller run at the nominal 400 Hz control cadence.
+- The completed-step axle-velocity observer, velocity filter update, jerk limiter, and COM-trim
+  integration run in the 100 Hz outer-loop interval.
+- The configured velocity low-pass has a 10 Hz cutoff; that is a filter characteristic, not a
+  separate scheduler.
+- The motor runner keeps a separate 50 ms completed-step average for actuator diagnostics; the
+  controller does not use that diagnostic average as its feedback observer.
+
+This distinction prevents the 100 Hz observer, 10 Hz filter, 50 ms diagnostic window, and 400 Hz
+control tick from being mistaken for competing controller clocks.
+
 Current controller structure in code:
 
-At 100 Hz, common completed motor steps are first corrected to axle motion. With
-`q = u - r theta`, the observer is
+At 100 Hz, common completed motor steps are first corrected to axle motion. The observer is
 
 > $$
-> \Delta u_{\mathrm{steps}} = \frac{\Delta q_L + \Delta q_R}{2}
+> \Delta u_{\mathrm{steps}} = \frac{\Delta q_{steps,L} + \Delta q_{steps,R}}{2}
 > + \frac{N}{2\pi}\mathrm{wrap}(\Delta\theta).
 > $$
 
@@ -271,16 +291,18 @@ Notes:
 
 ### Simulator wheel and motor coordinates
 
-The nonlinear simulator keeps the wheel coordinate `u = r psi` as absolute circumferential wheel
-motion. Tire deformation and tire speed therefore remain `u - x` and `u_dot - x_dot`. Motor steps,
+The nonlinear simulator keeps the wheel coordinate `u_wheel = r psi` as absolute circumferential wheel
+motion. Tire deformation and tire speed therefore remain $u_{wheel} - x$ and
+$\dot u_{wheel} - \dot x$.
+Motor steps,
 however, measure rotor motion relative to the chassis. With the configured initial pitch as the
 zero-step reference, the motor coordinates are
 
 > $$
-> q = u-r(\theta-\theta_0), \qquad \dot q = \dot u-r\dot\theta.
+> q_m = u_{wheel}-r(\theta-\theta_0), \qquad \dot q_m = \dot u_{wheel}-r\dot\theta.
 > $$
 
-The phase-error controller and torque-speed limit use `q` and `q_dot`. A motor force `F_m` applies
+The phase-error controller and torque-speed limit use `q_m` and `q_m_dot`. A motor force `F_m` applies
 `+F_m` to the wheel and the equal-and-opposite torque `-r F_m` to the chassis. The tire/contact force
 and motor force are consequently distinct inputs to the linearized audit model; adding their input
 vectors is only the quasi-static, no-wheel-acceleration approximation where `F_t = F_m`.

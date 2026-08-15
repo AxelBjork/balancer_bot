@@ -8,7 +8,6 @@ from typing import Any
 class MsgId(IntEnum):
     """Balancer UDP message identifiers."""
     PhysicsTick = 1
-    JoystickCommand = 3001
     MotorTargets = 3002
     SystemTelemetry = 3003
     SimStartRun = 3005
@@ -17,6 +16,9 @@ class MsgId(IntEnum):
     SimRunDone = 3008
     ImuRawData = 3009
     SimulatorTelemetry = 3010
+    ExternalJoystickCommand = 3011
+    PidConfigOverride = 3012
+    PidConfigStatus = 3013
 
 BalancerMsgId = MsgId
 
@@ -43,31 +45,6 @@ class PhysicsTickPayload:
 
     @classmethod
     def unpack(cls, data: bytes) -> "PhysicsTickPayload":
-        return cls.unpack_wire(data)
-
-@dataclass
-class JoystickCommandPayload:
-    WIRE_SIZE = 16
-    forward: float
-    turn: float
-
-    def pack_wire(self) -> bytes:
-        data = bytearray()
-        data.extend(struct.pack("<dd", self.forward, self.turn))
-        return bytes(data)
-
-    def pack(self) -> bytes:
-        return self.pack_wire()
-
-    @classmethod
-    def unpack_wire(cls, data: bytes) -> "JoystickCommandPayload":
-        offset = 0
-        forward, turn = struct.unpack_from("<dd", data, offset)
-        offset += struct.calcsize("<dd")
-        return cls(forward=forward, turn=turn)
-
-    @classmethod
-    def unpack(cls, data: bytes) -> "JoystickCommandPayload":
         return cls.unpack_wire(data)
 
 @dataclass
@@ -499,9 +476,149 @@ class SimulatorTelemetryPayload:
     def unpack(cls, data: bytes) -> "SimulatorTelemetryPayload":
         return cls.unpack_wire(data)
 
+@dataclass
+class JoystickCommandPayload:
+    WIRE_SIZE = 16
+    forward: float
+    turn: float
+
+    def pack_wire(self) -> bytes:
+        data = bytearray()
+        data.extend(struct.pack("<dd", self.forward, self.turn))
+        return bytes(data)
+
+    def pack(self) -> bytes:
+        return self.pack_wire()
+
+    @classmethod
+    def unpack_wire(cls, data: bytes) -> "JoystickCommandPayload":
+        offset = 0
+        forward, turn = struct.unpack_from("<dd", data, offset)
+        offset += struct.calcsize("<dd")
+        return cls(forward=forward, turn=turn)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> "JoystickCommandPayload":
+        return cls.unpack_wire(data)
+
+@dataclass
+class ConfigPidValuesPayload:
+    WIRE_SIZE = 120
+    rate_P: float
+    rate_I: float
+    rate_D: float
+    rate_I_lim: float
+    rate_FF: float
+    drive_max_acceleration_mps2: float
+    velocity_damping_per_s: float
+    velocity_I: float
+    velocity_I_limit_deg: float
+    angle_P: float
+    angle_D: float
+    pitch_rate_max_sps: float
+    drive_max_sps: float
+    turn_max_sps: float
+    balance_max_sps: float
+
+    def pack_wire(self) -> bytes:
+        data = bytearray()
+        data.extend(struct.pack("<ddddddddddddddd", self.rate_P, self.rate_I, self.rate_D, self.rate_I_lim, self.rate_FF, self.drive_max_acceleration_mps2, self.velocity_damping_per_s, self.velocity_I, self.velocity_I_limit_deg, self.angle_P, self.angle_D, self.pitch_rate_max_sps, self.drive_max_sps, self.turn_max_sps, self.balance_max_sps))
+        return bytes(data)
+
+    def pack(self) -> bytes:
+        return self.pack_wire()
+
+    @classmethod
+    def unpack_wire(cls, data: bytes) -> "ConfigPidValuesPayload":
+        offset = 0
+        rate_P, rate_I, rate_D, rate_I_lim, rate_FF, drive_max_acceleration_mps2, velocity_damping_per_s, velocity_I, velocity_I_limit_deg, angle_P, angle_D, pitch_rate_max_sps, drive_max_sps, turn_max_sps, balance_max_sps = struct.unpack_from("<ddddddddddddddd", data, offset)
+        offset += struct.calcsize("<ddddddddddddddd")
+        return cls(rate_P=rate_P, rate_I=rate_I, rate_D=rate_D, rate_I_lim=rate_I_lim, rate_FF=rate_FF, drive_max_acceleration_mps2=drive_max_acceleration_mps2, velocity_damping_per_s=velocity_damping_per_s, velocity_I=velocity_I, velocity_I_limit_deg=velocity_I_limit_deg, angle_P=angle_P, angle_D=angle_D, pitch_rate_max_sps=pitch_rate_max_sps, drive_max_sps=drive_max_sps, turn_max_sps=turn_max_sps, balance_max_sps=balance_max_sps)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> "ConfigPidValuesPayload":
+        return cls.unpack_wire(data)
+
+@dataclass
+class PidConfigOverridePayload:
+    WIRE_SIZE = 128
+    request_id: int
+    reserved: int
+    values: ConfigPidValuesPayload
+
+    def pack_wire(self) -> bytes:
+        data = bytearray()
+        data.extend(struct.pack("<II", self.request_id, self.reserved))
+        item = self.values
+        if not hasattr(item, 'pack_wire'):
+            if isinstance(item, tuple):
+                item = ConfigPidValuesPayload(*item)
+            elif isinstance(item, dict):
+                item = ConfigPidValuesPayload(**item)
+            else:
+                item = ConfigPidValuesPayload(item)
+        data.extend(item.pack_wire())
+        return bytes(data)
+
+    def pack(self) -> bytes:
+        return self.pack_wire()
+
+    @classmethod
+    def unpack_wire(cls, data: bytes) -> "PidConfigOverridePayload":
+        offset = 0
+        request_id, reserved = struct.unpack_from("<II", data, offset)
+        offset += struct.calcsize("<II")
+        sub_size = ConfigPidValuesPayload.WIRE_SIZE
+        values = ConfigPidValuesPayload.unpack_wire(data[offset:offset+sub_size])
+        offset += sub_size
+        return cls(request_id=request_id, reserved=reserved, values=values)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> "PidConfigOverridePayload":
+        return cls.unpack_wire(data)
+
+@dataclass
+class PidConfigStatusPayload:
+    WIRE_SIZE = 128
+    request_id: int
+    accepted: int
+    result_code: int
+    reserved: int
+    values: ConfigPidValuesPayload
+
+    def pack_wire(self) -> bytes:
+        data = bytearray()
+        data.extend(struct.pack("<IBBH", self.request_id, self.accepted, self.result_code, self.reserved))
+        item = self.values
+        if not hasattr(item, 'pack_wire'):
+            if isinstance(item, tuple):
+                item = ConfigPidValuesPayload(*item)
+            elif isinstance(item, dict):
+                item = ConfigPidValuesPayload(**item)
+            else:
+                item = ConfigPidValuesPayload(item)
+        data.extend(item.pack_wire())
+        return bytes(data)
+
+    def pack(self) -> bytes:
+        return self.pack_wire()
+
+    @classmethod
+    def unpack_wire(cls, data: bytes) -> "PidConfigStatusPayload":
+        offset = 0
+        request_id, accepted, result_code, reserved = struct.unpack_from("<IBBH", data, offset)
+        offset += struct.calcsize("<IBBH")
+        sub_size = ConfigPidValuesPayload.WIRE_SIZE
+        values = ConfigPidValuesPayload.unpack_wire(data[offset:offset+sub_size])
+        offset += sub_size
+        return cls(request_id=request_id, accepted=accepted, result_code=result_code, reserved=reserved, values=values)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> "PidConfigStatusPayload":
+        return cls.unpack_wire(data)
+
 MESSAGE_BY_ID = {
     MsgId.PhysicsTick: PhysicsTickPayload,
-    MsgId.JoystickCommand: JoystickCommandPayload,
     MsgId.MotorTargets: MotorTargetsPayload,
     MsgId.SystemTelemetry: SystemTelemetryPayload,
     MsgId.SimStartRun: SimStartRunPayload,
@@ -510,11 +627,13 @@ MESSAGE_BY_ID = {
     MsgId.SimRunDone: SimRunDonePayload,
     MsgId.ImuRawData: ImuRawPayload,
     MsgId.SimulatorTelemetry: SimulatorTelemetryPayload,
+    MsgId.ExternalJoystickCommand: JoystickCommandPayload,
+    MsgId.PidConfigOverride: PidConfigOverridePayload,
+    MsgId.PidConfigStatus: PidConfigStatusPayload,
 }
 
 PAYLOAD_SIZE_BY_ID = {
     MsgId.PhysicsTick: 16,
-    MsgId.JoystickCommand: 16,
     MsgId.MotorTargets: 16,
     MsgId.SystemTelemetry: 144,
     MsgId.SimStartRun: 1120,
@@ -523,6 +642,9 @@ PAYLOAD_SIZE_BY_ID = {
     MsgId.SimRunDone: 104,
     MsgId.ImuRawData: 56,
     MsgId.SimulatorTelemetry: 272,
+    MsgId.ExternalJoystickCommand: 16,
+    MsgId.PidConfigOverride: 128,
+    MsgId.PidConfigStatus: 128,
 }
 
-PROTOCOL_HASH = "75636990e95c6daa"
+PROTOCOL_HASH = "92b394fbbd835ff2"

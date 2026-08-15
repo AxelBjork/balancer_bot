@@ -274,7 +274,12 @@ void print_subscribers() {
 }
 
 template <typename T>
+void emit_nested_struct(const std::set<std::string>& top_level_payload_names,
+                        std::set<std::string>& emitted_nested_types);
+
+template <typename T>
 void emit_field_table() {
+  validate_wire_type<T>();
   constexpr std::size_t N = get_fields_size<T>();
 
   std::cout << "| Field | C++ Type | Python Type | Bytes | Offset | Description |\n";
@@ -301,12 +306,61 @@ void emit_field_table() {
   std::cout << "\n";
 }
 
+template <typename T>
+void emit_nested_structs(const std::set<std::string>& top_level_payload_names,
+                         std::set<std::string>& emitted_nested_types) {
+  constexpr std::size_t N = get_fields_size<T>();
+
+  if constexpr (N > 0) {
+    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+      (..., [&] {
+        constexpr auto field = StructArrHolder<T, N>::arr[Is];
+        constexpr auto type = std::meta::type_of(field);
+        using FieldT = typename[:type:];
+
+        if constexpr (is_array_like_v<FieldT>) {
+          using ElemT = typename array_traits<FieldT>::element_type;
+          if constexpr (std::is_class_v<ElemT> && !is_array_like_v<ElemT>) {
+            emit_nested_struct<ElemT>(top_level_payload_names, emitted_nested_types);
+          }
+        } else if constexpr (std::is_class_v<FieldT>) {
+          emit_nested_struct<FieldT>(top_level_payload_names, emitted_nested_types);
+        }
+      }());
+    }(std::make_index_sequence<N>{});
+  }
+}
+
+template <typename T>
+void emit_nested_struct(const std::set<std::string>& top_level_payload_names,
+                        std::set<std::string>& emitted_nested_types) {
+  const std::string type_name = get_cxx_type_name<T>();
+  if (top_level_payload_names.count(type_name) != 0 ||
+      !emitted_nested_types.insert(type_name).second) {
+    return;
+  }
+
+  std::cout << "#### Sub-struct: `" << type_name << "`\n\n";
+  constexpr auto desc = get_desc<^^T>();
+  if (desc.text[0] != '\0') {
+    emit_markdown_blockquote(desc.text);
+    std::cout << "\n";
+  }
+  std::cout << "- C++ type: `" << get_cxx_type_name<T>() << "`\n";
+  std::cout << "- Python type: `" << get_python_type_name<T>() << "`\n";
+  std::cout << "- Wire size: `" << sizeof(T) << "` bytes\n\n";
+
+  emit_field_table<T>();
+  emit_nested_structs<T>(top_level_payload_names, emitted_nested_types);
+}
+
 template <::MsgId Id>
-void emit_payload_section() {
+void emit_payload_section(const std::set<std::string>& top_level_payload_names,
+                          std::set<std::string>& emitted_nested_types) {
   using Payload = typename MessageTraits<Id>::Payload;
   constexpr auto desc = get_desc<^^Payload>();
 
-  std::cout << "### `MsgId::" << MessageTraits<Id>::name << "`\n\n";
+  std::cout << "### `MsgId::" << get_enum_name<MsgId, Id>() << "`\n\n";
   if (desc.text[0] != '\0') {
     emit_markdown_blockquote(desc.text);
     std::cout << "\n";
@@ -323,6 +377,7 @@ void emit_payload_section() {
   std::cout << "\n\n";
 
   emit_field_table<Payload>();
+  emit_nested_structs<Payload>(top_level_payload_names, emitted_nested_types);
 }
 
 template <typename Tuple, std::size_t... Is>
@@ -339,7 +394,7 @@ void emit_components_impl(std::index_sequence<Is...>) {
     std::cout << "- Publishes: ";
     []<::MsgId... Ids>(ipc::MsgList<Ids...>) {
       bool first = true;
-      (((std::cout << (first ? "" : ", ") << "`" << MessageTraits<Ids>::name << "`"),
+      (((std::cout << (first ? "" : ", ") << "`" << get_enum_name<MsgId, Ids>() << "`"),
         first = false),
        ...);
       if (first) {
@@ -352,7 +407,7 @@ void emit_components_impl(std::index_sequence<Is...>) {
     if constexpr (requires { typename Component::Subscribes; }) {
       []<::MsgId... Ids>(ipc::MsgList<Ids...>) {
         bool first = true;
-        (((std::cout << (first ? "" : ", ") << "`" << MessageTraits<Ids>::name << "`"),
+        (((std::cout << (first ? "" : ", ") << "`" << get_enum_name<MsgId, Ids>() << "`"),
           first = false),
          ...);
         if (first) {
@@ -362,7 +417,8 @@ void emit_components_impl(std::index_sequence<Is...>) {
     } else {
       std::cout << "_None_";
     }
-    std::cout << "\n\n";
+    std::cout << "\n";
+    std::cout << "\n";
   }());
 }
 
@@ -460,7 +516,7 @@ void collect_msg_edges(EdgeMap& edges, std::set<std::string>& inbound_message_na
 
   constexpr bool bridge_subscribes = component_subscribes<ipc::UdpBridge, Id>();
   constexpr bool bridge_publishes = component_publishes<ipc::UdpBridge, Id>();
-  constexpr std::string_view message_name = MessageTraits<Id>::name;
+  constexpr std::string_view message_name = get_enum_name<MsgId, Id>();
 
   if constexpr (bridge_publishes && has_cpp_subscribers) {
     inbound_message_names.insert(std::string(message_name));
@@ -550,24 +606,12 @@ void emit_graphviz_flow_dot(std::ostream& os) {
   os << "    fillcolor=\"#2A1B07\";\n";
   os << "    margin=24;\n\n";
   os << "    { rank=same; TX; RX; }\n\n";
-  os << "    TX [fillcolor=\"#B45309\", label=<<B><FONT POINT-SIZE=\"30\">TX Socket</FONT></B>"
-        "<BR/><FONT POINT-SIZE=\"24\">Port 9000 (Inbound)</FONT>>];\n";
-  os << "    RX [fillcolor=\"#B45309\", label=<<B><FONT POINT-SIZE=\"30\">RX Socket</FONT></B>"
-        "<BR/><FONT POINT-SIZE=\"24\">Client Ephemeral Port (Outbound)</FONT>>];\n";
+  os << "    TX [fillcolor=\"#B45309\", label=<<B><FONT POINT-SIZE=\"30\">UDP In</FONT></B>>];\n";
+  os << "    RX [fillcolor=\"#B45309\", label=<<B><FONT POINT-SIZE=\"30\">UDP Out</FONT></B>>];\n";
   os << "    TX -> RX [style=invis, weight=50, constraint=false];\n";
   os << "  }\n\n";
 
-  os << "  subgraph cluster_pytest {\n";
-  os << "    label=<<B><FONT POINT-SIZE=\"40\">Pytest Harness</FONT></B>>;\n";
-  os << "    fontcolor=\"#F1F5F9\";\n";
-  os << "    style=\"rounded,filled\";\n";
-  os << "    color=\"#22C55E\";\n";
-  os << "    penwidth=6;\n";
-  os << "    fillcolor=\"#0B2A20\";\n";
-  os << "    margin=24;\n\n";
-  os << "    TestCase [fillcolor=\"#047857\", label=<<B><FONT POINT-SIZE=\"34\">Test Case / "
-        "Fixtures</FONT></B>>];\n";
-  os << "  }\n\n";
+  os << "  Client [fillcolor=\"#047857\", label=<<B><FONT POINT-SIZE=\"34\">Client</FONT></B>>];\n\n";
 
   EdgeMap edge_map;
   std::set<std::string> inbound_message_names;
@@ -576,7 +620,7 @@ void emit_graphviz_flow_dot(std::ostream& os) {
     collect_msg_edges<Components, Id>(edge_map, inbound_message_names, outbound_message_names);
   });
 
-  os << "  TestCase -> TX [label=\"send_msg\", color=\"#F1F5F9\", penwidth=5];\n";
+  os << "  Client -> TX [label=\"send\", color=\"#F1F5F9\", penwidth=5];\n";
   os << "  TX -> " << dot_id("UdpBridge") << " [label=\"Inbound Traffic:\\n"
      << dot_escape_label(build_label(inbound_message_names))
      << "\", color=\"#F1F5F9\", penwidth=5, fontsize=25];\n\n";
@@ -588,7 +632,7 @@ void emit_graphviz_flow_dot(std::ostream& os) {
   os << "\n  RX -> " << dot_id("UdpBridge") << " [label=\"Outbound Traffic:\\n"
      << dot_escape_label(build_label(outbound_message_names))
      << "\", color=\"#F1F5F9\", penwidth=5, dir=back, fontsize=25, arrowtail=normal];\n";
-  os << "  TestCase -> RX [label=\"recv_msg\", color=\"#F1F5F9\", penwidth=5, dir=back, "
+  os << "  Client -> RX [label=\"receive\", color=\"#F1F5F9\", penwidth=5, dir=back, "
         "arrowtail=normal];\n";
   os << "}\n";
 }
@@ -619,8 +663,8 @@ int main(int argc, char** argv) {
 ## Overview
 
 This document is generated from the balancer runtime message registry and the reflected payload types in `src/messages/`.
-It describes the reflected runtime message bus used by the balancer services, including the UDP-facing
-messages consumed by the SIL harness and the internal-only messages exchanged between services.
+It describes the reflected runtime message bus used by the balancer services, including the production
+UDP runtime API and the internal-only messages exchanged between services.
 
 )";
 
@@ -633,8 +677,8 @@ messages consumed by the SIL harness and the internal-only messages exchanged be
 
 The architecture is divided into three logical areas:
 
-1. **Pytest Harness**: Python fixtures send fixed-size UDP datagrams and decode telemetry using the generated bindings.
-2. **Network Layer**: `UdpBridge` translates between UDP traffic and the internal message bus.
+1. **Client**: The telemetry server is the primary peer; SIL uses the same generated bindings and bridge contract.
+2. **Network Layer**: `UdpBridge` translates between UDP traffic and the internal message bus on the production port-9000 boundary.
 3. **Balancer Services**: services publish and consume reflected payload structs on the bus.
 
 ![IPC Flow Diagram](ipc_flow.svg)
@@ -652,11 +696,21 @@ The architecture is divided into three logical areas:
 ## Message Payloads
 
 Each section corresponds to one reflected balancer message. Some are exposed over UDP, while others are
-internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
+internal-only service messages. Wire sizes come directly from `sizeof(Payload)`. Nested struct types are
+listed as `Sub-struct` sections under the first message that references them; types that are also
+documented messages reuse their message section.
 
 )";
 
-  for_each_documented_message<Components>([&]<::MsgId Id>() { emit_payload_section<Id>(); });
+  std::set<std::string> top_level_payload_names;
+  for_each_documented_message<Components>([&]<::MsgId Id>() {
+    top_level_payload_names.insert(get_cxx_type_name<typename MessageTraits<Id>::Payload>());
+  });
+
+  std::set<std::string> emitted_nested_types;
+  for_each_documented_message<Components>([&]<::MsgId Id>() {
+    emit_payload_section<Id>(top_level_payload_names, emitted_nested_types);
+  });
 
   std::cout << R"(---
 
@@ -667,7 +721,7 @@ cmake -S . -B build
 cmake --build build --target balancer_docs
 ```
 
-_Generated with GCC trunk `-std=c++26 -freflection`._
+_Generated with standard C++26 reflection using GCC 16.1.0 `-std=c++26 -freflection`._
 )";
 
   return 0;

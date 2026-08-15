@@ -9,6 +9,9 @@ This directory contains the physical build reference material for the robot. It 
 - `hardware/frame/custom/`
   local modified print files for this build
 
+The [frame source directory](frame/B-robot_EVO_2/) and [local custom frame directory](frame/custom/)
+contain the physical assets referenced below.
+
 ## Bill of Materials
 
 | Qty | Item | Function | Brand/Manufacturer | Part Number / Model |
@@ -24,7 +27,7 @@ This directory contains the physical build reference material for the robot. It 
 
 ## Frame Source
 
-- **B-robot EVO 2 (jjrobots)** — https://www.thingiverse.com/thing:2306541
+- **B-robot EVO 2 (jjrobots)** — [Thingiverse frame source](https://www.thingiverse.com/thing:2306541)
 
 ## Wiring Summary
 
@@ -33,9 +36,13 @@ This directory contains the physical build reference material for the robot. It 
 - **Motors → HAT**
   Connect each NEMA-17 to one DRV8825 channel and set microstepping as needed.
 - **Power**
-  Feed the Stepper Motor HAT from the battery pack. Back-powering the Pi from the HAT is possible, but make sure the regulator current budget is adequate.
+  Feed the Stepper Motor HAT from the battery pack. Back-powering the Pi from the HAT is electrically
+  possible, but it is not a validated project recommendation; verify the regulator current budget
+  and wiring before using it.
 
 ## Notes
 
 - This directory is reference material for the physical build.
 - Software setup, deployment, and runtime bring-up are documented in [Running on Pi](../doc/Running_on_Pi.md).
+- Runtime confidence and caveats are summarized in [Current Status](../doc/status.md); retained
+  hardware evidence is listed in the [data archive](../data/README.md).

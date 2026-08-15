@@ -30,6 +30,7 @@ class RateControllerCore {
   void pushImu(const ImuSample& s);
   void clearImu();
   void setJoystick(const JoyCmd& j);
+  void applyPidConfig();
   void setMotorFeedback(int64_t left_actual_steps, int64_t right_actual_steps,
                         bool actuator_fault);
   void setTelemetrySink(std::function<void(const Telemetry&)> cb);

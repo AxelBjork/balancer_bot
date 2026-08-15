@@ -43,11 +43,11 @@ digraph IPC {
     ];
     InputService [
       fillcolor="#0369A1",
-      label=<<B><FONT POINT-SIZE="30">InputService</FONT></B><BR/><FONT POINT-SIZE="24">Reads input from a hardware Xbox<BR/>controller and publishes normalized<BR/>`JoystickCommand` messages to the bus.</FONT>>
+      label=<<B><FONT POINT-SIZE="30">InputService</FONT></B><BR/><FONT POINT-SIZE="24">Arbitrates hardware and external<BR/>joystick input, then publishes<BR/>resolved normalized `JoystickCommand`<BR/>messages to the bus.</FONT>>
     ];
     UdpBridge [
       fillcolor="#0F766E",
-      label=<<B><FONT POINT-SIZE="38">UdpBridge</FONT></B><BR/><FONT POINT-SIZE="24">Stateful transport bridge that<BR/>connects the internal `MessageBus` to<BR/>external UDP-based SIL clients.</FONT>>
+      label=<<B><FONT POINT-SIZE="38">UdpBridge</FONT></B><BR/><FONT POINT-SIZE="24">Stateful transport bridge that<BR/>connects the internal `MessageBus` to<BR/>external UDP runtime clients. In the<BR/>production Pi runtime it listens on<BR/>port `9000`; the telemetry server is<BR/>the primary peer, while SIL and other<BR/>authorized clients use the same<BR/>boundary.</FONT>>
     ];
   }
 
@@ -62,39 +62,30 @@ digraph IPC {
 
     { rank=same; TX; RX; }
 
-    TX [fillcolor="#B45309", label=<<B><FONT POINT-SIZE="30">TX Socket</FONT></B><BR/><FONT POINT-SIZE="24">Port 9000 (Inbound)</FONT>>];
-    RX [fillcolor="#B45309", label=<<B><FONT POINT-SIZE="30">RX Socket</FONT></B><BR/><FONT POINT-SIZE="24">Client Ephemeral Port (Outbound)</FONT>>];
+    TX [fillcolor="#B45309", label=<<B><FONT POINT-SIZE="30">UDP In</FONT></B>>];
+    RX [fillcolor="#B45309", label=<<B><FONT POINT-SIZE="30">UDP Out</FONT></B>>];
     TX -> RX [style=invis, weight=50, constraint=false];
   }
 
-  subgraph cluster_pytest {
-    label=<<B><FONT POINT-SIZE="40">Pytest Harness</FONT></B>>;
-    fontcolor="#F1F5F9";
-    style="rounded,filled";
-    color="#22C55E";
-    penwidth=6;
-    fillcolor="#0B2A20";
-    margin=24;
+  Client [fillcolor="#047857", label=<<B><FONT POINT-SIZE="34">Client</FONT></B>>];
 
-    TestCase [fillcolor="#047857", label=<<B><FONT POINT-SIZE="34">Test Case / Fixtures</FONT></B>>];
-  }
-
-  TestCase -> TX [label="send_msg", color="#F1F5F9", penwidth=5];
-  TX -> UdpBridge [label="Inbound Traffic:\nImuRawData, JoystickCommand\nPhysicsTick", color="#F1F5F9", penwidth=5, fontsize=25];
+  Client -> TX [label="send", color="#F1F5F9", penwidth=5];
+  TX -> UdpBridge [label="Inbound Traffic:\nExternalJoystickCommand, ImuRawData\nPhysicsTick, PidConfigOverride", color="#F1F5F9", penwidth=5, fontsize=25];
 
   // Internal Service Logic
   ControlService -> MotorService [label="MotorTargets", style=dashed];
-  ControlService -> UdpBridge [label="MotorTargets, SystemTelemetry", style=dashed];
+  ControlService -> UdpBridge [label="MotorTargets, PidConfigStatus\nSystemTelemetry", style=dashed];
   ImuService -> ControlService [label="ImuData", style=dashed];
   ImuService -> ImuService [label="ImuRawData", style=dashed];
   InputService -> ControlService [label="JoystickCommand", style=dashed];
   MotorService -> ControlService [label="MotorFeedback", style=dashed];
   TimeService -> ControlService [label="PhysicsTick", style=dashed];
   TimeService -> MotorService [label="PhysicsTick", style=dashed];
-  UdpBridge -> ControlService [label="JoystickCommand, PhysicsTick", style=dashed];
+  UdpBridge -> ControlService [label="PhysicsTick, PidConfigOverride", style=dashed];
   UdpBridge -> ImuService [label="ImuRawData", style=dashed];
+  UdpBridge -> InputService [label="ExternalJoystickCommand", style=dashed];
   UdpBridge -> MotorService [label="PhysicsTick", style=dashed];
 
-  RX -> UdpBridge [label="Outbound Traffic:\nMotorTargets, SystemTelemetry", color="#F1F5F9", penwidth=5, dir=back, fontsize=25, arrowtail=normal];
-  TestCase -> RX [label="recv_msg", color="#F1F5F9", penwidth=5, dir=back, arrowtail=normal];
+  RX -> UdpBridge [label="Outbound Traffic:\nMotorTargets, PidConfigStatus\nSystemTelemetry", color="#F1F5F9", penwidth=5, dir=back, fontsize=25, arrowtail=normal];
+  Client -> RX [label="receive", color="#F1F5F9", penwidth=5, dir=back, arrowtail=normal];
 }

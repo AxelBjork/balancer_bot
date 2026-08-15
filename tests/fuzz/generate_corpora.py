@@ -159,11 +159,11 @@ def write_udp_corpus(output_root: Path) -> None:
 
     _write(udp_dir / "imu_raw_only.bin", _udp_frame(MsgId.ImuRawData, imu_raw.pack()))
     _write(udp_dir / "tick_only.bin", _udp_frame(MsgId.PhysicsTick, tick.pack()))
-    _write(udp_dir / "joystick_only.bin", _udp_frame(MsgId.JoystickCommand, joystick.pack()))
+    _write(udp_dir / "joystick_only.bin", _udp_frame(MsgId.ExternalJoystickCommand, joystick.pack()))
 
     sequence = b"".join(
         [
-            _udp_frame(MsgId.JoystickCommand, joystick.pack()),
+            _udp_frame(MsgId.ExternalJoystickCommand, joystick.pack()),
             _udp_frame(MsgId.ImuRawData, imu_raw.pack()),
             _udp_frame(MsgId.PhysicsTick, tick.pack()),
             _udp_frame(

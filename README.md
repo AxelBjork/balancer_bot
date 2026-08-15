@@ -1,155 +1,114 @@
 # balancer_bot
 
-`balancer_bot` is a Raspberry Pi self-balancing robot project with a strong software spine: a tick-driven controller, a message-bus runtime, a deterministic direct simulator, and a Python SIL harness built from reflected C++ message definitions.
+`balancer_bot` is a Raspberry Pi two-wheel self-balancing robot and a control-system playground.
+It contains the real hardware runtime, a software-in-the-loop (SIL) version of that runtime, a
+deterministic simulator, and the tests and telemetry tools used to compare them.
 
-It is both a real robot project and a control/runtime playground. The same codebase supports:
+If you are browsing the project for the first time, start with the
+[documentation portal](doc/index.md). This page is the short version of the project story.
 
-- a hardware runtime on Raspberry Pi
-- a UDP-driven SIL runtime for Python tests
-- a fast direct simulator for stability work
-- generated IPC docs and Python bindings from the C++ message definitions
+For a first ten-minute tour, read [the overview](doc/overview.md), check [current confidence](doc/status.md),
+then choose [testing](doc/testing/strategy.md), [deployment](doc/Running_on_Pi.md), or [retained evidence](data/README.md)
+depending on what you want to explore.
 
-## Why This Project Is Interesting
+For a clean host setup, use the [host setup and first build guide](doc/host_setup.md) before running
+the standard test gate.
 
-- **Tick-driven control**
-  The balancing loop runs from an explicit `PhysicsTick`, which makes the control path easier to reason about in both hardware and simulation.
-- **Service-oriented runtime**
-  `TimeService`, `ImuService`, `ControlService`, `MotorService`, and `UdpBridge` are wired through a small internal message bus instead of ad hoc callback chains.
-- **Deterministic simulation**
-  The direct simulator can run representative scenarios, emit artifacts under `build/sim`, and act as the main software stability gate.
-- **Generated interfaces**
-  IPC docs and Python bindings are generated from the reflected message definitions and service metadata, which keeps the UDP contract and documentation aligned with the code.
+## The one-minute picture
 
-## Quick Start
+The robot balances by running a tick-driven control loop:
 
-### Host Build and Tests
-
-```bash
-./build_cmake
-pytest -q
+```text
+clock ──> PhysicsTick ──> ControlService ──> MotorTargets ──> MotorService ──> wheels
+                              ^                  ^                 |
+                              |                  |                 └─ MotorFeedback
+                 ImuService ── ImuData       joystick              |
+                              |                                    v
+                         SystemTelemetry ──> UdpBridge:9000 ──> dashboard / one client
 ```
 
-### AFL++ Harness Validation
+The services communicate through a small synchronous internal message bus. The UDP bridge is the
+external boundary: it lets one active client inject selected inputs and receive telemetry and
+other selected outputs. The exact message inventory and payload layout are maintained in the
+[generated IPC protocol](doc/ipc/protocol.md).
+
+The same control ideas appear in three different environments:
+
+| Mode | Executable | What is real | What it is for |
+| --- | --- | --- | --- |
+| Hardware | `balancer_pi` | IMU, stepper motors, and optional Xbox input | Running the robot on a Raspberry Pi |
+| SIL | `sil_app` | The service/message-bus/UDP path; no hardware reader, plant, or motor backend | Checking the production UDP boundary with Python-injected inputs |
+| Direct simulator | `balancer_simulator` | The production estimator/control path plus a deterministic motor and plant model | Stability, disturbance, transfer, and artifact-producing runs |
+
+The hardware bridge uses UDP port `9000`. The simulator's optional scenario-control wrapper uses
+port `9001`; it is a different endpoint and should not be confused with the production bridge.
+
+## What to read next
+
+- [Browse the project](doc/index.md) — choose a question or a path through the documentation.
+- [Host setup and first build](doc/host_setup.md) — prerequisites, the standard host gate, and result reporting.
+- [Project overview](doc/overview.md) — the modes, message roles, boundaries, and safety behavior.
+- [Runtime architecture](doc/arch/runtime.md) — how the services are assembled and how a tick moves through them.
+- [Testing strategy](doc/testing/strategy.md) — what the C++ tests, SIL tests, simulator, and fuzzing each prove.
+- [Control and plant model](doc/arch/control_plant.md) — the equations and code mapping.
+- [Control and simulator notes](doc/notes/control_and_simulator.md) — how repeatable simulator experiments are structured.
+- [IMU attitude design](doc/arch/imu_attitude_design.md) — the estimator and coordinate conventions.
+- [Current status](doc/status.md) — what has strong evidence and what still requires hardware validation.
+- [Running on Raspberry Pi](doc/Running_on_Pi.md) — deployment and physical bring-up.
+- [Hardware reference](hardware/README.md) — parts, frame, wiring, and physical references.
+- [Telemetry analysis](doc/testing/telemetry_analysis_cli.md) and [retained hardware data](data/README.md) — how runtime evidence is handled.
+
+## A few useful commands
+
+The standard host build and test gate is:
 
 ```bash
-pytest --fuzz --build-only
-python3 tools/run_afl.py --list
-python3 tools/run_afl.py udp_sequence --output-dir build-afl/afl-udp -V 60
-python3 tools/run_afl.py simulator_scenario --output-dir build-afl/afl-sim -V 300
-sed -n '1,40p' build-afl/afl-sim/default/fuzzer_stats
-find build-afl/afl-sim/default/queue -maxdepth 1 -type f | head
+pytest --build
 ```
 
-The seed corpus is generated on demand under `build-afl/fuzz-corpus/`; it is not checked into git.
+This configures and builds the host targets, runs CTest, and runs the Python SIL and simulator tests.
 
-### Standalone Simulator
+After that build, the main local executable is the simulator:
 
 ```bash
 ./build/balancer_simulator
 ```
 
-### Linearized Plant Audit
+Build the separate plant-audit target when you want the linearized model checks:
 
 ```bash
+cmake --build build --target balancer_plant_audit
 ./build/balancer_plant_audit --all
 ```
 
-### Timeline Analysis
+For a quick look at the simulator's transfer catalog or one direct summary, use:
 
 ```bash
-python3 tools/analyze_timeline.py build/sim/realistic_neutral_hold_40s/timeline.csv --summary-json
+./build/balancer_simulator --catalog-json
+./build/balancer_simulator --direct-summary 0
 ```
 
-### Live Raspberry Pi Telemetry Dashboard
+For a recorded simulator run or a transfer-validation report, follow the commands in the
+[testing strategy](doc/testing/strategy.md). For a physical robot, use the
+[Pi guide](doc/Running_on_Pi.md) rather than copying operational steps from this overview.
 
-Start the local dashboard on a laptop on the same network. It can start before the Pi is
-available; set or test the Pi target from the page and it will retry telemetry registration.
+## Project shape
 
-```bash
-python3 tools/telemetry_dashboard/server.py --pi rpi4
-```
+- `src/services/` — runtime services, controller integration, IMU, input, motors, and timing
+- `src/messages/` — the reflected C++ message payload definitions
+- `src/ipc/` — the synchronous message bus and UDP bridge
+- `src/reflection/` — generators for the Python bindings and IPC documentation
+- `tests/simulator/` and `tests/simulator_main.cpp` — the deterministic engine and its service wrapper
+- `tests/python/` — SIL, simulator, dashboard, and artifact tests
+- `tools/` — simulator runners, telemetry analysis, dashboard, and validation utilities
+- `doc/` — the human-written handbook; `doc/ipc/` is generated
+- `hardware/` and `data/` — physical references and retained runtime evidence
+- `pid.conf` — the checked-in default profile used by the hardware runtime and simulator
 
-To start without selecting a Pi, omit `--pi`. Existing dashboard logs and simulator `timeline.csv`
-files can be chosen with the page's **Choose CSV** button; uploads are temporary and discarded when
-another source is selected or the server exits. `--csv` remains available as a startup shortcut:
+## Scope and confidence
 
-```bash
-python3 tools/telemetry_dashboard/server.py --csv build/sim/example/timeline.csv
-```
-
-Live telemetry uses only the Python standard library. CSV playback uses the shared pandas-backed
-telemetry loader, so install `requirements-dev.txt` when using `--csv` or uploading a CSV.
-
-Open `http://127.0.0.1:8080`. The dashboard is read-only, uses the existing UDP telemetry
-stream, and intentionally claims the bridge's one active UDP peer; do not run it alongside a
-SIL client or another UDP observer. Add `--listen-lan` only when the laptop's network is trusted.
-`rpi4` may be the same SSH `Host` alias used by `ssh` and `scp`; the dashboard expands it through
-your `~/.ssh/config` before sending UDP. Drag any chart to pan all plots together, wheel to zoom,
-and use **Follow latest** to resume the live window.
-
-On Windows CMD, use the Python launcher. If port `8080` is reserved, choose another local port:
-
-```cmd
-py tools\telemetry_dashboard\server.py --pi rpi4 --port 8081
-```
-
-When running the dashboard on the host that already has working `scp` and non-interactive `sudo`
-access on the Pi, the page can deploy `build-pi/balancer_pi` plus `pid.conf`, start the bot, or
-abort the process it launched. Build the binary first with `./build_cmake OFF`.
-
-Every valid telemetry packet is logged automatically with a fixed CSV schema under `data/server/`.
-The dashboard keeps the ten newest files and rotates an active file at 128 MiB.
-
-### Raspberry Pi Cross-Build
-
-```bash
-./build_cmake OFF
-```
-
-## Simplified BOM
-
-| Area | Main Parts |
-| --- | --- |
-| Compute | Raspberry Pi 4 |
-| Sensing | ISM330DHCX IMU breakout + Qwiic SHIM/cable |
-| Actuation | 2x NEMA-17 steppers + Waveshare Stepper Motor HAT |
-| Power | 3S 18650 battery pack |
-| Structure | B-robot EVO 2 frame + local modified print files |
-
-The detailed parts list, frame assets, and wiring notes live in [hardware/README.md](hardware/README.md).
-
-## Architecture At a Glance
-
-![IPC Flow](doc/ipc/ipc_flow.svg)
-
-The generated flow graph above is the best quick picture of the system:
-
-- `TimeService` drives the control timeline with `PhysicsTick`
-- `ImuService` publishes the robot state estimate
-- `ControlService` converts tick + IMU + input into `MotorTargets` and telemetry
-- `MotorService` closes the loop with real motor feedback on hardware
-- `UdpBridge` exposes the SIL/test boundary without becoming the core runtime
-
-## Project Layout
-
-- `src/`
-  runtime, services, control code, reflection generators, and platform helpers
-- `tests/`
-  C++ tests, pytest SIL tests, simulator helpers, and captured reference data
-- `hardware/`
-  physical build assets, frame files, and hardware reference notes
-- `doc/`
-  handbook pages plus generated IPC docs
-- `pid.conf`
-  default hardware and simulator PID profiles
-
-## Learn More
-
-- [Documentation Portal](doc/index.md)
-- [Project Overview](doc/overview.md)
-- [Runtime Architecture](doc/arch/runtime.md)
-- [Control / Plant Notes](doc/arch/control_plant.md)
-- [Testing Strategy](doc/testing/strategy.md)
-- [Running on Pi](doc/Running_on_Pi.md)
-- [Current Status](doc/status.md)
-- [IPC Protocol Reference](doc/ipc/protocol.md)
+The simulator is the main software stability environment, not a substitute for a hardware
+balance test. The project deliberately records that distinction in the
+[current status](doc/status.md): software behavior can be strongly covered while final gains,
+mechanical parameters, and difficult recovery behavior still require restrained physical
+validation.

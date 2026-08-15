@@ -93,7 +93,7 @@ def _run_standard_build() -> None:
         "balancer_reflection",
         "-j8",
     ]
-    ctest_cmd = ["ctest", "--test-dir", str(_BUILD_DIR), "--output-on-failure", "-j8"]
+    ctest_cmd = ["ctest", "--test-dir", str(_BUILD_DIR), "--output-on-failure", "-j8", "--progress"]
 
     cache_path = _BUILD_DIR / "CMakeCache.txt"
     cache = cache_path.read_text(encoding="utf-8", errors="replace") if cache_path.exists() else ""

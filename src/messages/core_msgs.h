@@ -1,7 +1,5 @@
 #pragma once
 
-#include <string_view>
-
 #include "msg_base.h"
 
 struct DOC_DESC(
@@ -15,5 +13,4 @@ struct DOC_DESC(
 template <>
 struct MessageTraits<MsgId::PhysicsTick> {
   using Payload = PhysicsTickPayload;
-  static constexpr std::string_view name = "PhysicsTick";
 };

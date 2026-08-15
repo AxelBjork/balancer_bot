@@ -4,6 +4,24 @@ const MIN_WINDOW_S = 5;
 const MAX_POINTS = 6000;
 const FRAME_INTERVAL_MS = 1000 / 30;
 const DISPLAY_SAMPLE_HZ = 50;
+const JOYSTICK_REPEAT_MS = 100;
+const PID_FIELDS = [
+  ["rate_P", "Rate P"],
+  ["rate_I", "Rate I"],
+  ["rate_D", "Rate D"],
+  ["rate_I_lim", "Rate I limit"],
+  ["rate_FF", "Rate feed-forward"],
+  ["drive_max_acceleration_mps2", "Drive acceleration (m/s²)"],
+  ["velocity_damping_per_s", "Velocity damping (1/s)"],
+  ["velocity_I", "Velocity I"],
+  ["velocity_I_limit_deg", "Velocity I limit (deg)"],
+  ["angle_P", "Angle P"],
+  ["angle_D", "Angle D"],
+  ["pitch_rate_max_sps", "Pitch rate limit (steps/s)"],
+  ["drive_max_sps", "Drive limit (steps/s)"],
+  ["turn_max_sps", "Turn limit (steps/s)"],
+  ["balance_max_sps", "Balance limit (steps/s)"],
+];
 const groups = [
   { id:"attitude", title:"Attitude", unit:"deg", series:[
     {id:"pitch",label:"Pitch",path:"attitude.pitch_deg",decimals:2},
@@ -20,10 +38,6 @@ const groups = [
   { id:"wheel-steps", title:"Wheel position", unit:"steps", series:[
     {id:"left",label:"Left actual",path:"motion.left_actual_steps",decimals:0},
     {id:"right",label:"Right actual",path:"motion.right_actual_steps",decimals:0},
-  ]},
-  { id:"command", title:"Command", unit:"steps/s", series:[
-    {id:"command",label:"Command",path:"controller.command_sps",decimals:1},
-    {id:"error",label:"Velocity error",path:"controller.velocity_error",decimals:1},
   ]},
   { id:"controller", title:"Controller", unit:"deg", series:[
     {id:"pitch",label:"Pitch error",path:"controller.pitch_error_deg",decimals:2},
@@ -45,11 +59,12 @@ const store = {
 };
 const state = {
   charts:new Map(), observers:[],
-  visible:new Set(groups.filter(group => group.id !== "command").map(group => group.id)),
+  visible:new Set(groups.filter(group => group.id !== "wheel-steps").map(group => group.id)),
   seconds:DEFAULT_WINDOW_S, end:null, follow:true, source:null,
   events:null, paused:false, displayRun:0,
   navigator:null,
   playbackTimer:0, status:null, busy:false,
+  pid:null, joystick:{pad:null,pointerId:null,timer:0,forward:0,turn:0,inFlight:false,pending:null,neutralPending:false},
   renderQueued:false, lastRenderAt:0, backgroundLoad:0,
   ingestedSamples:0, renderedFrames:0,
 };
@@ -264,14 +279,178 @@ function rebuild() {
   state.charts.forEach(chart=>chart.destroy()); state.charts.clear(); $("#plots").replaceChildren();
   groups.filter(group=>state.visible.has(group.id)).forEach(create); render();
 }
+function liveConnection(status) {
+  const telemetryConnected=status.telemetry_connected===true;
+  const piReady=status.pi_ready===true;
+  if(telemetryConnected)return {label:"Streaming",online:true};
+  if(piReady)return {label:"Pi online · telemetry stopped",online:true};
+  return {label:"Pi offline",online:false};
+}
 function setStatus(source) {
   state.source=source;
-  const status=state.status??{}; const active=status.run_active===true;
-  const feed=status.telemetry_connected===true; const reachable=status.pi_ready===true||feed;
-  const label=source.mode==="csv"?(active?"Playing CSV":"CSV ready"):(active?(feed?"Running":"Starting · waiting for telemetry"):(reachable?"Pi ready":"Pi offline"));
-  $("#connection").textContent=label; $("#connection").className=`connection ${(reachable||source.mode==="csv")?"online":"offline"}`;
+  const status=state.status??{};
+  const connection=source.mode==="csv"
+    ? {label:status.run_active===true?"Playing CSV":"CSV ready",online:true}
+    : liveConnection(status);
+  $("#connection").textContent=connection.label; $("#connection").className=`connection ${connection.online?"online":"offline"}`;
   $("#source").textContent=source.mode==="csv"?`CSV · ${source.name}`:"Live source · rpi4";
   $("#deploy").toggleAttribute("disabled",source.mode==="csv"||state.busy);
+  updateJoystickControls();
+  updatePidStatus(status.pid_status);
+}
+
+function joystickAllowed() {
+  return state.source?.mode==="live" && state.status?.run_active===true && !state.busy;
+}
+function updateJoystickControls() {
+  const enabled=joystickAllowed();
+  const pad=$("#drive-pad"); if(pad)pad.setAttribute("aria-disabled",String(!enabled));
+  const status=$("#joystick-status");
+  if(status)status.textContent=enabled?"Drag from center · release to neutral.":"Start a live run to enable joystick commands.";
+  if(!enabled&&state.joystick.pad)stopJoystick();
+  const pidEnabled=state.source?.mode==="live"&&!state.busy;
+  document.querySelectorAll("[data-pid-field], #pid-apply, #pid-load").forEach(control=>control.disabled=!pidEnabled);
+}
+async function sendJoystick(vector={forward:0,turn:0}, release=false) {
+  if(release) {
+    state.joystick.neutralPending=true;
+    state.joystick.pending=null;
+  } else {
+    state.joystick.pending={vector:{forward:Number(vector.forward)||0,turn:Number(vector.turn)||0}};
+  }
+  if(state.joystick.inFlight)return;
+  state.joystick.inFlight=true;
+  while(state.joystick.neutralPending||state.joystick.pending) {
+    const isNeutral=state.joystick.neutralPending;
+    const request=isNeutral?{release:true}:state.joystick.pending;
+    state.joystick.neutralPending=false;
+    if(!isNeutral)state.joystick.pending=null;
+    try {
+      const response=await fetch("/api/joystick",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify(isNeutral?{release:true}:request.vector),
+        keepalive:isNeutral,
+      });
+      const result=await response.json();
+      if(!response.ok||!result.ok)throw new Error(result.error??"Joystick command failed.");
+    } catch(error) {
+      if(!isNeutral) {
+        stopJoystick(false);
+        $("#operation-result").textContent=`Joystick stopped: ${error.message}`;
+        state.joystick.pending=null;
+        state.joystick.neutralPending=true;
+      } else {
+        state.joystick.pending=null;
+      }
+    }
+  }
+  state.joystick.inFlight=false;
+}
+function clearJoystickVisuals() {
+  if(state.joystick.timer)window.clearInterval(state.joystick.timer);
+  state.joystick.timer=0; state.joystick.pad=null; state.joystick.pointerId=null; state.joystick.forward=0; state.joystick.turn=0;
+  const pad=$("#drive-pad");
+  if(pad) {
+    pad.classList.remove("active");
+    pad.style.setProperty("--drive-pad-x","50%");
+    pad.style.setProperty("--drive-pad-y","50%");
+    pad.setAttribute("aria-valuetext","Neutral");
+  }
+}
+function stopJoystick(sendNeutral=true) {
+  clearJoystickVisuals();
+  if(sendNeutral)void sendJoystick({forward:0,turn:0},true);
+}
+function clampJoystick(value) { return Math.max(-1,Math.min(1,value)); }
+function drivePadVectorAt(pad,event) {
+  const rect=pad.getBoundingClientRect();
+  const centerX=rect.left+rect.width/2, centerY=rect.top+rect.height/2;
+  const x=clampJoystick((event.clientX-centerX)/Math.max(1,rect.width/2));
+  const y=clampJoystick((event.clientY-centerY)/Math.max(1,rect.height/2));
+  return Math.abs(y)>Math.abs(x)?{forward:-y,turn:0}:{forward:0,turn:x};
+}
+function updateDrivePad(pad,event) {
+  const vector=drivePadVectorAt(pad,event);
+  state.joystick.forward=vector.forward; state.joystick.turn=vector.turn;
+  pad.style.setProperty("--drive-pad-x",`${50+vector.turn*50}%`);
+  pad.style.setProperty("--drive-pad-y",`${50-vector.forward*50}%`);
+  pad.setAttribute("aria-valuetext",`Forward ${vector.forward.toFixed(2)}, turn ${vector.turn.toFixed(2)}`);
+  void sendJoystick(vector);
+}
+function startJoystick(pad,event) {
+  if(!joystickAllowed()||state.joystick.pad)return;
+  state.joystick.pad=pad; state.joystick.pointerId=event.pointerId;
+  pad.classList.add("active");
+  pad.setPointerCapture?.(event.pointerId);
+  updateDrivePad(pad,event);
+  state.joystick.timer=window.setInterval(()=>{
+    if(!joystickAllowed()||state.joystick.pad!==pad) {stopJoystick();return;}
+    void sendJoystick({forward:state.joystick.forward,turn:state.joystick.turn});
+  },JOYSTICK_REPEAT_MS);
+}
+function moveJoystick(pad,event) {
+  if(state.joystick.pad!==pad||state.joystick.pointerId!==event.pointerId)return;
+  if(event.buttons===0) {stopJoystick();return;}
+  updateDrivePad(pad,event);
+}
+function finishJoystick(pad,event) {
+  if(state.joystick.pad!==pad||state.joystick.pointerId!==event.pointerId)return;
+  stopJoystick();
+}
+const PID_MIN_STEP = 0.0001;
+function pidSpinnerStep(value) {
+  const raw=Math.abs(Number(value))*.1;
+  if(!Number.isFinite(raw)||raw<=0)return PID_MIN_STEP;
+  const magnitude=10**Math.floor(Math.log10(raw));
+  return Math.max(PID_MIN_STEP,Number((Math.round(raw/magnitude)*magnitude).toPrecision(12)));
+}
+function updatePidSpinnerStep(input) {
+  input.step=String(pidSpinnerStep(input.value));
+}
+function renderPidFields(values) {
+  PID_FIELDS.forEach(([name])=>{
+    const input=document.querySelector(`[data-pid-field="${name}"]`);
+    if(input&&typeof values?.[name]==="number") {
+      input.value=String(values[name]);
+      updatePidSpinnerStep(input);
+    }
+  });
+}
+function updatePidStatus(status) {
+  const output=$("#pid-status");
+  if(!output||!status)return;
+  output.textContent=status.message??"";
+  output.className=`pid-status ${status.state??""}`;
+}
+async function loadPid() {
+  try {
+    const response=await fetch("/api/pid");
+    const result=await response.json();
+    if(!response.ok||!result.ok)throw new Error(result.error??"PID config unavailable.");
+    state.pid=result; renderPidFields(result.values); updatePidStatus(result.last_status);
+  } catch(error) {
+    const output=$("#pid-status"); if(output)output.textContent=`PID tuning unavailable: ${error.message}`;
+  }
+}
+async function applyPid() {
+  const values={};
+  for(const [name] of PID_FIELDS) {
+    const value=Number(document.querySelector(`[data-pid-field="${name}"]`)?.value);
+    if(!Number.isFinite(value)) {$("#pid-status").textContent=`Enter a finite value for ${name}.`;return;}
+    values[name]=value;
+  }
+  try {
+    const result=await post("/api/pid",{values});
+    if(state.pid) {state.pid.values=result.values;state.pid.pending=result.pending;}
+    $("#pid-status").textContent=result.message??"PID override sent.";
+  } catch(error) { $("#pid-status").textContent=`PID update failed: ${error.message}`; }
+}
+function loadPidBaseline() {
+  if(state.pid?.baseline) {
+    renderPidFields(state.pid.baseline);
+    void applyPid();
+  }
 }
 function stopPlayback() { if(state.playbackTimer)window.clearInterval(state.playbackTimer); state.playbackTimer=0; }
 function startPlayback() {
@@ -293,6 +472,10 @@ function stream() {
   state.events.addEventListener("telemetry",event=>append(JSON.parse(event.data)));
   state.events.addEventListener("status",event=>{
     const status=JSON.parse(event.data); state.status=status;
+    if(status.pid_status) {
+      if(state.pid) state.pid.last_status=status.pid_status;
+      updatePidStatus(status.pid_status);
+    }
     if(typeof status.display_run==="number"&&status.display_run!==state.displayRun)resetForDisplayRun(status.display_run);
     if(state.source)setStatus({...state.source,connection_state:String(status.connection_state??""),connection_message:String(status.connection_message??"")});
     if(store.samples.length)updateMetrics(store.samples.at(-1));
@@ -300,7 +483,8 @@ function stream() {
   state.events.onerror=()=>{state.events?.close();state.events=null;if(!state.paused&&!document.hidden)window.setTimeout(stream,2000);};
 }
 async function post(path, body, headers) {
-  const response=await fetch(path,{method:"POST",body,headers});
+  const isBinary=typeof body==="string"||(typeof Blob!=="undefined"&&body instanceof Blob);
+  const response=await fetch(path,{method:"POST",body:isBinary?body:JSON.stringify(body),headers:isBinary?headers:{"Content-Type":"application/json",...(headers??{})}});
   const result=await response.json();
   if(!response.ok||!result.ok)throw new Error(result.error??"Request failed."); if(result.source)setStatus(result.source); return result;
 }
@@ -308,17 +492,17 @@ async function operation(id) {
   if(state.busy)return;
   const button=$("#"+id); const controls=[...document.querySelectorAll(".run-buttons button")];
   const messages={deploy:"Deploying to pi@rpi4…",start:state.source?.mode==="csv"?"Starting CSV playback…":"Starting balancer…",abort:state.source?.mode==="csv"?"Stopping CSV playback…":"Stopping balancer…"};
-  state.busy=true; controls.forEach(control=>control.disabled=true); button.classList.add("working"); button.setAttribute("aria-busy","true"); $("#operation-result").textContent=messages[id];
+  state.busy=true; updateJoystickControls(); controls.forEach(control=>control.disabled=true); button.classList.add("working"); button.setAttribute("aria-busy","true"); $("#operation-result").textContent=messages[id];
   try {
-    if(id==="abort"){state.paused=true;stopPlayback();state.events?.close();state.events=null;}
+    if(id==="abort"){stopJoystick();state.paused=true;stopPlayback();state.events?.close();state.events=null;}
     const response=await post(`/api/${id}`);
     if(id==="start"){
       state.paused=false; resetForDisplayRun(response.display_run??state.displayRun); state.status={...(state.status??{}),run_active:true,telemetry_connected:false}; stream();
       if(state.source?.mode==="csv"){await loadCompleteCache();startPlayback();}
-    } else if(id==="abort") state.status={...(state.status??{}),run_active:false,telemetry_connected:false};
+    } else if(id==="abort") {state.status={...(state.status??{}),run_active:false,telemetry_connected:false};stopJoystick(false);}
     if(state.source)setStatus(state.source); $("#operation-result").textContent=response.message??"Done.";
   } catch(error){$("#operation-result").textContent=`Failed: ${error.message}`;}
-  finally {state.busy=false;controls.forEach(control=>control.disabled=false);button.classList.remove("working");button.removeAttribute("aria-busy");if(state.source)setStatus(state.source);}
+  finally {state.busy=false;controls.forEach(control=>control.disabled=false);button.classList.remove("working");button.removeAttribute("aria-busy");if(state.source)setStatus(state.source);updateJoystickControls();}
 }
 function navigatorPointer(event) {
   const target=event.target; const track=$("#navigator-track"); const [start,end]=viewRange();
@@ -341,15 +525,51 @@ function navigatorFinish() {
   if(store.decimated) { const [start,end]=viewRange(); void loadDetail(start,end); }
 }
 function layout() {
-  $("#app").innerHTML = `<div class="dashboard-shell"><aside class="left-rail"><div class="brand"><div class="brand-mark"><img src="/balancer-mark.svg" alt="Balancer Bot"></div><div><span class="brand-kicker">LOCAL CONSOLE</span><h1>Balancer</h1><p id="source" class="subtle">Live source · rpi4</p></div></div><div class="source-actions"><span class="rail-label">Data source</span><label class="file-button source-file">${icon("upload")}<span>Open CSV capture</span><input id="csv-file" type="file" accept=".csv,text/csv"></label></div><div class="rail-signature"><span></span>LOCAL TELEMETRY</div></aside><main class="dashboard-main"><section id="metrics" class="metrics"></section><section class="workspace"><div class="workspace-head"><div class="workspace-title">${icon("activity")}<h2>Telemetry</h2></div><div class="plot-controls"><div class="tabs">${groups.map(group=>`<button data-group="${group.id}" class="${state.visible.has(group.id)?"active":""}">${group.title}</button>`).join("")}</div><div class="toolbar-divider"></div><div class="ranges"><span id="timeline-state">Following latest</span><button id="follow" class="primary" disabled>Follow latest</button></div></div></div><div class="navigator"><div class="navigator-labels"><span id="navigator-start">0.0 s</span><strong>History window · <em id="window-duration">15 s</em></strong><span id="navigator-end">15.0 s</span></div><div id="navigator-track" class="navigator-track"><div id="navigator-fill" class="navigator-fill"></div><div id="navigator-window" class="navigator-window"><i class="handle left-handle"></i><span>DRAG</span><i class="handle right-handle"></i></div></div></div><div id="plots" class="plot-grid"></div></section></main><aside class="right-rail"><section class="run-controls" aria-label="Run controls"><div class="run-label"><span>${icon("radio")}Run control</span><strong id="connection" class="connection offline">Idle · waiting</strong></div><div class="run-buttons"><button id="deploy" class="secondary">${icon("rocket")}Deploy</button><button id="start" class="primary">${icon("play")}Start</button><button id="abort" class="danger">${icon("abort")}Abort</button></div><output id="operation-result" class="operation-result" aria-live="polite">Ready.</output></section><section class="run-notes"><span class="rail-label">Session</span><p>Start clears the display clock. Abort freezes presentation while capture stays passive.</p></section><section class="events"><strong>Latched flags</strong><span id="events-text">No telemetry received.</span></section></aside></div>`;
+  $("#app").innerHTML = `<div class="dashboard-shell"><aside class="left-rail"><div class="brand"><div class="brand-mark"><img src="/balancer-mark.svg" alt="Balancer Bot"></div><div><span class="brand-kicker">LOCAL CONSOLE</span><h1>Balancer</h1><p id="source" class="subtle">Live source · rpi4</p></div></div><div class="source-actions"><span class="rail-label">Data source</span><label class="file-button source-file">${icon("upload")}<span>Open CSV capture</span><input id="csv-file" type="file" accept=".csv,text/csv"></label></div><div class="rail-signature"><span></span>LOCAL TELEMETRY</div></aside><main class="dashboard-main"><section id="metrics" class="metrics"></section><section class="workspace"><div class="workspace-head"><div class="workspace-title">${icon("activity")}<h2>Telemetry</h2></div><div class="plot-controls"><div class="tabs">${groups.map(group=>`<button data-group="${group.id}" class="${state.visible.has(group.id)?"active":""}">${group.title}</button>`).join("")}</div><div class="toolbar-divider"></div><div class="ranges"><span id="timeline-state">Following latest</span><button id="follow" class="primary" disabled>Follow latest</button></div></div></div><div class="navigator"><div class="navigator-labels"><span id="navigator-start">0.0 s</span><strong>History window · <em id="window-duration">15 s</em></strong><span id="navigator-end">15.0 s</span></div><div id="navigator-track" class="navigator-track"><div id="navigator-fill" class="navigator-fill"></div><div id="navigator-window" class="navigator-window"><i class="handle left-handle"></i><span>DRAG</span><i class="handle right-handle"></i></div></div></div><div id="plots" class="plot-grid"></div></section></main><aside class="right-rail"><section class="run-controls" aria-label="Run controls"><div class="run-label"><span>${icon("radio")}Run control</span><strong id="connection" class="connection offline">Idle · waiting</strong></div><div class="run-buttons"><button id="deploy" class="secondary">${icon("rocket")}Deploy</button><button id="start" class="primary">${icon("play")}Start</button><button id="abort" class="danger">${icon("abort")}Abort</button></div><output id="operation-result" class="operation-result" aria-live="polite">Ready.</output></section><section class="run-notes"><span class="rail-label">Session</span><p>Start begins a new raw capture file and clears the display clock. Abort freezes presentation while capture stays passive.</p></section><section class="events"><strong>Latched flags</strong><span id="events-text">No telemetry received.</span></section></aside></div>`;
   document.querySelectorAll("[data-group]").forEach(button=>button.onclick=()=>{const id=button.dataset.group;state.visible.has(id)?state.visible.delete(id):state.visible.add(id);button.classList.toggle("active");rebuild();});
   $("#follow").addEventListener("click",()=>{state.follow=true;state.end=null;scheduleRender();if(store.decimated){const [start,end]=viewRange();void loadDetail(start,end);}});
   (["deploy","start","abort"]).forEach(id=>$("#"+id).addEventListener("click",()=>void operation(id)));
   const track=$("#navigator-track"); track.addEventListener("pointerdown",navigatorPointer); track.addEventListener("pointermove",navigatorMove); track.addEventListener("pointerup",navigatorFinish); track.addEventListener("pointercancel",navigatorFinish);
   $("#csv-file").addEventListener("change",async event=>{const file=(event.currentTarget).files?.[0];if(!file)return;try{const result=await post("/api/source/csv",file,{"Content-Type":"text/csv","X-Filename":file.name});state.paused=true;stopPlayback();state.events?.close();state.events=null;clearStore();await loadInitial();await loadCompleteCache();$("#operation-result").textContent=result.message??"CSV loaded. Press Start to play.";}catch(error){$("#operation-result").textContent=`Failed: ${error.message}`;}});
-  document.addEventListener("visibilitychange",()=>{if(document.hidden){state.events?.close();state.events=null;}else if(!state.paused){void loadCompleteCache();stream();}});
+  document.addEventListener("visibilitychange",()=>{if(document.hidden){stopJoystick();state.events?.close();state.events=null;}else if(!state.paused){void loadCompleteCache();stream();}});
+}
+function installControlPanels() {
+  const fields=PID_FIELDS.map(([name,label])=>`<label class="pid-field"><span>${label}</span><input data-pid-field="${name}" type="number" step="${PID_MIN_STEP}" inputmode="decimal"></label>`).join("");
+  $(".right-rail").insertAdjacentHTML("beforeend",`
+    <section class="joystick-controls" aria-label="Joystick commands">
+      <div class="panel-heading"><span class="rail-label">Joystick</span><strong>Drag for direction and speed; release to stop</strong></div>
+      <div id="drive-pad" class="drive-pad" data-drive-pad role="group" tabindex="0" aria-label="Forward and turn joystick" aria-disabled="true" aria-valuetext="Neutral" style="--drive-pad-x:50%;--drive-pad-y:50%">
+        <span class="drive-pad-label top">Forward</span><span class="drive-pad-label bottom">Reverse</span>
+        <span class="drive-pad-label left">Left</span><span class="drive-pad-label right">Right</span>
+        <span class="drive-pad-center">Neutral</span><i class="drive-pad-thumb"></i>
+      </div>
+      <small id="joystick-status" class="panel-status">Start a live run to enable joystick commands.</small>
+    </section>
+    <details class="pid-controls">
+      <summary>Session PID tuning</summary>
+      <p class="panel-help">Changes apply to the current balancer process only and are never written to pid.conf.</p>
+      <div class="pid-actions"><button id="pid-apply" class="primary">Apply</button><button id="pid-load" class="secondary">Load</button></div>
+      <div class="pid-fields">${fields}</div>
+      <output id="pid-status" class="pid-status" aria-live="polite">Loading PID values…</output>
+    </details>`);
+  const pad=$("#drive-pad");
+  pad.addEventListener("pointerdown",event=>{
+      event.preventDefault();
+      startJoystick(pad,event);
+  });
+  pad.addEventListener("pointermove",event=>{event.preventDefault();moveJoystick(pad,event);});
+  pad.addEventListener("pointerup",event=>finishJoystick(pad,event));
+  pad.addEventListener("pointercancel",()=>{if(state.joystick.pad===pad)stopJoystick();});
+  pad.addEventListener("lostpointercapture",()=>{if(state.joystick.pad===pad)stopJoystick();});
+  $("#pid-apply").addEventListener("click",()=>void applyPid());
+  $("#pid-load").addEventListener("click",loadPidBaseline);
+  document.querySelectorAll("[data-pid-field]").forEach(input=>input.addEventListener("input",()=>updatePidSpinnerStep(input)));
+  window.addEventListener("blur",()=>stopJoystick());
+  window.addEventListener("beforeunload",()=>stopJoystick());
+  loadPid();
 }
 layout();
+installControlPanels();
 void(async()=>{
   const source=await(await fetch("/api/source")).json(); setStatus(source); state.displayRun=source.display_run??0;
   await loadInitial(); requestAnimationFrame(()=>{rebuild();setTimeout(()=>void loadCompleteCache(),0);}); stream();

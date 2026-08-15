@@ -11,19 +11,25 @@
 using namespace balancer_reflection;
 
 template <typename E>
-void generate_enum() {
-  std::cout << "class " << std::meta::identifier_of(^^E) << "(IntEnum):\n";
+void generate_enum(std::set<std::string>& visited) {
+  const std::string class_name{std::meta::identifier_of(^^E)};
+  if (!visited.insert(class_name).second) {
+    return;
+  }
+
+  std::cout << "class " << class_name << "(IntEnum):\n";
   constexpr auto desc = get_desc<^^E>();
   if (desc.text[0] != '\0') {
     std::cout << "    \"\"\"" << desc.text << "\"\"\"\n";
   }
 
+  using UnderlyingT = std::underlying_type_t<E>;
   constexpr std::size_t N = get_enum_size<E>();
   [&]<std::size_t... Is>(std::index_sequence<Is...>) {
     (..., [] {
       constexpr auto e = EnumArrHolder<E, N>::arr[Is];
-      std::cout << "    " << std::meta::identifier_of(e) << " = " << static_cast<uint32_t>([:e:])
-                << "\n";
+      std::cout << "    " << std::meta::identifier_of(e) << " = "
+                << static_cast<UnderlyingT>([:e:]) << "\n";
     }());
   }(std::make_index_sequence<N>{});
 
@@ -34,14 +40,16 @@ void generate_balancer_msg_enum() {
   std::cout << "class MsgId(IntEnum):\n";
   std::cout << "    \"\"\"Balancer UDP message identifiers.\"\"\"\n";
   for_each_udp_message([&]<::MsgId Id>() {
-    std::cout << "    " << MessageTraits<Id>::name << " = " << static_cast<uint16_t>(Id) << "\n";
+    std::cout << "    " << get_enum_name<MsgId, Id>() << " = " << static_cast<uint16_t>(Id)
+              << "\n";
   });
   std::cout << "\n";
   std::cout << "BalancerMsgId = MsgId\n\n";
 }
 
 template <typename T>
-void generate_struct(std::set<std::string>& visited) {
+void generate_struct(std::set<std::string>& visited, std::set<std::string>& visited_enums) {
+  validate_wire_type<T>();
   std::string class_name = get_python_type_name<T>();
   if (visited.count(class_name)) {
     return;
@@ -59,12 +67,17 @@ void generate_struct(std::set<std::string>& visited) {
         using BaseT = std::remove_all_extents_t<FieldT>;
 
         if constexpr (is_array_like_v<FieldT>) {
-          using ElemT = typename array_traits<FieldT>::element_type;
-          if constexpr (std::is_class_v<ElemT> && !is_array_like_v<ElemT>) {
-            generate_struct<ElemT>(visited);
+          using ArrayT = std::remove_cv_t<FieldT>;
+          using ElemT = std::remove_cv_t<typename array_traits<ArrayT>::element_type>;
+          if constexpr (std::is_enum_v<ElemT>) {
+            generate_enum<ElemT>(visited_enums);
+          } else if constexpr (std::is_class_v<ElemT> && !is_array_like_v<ElemT>) {
+            generate_struct<ElemT>(visited, visited_enums);
           }
+        } else if constexpr (std::is_enum_v<BaseT>) {
+          generate_enum<std::remove_cv_t<BaseT>>(visited_enums);
         } else if constexpr (std::is_class_v<BaseT>) {
-          generate_struct<BaseT>(visited);
+          generate_struct<BaseT>(visited, visited_enums);
         }
       }());
     }(std::make_index_sequence<N>{});
@@ -125,8 +138,9 @@ void generate_struct(std::set<std::string>& visited) {
         }
 
         if constexpr (is_array_like_v<FieldT>) {
-          using ElemT = typename array_traits<FieldT>::element_type;
-          constexpr std::size_t elem_count = array_traits<FieldT>::size;
+          using ArrayT = std::remove_cv_t<FieldT>;
+          using ElemT = std::remove_cv_t<typename array_traits<ArrayT>::element_type>;
+          constexpr std::size_t elem_count = array_traits<ArrayT>::size;
 
           if constexpr (is_byte_like_v<ElemT>) {
             pack_fmt += std::to_string(elem_count) + "s";
@@ -267,20 +281,23 @@ int main() {
 
   generate_balancer_msg_enum();
 
-  std::set<std::string> visited;
+  std::set<std::string> visited_structs;
+  std::set<std::string> visited_enums{"MsgId"};
   for_each_udp_message(
-      [&]<::MsgId Id>() { generate_struct<typename MessageTraits<Id>::Payload>(visited); });
+      [&]<::MsgId Id>() {
+        generate_struct<typename MessageTraits<Id>::Payload>(visited_structs, visited_enums);
+      });
 
   std::cout << "MESSAGE_BY_ID = {\n";
   for_each_udp_message([&]<::MsgId Id>() {
-    std::cout << "    MsgId." << MessageTraits<Id>::name << ": "
+    std::cout << "    MsgId." << get_enum_name<MsgId, Id>() << ": "
               << get_python_type_name<typename MessageTraits<Id>::Payload>() << ",\n";
   });
   std::cout << "}\n\n";
 
   std::cout << "PAYLOAD_SIZE_BY_ID = {\n";
   for_each_udp_message([&]<::MsgId Id>() {
-    std::cout << "    MsgId." << MessageTraits<Id>::name << ": "
+    std::cout << "    MsgId." << get_enum_name<MsgId, Id>() << ": "
               << sizeof(typename MessageTraits<Id>::Payload) << ",\n";
   });
   std::cout << "}\n\n";

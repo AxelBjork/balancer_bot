@@ -1,4 +1,8 @@
-# IPC Send Path Assembly Analysis (-O3)
+# Historical IPC Send Path Assembly Analysis (-O3)
+
+> Historical analysis only. This page describes an earlier SIL-oriented implementation and is not
+> part of the active runtime contract. Use [MessageBus and UDP Bridge](../arch/message_hub.md) and
+> the [generated IPC protocol reference](../ipc/protocol.md) for current behavior.
 
 This document analyzes the generated x86-64 assembly of the SIL application's IPC send path, from a publisher calling `bus.publish()` down to the `sendmsg()` system call in the UDP Bridge, when compiled with `-O3` optimizations. The implementation is hyper-optimized for zero dynamic allocations and zero user-space memory copies.
 

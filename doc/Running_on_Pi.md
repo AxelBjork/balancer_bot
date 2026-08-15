@@ -14,6 +14,17 @@ That configures CMake with `cmake/toolchain-rpi4.cmake` and builds:
 
 - `build-pi/balancer_pi`
 
+## Choose a task
+
+- For deployment and first bring-up, continue to [What to Copy to the Pi](#what-to-copy-to-the-pi)
+  and [First Bring-Up](#first-bring-up).
+- For a passive physical-pendulum measurement, read [Passive Pitch-Inertia Measurement](#passive-pitch-inertia-measurement)
+  and compare the retained [2026-07-22 excerpts](../data/hardware_sessions/20260722_pitch_inertia/README.md).
+- For runtime failures, jump to [Troubleshooting](#troubleshooting).
+
+Before energizing the wheels on a floor, use the [recommended first hardware session](#recommended-first-hardware-session)
+and begin restrained or wheels-off-ground.
+
 ## Pi Base Setup
 
 ### Firmware Config
@@ -42,7 +53,9 @@ Reboot after changing `config.txt`.
 scp build-pi/balancer_pi pid.conf pi@rpi4:~/
 ```
 
-If you want to keep the PID config elsewhere on the Pi, use the `BALANCER_PID_CONF` environment variable for simulator-oriented flows. The normal hardware path expects `pid.conf` to be present next to the launched process or in the current working directory.
+`BALANCER_PID_CONF` is supported by simulator-oriented flows and tests. The normal hardware path
+loads `pid.conf` from its working directory, so deployment must keep the file next to the binary or
+launch the process from the directory containing it.
 
 ## Passive Pitch-Inertia Measurement
 
@@ -65,9 +78,10 @@ python3 tools/measure_pitch_inertia.py data/server/telemetry_YYYYMMDD-HHMMSS_00.
 
 It reports a robust median period and its spread. If you have an unassisted amplitude-decay
 measurement, pass its natural-log decrement per period with `--log-decrement`; do not infer
-damping from a manually assisted capture. Update the authoritative value in
-[`HardwareNominal`](../tests/simulator/balancer_simulator.h), restore the normal configuration, and
-verify the build before balancing.
+damping from a manually assisted capture. The retained 2026-07-22 result is provisional and does
+not by itself authorize changing [`HardwareNominal`](../tests/simulator/balancer_simulator.h). Only
+after a separately reviewed, lower-friction measurement should that value be updated; restore the
+normal configuration and verify the build before balancing.
 
 ## Runtime Prerequisites
 
@@ -260,7 +274,7 @@ If you want a one-shot deploy and run command from the host:
 
 ```bash
 scp build-pi/balancer_pi pid.conf "${PI_TARGET}:~/" && \
-ssh -t "$PI_TARGET" "echo ism330dhcx 0x6a | sudo tee /sys/bus/i2c/devices/i2c-1/new_device || true && \
+ssh -t "$PI_TARGET" "if [ -e /sys/bus/i2c/devices/1-006a ]; then echo 'IMU already bound'; else echo ism330dhcx 0x6a | sudo tee /sys/bus/i2c/devices/i2c-1/new_device >/dev/null || exit 1; fi && \
 chmod +x ~/balancer_pi && \
 sudo ~/balancer_pi"
 ```
@@ -273,10 +287,14 @@ Run this on the development laptop after the Pi runtime has started:
 python3 tools/telemetry_dashboard/server.py --pi "$PI_HOST"
 ```
 
-Then open `http://127.0.0.1:8080`. The dashboard expands the SSH alias through
+Then open `http://127.0.0.1:8080`. The dashboard is the primary production UDP client. It expands the SSH alias through
 `~/.ssh/config`, so `rpi4` can map to a changing LAN address without updating another command.
-It receives the existing UDP stream and claims its one external peer slot; stop the dashboard
-before running a SIL client or another UDP observer.
+It resolves the target when the receiver starts (and retries after a failed resolution), then
+reuses that address for the server session. A separate ten-second heartbeat resolves the target,
+checks SSH port `22`, and refreshes the receiver’s cached address so DHCP changes after wake are
+picked up without blocking telemetry reception. The receiver periodically registers with the Pi on
+UDP port `9000`, receives `SystemTelemetry`, and writes valid packets to the server CSV log. The Pi
+bridge has one active peer; stop the dashboard before running a SIL client or another UDP observer.
 
 If the dashboard is running on the Windows host where `scp` already works, enable its optional
 file-picker deployment panel with:
@@ -299,7 +317,22 @@ Notes:
 
 - the app will start even if no Xbox controller is attached
 - it still loads `pid.conf` from the current working directory
-- `UdpBridge` is also started, so you can observe telemetry if port `9000` is reachable
+- `UdpBridge` is the production external runtime boundary and listens on port `9000`
+- the dashboard’s UDP registration is required before outbound telemetry has a peer
+- deployment, start, and abort actions use SSH; the dashboard does not currently send control
+  commands over UDP
+
+### Where telemetry is recorded
+
+The dashboard must be running before a hardware run if you want a raw capture. It receives the
+production `SystemTelemetry` stream and writes CSV files under `data/server/` on the development
+machine; that directory is ignored by Git. A successful live **Start** begins a new capture file;
+telemetry received before that boundary remains in the previous file. The existing 128 MiB file
+limit remains as a fallback for unusually long runs. After stopping the run, inspect the CSV for a
+continuous session and use the [shared analysis workflow](testing/telemetry_analysis_cli.md) before
+promoting any derived files into the [hardware data archive](../data/README.md). The archive
+manifests state whether the source capture is still available and what claim each retained extract
+supports.
 
 ## Recommended First Hardware Session
 

@@ -143,11 +143,11 @@ is different from learning a calibration offset:
 - old startup input decays according to the configured cutoff rather than permanently
   changing the estimate.
 
-On the first valid sample, each filter is reset to that sample so startup does not
-begin from an artificial zero. Duplicate or backward timestamps and non-finite input
-invalidate and reset the path. A gap longer than four nominal sample periods reseeds
-from the current sample with zero derivative. Invalid input is never fed through the
-filter as a numeric value.
+On the first valid sample, the accelerometer and gyro filters are reset to that sample,
+while the fused pitch state starts at zero. Duplicate or backward timestamps and
+non-finite input invalidate and reset the path. A gap longer than four nominal sample
+periods reseeds from the current sample with zero derivative and a zero pitch state.
+Invalid input is never fed through the filter as a numeric value.
 
 ## Bounded Gyro/Gravity Fusion
 

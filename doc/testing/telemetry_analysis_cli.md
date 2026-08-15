@@ -1,534 +1,143 @@
-# Telemetry Analysis CLI Requirements
+# Telemetry Analysis
 
-## Recommendation
+This page defines the required analysis workflow for production telemetry, simulator timelines, and
+captured hardware sessions. Analysis is read-only: it must never rewrite or repair a source CSV, and
+derived output must be written only to an explicit path under `build/` or another requested output
+location.
 
-A small CLI is worthwhile, but it should standardize the repetitive mechanics rather than try to
-encode every control investigation. Most investigations still require a new derived expression or
-a different way of dividing the run into windows. Pandas makes that exploratory work concise once
-the CSV has been loaded and normalized correctly.
+While diagnosing live capture gaps, the dashboard status includes the maximum and average duration
+of `TelemetryState.accept`, plus the approximate CSV queue depth. `udp_receive_pause` events indicate
+that receive timestamps paused while controller time remained continuous; `csv_write_stall` events
+identify a slow individual CSV write.
 
-The useful split is:
+The live dashboard distinguishes fresh telemetry from Pi reachability: `telemetry_connected` drives
+the **Streaming** state, while `pi_ready` identifies an online Pi whose telemetry has stopped. The
+descriptive `connection_state` is not the online/offline boolean.
 
-- the CLI owns loading, schema normalization, session detection, window selection, common metrics,
-  event/plateau detection, resampling, spectra, JSON output, and SVG generation
-- an investigator can request normalized rows or import the same library and write a few lines of
-  pandas for the question that is unique to the current run
-- any exploratory calculation that is used more than once should be promoted into the shared
-  library and covered by tests
+## Sources and Ownership
 
-This will eliminate most shell-embedded CSV parsers without turning the CLI into a control-system
-expert. The CLI should default to concise JSON on stdout because JSON is easy for people, tests,
-agents, and the dashboard to consume. Human-readable tables are an optional presentation mode.
+The telemetry dashboard is the primary production UDP peer. It validates `SystemTelemetry` datagrams
+and writes fixed-schema CSV captures under `data/server/`; a successful live Start normally begins a
+new file, while the existing 128 MiB limit remains a fallback for unusually long runs. Simulator
+runs and `RunRecorder` write structured artifacts under `build/sim/`. Both sources are valid inputs
+to the shared analysis package.
 
-## One Implementation, Including Existing Artifact Tooling
+There must be one pandas-backed analysis implementation shared by:
 
-Do not create an independent parser or plotting program. The implementation must be merged with
-the analysis and hand-written SVG support currently in
-`tests/python/support/run_artifacts.py`.
+- `tools/analyze_timeline.py`
+- simulator and test artifact generation
+- dashboard/offline analysis that needs normalized frames or common metrics
+- the existing analysis helpers in `tests/python/support/run_artifacts.py`
 
-The preferred end state is:
+The ownership boundary is:
 
-1. Move the reusable contents of `run_artifacts.py` into an importable package under
-   `tools/telemetry_analysis/`.
-2. Put CSV normalization, selections, metrics, JSON serialization, and the existing SVG renderer in
-   that package.
-3. Keep `tests/python/support/run_artifacts.py` as a thin compatibility import so existing simulator
-   tests and `RunRecorder` callers do not need a large simultaneous rewrite.
-4. Change `tools/analyze_timeline.py` into either the CLI entry point or another thin wrapper over
-   the package.
-5. Make simulator artifact generation and offline hardware analysis call the same functions with
-   the same metric definitions.
+- `tools/telemetry_analysis/` owns reusable frame normalization, metrics, and plotting primitives;
+- `tools/analyze_timeline.py` is the supported command-line wrapper and does not implement a second
+  CSV or metric stack;
+- `tests/python/support/run_artifacts.py` is the simulator/test artifact adapter. It uses the shared
+  package, while retaining artifact summaries, manifests, and test-facing row helpers; and
+- the dashboard uses the shared package for CSV playback and offline analysis where applicable.
 
-Preserve the current dependency-free manual SVG renderer. Generalize it to accept the normalized
-time column and arbitrary panel specifications. Do not add a separate matplotlib plotting path.
+The current import path through `tests/python/support/run_artifacts.py` therefore does not make the
+shared analysis package test-only. It reflects the adapter’s current ownership of simulator artifact
+recording and summary metadata.
 
-Pandas should be a declared development/tool dependency, not an undeclared property of one
-developer environment. Pandas already brings NumPy, so NumPy may be used for vector operations and
-FFT. Do not require SciPy for the base CLI. Algorithms with an optional SciPy implementation must
-have a clearly tested NumPy/pandas fallback.
+At function level, the current split is:
 
-## Scope
+| Location | Current responsibility |
+| --- | --- |
+| `tools/telemetry_analysis/frames.py` | Canonical frame aliases, numeric normalization, and CSV read/write |
+| `tools/telemetry_analysis/metrics.py` | Reusable band-response and actuator-stage metrics |
+| `tools/telemetry_analysis/plotting.py` | Shared SVG plotting |
+| `tests/python/support/run_artifacts.py` | Timeline lag/scale analysis, summaries, artifact metadata, and `RunRecorder` integration |
+| `tools/analyze_timeline.py` | Thin CLI wrapper around the artifact adapter |
+| `tools/measure_pitch_inertia.py` | Domain-specific period/inertia calculation using the shared frame loader |
+| `tools/telemetry_dashboard/server.py` | Live CSV logging and playback integration |
 
-The CLI is read-only unless an explicit output path is supplied. It accepts:
+This table describes the current implementation, not the desired long-term directory layout. The
+lag/scale and timeline-summary functions remain candidates for promotion into the shared package
+only if they become reusable beyond the current artifact workflows.
 
-- dashboard/server CSVs under `data/server/`
-- simulator `timeline.csv` files and rows emitted by `RunRecorder`
-- standalone or reduced CSV captures containing any supported subset of columns
-- files that are still being appended to by the telemetry server
+Use `tools/telemetry_analysis/` for reusable frame normalization, metrics, and plotting. Do not add
+another CSV parser, signal catalog, metric implementation, or plotting stack for an individual
+investigation. A one-off investigation may import the shared loader and use concise pandas in one
+terminal session; reusable calculations belong in the shared package with regression coverage.
 
-It should not:
+## Current Command
 
-- tune PID values or declare a controller safe
-- contain thresholds that only make sense for one captured incident
-- guess missing signals from unrelated columns
-- rewrite, truncate, or repair its input file
-- grow another signal-name catalog separate from the dashboard catalog
-- replace exploratory pandas analysis for genuinely novel questions
+The supported command-line entry point is:
 
-## Proposed CLI Surface
-
-Keep the number of commands small. Options such as `--session`, `--time`, `--rows`, and `--where`
-should work consistently across commands.
-
-```text
-telemetry-analysis inspect FILE
-telemetry-analysis rows FILE [SELECTION] --columns SIGNAL...
-telemetry-analysis stats FILE [SELECTION] --signals SIGNAL...
-telemetry-analysis bins FILE [SELECTION] --width 1s --signals SIGNAL...
-telemetry-analysis events FILE [SELECTION]
-telemetry-analysis plateaus FILE [SELECTION] --signal SIGNAL --tolerance N --min-duration 1s
-telemetry-analysis relate FILE [SELECTION] --source SIGNAL --response SIGNAL --max-lag 1s
-telemetry-analysis spectrum FILE [SELECTION] --signals SIGNAL... --max-frequency 20
-telemetry-analysis plot FILE [SELECTION] --preset overview --output overview.svg
+```bash
+python3 tools/analyze_timeline.py FILE [--summary-json] [--output OUTPUT]
 ```
+
+It accepts a simulator or dashboard-compatible CSV, loads it through the existing artifact support,
+and emits JSON to stdout unless `--output` is supplied. The command currently provides the standard
+timeline analysis and summary; the multi-command `telemetry-analysis inspect/rows/stats/...`
+interface is a future extension, not an installed command.
+
+The current `analyze_timeline.py` wrapper does not expose `--session`, `--start`, or `--end`
+selection flags. For a multi-session or bounded-window investigation, select the continuous rows
+before calling the command, use the shared Python loader directly, or use a purpose-built tool such
+as [`measure_pitch_inertia.py`](../../tools/measure_pitch_inertia.py), which exposes session and
+controller-time selection for its calculation.
 
 Examples:
 
-```sh
-# Discover sessions, columns, unavailable fields, cadence, gaps, and flag counts.
-telemetry-analysis inspect data/server/telemetry.csv
-
-# Get compact one-second summaries without writing a file.
-telemetry-analysis bins data/server/telemetry.csv \
-  --time 7:17 --width 1s \
-  --signals pitch_deg,raw_acc_pitch_deg,pitch_rate_dps,u_sps,corrected_axle_velocity_sps
-
-# Export an exact normalized window for free-form pandas work.
-telemetry-analysis rows data/server/telemetry.csv \
-  --session 2 --time 12:18 --columns time_s,pitch_deg,u_sps --format csv \
-  --output build/analysis/window.csv
-
-# Compare two aligned signals using common lag, scale, correlation, and residual definitions.
-telemetry-analysis relate build/sim/run/timeline.csv \
-  --source u_sps --response corrected_axle_velocity_sps --max-lag 1s
+```bash
+python3 tools/analyze_timeline.py build/sim/<run_id>/timeline.csv --summary-json
+python3 tools/analyze_timeline.py data/server/telemetry_YYYYMMDD-HHMMSS_00.csv \
+  --summary-json --output build/analysis/telemetry.json
 ```
 
-`inspect`, `stats`, `bins`, `events`, `plateaus`, `relate`, and `spectrum` should emit JSON by
-default. `rows` defaults to JSON Lines on stdout so large selections can stream. `--format table`
-is for interactive use, while `--format csv` and `--output` create an explicit derived artifact.
+The dashboard’s **Choose CSV** and upload paths use the same shared telemetry package for playback.
+Install `requirements-dev.txt` when using pandas-backed playback or analysis.
 
-## Stable JSON Contract
+The dashboard’s browser JSON is a presentation adapter, not the reflected wire schema. When a chart
+is blank or a field appears unavailable, compare the browser path in
+`tools/telemetry_dashboard/static/dashboard.js` with the keys emitted by `telemetry_view()` in
+`tools/telemetry_dashboard/server.py`, then inspect the logged CSV and generated binding. Do not
+infer field absence or a controller result from a missing chart alone.
 
-Every JSON result should include provenance and the resolved selection. Warnings belong in the
-result rather than being lost in terminal prose.
+## Analysis Rules
 
-```json
-{
-  "schema_version": 1,
-  "analysis": "stats",
-  "source": {
-    "path": "data/server/telemetry.csv",
-    "size_bytes_at_read": 123456,
-    "complete_rows_read": 4000
-  },
-  "selection": {
-    "session_ids": [0],
-    "time_column": "t_sec",
-    "time_start_s": 7.0,
-    "time_end_s": 17.0,
-    "source_row_start": 2800,
-    "source_row_end": 6799
-  },
-  "warnings": [],
-  "result": {}
-}
-```
+Analysis must distinguish these clocks:
 
-Requirements:
+- controller/simulator time for dynamics and derivatives
+- receive wall time for operator-facing timestamps
+- receive monotonic time for gap and freshness measurements
 
-- use JSON `null`, never non-standard `NaN` or `Infinity`
-- include units and preprocessing beside metrics where they are not self-evident
-- keep signal names stable and use the shared signal catalog for aliases, labels, units, colors,
-  plot groups, and zero-centered plotting conventions
-- include all thresholds supplied by the user or defaults applied by the command
-- report why a calculation is unavailable instead of returning a plausible zero
-- keep stdout machine-readable; progress and warnings intended only for people go to stderr
+Sessions must be split or selected before calculating derivatives, correlations, lags, or spectra.
+Material capture gaps and resets must not be interpolated across. Missing or consistently zero fields
+must be reported as unavailable rather than treated as real measurements; this is especially
+important for hardware captures containing simulator-only columns.
 
-## Input Normalization
+Every reported result should identify the exact source path, session or row selection, time window,
+and transformation. Hardware logs are evidence of runtime behavior, not calibrated plant-identification
+data, unless the capture manifest explicitly permits fitting.
 
-### Complete-row snapshots
+## Shared Outputs
 
-When the source is growing, record its byte length when the command starts and read no further than
-that snapshot. Ignore a final record that does not have the header's field count. Do not silently
-skip malformed complete records in the middle of the file; report their source row numbers.
+The shared package currently provides:
 
-For operations that only need aggregates, use `pandas.read_csv(..., chunksize=...)` and combine
-partial aggregates. Loading tens of megabytes into a DataFrame is acceptable for analyses that
-require random access, resampling, or FFT, but it should be an explicit consequence of that
-analysis rather than the only loading implementation.
+- canonical telemetry-frame normalization and CSV read/write helpers
+- band RMS and frequency-response metrics
+- actuator-stage metrics
+- SVG plotting through the existing shared plotting implementation
 
-The implementation should retain both the original frame and a numeric view:
+Simulator artifact generation must continue to use the shared helpers through
+`tests/python/support/run_artifacts.py`. New output formats or selection APIs should be added only
+when they are needed by more than one workflow or by a regression test.
 
-```python
-raw = pd.read_csv(snapshot, dtype=str)
-numeric = raw.apply(pd.to_numeric, errors="coerce")
-```
+## Workflow for a Novel Investigation
 
-This prevents one non-numeric value from forcing an otherwise numeric telemetry column to object
-dtype while preserving identifiers and malformed values for diagnostics.
+1. Identify the source file, capture manifest, clock, and session boundaries.
+2. Import the shared loader or use `tools/analyze_timeline.py`.
+3. Check field availability, resets, gaps, cadence, and zero-only columns before deriving metrics.
+4. Select a continuous session and explicit time window.
+5. Write derived CSV, JSON, or SVG output only to an explicit build/output path and record its source
+   and transformation.
+6. Promote repeated calculations into `tools/telemetry_analysis/` and add focused tests.
 
-### Time and sessions
-
-Choose the first suitable controller/simulator time from `t_sec`, `sim_time_s`, `time_s`, or
-`time`. Keep receive timestamps as separate clocks. Normalize the chosen analysis clock to
-`time_s` without deleting its original column.
-
-A new session begins on any of:
-
-- controller/simulator time moving backward or resetting
-- a `run_id` change
-- a receive-time gap explicitly selected as a session boundary
-- an input-file boundary when multiple files are supplied
-
-Do not split merely because one 400 Hz sample is late. The default gap threshold should be derived
-from cadence, for example `max(20 * median_dt, 0.25 s)`, and must be reported.
-
-```python
-t = numeric[time_key]
-positive_dt = t.diff().where(lambda s: s > 0)
-median_dt = positive_dt.median()
-reset = t.diff().le(0)
-gap = t.diff().gt(max(20 * median_dt, 0.25))
-session_id = (reset | gap).fillna(False).cumsum().astype("int64")
-```
-
-### Missing and uninformative fields
-
-Distinguish these states:
-
-- `missing`: column is absent
-- `non_numeric`: no values can be parsed as finite numbers
-- `all_null`: column exists but every parsed value is null
-- `all_zero`: all finite values are zero; often unavailable hardware telemetry, but sometimes a
-  legitimate constant signal
-- `constant`: one non-zero finite value
-- `variable`: suitable for general analysis
-
-Never automatically substitute one signal for another. A command can accept an ordered alias list,
-but it must report the resolved field.
-
-```python
-def classify(series: pd.Series) -> str:
-    finite = pd.to_numeric(series, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
-    if finite.empty:
-        return "all_null"
-    if np.isclose(finite.to_numpy(), 0.0).all():
-        return "all_zero"
-    if finite.nunique() == 1:
-        return "constant"
-    return "variable"
-```
-
-## Selection Primitives
-
-All commands should share one selection object supporting:
-
-- source row range, preserving the original zero-based source row number
-- controller/simulator time range
-- receive timestamp range
-- session number
-- exact flag value or bit mask for controller faults and saturation
-- a pandas-style conjunction of simple comparisons, such as
-  `abs(pitch_rate_dps) < 5 and abs(corrected_axle_velocity_sps) < 200`
-- detected constant-command plateau and plateau sign
-
-Arbitrary Python evaluation is not acceptable in the CLI. Implement `--where` using a small safe
-comparison grammar or a constrained DataFrame query parser. The selected frame must retain
-`source_row` and `session_id`.
-
-Reusable contiguous-window detection is more valuable than dozens of named incident detectors:
-
-```python
-def contiguous_runs(mask: pd.Series) -> pd.DataFrame:
-    groups = mask.ne(mask.shift(fill_value=False)).cumsum()
-    selected = mask.groupby(groups).first()
-    spans = (
-        mask.to_frame("selected")
-        .assign(group=groups)
-        .query("selected")
-        .groupby("group")
-        .agg(first_row=("selected", "idxmin"), last_row=("selected", "idxmax"))
-    )
-    return spans.loc[selected[selected].index]
-```
-
-The real implementation should also attach start/end time, duration, row count, and preceding and
-following values.
-
-## Reusable Metrics
-
-### Generic statistics
-
-For each requested signal provide count, null count, min, max, mean, standard deviation, RMS,
-median, p05, p95, p95 absolute value, first, and last. Do not compute RMS after demeaning unless the
-metric explicitly says so.
-
-```python
-def signal_stats(s: pd.Series) -> dict[str, float | int | None]:
-    x = pd.to_numeric(s, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
-    if x.empty:
-        return {"count": 0}
-    a = x.to_numpy(dtype=float)
-    return {
-        "count": int(a.size),
-        "min": float(a.min()),
-        "max": float(a.max()),
-        "mean": float(a.mean()),
-        "std": float(a.std(ddof=0)),
-        "rms": float(np.sqrt(np.mean(a * a))),
-        "median": float(np.median(a)),
-        "p05": float(np.quantile(a, 0.05)),
-        "p95": float(np.quantile(a, 0.95)),
-        "p95_abs": float(np.quantile(np.abs(a), 0.95)),
-        "first": float(a[0]),
-        "last": float(a[-1]),
-    }
-```
-
-### Time bins
-
-Time-binned summaries are the fastest way to understand a long run before looking for a specific
-event. They should work with any signals and use elapsed time rather than assuming exactly 400
-rows per second.
-
-```python
-width_s = 1.0
-bin_id = np.floor((df["time_s"] - df["time_s"].iloc[0]) / width_s).astype("int64")
-summary = df.groupby(bin_id)[signals].agg(["count", "mean", "std", "min", "max"])
-```
-
-Add RMS and fraction-of-rows predicates such as non-zero fault flags or saturation. Emit each bin's
-actual start/end time and sample count so capture gaps remain visible.
-
-### Cadence and gaps
-
-Report median, p05, p95, and maximum positive `dt`, non-positive steps, counts above configurable
-multiples of median cadence, and the largest gaps with source rows and both timestamps.
-
-```python
-dt = df.groupby("session_id")["time_s"].diff()
-median_dt = dt.where(dt > 0).median()
-gaps = df.loc[dt > 5 * median_dt, ["source_row", "session_id", "time_s"]].assign(dt_s=dt)
-```
-
-Analyze controller time and receive time separately. A receive-time gap with continuous controller
-time means capture or delivery delay, not necessarily a controller stall.
-
-### Flags and event transitions
-
-Treat fault and saturation columns as integer bit fields. Report union, counts and duration per
-value and per bit, plus transition windows.
-
-```python
-flags = pd.to_numeric(df["controller_fault_flags"], errors="coerce").fillna(0).astype("uint32")
-transitions = df.loc[flags.ne(flags.shift()), ["source_row", "time_s"]].assign(
-    previous=flags.shift().loc[lambda s: s.index.isin(transitions.index)],
-    current=flags.loc[lambda s: s.index.isin(transitions.index)],
-)
-```
-
-The production implementation should avoid the self-reference in this compact sketch and use a
-named transition mask. Bit names should come from one declared mapping matching the C++ protocol.
-
-### Wrapped angles and integrated rates
-
-Angle subtraction must be circular. A normal subtraction around `-180`/`180` creates fake 360°
-events.
-
-```python
-def wrap_deg(x):
-    return (x + 180.0) % 360.0 - 180.0
-
-gravity_error_deg = wrap_deg(df["raw_acc_pitch_deg"] - df["fused_pitch_deg"])
-fused_rate_dps = wrap_deg(df["fused_pitch_deg"].diff()) / df["time_s"].diff()
-correction_rate_dps = fused_rate_dps - df["gyro_pitch_rate_dps"]
-```
-
-Integrate a rate without SciPy using the trapezoidal rule:
-
-```python
-t = df["time_s"].to_numpy(dtype=float)
-g = df["gyro_pitch_rate_dps"].to_numpy(dtype=float)
-integrated = np.r_[0.0, np.cumsum(0.5 * (g[1:] + g[:-1]) * np.diff(t))]
-```
-
-Useful generic angle diagnostics include wrapped error statistics, time spent outside an error
-band, recovery slope after large disagreement, and whether an angle returns near its initial value
-after one or more complete rotations.
-
-### Lag, scale, sign, and residuals
-
-Preserve and generalize `estimate_lag_scale()` from `run_artifacts.py`. It should:
-
-- operate within one session
-- optionally resample irregular data to a uniform grid
-- search positive and negative lags unless causality is explicitly constrained
-- optionally analyze levels or first differences
-- return lag, scale, signed correlation, RMSE, sample count, and confidence warnings
-- reject constant or mostly unavailable signals
-
-For quick exploratory work after uniform resampling:
-
-```python
-best = None
-for lag in range(-max_steps, max_steps + 1):
-    shifted = response.shift(-lag)
-    pair = pd.concat({"source": source, "response": shifted}, axis=1).dropna()
-    corr = pair.corr().iloc[0, 1]
-    scale = np.dot(pair.source, pair.response) / np.dot(pair.source, pair.source)
-    rmse = np.sqrt(np.mean((scale * pair.source - pair.response) ** 2))
-    candidate = {"lag_steps": lag, "correlation": corr, "scale": scale, "rmse": rmse}
-    if best is None or abs(corr) > abs(best["correlation"]):
-        best = candidate
-```
-
-Always report whether signals were demeaned or differenced. Correlation of two trending signals can
-look excellent while saying little about dynamic response.
-
-### Plateaus and response metrics
-
-Plateau detection should be generic: quantize a signal using a caller-provided tolerance, run-length
-encode it, then retain spans longer than a minimum duration.
-
-```python
-level = (df[signal] / tolerance).round() * tolerance
-group = level.ne(level.shift()).cumsum()
-plateaus = (
-    df.assign(level=level, group=group)
-    .groupby("group")
-    .agg(
-        level=("level", "median"),
-        start_s=("time_s", "first"),
-        end_s=("time_s", "last"),
-        rows=("time_s", "size"),
-    )
-)
-plateaus["duration_s"] = plateaus.end_s - plateaus.start_s
-```
-
-Given a detected step or plateau, reusable response metrics are delay to first correct-sign
-response, 10–90% rise time, peak and overshoot, time in the wrong direction, settled mean/RMS,
-steady error, and stopping or reversal time. Positive/negative symmetry compares matched absolute
-plateau levels and reports ratios as well as signed differences.
-
-### Spectra, phase, and coherence
-
-FFT requires uniform sampling. Split at session boundaries and large gaps, interpolate only within
-a contiguous selected window, detrend, apply a named window, and report sample rate and bin width.
-A NumPy-only amplitude spectrum is sufficient for the base CLI:
-
-```python
-rate_hz = 100.0
-uniform_t = np.arange(t[0], t[-1], 1.0 / rate_hz)
-uniform_y = np.interp(uniform_t, t, y)
-q = np.arange(uniform_y.size)
-detrended = uniform_y - np.polyval(np.polyfit(q, uniform_y, 1), q)
-window = np.hanning(detrended.size)
-amplitude = 2.0 * np.abs(np.fft.rfft(detrended * window)) / window.sum()
-frequency_hz = np.fft.rfftfreq(detrended.size, d=1.0 / rate_hz)
-```
-
-Return dominant peaks with configurable frequency separation rather than simply returning adjacent
-bins from one broad peak. Cross-spectral phase and magnitude-squared coherence can be implemented
-with a documented NumPy Welch calculation; SciPy must remain optional. Never interpolate across a
-session reset or material capture gap.
-
-### Actuator-stage metrics
-
-`actuator_stage_metrics()` operates on the same canonical pandas frame used by simulator artifacts
-and hardware CSV analysis. When the corresponding fields are available it reports:
-
-- independent and combined requested-to-slewed, slewed-to-applied, and requested-to-applied RMS
-  errors in SPS
-- RMS, 95th-percentile absolute, and maximum target/post-slew/applied command slopes in SPS/s
-- any/left/right slew-limited sample fractions and the longest continuous limited interval
-- dominant requested-to-applied magnitude, lag, and phase in the 6–12 Hz band for each motor
-
-The frequency calculation uses only the longest contiguous selected segment and reports why it is
-unavailable when fields, cadence, sample count, or in-band source energy are insufficient.
-
-### Safe JSON conversion
-
-Pandas and NumPy scalar types and non-finite floats need normalization before `json.dumps`:
-
-```python
-def json_value(value):
-    if isinstance(value, np.generic):
-        value = value.item()
-    if isinstance(value, float) and not math.isfinite(value):
-        return None
-    if isinstance(value, dict):
-        return {str(k): json_value(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [json_value(v) for v in value]
-    return value
-```
-
-## SVG and Artifact Output
-
-Generalize `_write_svg_multiplot()` rather than replacing it. It should consume normalized frames
-or a small frame-to-row adapter, use the shared signal catalog, and support:
-
-- arbitrary signal panels from CLI arguments or named presets
-- the resolved analysis time instead of requiring `sim_time_s`
-- explicit y ranges or zero-centered automatic ranges
-- gap-aware polylines that do not draw through missing sessions
-- min/max envelope downsampling so short spikes are not discarded
-- titles containing source and resolved selection
-
-`RunRecorder.write_csv_json_plots()` should call the same public plot and summary functions as the
-CLI. Existing `overview_plot.svg` and `actuator_plot.svg` outputs remain supported. Optional CSV,
-JSON, or SVG artifacts are written only when an explicit output directory or path is supplied.
-
-## Practical Workflow for Novel Investigations
-
-The expected workflow is deliberately simple:
-
-1. Run `inspect` to identify sessions, gaps, valid fields, and obvious fault intervals.
-2. Run `bins` over the whole session to locate interesting time ranges.
-3. Use `stats`, `events`, `plateaus`, `relate`, or `spectrum` if the question matches a reusable
-   metric.
-4. Use `rows --format csv` or import `load_telemetry()` for a unique pandas calculation.
-5. Promote the calculation only if it recurs or belongs in regression tests.
-
-The package API is as important as the executable:
-
-```python
-from tools.telemetry_analysis import load_telemetry, Selection
-
-run = load_telemetry("data/server/telemetry.csv")
-window = run.select(Selection(session=0, time=(7.0, 17.0)))
-df = window.numeric
-```
-
-This is the escape hatch for questions that do not justify a permanent CLI option. It still reuses
-safe ingestion, normalized time, sessions, source rows, aliases, and availability diagnostics.
-
-## Regression Coverage
-
-Tests should cover:
-
-- server, simulator, reduced, concatenated, growing, and incomplete-final-row CSVs
-- time-column selection, controller-time resets, receive-time gaps, and multiple sessions
-- absent, malformed, all-null, all-zero, constant, and variable fields
-- row/time/flag/query/plateau selections with exact provenance
-- irregular cadence and no interpolation across gaps
-- wrapped angle differences and crossings at `-180`/`180`
-- lag and scale with known synthetic delay, sign, offset, noise, and irregular sampling
-- spectra with known frequencies and amplitudes, including peak separation
-- valid strict JSON without `NaN`
-- stable SVG generation and preservation of spikes during downsampling
-- compatibility of existing simulator `RunRecorder` callers and artifact filenames
-
-## Domain Lessons Worth Keeping Generic
-
-Circular-angle diagnostics should compare gravity-derived and fused angles with wrapped
-differences. Include detection of folded accelerometer estimates that behave like
-`asin(sin(angle))`: they agree near upright but reflect beyond `+90` or `-90` instead of continuing
-around the circle.
-
-Command-authority analysis should be built from generic plateau and relationship primitives. For a
-selected command plateau it can compare requested target, governed target, final actuator command,
-measured response, and controller terms. Report response delay, wrong-sign intervals, cancellation
-or reinforcement, settled authority, and positive/negative symmetry. Keep the signal list
-configurable so the same analysis works for simulator and hardware schemas.
+The dashboard and analysis tools must remain separate from controller tuning and safety decisions.
+They report evidence; they do not declare a PID configuration safe for hardware.

@@ -19,17 +19,26 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from generated_balancer import SystemTelemetryPayload
+from generated_balancer import (
+    ConfigPidValuesPayload,
+    JoystickCommandPayload,
+    PidConfigOverridePayload,
+    PidConfigStatusPayload,
+    SystemTelemetryPayload,
+)
 from tools.telemetry_dashboard.server import (
     DISPLAY_HISTORY_POINTS,
     DISPLAY_HISTORY_SECONDS,
     DISPLAY_HZ,
     SYSTEM_TELEMETRY_ID,
+    JoystickCommandController,
     DeploymentManager,
     CsvLogger,
     CsvPlayback,
     DIAGNOSTIC_LOGGER,
     PiHeartbeat,
+    PID_CONFIG_FIELDS,
+    PidSessionController,
     SseHub,
     TelemetryState,
     UdpReceiver,
@@ -99,6 +108,171 @@ def test_dashboard_decodes_generated_payload_and_latches_flags():
         "actuator_saturation": 0x03,
         "actuator": 1,
     }
+    assert status["telemetry_accept_count"] == 1
+    assert status["telemetry_accept_avg_ms"] is not None
+    assert status["telemetry_accept_max_ms"] >= status["telemetry_accept_avg_ms"]
+    assert status["csv_queue_depth"] is None
+
+
+def test_status_separates_telemetry_freshness_from_pi_reachability():
+    state = TelemetryState("rpi4")
+    assert state.accept(telemetry_packet(), received_at=time.monotonic())
+    _, status = state.snapshot(0.0)
+    assert status["telemetry_connected"]
+    assert not status["pi_ready"]
+
+
+def test_pid_session_exposes_numeric_fields_and_applies_complete_snapshot():
+    state = TelemetryState("rpi4")
+    receiver = Mock()
+    receiver.send_message.return_value = True
+    controller = PidSessionController(state, receiver)
+    assert not state.run_active
+
+    initial = controller.snapshot()
+    assert set(initial["values"]) == set(PID_CONFIG_FIELDS)
+    assert set(initial["baseline"]) == set(PID_CONFIG_FIELDS)
+    values = dict(initial["values"])
+    values["rate_P"] = 0.23
+    result = controller.update(values)
+    assert result["ok"] and result["sent"]
+    message_id, encoded = receiver.send_message.call_args.args
+    assert message_id == 3012
+    payload = PidConfigOverridePayload.unpack(encoded)
+    assert payload.request_id == result["request_id"]
+    assert payload.values.rate_P == 0.23
+
+    controller.accept_status(
+        PidConfigStatusPayload(
+            request_id=payload.request_id,
+            accepted=1,
+            result_code=0,
+            reserved=0,
+            values=ConfigPidValuesPayload(**values),
+        )
+    )
+    snapshot = controller.snapshot()
+    assert snapshot["last_status"]["state"] == "applied"
+    assert snapshot["values"]["rate_P"] == 0.23
+    assert state.snapshot(0.0)[1]["pid_status"]["accepted"] is True
+    assert "values" not in state.snapshot(0.0)[1]["pid_status"]
+    assert "values" not in snapshot["last_status"]
+
+    invalid = dict(values)
+    invalid["drive_max_sps"] = 12001.0
+    with pytest.raises(ValueError, match="12000"):
+        controller.update(invalid)
+
+
+def test_pid_payloads_share_nested_block_without_changing_wire_size():
+    values = ConfigPidValuesPayload(**{name: float(index + 1) for index, name in enumerate(PID_CONFIG_FIELDS)})
+    override = PidConfigOverridePayload(request_id=9, reserved=0, values=values)
+    status = PidConfigStatusPayload(request_id=9, accepted=1, result_code=0, reserved=0, values=values)
+
+    assert ConfigPidValuesPayload.WIRE_SIZE == 120
+    assert len(override.pack()) == 128
+    assert len(status.pack()) == 128
+    assert PidConfigOverridePayload.unpack(override.pack()).values == values
+    assert PidConfigStatusPayload.unpack(status.pack()).values == values
+
+
+def test_joystick_command_is_run_gated_and_auto_neutralizes():
+    state = TelemetryState("rpi4")
+    receiver = Mock()
+    receiver.send_message.return_value = True
+    controller = JoystickCommandController(state, receiver)
+
+    with pytest.raises(ValueError, match="Start"):
+        controller.send({"forward": 0.1, "turn": 0.0})
+
+    state.set_run_active(True)
+    result = controller.send({"forward": 0.1, "turn": 0.0})
+    assert result["ok"] and result["sent"]
+    message_id, encoded = receiver.send_message.call_args.args
+    assert message_id == 3011
+    payload = JoystickCommandPayload.unpack(encoded)
+    assert payload.forward == 0.1 and payload.turn == 0.0
+
+    time.sleep(0.15)
+    _, encoded = receiver.send_message.call_args.args
+    payload = JoystickCommandPayload.unpack(encoded)
+    assert payload.forward == 0.0 and payload.turn == 0.0
+    controller.send({"release": True})
+
+
+def test_dashboard_control_http_endpoints_enforce_pid_snapshot_and_run_gate():
+    state = TelemetryState("rpi4")
+    hub = SseHub(state)
+    receiver = Mock()
+    receiver.send_message.return_value = True
+    pid_controller = PidSessionController(state, receiver)
+    command_controller = JoystickCommandController(state, receiver)
+    server = ThreadingHTTPServer(
+        ("127.0.0.1", 0),
+        make_handler(hub, state, None, None, pid_controller, command_controller),
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        pid = json.load(urllib.request.urlopen(base + "/api/pid", timeout=1))
+        assert set(pid["values"]) == set(PID_CONFIG_FIELDS)
+        request = urllib.request.Request(
+            base + "/api/joystick",
+            data=json.dumps({"forward": 0.1, "turn": 0.0}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as response:
+            urllib.request.urlopen(request, timeout=1)
+        assert response.value.code == 400
+
+        state.set_run_active(True)
+        response = json.load(urllib.request.urlopen(request, timeout=1))
+        assert response["ok"] and response["sent"]
+    finally:
+        command_controller.close()
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+    state.set_pi_ready(True)
+    with state.lock:
+        state.last_packet_at = time.monotonic() - 2.0
+    _, status = state.snapshot(0.0)
+    assert not status["telemetry_connected"]
+    assert status["pi_ready"]
+
+    state.set_pi_ready(False)
+    _, status = state.snapshot(0.0)
+    assert not status["telemetry_connected"]
+    assert not status["pi_ready"]
+
+
+def test_joystick_hold_renews_pulse_and_neutral_cleanup_is_best_effort():
+    state = TelemetryState("rpi4")
+    state.set_run_active(True)
+    receiver = Mock()
+    receiver.send_message.return_value = True
+    controller = JoystickCommandController(state, receiver)
+
+    controller.send({"forward": 0.25, "turn": 0.0})
+    time.sleep(0.06)
+    controller.send({"forward": 0.5, "turn": 0.0})
+    time.sleep(0.05)
+    _, encoded = receiver.send_message.call_args.args
+    assert JoystickCommandPayload.unpack(encoded).forward == 0.5
+
+    time.sleep(0.08)
+    _, encoded = receiver.send_message.call_args.args
+    assert JoystickCommandPayload.unpack(encoded).forward == 0.0
+
+    receiver.send_message.return_value = False
+    with pytest.raises(RuntimeError, match="address"):
+        controller.send({"forward": 0.1, "turn": 0.0})
+    result = controller.send({"release": True})
+    assert result["ok"] and not result["sent"]
+    controller.close()
 
 
 def test_csv_logger_writes_every_raw_field_with_fixed_header(tmp_path):
@@ -118,6 +292,55 @@ def test_csv_logger_writes_every_raw_field_with_fixed_header(tmp_path):
     assert float(rows[0]["pitch_deg"]) == -1.25
     assert len(rows) == 400
     assert float(rows[-1]["pitch_deg"]) == 397.75
+
+
+def test_csv_logger_rolls_at_hardware_run_boundary_without_losing_rows(tmp_path):
+    logger = CsvLogger(tmp_path, max_bytes=1024 * 1024, retain_count=10)
+    state = TelemetryState("pi.local", logger)
+    for index in range(2):
+        assert state.accept(telemetry_packet(pitch_deg=float(index)), received_at=10.0 + index / 400.0)
+
+    state.begin_hardware_run()
+
+    for index in range(2, 4):
+        assert state.accept(telemetry_packet(pitch_deg=float(index)), received_at=10.0 + index / 400.0)
+    logger.close()
+
+    logs = sorted(tmp_path.glob("telemetry_*.csv"))
+    assert len(logs) == 2
+    with logs[0].open(newline="", encoding="utf-8") as handle:
+        first_rows = list(csv.DictReader(handle))
+    with logs[1].open(newline="", encoding="utf-8") as handle:
+        second_rows = list(csv.DictReader(handle))
+    assert [float(row["pitch_deg"]) for row in first_rows] == [0.0, 1.0]
+    assert [float(row["pitch_deg"]) for row in second_rows] == [2.0, 3.0]
+
+
+def test_csv_logger_roll_before_first_packet_is_lazy(tmp_path):
+    logger = CsvLogger(tmp_path, max_bytes=1024 * 1024, retain_count=10)
+    logger.roll()
+    assert not list(tmp_path.glob("telemetry_*.csv"))
+
+    state = TelemetryState("pi.local", logger)
+    assert state.accept(telemetry_packet(pitch_deg=4.0), received_at=10.0)
+    logger.close()
+    assert len(list(tmp_path.glob("telemetry_*.csv"))) == 1
+
+
+def test_csv_logger_keeps_size_rollover_as_fallback(tmp_path):
+    logger = CsvLogger(tmp_path, max_bytes=1024, retain_count=100)
+    state = TelemetryState("pi.local", logger)
+    for index in range(20):
+        assert state.accept(telemetry_packet(pitch_deg=float(index)), received_at=10.0 + index / 400.0)
+    logger.close()
+
+    logs = sorted(tmp_path.glob("telemetry_*.csv"))
+    assert len(logs) > 1
+    total_rows = 0
+    for log in logs:
+        with log.open(newline="", encoding="utf-8") as handle:
+            total_rows += len(list(csv.DictReader(handle)))
+    assert total_rows == 20
 
 
 def test_dashboard_rejects_wrong_id_and_wrong_size():
@@ -309,6 +532,26 @@ def test_receiver_registers_and_accepts_fake_pi_telemetry():
     assert telemetry["attitude"]["pitch_deg"] == 4.5
 
 
+def test_receiver_retries_failed_resolution_but_reuses_successful_address():
+    state = TelemetryState("rpi4")
+    receiver = UdpReceiver(state, "rpi4", 9)
+    resolution = Mock(side_effect=[RuntimeError("offline"), "127.0.0.1"])
+    thread = threading.Thread(target=receiver.run, daemon=True)
+    try:
+        with patch("tools.telemetry_dashboard.server.resolve_udp_host", resolution), patch(
+            "tools.telemetry_dashboard.server.RESOLVE_RETRY_S", 0.01
+        ):
+            thread.start()
+            deadline = time.monotonic() + 1.0
+            while resolution.call_count < 2 and time.monotonic() < deadline:
+                time.sleep(0.01)
+            time.sleep(0.25)
+    finally:
+        receiver.close()
+        thread.join(timeout=1.0)
+    assert resolution.call_count == 2
+
+
 def test_pi_heartbeat_reports_ssh_port_reachability_without_authentication():
     state = TelemetryState("rpi4")
     receiver = Mock()
@@ -321,6 +564,21 @@ def test_pi_heartbeat_reports_ssh_port_reachability_without_authentication():
     connect.assert_called_once_with(("192.168.1.44", 22), timeout=1.5)
     with patch("tools.telemetry_dashboard.server.resolve_udp_host", side_effect=RuntimeError("offline")):
         assert not heartbeat.probe()
+
+
+def test_pi_heartbeat_refreshes_receiver_udp_address():
+    state = TelemetryState("rpi4")
+    receiver = UdpReceiver(state, "rpi4", 9000)
+    heartbeat = PiHeartbeat(state, receiver)
+    try:
+        with patch("tools.telemetry_dashboard.server.resolve_udp_host", return_value="192.168.1.45"), patch(
+            "tools.telemetry_dashboard.server.socket.create_connection", return_value=MagicMock()
+        ):
+            assert heartbeat.probe()
+        with receiver.lock:
+            assert receiver.pi_address == ("192.168.1.45", 9000)
+    finally:
+        receiver.close()
 
 
 def test_ssh_alias_uses_ssh_config_hostname_and_accepts_user_prefix():
@@ -429,6 +687,73 @@ def test_start_surfaces_immediate_remote_failure_log(tmp_path, monkeypatch):
             deployer.start()
 
 
+def test_successful_live_start_rolls_raw_capture(tmp_path):
+    logger = CsvLogger(tmp_path, max_bytes=1024 * 1024, retain_count=10)
+    state = TelemetryState("rpi4", logger)
+    hub = SseHub(state)
+    deployer = Mock()
+    deployer.start.return_value = {"ok": True, "message": "started"}
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(hub, state, deployer))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        assert state.accept(telemetry_packet(pitch_deg=1.0), received_at=10.0)
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/start", method="POST"
+        )
+        response = json.load(urllib.request.urlopen(request, timeout=1))
+        assert response["ok"]
+        assert response["display_run"] == 1
+        assert state.snapshot(0.0)[1]["run_active"]
+        assert state.accept(telemetry_packet(pitch_deg=2.0), received_at=10.01)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+        logger.close()
+
+    logs = sorted(tmp_path.glob("telemetry_*.csv"))
+    assert len(logs) == 2
+    with logs[0].open(newline="", encoding="utf-8") as handle:
+        first_rows = list(csv.DictReader(handle))
+    with logs[1].open(newline="", encoding="utf-8") as handle:
+        second_rows = list(csv.DictReader(handle))
+    assert [float(row["pitch_deg"]) for row in first_rows] == [1.0]
+    assert [float(row["pitch_deg"]) for row in second_rows] == [2.0]
+    deployer.start.assert_called_once_with()
+
+
+def test_failed_live_start_does_not_roll_raw_capture(tmp_path):
+    logger = CsvLogger(tmp_path, max_bytes=1024 * 1024, retain_count=10)
+    state = TelemetryState("rpi4", logger)
+    hub = SseHub(state)
+    deployer = Mock()
+    deployer.start.side_effect = RuntimeError("start failed")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(hub, state, deployer))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        assert state.accept(telemetry_packet(pitch_deg=1.0), received_at=10.0)
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/start", method="POST"
+        )
+        with pytest.raises(urllib.error.HTTPError) as response:
+            urllib.request.urlopen(request, timeout=1)
+        assert response.value.code == 400
+        assert not state.snapshot(0.0)[1]["run_active"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+        logger.close()
+
+    logs = sorted(tmp_path.glob("telemetry_*.csv"))
+    assert len(logs) == 1
+    with logs[0].open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    assert [float(row["pitch_deg"]) for row in rows] == [1.0]
+
+
 def test_dashboard_operation_failures_are_written_to_jsonl(tmp_path):
     listener = configure_diagnostic_logging(tmp_path)
     state = TelemetryState("rpi4")
@@ -481,8 +806,42 @@ def test_dashboard_serves_assets_and_sse_to_multiple_clients():
         script = script.read()
         assert b"EventSource" in script
         assert b"setData" in script
+        assert b"function liveConnection(status)" in script
+        assert b"telemetry_connected===true" in script
+        assert b"pi_ready===true" in script
+        assert "Pi online · telemetry stopped".encode() in script
+        assert b"joystick-controls" in script
+        assert b"drive-pad" in script
+        assert b"data-drive-pad" in script
+        assert b"drivePadVectorAt" in script
+        assert b"forward:-y" in script
+        assert b"setPointerCapture" in script
+        assert b"JOYSTICK_REPEAT_MS = 100" in script
+        assert b"data-joystick-track" not in script
+        assert b"data-axis=\"forward\"" not in script
+        assert b"data-axis=\"turn\"" not in script
+        assert b"Neutral" in script
+        assert b"joystick-value" not in script
+        assert b"Drag for direction and speed; release to stop" in script
+        assert b'id="joystick-stop"' not in script
+        assert b'id="pid-load"' in script
+        assert b">Load<" in script
+        assert b'title:"Command"' not in script
+        assert b'group.id !== "wheel-steps"' in script
+        assert b"PID_MIN_STEP = 0.0001" in script
+        assert b"Math.round(raw/magnitude)" in script
+        assert b'<div class="pid-actions"><button id="pid-apply"' in script
+        assert b'<div class="pid-fields">${fields}</div>' in script
+        assert b"lostpointercapture" in script
+        assert b"sanity" not in script.lower()
+        assert b"if(status.values)renderPidFields(status.values)" not in script
+        assert b"Session PID tuning" in script
         stylesheet = urllib.request.urlopen(base + "/dashboard.css", timeout=1)
         assert stylesheet.headers.get_content_type() == "text/css"
+        stylesheet_data = stylesheet.read()
+        assert b'grid-template-areas: "left" "right" "main"' in stylesheet_data
+        assert b".drive-pad" in stylesheet_data
+        assert b"touch-action: none" in stylesheet_data
         uplot = urllib.request.urlopen(base + "/vendor/uPlot-1.6.32.iife.min.js", timeout=1)
         assert uplot.headers.get_content_type() == "text/javascript"
         assert b"uPlot" in uplot.read()

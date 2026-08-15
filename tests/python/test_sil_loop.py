@@ -20,7 +20,7 @@ def make_imu_sample(timestamp_us: int) -> ImuRawPayload:
 
 def test_joystick_to_motor_targets(udp):
     cmd = JoystickCommandPayload(forward=1.0, turn=0.5)
-    udp.send(BalancerMsgId.JoystickCommand, cmd.pack())
+    udp.send(BalancerMsgId.ExternalJoystickCommand, cmd.pack())
 
     base_time_us = time.monotonic_ns() // 1000
     for _ in range(32):
@@ -47,7 +47,7 @@ def test_joystick_to_motor_targets(udp):
 
 
 def test_tick_driven_telemetry_stream(udp):
-    udp.send(BalancerMsgId.JoystickCommand, JoystickCommandPayload(forward=0.2, turn=0.0).pack())
+    udp.send(BalancerMsgId.ExternalJoystickCommand, JoystickCommandPayload(forward=0.2, turn=0.0).pack())
 
     base_time_us = time.monotonic_ns() // 1000
     for _ in range(24):

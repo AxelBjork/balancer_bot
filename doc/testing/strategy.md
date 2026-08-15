@@ -3,9 +3,36 @@
 The project uses four complementary test layers:
 
 - C++ unit and integration tests
-- Python SIL tests over UDP
+- Python SIL tests against the production UDP boundary
 - deterministic unified-engine acceptance tests
 - host/AFL fuzz-harness validation
+
+## Validation vocabulary
+
+These terms refer to different layers of the same validation workflow:
+
+- **Scenario catalog** — the canonical named scenario definitions used by direct tests, the
+  simulator service, tuning, and fuzzing.
+- **Transfer matrix** — the current ten-case catalog used for transfer validation: four nominal
+  cases plus six conservative margin cases.
+- **Acceptance function** — the shared pass/fail decision applied to one completed scenario. It
+  checks hard failures such as falls, faults, non-finite values, excessive pitch, tail RMS, and
+  continuous saturation.
+- **Transfer-matrix validation** — running the complete deterministic simulator matrix and
+  preserving the per-run evidence and manifest. This is a software-model gate, not authorization
+  to run the candidate gains on hardware; a candidate is matrix-qualified only when every case
+  passes.
+- **Direct-versus-UDP equivalence** — a separate focused protocol check. The current Python test
+  compares the direct engine and simulator UDP wrapper tick-for-tick for transfer catalog index `1`;
+  it is not an all-ten-case equivalence proof. The test’s inline scenario comment currently names a
+  different case than the catalog order, so use the numeric index until that source comment is
+  corrected.
+
+When other pages say “acceptance set,” “transfer matrix,” or “acceptance catalog,” they mean the
+same canonical ten-case transfer workflow unless they explicitly describe a different focused test
+set. The [control and simulator notes](../notes/control_and_simulator.md) explain how to interpret
+the resulting artifacts; the [current status](../status.md) reports confidence rather than
+redefining the gate.
 
 ## Component Coverage
 
@@ -17,7 +44,7 @@ The project uses four complementary test layers:
 | Joystick/velocity control | Ramp, reversal, command symmetry, stopping, and trim freeze | Bidirectional 800 SPS command and stop scenarios | Equal positive/negative command response and stopping |
 | Plant physics | Nonlinear/linear small-angle signs and parameter influence | Nonlinear cart-pole, actuator lag, traction, tire, and measured geometry | Parameters come from measured hardware; mismatches become simulator defects |
 | Safety | Fallover, stale IMU, saturation, and actuator-fault paths | Fault-free finite state, pitch margin, and saturation-duration gates | Restrained fallover followed by cautious unrestrained validation |
-| Runtime/telemetry | Message bus, timestamps, schema, and artifact parsing | Production message/control path plus direct/UDP timeline equivalence | Telemetry-server capture used for transfer diagnosis |
+| Runtime/telemetry | Message bus, timestamps, schema, and artifact parsing | Production UDP message path plus focused direct/simulator timeline equivalence | Telemetry-server capture used for transfer diagnosis |
 
 ## C++ Test Layer
 
@@ -40,6 +67,23 @@ Run it with:
 ```bash
 ./build/balancer_tests
 ```
+
+## Executable and build boundaries
+
+The main host workflow and the additional validation tools are different entry points:
+
+| Target or layer | How it is built or run | What it proves |
+| --- | --- | --- |
+| `balancer_tests` | Built by `pytest --build`; run through CTest or directly | In-process controller, service, timing, simulator, and transfer-matrix checks |
+| `balancer_simulator` and `balancer_simulator_tuner` | Built by `pytest --build`; tuner is a dependency of the simulator target | Deterministic scenario service, direct summaries, artifacts, and candidate evaluation |
+| `sil_app` | Built by `pytest --build`; exercised by Python SIL tests | Production service/message-bus/UDP path without a plant or hardware backend |
+| `balancer_plant_audit` | Build separately with `cmake --build build --target balancer_plant_audit` | Linearized plant and model consistency checks |
+| AFL++ harnesses | `pytest --fuzz --build-only` or compiler-independent fuzz smoke | Fuzz target execution and corpus coverage, not transfer acceptance |
+| `balancer_pi` | Raspberry Pi cross-build through `build_cmake OFF` | Physical deployment artifact; host validation does not prove hardware behavior |
+
+The repository-root [`conftest.py`](../../conftest.py) owns the `pytest --build` options and build
+workflow. [`tests/python/conftest.py`](../../tests/python/conftest.py) owns process fixtures and
+binary discovery for the Python tests.
 
 ## Pytest Layer
 
@@ -72,34 +116,61 @@ pytest --fuzz-smoke --build-only -q
 ```
 
 It builds all three harnesses in `build-fuzz-smoke/`, regenerates the registered corpus, and runs
-all fourteen seeds. The seed formats can select and mutate cases from the canonical transfer
+the registered seeds. The seed formats can select and mutate cases from the canonical transfer
 catalog. AFL++ remains the instrumentation/coverage gate when its tools are available.
 
 Key files:
 
+- `conftest.py`
+  owns the `pytest --build` options, CMake targets, and CTest workflow
 - `tests/python/conftest.py`
-  owns the `pytest --build` workflow and process fixtures
+  owns process management, binary discovery, and Python test fixtures
 - `tests/fuzz/registry.py`
   registers the AFL++ targets, corpora, and `@@` command lines used by both pytest and
   `tools/run_afl.py`
 - `tests/python/test_udp_bridge.py`
-  verifies the UDP bridge transport path
+  verifies the production UDP bridge transport and peer behavior
 - `tests/python/test_sil_loop.py`
   verifies the `sil_app` control path with injected tick/IMU traffic
 - `tests/python/test_sim_scenarios.py`
   checks representative downsampled UDP runs and complete physics overrides
 - `tests/python/test_simulator_main_artifacts.py`
   checks protocol behavior, stride-invariant summaries, and exact direct-versus-real-UDP timeline
-  hashes
+  hashes for a representative transfer scenario
 - `tests/python/test_run_artifacts.py`
   checks artifact summarization and hardware-log parsing
 
 ## Transfer Acceptance and Artifacts
 
-The focused four-nominal-plus-six-conservative matrix runs in-process in `balancer_tests`. Direct tests,
-the UDP simulator, tuner, and fuzz harnesses obtain scenarios from `transfer_scenario_set()`; direct
+The focused four-nominal-plus-six-conservative transfer matrix runs in-process in `balancer_tests`.
+Direct tests, the simulator service, tuner, and fuzz harnesses obtain scenarios from
+`transfer_scenario_set()`; direct
 tests, the tuner, and UDP transfer runs use `evaluate_transfer_scenario()` for the hard acceptance
 decision. This keeps the normal gate fast while retaining focused real-UDP protocol coverage.
+
+The human-readable matrix is:
+
+| Profile | Release cases | Push case | Drive case | Duration |
+| --- | --- | --- | --- | --- |
+| Nominal | `nominal_release_pos`, `nominal_release_neg` | `nominal_push_symmetric` | `nominal_drive_bidirectional` | 20 s for release/push; 23 s for drive |
+| Slow/weak margin | `slow_weak_release` | `slow_weak_push_symmetric` | `slow_weak_drive_bidirectional` | 20 s for release/push; 23 s for drive |
+| Fast/strong margin | `fast_strong_release` | `fast_strong_push_symmetric` | `fast_strong_drive_bidirectional` | 20 s for release/push; 23 s for drive |
+
+The source of truth is [`transfer_scenario_set()`](../../tests/simulator/simulator_runner.cpp), and
+the shared hard decision is [`evaluate_transfer_scenario()`](../../tests/simulator/simulator_runner.cpp).
+The separate `simulator_scenario_set()` APIs contain required, capability, slow-push, and tuning
+scenarios; they are not additional transfer-matrix cases.
+
+The direct C++ tests evaluate all ten cases with the shared acceptance function. The
+`run_transfer_validation.py` report runs all ten through the UDP wrapper, but its per-case `passed`
+field comes from a separate direct-summary acceptance call; an unexpected UDP completion reason is
+also recorded as a failure. That report therefore combines UDP transport evidence with direct-model
+acceptance and should not be described as an all-tick direct/UDP equivalence result. The focused
+Python equivalence test compares the complete result for transfer catalog index `1` only.
+
+The simulator service’s scenario-control traffic uses its separate UDP port `9001`. Tests of the
+production `UdpBridge` on port `9000` and tests of the simulator endpoint must remain distinguishable
+in fixtures, logs, and reports.
 
 To regenerate full-rate evidence and the stable report:
 
@@ -173,9 +244,9 @@ They are not treated as golden replay traces for the simulator.
 ## What Each Layer Proves
 
 - C++ tests prove the local math, contracts, service glue, and complete transfer matrix.
-- `sil_app` tests prove the UDP-facing message-bus runtime is alive and coherent.
+- `sil_app` tests prove the production UDP-facing message-bus runtime is alive and coherent.
 - focused UDP tests prove wire behavior, artifact generation, telemetry downsampling, and exact
-  timeline equivalence with the direct engine.
+  timeline equivalence with the direct engine for the representative transfer case they exercise.
 - AFL++ harness validation proves the fuzz targets still build, execute, and produce coverage on their seed corpora without changing the normal pytest gate.
 
 For the deeper simulator and control notes, read [Control and Simulator Notes](../notes/control_and_simulator.md). For the SIL-specific transport path, read [SIL Guide](sil_guide.md).

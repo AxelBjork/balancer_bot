@@ -67,7 +67,7 @@ inline void app_dispatcher(void* ctx, MsgId id, const void* payload) {
   auto* s = static_cast<AppServices*>(ctx);
   static int telemetry_count = 0;
 
-  ipc::dispatch_to_services(id, payload, s->is, s->ms, s->cs, s->udp, s->ts);
+  ipc::dispatch_to_services(id, payload, s->is, s->ms, s->cs, s->ins, s->udp, s->ts);
 
   if (id == MsgId::SystemTelemetry) {
     if constexpr (Config::kPrintEvery != -1) {

@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+readonly IMAGE="${CODEX_CONTAINER_IMAGE:-localhost/balancer-bot-codex:local}"
+readonly CONTAINER_NAME="${CODEX_CONTAINER_NAME:-balancer-bot-codex-gui}"
+readonly SSH_ALIAS=codex-devcontainer
+readonly SSH_PORT="${CODEX_SSH_PORT:-2222}"
+readonly SSH_KEY_PATH="${CODEX_SSH_KEY_PATH:-$HOME/.ssh/codex-devcontainer}"
+readonly SSH_CONFIG_PATH="${CODEX_SSH_CONFIG_PATH:-$HOME/.ssh/config}"
+readonly DATA_VOLUME="${CODEX_DATA_VOLUME:-balancer-bot-codex-data}"
+readonly HOSTKEY_VOLUME="${CONTAINER_NAME}-hostkeys"
+readonly HOST_GUI="${CODEX_HOST_GUI:-/usr/bin/codex-desktop}"
+readonly HOST_UID="$(id -u)"
+
+container_started=0
+hostkey_volume_created=0
+gui_pid=""
+
+fail() {
+    local message="$1"
+    if command -v kdialog >/dev/null 2>&1; then
+        kdialog --error "$message" >/dev/null 2>&1 &
+    fi
+    printf 'codex-gui: %s\n' "$message" >&2
+    exit 1
+}
+
+cleanup() {
+    local status=$?
+    set +e
+
+    if [[ -n "$gui_pid" ]] && kill -0 "$gui_pid" 2>/dev/null; then
+        kill "$gui_pid" 2>/dev/null || true
+    fi
+    if [[ "$container_started" -eq 1 ]]; then
+        podman stop --time 5 "$CONTAINER_NAME" >/dev/null 2>&1 || true
+        podman rm --force "$CONTAINER_NAME" >/dev/null 2>&1 || true
+    fi
+    if [[ "$hostkey_volume_created" -eq 1 ]]; then
+        podman volume rm "$HOSTKEY_VOLUME" >/dev/null 2>&1 || true
+    fi
+
+    exit "$status"
+}
+trap cleanup EXIT INT TERM
+
+host_gui_is_running() {
+    local pid executable
+
+    while read -r pid; do
+        [[ -n "$pid" ]] || continue
+        executable="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
+        if [[ "$executable" == /opt/codex-desktop/electron ]]; then
+            return 0
+        fi
+    done < <(pgrep -u "$HOST_UID" -f '/opt/codex-desktop/(electron|start\.sh)' 2>/dev/null || true)
+
+    return 1
+}
+
+command -v podman >/dev/null 2>&1 || fail "Podman is not installed."
+command -v ssh >/dev/null 2>&1 || fail "The host ssh client is not installed."
+[[ -x "$HOST_GUI" ]] || fail "Host Codex GUI not found at $HOST_GUI."
+[[ -d "$REPO_ROOT" ]] || fail "Repository directory not found: $REPO_ROOT"
+
+if host_gui_is_running; then
+    fail "Close the ordinary host Codex window before launching the container target."
+fi
+
+mkdir -p "$HOME/.ssh"
+chmod 0700 "$HOME/.ssh"
+
+if [[ ! -f "$SSH_KEY_PATH" ]]; then
+    ssh-keygen -q -t ed25519 -N '' -C "$SSH_ALIAS" -f "$SSH_KEY_PATH" \
+        || fail "Could not create the dedicated SSH key at $SSH_KEY_PATH."
+fi
+[[ -f "$SSH_KEY_PATH.pub" ]] || fail "The SSH public key is missing: $SSH_KEY_PATH.pub"
+chmod 0600 "$SSH_KEY_PATH"
+chmod 0644 "$SSH_KEY_PATH.pub"
+
+touch "$SSH_CONFIG_PATH"
+chmod 0600 "$SSH_CONFIG_PATH"
+if ! grep -Fq '# BEGIN balancer_bot Codex container' "$SSH_CONFIG_PATH"; then
+    if grep -Eq "^[[:space:]]*Host[[:space:]]+$SSH_ALIAS([[:space:]]|$)" "$SSH_CONFIG_PATH"; then
+        fail "SSH alias $SSH_ALIAS already exists in $SSH_CONFIG_PATH; rename it or remove the conflicting entry."
+    fi
+    cat >> "$SSH_CONFIG_PATH" <<EOF
+
+# BEGIN balancer_bot Codex container
+Host $SSH_ALIAS
+    HostName 127.0.0.1
+    Port $SSH_PORT
+    User vscode
+    IdentityFile $SSH_KEY_PATH
+    IdentitiesOnly yes
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+    LogLevel ERROR
+# END balancer_bot Codex container
+EOF
+fi
+
+if ! podman volume exists "$DATA_VOLUME" >/dev/null 2>&1; then
+    podman volume create "$DATA_VOLUME" >/dev/null \
+        || fail "Could not create the persistent Codex data volume $DATA_VOLUME."
+fi
+
+if podman container exists "$CONTAINER_NAME" >/dev/null 2>&1; then
+    podman rm --force "$CONTAINER_NAME" >/dev/null \
+        || fail "Could not remove stale container $CONTAINER_NAME."
+fi
+podman volume rm "$HOSTKEY_VOLUME" >/dev/null 2>&1 || true
+podman volume create "$HOSTKEY_VOLUME" >/dev/null \
+    || fail "Could not create the temporary SSH host-key volume."
+hostkey_volume_created=1
+
+build_security_args=()
+run_security_args=()
+if command -v getenforce >/dev/null 2>&1 && [[ "$(getenforce)" == Enforcing ]]; then
+    # Fedora's targeted policy rejects the namespace transition needed by
+    # this rootless build/run path. Disable labeling only for this container;
+    # do not create an audit2allow policy module.
+    build_security_args+=(--security-opt label=disable)
+    run_security_args+=(--security-opt label=disable)
+fi
+
+if ! podman image exists "$IMAGE" >/dev/null 2>&1; then
+    printf 'Building %s; the first build can take a while.\n' "$IMAGE" >&2
+    podman build \
+        "${build_security_args[@]}" \
+        --file "$REPO_ROOT/.devcontainer/Dockerfile" \
+        --tag "$IMAGE" \
+        "$REPO_ROOT" \
+        || fail "The Podman image build failed."
+fi
+
+podman run -d \
+    --name "$CONTAINER_NAME" \
+    --rm \
+    --userns keep-id \
+    --user 0:0 \
+    --publish "127.0.0.1:$SSH_PORT:22" \
+    --workdir /workspaces/balancer_bot \
+    --hostname balancer-bot-codex \
+    --env HOME=/home/vscode \
+    --env USER=vscode \
+    --env CODEX_HOME=/home/vscode/.codex \
+    "${run_security_args[@]}" \
+    --volume "$REPO_ROOT:/workspaces/balancer_bot:rw" \
+    --volume "$DATA_VOLUME:/home/vscode/.codex:rw" \
+    --volume "$SSH_KEY_PATH.pub:/home/vscode/.ssh/authorized_keys:ro" \
+    --volume "$HOSTKEY_VOLUME:/etc/ssh/hostkeys:rw" \
+    "$IMAGE" >/dev/null \
+    || fail "Could not start the Codex container."
+container_started=1
+
+for attempt in {1..30}; do
+    if ssh -o BatchMode=yes -o ConnectTimeout=2 "$SSH_ALIAS" true >/dev/null 2>&1; then
+        break
+    fi
+    if [[ "$attempt" -eq 30 ]]; then
+        fail "The Codex container started, but SSH did not become ready."
+    fi
+    sleep 1
+done
+
+printf 'Codex container ready: ssh %s, project /workspaces/balancer_bot\n' "$SSH_ALIAS" >&2
+"$HOST_GUI" "$@" &
+gui_pid=$!
+
+set +e
+wait "$gui_pid"
+status=$?
+set -e
+exit "$status"

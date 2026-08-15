@@ -1,5 +1,9 @@
 # Passive Pitch-Inertia Measurement — 2026-07-22
 
+[Back to the hardware data archive](../../README.md)
+
+[Analysis workflow](../../../doc/testing/telemetry_analysis_cli.md) · [Manifest](manifest.json)
+
 These are two derived excerpts from the dashboard/server capture
 `data/server/telemetry_20260722-000533_00.csv`. They preserve full reflected telemetry rows and
 were selected as clean, continuous free-swing bursts after starting `balancer_pi` with
@@ -17,8 +21,9 @@ damped correction.
 | `session0_51p2_to_54p6.csv` | 0 / 51.2–54.6 s | 0.54383 s | 0.004551 kg m² |
 | `session1_3p8_to_5p5.csv` | 1 / 3.8–5.5 s | 0.54186 s | 0.004518 kg m² |
 
-Using `H = 0.06192 kg m` and `g = 9.81 m/s²`, the agreed one-decimal-millith precision
-provisional value is **`J = 0.0045 kg m²`**. Do not use this fixture to tune controller gains.
+Using `H = 0.06192 kg m` and `g = 9.81 m/s²`, the rounded provisional value is
+**`J = 0.0045 kg m²`**. This is a four-decimal-`kg m²` summary, not a precision claim. Do not use
+this fixture to tune controller gains or to authorize changing the simulator constant.
 Before replacing the simulator constant, obtain an unassisted small-angle run on a lower-friction
 pivot and compare the result; motor detent/friction is the main remaining systematic uncertainty.
 
@@ -29,4 +34,6 @@ python3 tools/measure_pitch_inertia.py data/server/telemetry_20260722-000533_00.
   --session 0 --start-s 51.2 --end-s 54.6
 ```
 
-The source and derived-file checksums are recorded in `manifest.json`.
+The source capture is not included in this repository; its filename and checksum, along with the
+derived-file checksums, are recorded in [`manifest.json`](manifest.json). The command is therefore
+reproducible only if that source CSV is available separately.

@@ -53,7 +53,7 @@ class AlphaFilter
 public:
 	AlphaFilter() = default;
 	explicit AlphaFilter(float sample_interval, float time_constant) { setParameters(sample_interval, time_constant); }
-	explicit AlphaFilter(float time_constant) : _time_constant(time_constant) {};
+	explicit AlphaFilter(float time_constant) : _time_constant(time_constant) {}
 
 	~AlphaFilter() = default;
 

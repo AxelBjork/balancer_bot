@@ -184,7 +184,7 @@ TEST(SimulatorRunnerTest, ImuFiltersReduceStaticRawImuNoiseWithoutStartupBias) {
 
   constexpr double fs_hz = Config::sampling_hz;
   constexpr int total_samples = static_cast<int>(4.0 * fs_hz);
-  constexpr int warmup_samples = static_cast<int>(0.1 * fs_hz);
+  constexpr int warmup_samples = static_cast<int>(1.0 * fs_hz);
   const auto tick = std::chrono::nanoseconds{std::llround(1e9 / fs_hz)};
   auto now = std::chrono::steady_clock::now();
 
@@ -548,7 +548,8 @@ TEST(SimulatorRunnerTest, TranslationCreatesSymmetricApparentPitchAndFilterRecov
         estimator.push_sample(translated.acc, translated.gyr,
                               ImuPitchEstimator::TimePoint{});
     ASSERT_TRUE(estimate.valid);
-    apparent_pitch[index] = estimate.sample.angle_rad;
+    apparent_pitch[index] = std::atan2(-translated.acc[0], -translated.acc[2]);
+    EXPECT_DOUBLE_EQ(estimate.sample.angle_rad, 0.0);
 
     for (int sample = 1; sample <= static_cast<int>(4.0 * Config::sampling_hz);
          ++sample) {

@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -10,10 +11,139 @@
 #include <unordered_map>
 #include <vector>
 
-#include "messages/types.h"
+#include "services/main/config_pid_io.h"
+
+namespace {
+
+std::atomic<uint64_t> g_config_pid_generation{0};
+
+}  // namespace
+
+namespace sil {
+
+ConfigPidValues pid_values_from_payload(const ConfigPidValues& p) {
+  return p;
+}
+
+void fill_pid_status_values(ConfigPidValues& p, const ConfigPidValues& values) {
+  p = values;
+}
+
+ipc::PidConfigStatusPayload apply_pid_config_override(const ipc::PidConfigOverridePayload& payload) {
+  const ConfigPidValues values = pid_values_from_payload(payload.values);
+  const ConfigPidValidationCode validation = ConfigPid::validate_numeric(values);
+
+  ipc::PidConfigStatusPayload status{};
+  status.request_id = payload.request_id;
+  status.accepted = validation == ConfigPidValidationCode::Accepted ? 1 : 0;
+  status.result_code = static_cast<uint8_t>(validation);
+  fill_pid_status_values(status.values, ConfigPid::numeric_values());
+  if (validation == ConfigPidValidationCode::Accepted) {
+    ConfigPid::apply_numeric(values);
+    fill_pid_status_values(status.values, ConfigPid::numeric_values());
+  }
+  return status;
+}
+
+}  // namespace sil
 
 static void write_param(std::ofstream& f, const std::string& name, double value) {
   f << std::left << std::setw(20) << name << " = " << value << "\n";
+}
+
+ConfigPidValues ConfigPid::numeric_values() {
+  return {
+      rate_P,
+      rate_I,
+      rate_D,
+      rate_I_lim,
+      rate_FF,
+      drive_max_acceleration_mps2,
+      velocity_damping_per_s,
+      velocity_I,
+      velocity_I_limit_deg,
+      angle_P,
+      angle_D,
+      pitch_rate_max_sps,
+      drive_max_sps,
+      turn_max_sps,
+      balance_max_sps,
+  };
+}
+
+ConfigPidValidationCode ConfigPid::validate_numeric(const ConfigPidValues& values) {
+  for (const double value : {
+           values.rate_P,
+           values.rate_I,
+           values.rate_D,
+           values.rate_I_lim,
+           values.rate_FF,
+           values.drive_max_acceleration_mps2,
+           values.velocity_damping_per_s,
+           values.velocity_I,
+           values.velocity_I_limit_deg,
+           values.angle_P,
+           values.angle_D,
+           values.pitch_rate_max_sps,
+           values.drive_max_sps,
+           values.turn_max_sps,
+           values.balance_max_sps,
+       }) {
+    if (!std::isfinite(value)) return ConfigPidValidationCode::NonFinite;
+  }
+
+  for (const double value : {
+           values.rate_P,
+           values.rate_I,
+           values.rate_D,
+           values.rate_I_lim,
+           values.rate_FF,
+           values.drive_max_acceleration_mps2,
+           values.velocity_damping_per_s,
+           values.velocity_I,
+           values.velocity_I_limit_deg,
+           values.angle_P,
+           values.angle_D,
+           values.turn_max_sps,
+       }) {
+    if (value < 0.0) return ConfigPidValidationCode::Negative;
+  }
+
+  if (values.pitch_rate_max_sps <= 0.0 || values.drive_max_sps <= 0.0 ||
+      values.balance_max_sps <= 0.0) {
+    return ConfigPidValidationCode::NonPositive;
+  }
+  if (values.drive_max_sps > 12000.0 || values.turn_max_sps > 12000.0 ||
+      values.balance_max_sps > 12000.0) {
+    return ConfigPidValidationCode::OutOfRange;
+  }
+  return ConfigPidValidationCode::Accepted;
+}
+
+void ConfigPid::apply_numeric(const ConfigPidValues& values) {
+  if (validate_numeric(values) != ConfigPidValidationCode::Accepted) {
+    throw std::invalid_argument("Cannot apply invalid numeric PID configuration");
+  }
+  rate_P = values.rate_P;
+  rate_I = values.rate_I;
+  rate_D = values.rate_D;
+  rate_I_lim = values.rate_I_lim;
+  rate_FF = values.rate_FF;
+  drive_max_acceleration_mps2 = values.drive_max_acceleration_mps2;
+  velocity_damping_per_s = values.velocity_damping_per_s;
+  velocity_I = values.velocity_I;
+  velocity_I_limit_deg = values.velocity_I_limit_deg;
+  angle_P = values.angle_P;
+  angle_D = values.angle_D;
+  pitch_rate_max_sps = values.pitch_rate_max_sps;
+  drive_max_sps = values.drive_max_sps;
+  turn_max_sps = values.turn_max_sps;
+  balance_max_sps = values.balance_max_sps;
+  g_config_pid_generation.fetch_add(1, std::memory_order_release);
+}
+
+uint64_t ConfigPid::generation() {
+  return g_config_pid_generation.load(std::memory_order_acquire);
 }
 
 void ConfigPid::load(const std::string& path) {
@@ -95,12 +225,12 @@ void ConfigPid::load(const std::string& path) {
                              std::to_string(config_version) + ", got " + version->value_text);
   }
 
-  std::unordered_map<std::string, double> values;
+  std::unordered_map<std::string, double> parsed_values;
   for (const auto& item : parsed_lines) {
     if (!allowed.contains(item.key)) {
       throw std::runtime_error("Unknown PID configuration key: " + item.key);
     }
-    if (values.contains(item.key)) {
+    if (parsed_values.contains(item.key)) {
       throw std::runtime_error("Duplicate PID configuration key: " + item.key);
     }
     size_t parsed = 0;
@@ -113,53 +243,51 @@ void ConfigPid::load(const std::string& path) {
     if (parsed != item.value_text.size() || !std::isfinite(value)) {
       throw std::runtime_error("Non-finite or malformed PID value for key: " + item.key);
     }
-    values.emplace(item.key, value);
+    parsed_values.emplace(item.key, value);
   }
 
   for (const auto& key : allowed) {
-    if (key == "controller_enabled") continue;
-    if (!values.contains(key)) {
+    if (key == "config_version" || key == "controller_enabled") continue;
+    if (!parsed_values.contains(key)) {
       throw std::runtime_error("Missing PID configuration key: " + key);
     }
   }
-  if (values.contains("controller_enabled") && values.at("controller_enabled") != 0.0 &&
-      values.at("controller_enabled") != 1.0) {
+  if (parsed_values.contains("controller_enabled") && parsed_values.at("controller_enabled") != 0.0 &&
+      parsed_values.at("controller_enabled") != 1.0) {
     throw std::runtime_error("controller_enabled must be 0 or 1");
   }
 
-  const auto nonnegative = [&](const char* key) {
-    if (values.at(key) < 0.0) throw std::runtime_error(std::string(key) + " must be non-negative");
+  const ConfigPidValues numeric{
+      parsed_values.at("rate_P"),
+      parsed_values.at("rate_I"),
+      parsed_values.at("rate_D"),
+      parsed_values.at("rate_I_lim"),
+      parsed_values.at("rate_FF"),
+      parsed_values.at("drive_max_acceleration_mps2"),
+      parsed_values.at("velocity_damping_per_s"),
+      parsed_values.at("velocity_I"),
+      parsed_values.at("velocity_I_limit_deg"),
+      parsed_values.at("angle_P"),
+      parsed_values.at("angle_D"),
+      parsed_values.at("pitch_rate_max_sps"),
+      parsed_values.at("drive_max_sps"),
+      parsed_values.at("turn_max_sps"),
+      parsed_values.at("balance_max_sps"),
   };
-  for (const char* key : {"rate_P", "rate_I", "rate_D", "rate_I_lim", "rate_FF",
-                          "drive_max_acceleration_mps2",
-                          "velocity_damping_per_s", "velocity_I", "velocity_I_limit_deg",
-                          "angle_P", "angle_D", "turn_max_sps"}) {
-    nonnegative(key);
+  switch (validate_numeric(numeric)) {
+    case ConfigPidValidationCode::Accepted:
+      break;
+    case ConfigPidValidationCode::NonFinite:
+      throw std::runtime_error("PID configuration contains a non-finite value");
+    case ConfigPidValidationCode::Negative:
+      throw std::runtime_error("PID configuration contains a negative value");
+    case ConfigPidValidationCode::NonPositive:
+      throw std::runtime_error("PID configuration contains a non-positive limit");
+    case ConfigPidValidationCode::OutOfRange:
+      throw std::runtime_error("PID configuration limit exceeds the supported range");
   }
-  for (const char* key : {"pitch_rate_max_sps", "drive_max_sps", "balance_max_sps"}) {
-    if (values.at(key) <= 0.0) throw std::runtime_error(std::string(key) + " must be positive");
-  }
-  if (values.at("drive_max_sps") > 12000.0 || values.at("turn_max_sps") > 12000.0 ||
-      values.at("balance_max_sps") > 12000.0) {
-    throw std::runtime_error("PID configuration limit exceeds the supported range");
-  }
-
-  rate_P = values.at("rate_P");
-  rate_I = values.at("rate_I");
-  rate_D = values.at("rate_D");
-  rate_I_lim = values.at("rate_I_lim");
-  rate_FF = values.at("rate_FF");
-  drive_max_acceleration_mps2 = values.at("drive_max_acceleration_mps2");
-  velocity_damping_per_s = values.at("velocity_damping_per_s");
-  velocity_I = values.at("velocity_I");
-  velocity_I_limit_deg = values.at("velocity_I_limit_deg");
-  angle_P = values.at("angle_P");
-  angle_D = values.at("angle_D");
-  pitch_rate_max_sps = values.at("pitch_rate_max_sps");
-  drive_max_sps = values.at("drive_max_sps");
-  turn_max_sps = values.at("turn_max_sps");
-  balance_max_sps = values.at("balance_max_sps");
-  controller_enabled = !values.contains("controller_enabled") || values.at("controller_enabled") == 1.0;
+  apply_numeric(numeric);
+  controller_enabled = !parsed_values.contains("controller_enabled") || parsed_values.at("controller_enabled") == 1.0;
 }
 
 void ConfigPid::save(const std::string& path) {
