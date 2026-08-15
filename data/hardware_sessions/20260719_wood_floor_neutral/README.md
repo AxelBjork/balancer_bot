@@ -1,5 +1,9 @@
 # Clean Wood-Floor Neutral Balance — 2026-07-19
 
+[Back to the hardware data archive](../../README.md)
+
+[Analysis workflow](../../../doc/testing/telemetry_analysis_cli.md) · [Manifest](manifest.json)
+
 This Raspberry Pi capture records the robot balancing undisturbed on a wooden floor with zero
 joystick target. At capture and simulator-comparison time, hardware and simulator used identical
 PID values (SHA-256
@@ -7,6 +11,8 @@ PID values (SHA-256
 treated as release and settling; steady-state statistics and spectra use `t >= 10.0 s`.
 
 Later working-tree PID edits are not represented by this session or its simulator comparison.
+The digest above identifies the historical run; compare it with the current `pid.conf` digest before
+describing any result as current verification.
 
 ## Main findings
 
@@ -51,7 +57,7 @@ acceleration energy (16.79° RMS), which should not be interpreted as sensor noi
 
 ## Simulator comparison
 
-The latest `pytest --build` artifacts use the same PID values. The ideal neutral simulator remains
+The simulator comparison used the same PID digest shown above. The ideal neutral simulator remains
 exactly at zero. Its realistic push scenarios recover to much smaller tails:
 
 | Case | Peak pitch | Last-2-s pitch RMS | Outcome |
@@ -71,7 +77,6 @@ never runs away.
 
 | File | Contents |
 | --- | --- |
-| [`raw_400hz.csv`](raw_400hz.csv) | Complete 24,954-row, 68-field dashboard capture |
 | [`steady_state_10s_400hz.csv`](steady_state_10s_400hz.csv) | Last 10 seconds at full rate, reduced to 22 diagnostic fields |
 | [`steady_state_100hz.csv`](steady_state_100hz.csv) | Entire steady interval at 100 Hz; preserves content below the 50 Hz Nyquist limit |
 | [`steady_state_spectrum.csv`](steady_state_spectrum.csv) | 0–20 Hz pitch, pitch-rate, command, and accelerometer amplitudes |

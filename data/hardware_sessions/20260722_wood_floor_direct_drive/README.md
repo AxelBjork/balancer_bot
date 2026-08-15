@@ -1,5 +1,9 @@
 # Wood-Floor Direct-Drive Reference — 2026-07-22
 
+[Back to the hardware data archive](../../README.md)
+
+[Analysis workflow](../../../doc/testing/telemetry_analysis_cli.md) · [Manifest](manifest.json)
+
 This is a short, fault-free excerpt from
 `data/server/telemetry_20260722-193855_00.csv`, captured after removing the direct motor
 velocity feed-forward from the controller allocation. The operator reported stable balancing,
@@ -32,3 +36,13 @@ protocol after the controller cleanup.
 Do not use this fixture to fit PID values. Reproduce the extraction from the checksum-bound source
 with session selection before applying the controller-time window; the source file contains a
 controller-time reset between sessions 0 and 1.
+
+## Files
+
+| File | Contents |
+| --- | --- |
+| [`session1_55p8_to_58p0.csv`](session1_55p8_to_58p0.csv) | Retained 879-row telemetry excerpt |
+| [`session1_55p8_to_58p0.svg`](session1_55p8_to_58p0.svg) | Plot for the exact excerpt |
+| [`manifest.json`](manifest.json) | Source and artifact checksums, selection, and statistics |
+
+The source capture is not retained here; the manifest records its filename and checksum.

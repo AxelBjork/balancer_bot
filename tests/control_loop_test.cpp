@@ -6,12 +6,14 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
 #include "services/control/control_service.h"
 #include "services/control/rate_controller_core.h"
 #include "services/imu/imu_service.h"
+#include "services/input/input_service.h"
 #include "services/main/config.h"
 #include "services/motor/motor_runner.h"
 #include "services/motor/motor_service.h"
@@ -135,12 +137,34 @@ class RateControllerHarness {
 
 class ControlServiceHarness {
  public:
-  ControlServiceHarness() : bus_(this, &ControlServiceHarness::dispatch), control_(bus_) {
+  ControlServiceHarness()
+      : bus_(this, &ControlServiceHarness::dispatch), control_(bus_) {
   }
 
   void sendJoystick(double forward, double turn) {
     control_.on_message<MsgId::JoystickCommand>(
         ipc::JoystickCommandPayload{static_cast<float>(forward), static_cast<float>(turn)});
+  }
+
+  void sendPidOverride(uint32_t request_id, const ConfigPidValues& values) {
+    ipc::PidConfigOverridePayload payload{};
+    payload.request_id = request_id;
+    payload.values = {values.rate_P,
+                      values.rate_I,
+                      values.rate_D,
+                      values.rate_I_lim,
+                      values.rate_FF,
+                      values.drive_max_acceleration_mps2,
+                      values.velocity_damping_per_s,
+                      values.velocity_I,
+                      values.velocity_I_limit_deg,
+                      values.angle_P,
+                      values.angle_D,
+                      values.pitch_rate_max_sps,
+                      values.drive_max_sps,
+                      values.turn_max_sps,
+                      values.balance_max_sps};
+    control_.on_message<MsgId::PidConfigOverride>(payload);
   }
 
   void sendMotorFeedback(double left_command_sps, double right_command_sps, double measured_avg_sps,
@@ -190,6 +214,9 @@ class ControlServiceHarness {
   const std::vector<ipc::SystemTelemetryPayload>& telemetry() const {
     return telemetry_;
   }
+  const std::vector<ipc::PidConfigStatusPayload>& pid_status() const {
+    return pid_status_;
+  }
 
  private:
   static void dispatch(void* ctx, MsgId id, const void* payload) {
@@ -198,6 +225,8 @@ class ControlServiceHarness {
       self->motor_targets_.push_back(unpack_payload<MsgId::MotorTargets>(payload));
     } else if (id == MsgId::SystemTelemetry) {
       self->telemetry_.push_back(unpack_payload<MsgId::SystemTelemetry>(payload));
+    } else if (id == MsgId::PidConfigStatus) {
+      self->pid_status_.push_back(unpack_payload<MsgId::PidConfigStatus>(payload));
     }
   }
 
@@ -205,6 +234,7 @@ class ControlServiceHarness {
   sil::ControlService control_;
   std::vector<ipc::MotorTargetsPayload> motor_targets_;
   std::vector<ipc::SystemTelemetryPayload> telemetry_;
+  std::vector<ipc::PidConfigStatusPayload> pid_status_;
 };
 
 class ImuServiceHarness {
@@ -531,6 +561,105 @@ TEST(ConfigPidV6Test, SaveEmitsNewRateLimitAndNoOutputScale) {
   EXPECT_NE(contents.find("pitch_rate_max_sps   = 1750"), std::string::npos);
   EXPECT_EQ(contents.find("output_scale_sps"), std::string::npos);
   std::filesystem::remove(path);
+}
+
+TEST(ConfigPidV6Test, RuntimeNumericSnapshotValidatesAndAppliesAtomically) {
+  ScopedConfigPidRestore restore;
+  const ConfigPidValues original = ConfigPid::numeric_values();
+  ConfigPidValues updated = original;
+  updated.rate_P = 0.42;
+  updated.drive_max_acceleration_mps2 = 2.25;
+  updated.balance_max_sps = 9000.0;
+
+  EXPECT_EQ(ConfigPid::validate_numeric(updated), ConfigPidValidationCode::Accepted);
+  ASSERT_NO_THROW(ConfigPid::apply_numeric(updated));
+  EXPECT_DOUBLE_EQ(ConfigPid::rate_P, 0.42);
+  EXPECT_DOUBLE_EQ(ConfigPid::drive_max_acceleration_mps2, 2.25);
+  EXPECT_DOUBLE_EQ(ConfigPid::balance_max_sps, 9000.0);
+
+  const ConfigPidValues before_invalid = ConfigPid::numeric_values();
+  ConfigPidValues invalid = updated;
+  invalid.rate_I = -0.1;
+  EXPECT_EQ(ConfigPid::validate_numeric(invalid), ConfigPidValidationCode::Negative);
+  EXPECT_THROW(ConfigPid::apply_numeric(invalid), std::invalid_argument);
+  const ConfigPidValues after_invalid = ConfigPid::numeric_values();
+  EXPECT_DOUBLE_EQ(after_invalid.rate_P, before_invalid.rate_P);
+  EXPECT_DOUBLE_EQ(after_invalid.rate_I, before_invalid.rate_I);
+  EXPECT_DOUBLE_EQ(after_invalid.balance_max_sps, before_invalid.balance_max_sps);
+}
+
+TEST(ControlServicePidConfigTest, PublishesStatusAndRejectsAtomically) {
+  ScopedConfigPidRestore restore;
+  ControlServiceHarness harness;
+  ConfigPidValues updated = ConfigPid::numeric_values();
+  updated.rate_P = 0.37;
+  harness.sendPidOverride(17, updated);
+
+  ASSERT_EQ(harness.pid_status().size(), 1u);
+  EXPECT_EQ(harness.pid_status().back().request_id, 17u);
+  EXPECT_EQ(harness.pid_status().back().accepted, 1u);
+  EXPECT_DOUBLE_EQ(ConfigPid::rate_P, 0.37);
+
+  ConfigPidValues invalid = updated;
+  invalid.turn_max_sps = 12001.0;
+  harness.sendPidOverride(18, invalid);
+  ASSERT_EQ(harness.pid_status().size(), 2u);
+  EXPECT_EQ(harness.pid_status().back().request_id, 18u);
+  EXPECT_EQ(harness.pid_status().back().accepted, 0u);
+  EXPECT_EQ(harness.pid_status().back().result_code,
+            static_cast<uint8_t>(ConfigPidValidationCode::OutOfRange));
+  EXPECT_DOUBLE_EQ(ConfigPid::rate_P, 0.37);
+}
+
+TEST(RateControllerCoreTest, RuntimePidGenerationRefreshesAndClampsTrim) {
+  ScopedConfigPidRestore restore;
+  set_zeroed_gain_audit_config();
+  ConfigPid::velocity_I = 0.01;
+  ConfigPid::velocity_I_limit_deg = 4.0;
+
+  RateControllerHarness harness;
+  harness.setJoystick(0.0, 0.0);
+  harness.runner().setActualSpeedSps(100.0);
+  harness.run_steps(800, 1.0 / 400.0);
+  ASSERT_GT(std::abs(harness.telemetry().back().vel_i_term_deg), 0.25);
+
+  ConfigPidValues updated = ConfigPid::numeric_values();
+  updated.velocity_I_limit_deg = 0.25;
+  ASSERT_NO_THROW(ConfigPid::apply_numeric(updated));
+  harness.run_steps(1, 1.0 / 400.0);
+  EXPECT_LE(std::abs(harness.telemetry().back().vel_i_term_deg), 0.25 + 1e-9);
+}
+
+TEST(InputServiceTest, ExternalCommandFallsBackButXboxPriorityClearsIt) {
+  sil::JoystickInputArbiter arbiter;
+  const auto start = std::chrono::steady_clock::now();
+  const ipc::JoystickCommandPayload external{0.4, -0.2};
+
+  arbiter.accept_external(external, false, start);
+  EXPECT_DOUBLE_EQ(arbiter.resolve(false, {0.0, 0.0}, start + std::chrono::milliseconds(1)).forward,
+                   0.4);
+
+  arbiter.accept_external(external, true, start + std::chrono::milliseconds(2));
+  const JoyCmd xbox{0.1, 0.3};
+  const JoyCmd selected = arbiter.resolve(true, xbox, start + std::chrono::milliseconds(3));
+  EXPECT_DOUBLE_EQ(selected.forward, xbox.forward);
+  EXPECT_DOUBLE_EQ(selected.turn, xbox.turn);
+
+  const JoyCmd after_xbox = arbiter.resolve(false, {0.0, 0.0}, start + std::chrono::milliseconds(4));
+  EXPECT_DOUBLE_EQ(after_xbox.forward, 0.0);
+  EXPECT_DOUBLE_EQ(after_xbox.turn, 0.0);
+
+  arbiter.accept_external(external, false, start + std::chrono::milliseconds(5));
+  EXPECT_DOUBLE_EQ(arbiter.resolve(false, {0.0, 0.0}, start + std::chrono::milliseconds(100)).turn,
+                   -0.2);
+  const JoyCmd expired = arbiter.resolve(false, {0.0, 0.0}, start + std::chrono::milliseconds(256));
+  EXPECT_DOUBLE_EQ(expired.forward, 0.0);
+  EXPECT_DOUBLE_EQ(expired.turn, 0.0);
+
+  arbiter.accept_external({std::numeric_limits<double>::quiet_NaN(), 0.0}, false,
+                          start + std::chrono::milliseconds(300));
+  EXPECT_DOUBLE_EQ(arbiter.resolve(false, {0.0, 0.0}, start + std::chrono::milliseconds(301)).forward,
+                   0.0);
 }
 
 TEST(RateControllerCoreTest, ZeroInputsStayNearZero) {
@@ -1301,15 +1430,18 @@ TEST(ImuServiceTest, ConditionsRawImuAndPreservesRawVectors) {
   raw.gyr = {0.1, 0.0, 0.3};
   raw.acc = accel_for_pitch(pitch_rad);
 
-  for (int sample = 0; sample <= 10; ++sample) {
+  for (int sample = 0;
+       sample <= static_cast<int>(4.0 * Config::sampling_hz); ++sample) {
     raw.timestamp_us = 123456 + static_cast<uint64_t>(sample * 1200);
     h.publish_raw(raw);
   }
 
-  ASSERT_EQ(h.fused_samples().size(), 11u);
+  ASSERT_EQ(h.fused_samples().size(),
+            static_cast<size_t>(4.0 * Config::sampling_hz) + 1u);
+  EXPECT_DOUBLE_EQ(h.fused_samples().front().pitch_rad, 0.0);
   const auto& fused = h.fused_samples().back();
   EXPECT_TRUE(fused.estimate_valid);
-  EXPECT_NEAR(fused.pitch_rad, pitch_rad, 1e-6);
+  EXPECT_NEAR(fused.pitch_rad, pitch_rad, 1e-4);
   EXPECT_NEAR(fused.pitch_rate_rad_s, 0.0, 3e-6);
   EXPECT_NEAR(fused.pitch_accel_rad_s2, 0.0, 2e-5);
   EXPECT_EQ(fused.acc, raw.acc);

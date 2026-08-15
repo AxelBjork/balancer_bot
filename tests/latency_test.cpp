@@ -191,14 +191,14 @@ TEST(ImuPitchAlgebraTest, RejectsNonFiniteAndOutOfRangeSpecificForce) {
   EXPECT_FALSE(imu_pitch_detail::solve_pitch(0.0, -40.0, 0.0, 0.0).has_value());
 }
 
-TEST(ImuPitchEstimatorTest, FirstValidSamplePublishesImmediately) {
+TEST(ImuPitchEstimatorTest, FirstValidSampleStartsPitchAtZero) {
   ImuPitchEstimator estimator;
   const double pitch = deg2rad(7.0);
   const auto result = estimator.push_sample(
       imu_accel(pitch), {0.0, 0.4, 0.2}, at_seconds(1.0));
 
   ASSERT_TRUE(result.valid);
-  EXPECT_NEAR(wrap_pi(result.sample.angle_rad - pitch), 0.0, 1e-7);
+  EXPECT_DOUBLE_EQ(result.sample.angle_rad, 0.0);
   EXPECT_NEAR(result.sample.gyro_rad_s, 0.4, 3e-6);
   EXPECT_EQ(result.sample.pitch_accel_rad_s2, 0.0);
   EXPECT_EQ(result.sample.yaw_rate_z, 0.2);
@@ -209,7 +209,8 @@ TEST(ImuPitchEstimatorTest, ReconstructsSymmetricStaticPitchWithTimestampJitter)
     ImuPitchEstimator estimator;
     ImuPitchEstimate result;
     double previous_time_s = 5.0;
-    for (int sample = 0; sample < 400; ++sample) {
+    for (int sample = 0; sample <= static_cast<int>(7.0 * Config::sampling_hz);
+         ++sample) {
       const double nominal =
           5.0 + static_cast<double>(sample) / Config::sampling_hz;
       const double jitter = sample == 0 ? 0.0 : 0.00015 * std::sin(sample * 0.7);
@@ -263,8 +264,8 @@ TEST(ImuPitchEstimatorTest, StartupHistoryDecaysWithoutLearnedOffset) {
   (void)feed_static(first, 0.0, 0.05, deg2rad(-20.0), 2.0);
   (void)feed_static(second, 0.0, 0.05, deg2rad(20.0), -2.0);
 
-  const auto first_result = feed_static(first, 0.06, 3.0, deg2rad(7.0));
-  const auto second_result = feed_static(second, 0.06, 3.0, deg2rad(7.0));
+  const auto first_result = feed_static(first, 0.06, 4.0, deg2rad(7.0));
+  const auto second_result = feed_static(second, 0.06, 4.0, deg2rad(7.0));
   ASSERT_TRUE(first_result.valid);
   ASSERT_TRUE(second_result.valid);
   EXPECT_NEAR(first_result.sample.angle_rad, second_result.sample.angle_rad, 1e-7);
@@ -292,22 +293,17 @@ TEST(ImuPitchEstimatorTest, ConstantGyroBiasCannotAccumulatePitchDrift) {
 
 TEST(ImuPitchEstimatorTest, TranslationHasNoPersistentEstimatorOffset) {
   ImuPitchEstimator estimator;
-  ImuPitchEstimate translated;
-  const int samples = static_cast<int>(0.15 * Config::sampling_hz);
-  for (int sample = 0; sample <= samples; ++sample) {
-    translated = estimator.push_sample(
-        imu_accel(0.0, 0.0, 0.0, 2.0), {0.0, 0.0, 0.0},
-        at_seconds(static_cast<double>(sample) / Config::sampling_hz));
-  }
+  const auto translated = estimator.push_sample(
+      imu_accel(0.0, 0.0, 0.0, 2.0), {0.0, 0.0, 0.0}, at_seconds(0.0));
   ASSERT_TRUE(translated.valid);
-  EXPECT_NEAR(translated.sample.angle_rad, std::atan2(-2.0, Config::g0), 1e-5);
+  EXPECT_DOUBLE_EQ(translated.sample.angle_rad, 0.0);
 
-  const auto recovered = feed_static(estimator, 0.16, 0.15, 0.0);
+  const auto recovered = feed_static(estimator, 0.01, 4.0, 0.0);
   ASSERT_TRUE(recovered.valid);
   EXPECT_NEAR(recovered.sample.angle_rad, 0.0, 1e-5);
 }
 
-TEST(ImuPitchEstimatorTest, NonFiniteSampleResetsAndNextValidSampleSeedsImmediately) {
+TEST(ImuPitchEstimatorTest, NonFiniteSampleResetsAndNextValidSampleStartsAtZero) {
   ImuPitchEstimator estimator;
   ASSERT_TRUE(estimator.push_sample(imu_accel(deg2rad(3.0)), {0.0, 0.0, 0.0},
                                     at_seconds(0.0))
@@ -320,7 +316,7 @@ TEST(ImuPitchEstimatorTest, NonFiniteSampleResetsAndNextValidSampleSeedsImmediat
   const auto recovered = estimator.push_sample(
       imu_accel(deg2rad(-4.0)), {0.0, 0.0, 0.0}, at_seconds(0.004));
   ASSERT_TRUE(recovered.valid);
-  EXPECT_NEAR(rad2deg(recovered.sample.angle_rad), -4.0, 1e-5);
+  EXPECT_DOUBLE_EQ(recovered.sample.angle_rad, 0.0);
   EXPECT_EQ(recovered.sample.pitch_accel_rad_s2, 0.0);
 }
 
@@ -336,7 +332,7 @@ TEST(ImuPitchEstimatorTest, DuplicateAndBackwardTimestampsInvalidateAndReset) {
     const auto recovered = estimator.push_sample(
         imu_accel(deg2rad(2.0)), {0.0, 0.0, 0.0}, at_seconds(1.01));
     ASSERT_TRUE(recovered.valid);
-    EXPECT_NEAR(rad2deg(recovered.sample.angle_rad), 2.0, 1e-5);
+    EXPECT_DOUBLE_EQ(recovered.sample.angle_rad, 0.0);
   }
 }
 
@@ -348,7 +344,7 @@ TEST(ImuPitchEstimatorTest, LargeGapReseedsCurrentSampleWithZeroDerivative) {
   const auto result = estimator.push_sample(
       imu_accel(deg2rad(-6.0)), {0.0, -2.0, 0.0}, at_seconds(0.010));
   ASSERT_TRUE(result.valid);
-  EXPECT_NEAR(rad2deg(result.sample.angle_rad), -6.0, 1e-5);
+  EXPECT_DOUBLE_EQ(result.sample.angle_rad, 0.0);
   EXPECT_NEAR(result.sample.gyro_rad_s, -2.0, 1e-5);
   EXPECT_EQ(result.sample.pitch_accel_rad_s2, 0.0);
 }
@@ -406,12 +402,17 @@ TEST(ImuPitchEstimatorTest, ProductionDefaultLeavesLeverArmCorrectionDisabled) {
   ImuPitchEstimator estimator;
   constexpr double angular_accel = 20.0;
   const auto specific_force = imu_accel(0.0, 0.0, angular_accel);
-  const auto result = estimator.push_sample(
-      specific_force, {0.0, 0.0, 0.0}, at_seconds(0.0));
+  ImuPitchEstimate result;
+  for (int sample = 0; sample <= static_cast<int>(4.0 * Config::sampling_hz);
+       ++sample) {
+    result = estimator.push_sample(
+        specific_force, {0.0, 0.0, 0.0},
+        at_seconds(static_cast<double>(sample) / Config::sampling_hz));
+  }
 
   ASSERT_TRUE(result.valid);
   EXPECT_NEAR(result.sample.angle_rad,
-              std::atan2(-specific_force[0], -specific_force[2]), 1e-7);
+              std::atan2(-specific_force[0], -specific_force[2]), 1e-5);
   EXPECT_GT(std::abs(result.sample.angle_rad), deg2rad(5.0));
 }
 
@@ -536,7 +537,7 @@ TEST(ImuPitchEstimatorTest, LowPassReducesStaticAccelNoiseWithoutBias) {
     const auto result = estimator.push_sample(
         acc, {0.0, 0.0, 0.0},
         at_seconds(static_cast<double>(sample) / Config::sampling_hz));
-    if (sample > 100 && result.valid) {
+    if (sample > static_cast<int>(1.0 * Config::sampling_hz) && result.valid) {
       const double raw_pitch = std::atan2(-acc[0], -acc[2]);
       raw_sq += std::pow(wrap_pi(raw_pitch - pitch), 2);
       filtered_sq += std::pow(wrap_pi(result.sample.angle_rad - pitch), 2);

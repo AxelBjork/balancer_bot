@@ -1,9 +1,10 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
-#include <string_view>
 
+#include "config_pid_values.h"
 #include "core_msgs.h"
 #include "msg_base.h"  // pull in global MsgId
 
@@ -22,7 +23,7 @@ struct DOC_DESC(
 };
 
 struct DOC_DESC(
-    "Chassis-referenced IMU sample published by the IMU service and accepted by the SIL harness. "
+    "Chassis-referenced IMU sample published by the IMU service for controller and diagnostic use. "
     "The controller consumes the pitch fields only while `estimate_valid` is true; an invalid "
     "sample immediately clears its current IMU. Raw accelerometer and gyro vectors are carried "
     "alongside the bounded gyro/gravity pitch, rate, and derivative for diagnostics.")
@@ -36,10 +37,28 @@ struct DOC_DESC(
   bool estimate_valid;
 };
 
-struct DOC_DESC("Normalized joystick command injected by Python tests or the runtime input layer.")
+struct DOC_DESC(
+    "Normalized joystick command injected by an external client or the runtime input layer.")
     JoystickCommandPayload {
   double forward;
   double turn;
+};
+
+struct DOC_DESC(
+    "Complete in-memory PID override from the dashboard. This message intentionally excludes the "
+    "file schema version and controller enable mode.") PidConfigOverridePayload {
+  uint32_t request_id;
+  uint32_t reserved;
+  ConfigPidValuesPayload values;
+};
+
+struct DOC_DESC("Result of applying a dashboard PID override and the currently active values.")
+    PidConfigStatusPayload {
+  uint32_t request_id;
+  uint8_t accepted;
+  uint8_t result_code;
+  uint16_t reserved;
+  ConfigPidValuesPayload values;
 };
 
 struct DOC_DESC("Wheel speed targets emitted by the controller in steps per second.")
@@ -49,7 +68,9 @@ struct DOC_DESC("Wheel speed targets emitted by the controller in steps per seco
 };
 
 struct DOC_DESC(
-    "Detailed controller telemetry streamed out over UDP and used for runtime logging/visibility. "
+    "Detailed controller telemetry streamed to the active UDP runtime peer and used by the "
+    "telemetry "
+    "server for logging and live visibility. "
     "Actuator saturation bit 0 is left slew limiting and bit 1 is right slew limiting.")
     SystemTelemetryPayload {
   uint32_t run_id;
@@ -143,7 +164,7 @@ struct DOC_DESC(
 constexpr uint8_t kSimDisturbanceStep = 0;
 constexpr uint8_t kSimDisturbanceRamp = 1;
 constexpr uint8_t kSimDisturbanceHoldBias = 2;
-inline constexpr size_t kMaxSimJoySegments = 4;
+inline constexpr std::size_t kMaxSimJoySegments = 4;
 
 struct DOC_DESC("One deterministic joystick segment scheduled on the simulator timeline.")
     SimJoySegmentPayload {
@@ -249,65 +270,69 @@ struct DOC_DESC("Terminal simulator status emitted once per accepted run.") SimR
 template <>
 struct MessageTraits<MsgId::ImuRawData> {
   using Payload = ipc::ImuRawPayload;
-  static constexpr std::string_view name = "ImuRawData";
 };
 
 template <>
 struct MessageTraits<MsgId::ImuData> {
   using Payload = ipc::ImuSamplePayload;
-  static constexpr std::string_view name = "ImuData";
 };
 
 template <>
 struct MessageTraits<MsgId::JoystickCommand> {
   using Payload = ipc::JoystickCommandPayload;
-  static constexpr std::string_view name = "JoystickCommand";
+};
+
+template <>
+struct MessageTraits<MsgId::ExternalJoystickCommand> {
+  using Payload = ipc::JoystickCommandPayload;
+};
+
+template <>
+struct MessageTraits<MsgId::PidConfigOverride> {
+  using Payload = ipc::PidConfigOverridePayload;
+};
+
+template <>
+struct MessageTraits<MsgId::PidConfigStatus> {
+  using Payload = ipc::PidConfigStatusPayload;
 };
 
 template <>
 struct MessageTraits<MsgId::MotorTargets> {
   using Payload = ipc::MotorTargetsPayload;
-  static constexpr std::string_view name = "MotorTargets";
 };
 
 template <>
 struct MessageTraits<MsgId::SystemTelemetry> {
   using Payload = ipc::SystemTelemetryPayload;
-  static constexpr std::string_view name = "SystemTelemetry";
 };
 
 template <>
 struct MessageTraits<MsgId::SimulatorTelemetry> {
   using Payload = ipc::SimulatorTelemetryPayload;
-  static constexpr std::string_view name = "SimulatorTelemetry";
 };
 
 template <>
 struct MessageTraits<MsgId::MotorFeedback> {
   using Payload = ipc::MotorFeedbackPayload;
-  static constexpr std::string_view name = "MotorFeedback";
 };
 
 template <>
 struct MessageTraits<MsgId::SimStartRun> {
   using Payload = ipc::SimStartRunPayload;
-  static constexpr std::string_view name = "SimStartRun";
 };
 
 template <>
 struct MessageTraits<MsgId::SimStartAck> {
   using Payload = ipc::SimStartAckPayload;
-  static constexpr std::string_view name = "SimStartAck";
 };
 
 template <>
 struct MessageTraits<MsgId::SimStopRun> {
   using Payload = ipc::SimStopRunPayload;
-  static constexpr std::string_view name = "SimStopRun";
 };
 
 template <>
 struct MessageTraits<MsgId::SimRunDone> {
   using Payload = ipc::SimRunDonePayload;
-  static constexpr std::string_view name = "SimRunDone";
 };

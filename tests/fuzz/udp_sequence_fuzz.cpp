@@ -22,7 +22,7 @@ std::size_t payload_size_for(MsgId id) {
   switch (id) {
     case MsgId::PhysicsTick:
       return sizeof(PhysicsTickPayload);
-    case MsgId::JoystickCommand:
+    case MsgId::ExternalJoystickCommand:
       return sizeof(ipc::JoystickCommandPayload);
     case MsgId::ImuRawData:
       return sizeof(ipc::ImuRawPayload);

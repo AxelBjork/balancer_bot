@@ -1,6 +1,6 @@
 # Control and Simulator Notes
 
-This is the maintainer-facing notebook for the balancing stack. It captures the behavior we learned while migrating the project to the message-bus architecture and rebuilding the simulator/test harness around deterministic ticks.
+This is the maintainer-facing notebook for the balancing stack. It captures the behavior we learned while migrating the project to the message-bus architecture and rebuilding the simulator/test harness around deterministic ticks. For canonical runtime boundaries and validation terminology, see [Runtime architecture](../arch/runtime.md), [Control and plant model](../arch/control_plant.md), and [Testing strategy](../testing/strategy.md).
 
 ## Control Structure
 
@@ -21,7 +21,7 @@ Important details:
 - control is tick-driven by `PhysicsTick`
 - the controller uses fused pitch plus filtered pitch-rate for control; raw gyro stays diagnostic-only
 - axle velocity uses common completed-step position corrected as
-  `Δu = (ΔqL + ΔqR)/2 + steps_per_rad * wrap(Δpitch)`; the motor-rate estimate remains
+  `Δu = (Δq_steps,L + Δq_steps,R)/2 + steps_per_rad * wrap(Δpitch)`; the motor-rate estimate remains
   a separate 50 ms diagnostic-only signal and differential turning cannot enter the observer
 - the observer, velocity filter, jerk limiter, and COM-trim integrator use the elapsed 100 Hz
   interval so control-tick jitter does not change their continuous-time behavior
@@ -29,7 +29,9 @@ Important details:
   command zero, and publish the corresponding controller-fault bitmask
 - electrical direction inversion exists only inside the stepper boundary
 - the active outer-loop parameters are `drive_max_acceleration_mps2`,
-  `velocity_damping_per_s`, `velocity_I`, `angle_P`, and `angle_D`; jerk limiting is a fixed
+  `velocity_damping_per_s`, `velocity_I`, `angle_P`, and `angle_D`; in the compact model,
+  `velocity_damping_per_s` supplies `k_v`, `angle_P`/`angle_D` represent the inner pitch-shaping
+  terms, and `velocity_I` is the bounded stationary COM-trim integrator; jerk limiting is a fixed
   internal safety value, and maximum drive lean is derived from the configured acceleration
 
 ## Why Tick-Driven Control Matters
@@ -73,10 +75,13 @@ excess phase error, and transmits force to the cart-pole through a traction-limi
 Its continuous motor field-speed term uses the post-slew command, while exact pulse-frame
 quantization enters through scheduled emitted position. This keeps the two actuator effects
 separate instead of applying frame quantization twice.
-The controller sees only completed-pulse feedback. Its corrected-axle outer reference is
+Feedback semantics are mode-specific: hardware uses actual completed steps, the direct simulator
+uses quantized simulated completed steps, and SIL uses a commanded-speed proxy because it has no
+plant or motor runner. The corrected-axle outer reference is the clamped `theta_ref` used by the
+controller:
 
 > $$
-> \theta_{sp} = \operatorname{atan2}(a_{nominal} - k_v v_{axle},g) + \theta_{COM}.
+> \theta_{ref} = \operatorname{clamp}\left(\operatorname{atan2}(a_{nominal} - k_v v_{axle},g) + \theta_{COM}\right).
 > $$
 
 Because the inverted-pendulum plant has an inverse response, a forward command may initially
@@ -144,10 +149,13 @@ python3 tools/run_transfer_validation.py --include-build-gates
 The UDP service is a reflected transport wrapper around the deterministic engine. It no longer
 contains a second plant or wall-clock joystick path.
 
-### Simulator and hardware PID configurations remain independent
+### One checked-in baseline, separate tuning outputs
 
-Simulator and hardware PID files use the same validated schema but remain separate so hardware
-validation can adjust its configuration without changing the simulation baseline.
+The checked-in `pid.conf` is the default profile loaded by both the hardware runtime and the
+simulator. Simulator-oriented tuning can select another input or write candidate profiles under
+`build/sim`, which lets an experiment preserve its own provenance without silently changing the
+hardware default. A simulator candidate is never an authorization to apply that profile to the
+physical robot; hardware validation remains a separate step.
 
 ### Real motor feedback matters on hardware
 
@@ -165,7 +173,8 @@ The rewritten simulator/controller path no longer treats "did not fall" as the m
 ## What to Watch During Future Tuning
 
 - avoid claiming simulator success from SIL smoke tests alone
-- score nominal plus one-at-a-time margins and reject any candidate with a hard safety failure
+- score the complete ten-case matrix (four nominal plus six conservative margin cases) and reject
+  any candidate with a hard safety failure
 - preserve artifact generation whenever changing controller or plant behavior
 
 For the current confidence level and remaining caveats, read [Current Status](../status.md).

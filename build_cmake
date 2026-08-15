@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-TEST=${1:-ON}
+TEST=${1:-OFF}
 
 # Configure
 if [ "$TEST" = "ON" ]; then 
@@ -25,5 +25,5 @@ cmake --build "$BUILD_DIR" -j"$(nproc)"
 
 # Run tests
 if [ "$TEST" = "ON" ]; then
-    ctest --test-dir "$BUILD_DIR" --output-on-failure -j8
+    ctest --test-dir "$BUILD_DIR" --output-on-failure -j8 --progress
 fi

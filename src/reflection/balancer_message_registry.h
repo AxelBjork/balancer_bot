@@ -21,11 +21,15 @@ constexpr void for_each_message(ipc::MsgList<Ids...>, Fn&& fn) {
 
 template <typename Fn>
 constexpr void for_each_message_enum(Fn&& fn) {
+  static_assert(reflected_enum_values_are_unique<MsgId>(),
+                "MsgId enumerators must have unique wire values");
   constexpr std::size_t N = get_enum_size<MsgId>();
   [&]<std::size_t... Is>(std::index_sequence<Is...>) {
     (..., [&] {
       constexpr auto e = EnumArrHolder<MsgId, N>::arr[Is];
       constexpr auto id = static_cast<MsgId>([:e:]);
+      static_assert(requires { typename MessageTraits<id>::Payload; },
+                    "every MsgId enumerator must have a MessageTraits Payload binding");
       fn.template operator()<id>();
     }());
   }(std::make_index_sequence<N>{});
@@ -65,7 +69,7 @@ inline std::string compute_protocol_hash() {
   hash_combine(structural_hash, std::string_view("MsgId"));
 
   for_each_udp_message([&]<MsgId Id>() {
-    hash_combine(structural_hash, std::string_view(MessageTraits<Id>::name));
+    hash_combine(structural_hash, get_enum_name<MsgId, Id>());
     hash_combine(structural_hash, std::to_string(static_cast<uint16_t>(Id)));
     hash_combine(structural_hash, std::to_string(sizeof(typename MessageTraits<Id>::Payload)));
   });

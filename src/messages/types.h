@@ -4,6 +4,8 @@
 #include <cstdlib>
 #include <string>
 
+#include "config_pid_values.h"
+
 // ---- IMU sample (from ISM330DHCX conditioning) ----
 // angle_rad: bounded gyro/gravity pitch (+ forward), gyro_rad_s: filtered pitch rate used by control.
 struct ImuSample {
@@ -76,6 +78,16 @@ struct Telemetry {
   uint32_t controller_saturation_flags{};
 };
 
+using ConfigPidValues = ipc::ConfigPidValuesPayload;
+
+enum class ConfigPidValidationCode : uint8_t {
+  Accepted = 0,
+  NonFinite = 1,
+  Negative = 2,
+  NonPositive = 3,
+  OutOfRange = 4,
+};
+
 // ---- PID Configuration ----
 // Runtime-configurable PID gains loaded from pid.conf
 // Default values are set here, can be overridden at runtime by load()
@@ -120,6 +132,10 @@ struct ConfigPid {
     return default_path;
   }
 
+  static ConfigPidValues numeric_values();
+  static ConfigPidValidationCode validate_numeric(const ConfigPidValues& values);
+  static void apply_numeric(const ConfigPidValues& values);
+  static uint64_t generation();
   static void load(const std::string& path);
   static void save(const std::string& path);
 };

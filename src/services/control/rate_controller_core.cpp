@@ -68,6 +68,7 @@ struct RateControllerCore::Impl {
 
   std::chrono::steady_clock::time_point start_ts{};
   RateControl rc{};
+  uint64_t pid_generation{0};
 
   int64_t left_actual_steps{0};
   int64_t right_actual_steps{0};
@@ -95,11 +96,20 @@ struct RateControllerCore::Impl {
 };
 
 RateControllerCore::RateControllerCore() : p_(new Impl) {
+  applyPidConfig();
+}
+
+void RateControllerCore::applyPidConfig() {
   p_->rc.setPidGains(Vector3f(0.0f, static_cast<float>(ConfigPid::rate_P), 0.0f),
                      Vector3f(0.0f, static_cast<float>(ConfigPid::rate_I), 0.0f),
                      Vector3f(0.0f, static_cast<float>(ConfigPid::rate_D), 0.0f));
   p_->rc.setIntegratorLimit(Vector3f(0.0f, static_cast<float>(ConfigPid::rate_I_lim), 0.0f));
   p_->rc.setFeedForwardGain(Vector3f(0.0f, static_cast<float>(ConfigPid::rate_FF), 0.0f));
+  p_->rc.resetIntegral(1);
+  const double trim_limit_rad =
+      std::max(0.0, ConfigPid::velocity_I_limit_deg) * M_PI / 180.0;
+  p_->com_trim_rad = std::clamp(p_->com_trim_rad, -trim_limit_rad, trim_limit_rad);
+  p_->pid_generation = ConfigPid::generation();
 }
 
 RateControllerCore::~RateControllerCore() {
@@ -121,6 +131,9 @@ void RateControllerCore::setMotorFeedback(int64_t left_actual_steps, int64_t rig
 }
 
 void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point now) {
+  if (p_->pid_generation != ConfigPid::generation()) {
+    applyPidConfig();
+  }
   const double dt = std::clamp(dt_s, 1.0 / 2000.0, 0.05);
   if (!p_->initialized) {
     p_->initialized = true;

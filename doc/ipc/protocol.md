@@ -8,19 +8,19 @@
 ## Overview
 
 This document is generated from the balancer runtime message registry and the reflected payload types in `src/messages/`.
-It describes the reflected runtime message bus used by the balancer services, including the UDP-facing
-messages consumed by the SIL harness and the internal-only messages exchanged between services.
+It describes the reflected runtime message bus used by the balancer services, including the production
+UDP runtime API and the internal-only messages exchanged between services.
 
-- Documented balancer message count: `12`
-- Protocol hash: `75636990e95c6daa`
+- Documented balancer message count: `15`
+- Protocol hash: `92b394fbbd835ff2`
 - UDP ingress/egress gateway: `UdpBridge`
 
 ## System Architecture
 
 The architecture is divided into three logical areas:
 
-1. **Pytest Harness**: Python fixtures send fixed-size UDP datagrams and decode telemetry using the generated bindings.
-2. **Network Layer**: `UdpBridge` translates between UDP traffic and the internal message bus.
+1. **Client**: The telemetry server is the primary peer; SIL uses the same generated bindings and bridge contract.
+2. **Network Layer**: `UdpBridge` translates between UDP traffic and the internal message bus on the production port-9000 boundary.
 3. **Balancer Services**: services publish and consume reflected payload structs on the bus.
 
 ![IPC Flow Diagram](ipc_flow.svg)
@@ -61,10 +61,10 @@ The architecture is divided into three logical areas:
 >
 > $$ \omega_{sp} = k_{pitch}(\theta_{sp} - \theta) - k_{pitch\_rate}\dot{\theta} $$
 >
-> The pitch-rate controller supplies the wheel command before turn allocation. Motor output can initially reduce or reverse to acquire lean. Faults clear dynamic state but preserve bounded COM trim. Telemetry reports the pitch-reference terms, target/post-slew/applied commands, feedback, saturation, and faults. In `actuator_saturation_flags`, bit 0 is left slew limiting and bi
+> The pitch-rate controller supplies the wheel command before turn allocation. Motor output can initially reduce or reverse to acquire lean. Faults clear dynamic state but preserve bounded COM trim. Telemetry reports the pitch-reference terms, target/post-slew/applied commands, feedback, saturation, and faults. In `actuator_saturation_flags`, bit 0 is left slew limiting and bit 1 is right slew limiting.
 
-- Publishes: `MotorTargets`, `SystemTelemetry`
-- Subscribes: `PhysicsTick`, `ImuData`, `JoystickCommand`, `MotorFeedback`
+- Publishes: `MotorTargets`, `SystemTelemetry`, `PidConfigStatus`
+- Subscribes: `PhysicsTick`, `ImuData`, `JoystickCommand`, `MotorFeedback`, `PidConfigOverride`
 
 ### `MotorService`
 
@@ -74,41 +74,43 @@ The architecture is divided into three logical areas:
 >
 > $$ u_L, u_R \; [\mathrm{steps/s}] \rightarrow \texttt{MotorRunner::setTargets}(u_L, u_R) $$
 >
-> Keeping this service narrow is intentional. Closed-loop balance, velocity estimation, and telemetry all remain in `ControlService` and `RateControllerCore`, while hardware-specific pulse generation, slew limiting, and direction control remain below this layer in the motor runner. The service also listens for `PhysicsTick` so it can keep the runner aligned with the current physics time before forwarding motor targets. When hardware is present the service also republishes the runner's continuous post-slew command, pulse-frame-a
+> Keeping this service narrow is intentional. Closed-loop balance, velocity estimation, and telemetry all remain in `ControlService` and `RateControllerCore`, while hardware-specific pulse generation, slew limiting, and direction control remain below this layer in the motor runner. The service also listens for `PhysicsTick` so it can keep the runner aligned with the current physics time before forwarding motor targets. When hardware is present the service also republishes the runner's continuous post-slew command, pulse-frame-applied rate, slew-limit flags, steps-derived diagnostic speed estimate, and integrated step state as `MotorFeedback`; actuator saturation bit 0 is left slew limiting and bit 1 is right slew limiting. This feedback lets `ControlService` observe the real actuator stages instead of assuming the last commanded target was achieved. In SIL or unit-test configurations the runner pointer may be null, allowing the bus and controller stack to execute without requiring a physical motor backend.
 
 - Publishes: `MotorFeedback`
 - Subscribes: `PhysicsTick`, `MotorTargets`
 
 ### `InputService`
 
-> Reads input from a hardware Xbox controller and publishes normalized `JoystickCommand` messages to the bus.
+> Arbitrates hardware and external joystick input, then publishes resolved normalized `JoystickCommand` messages to the bus.
 >
-> This service isolates the platform-dependent gamepad reading (SDL2) from the main application logic. It runs a dedicated worker thread at a fixed cadence, polling the controller state and emitting standard forward/turn commands. This allows the controller to be replaced or simulated by external sources like Python tests or UDP injection without modifying the balancing application.
+> This service isolates the platform-dependent gamepad reading (SDL2) from the main application logic. An available Xbox controller has priority; otherwise a validated external command may be used until its short watchdog expires.
 
 - Publishes: `JoystickCommand`
-- Subscribes: _None_
+- Subscribes: `ExternalJoystickCommand`
 
 ### `UdpBridge`
 
-> Stateful transport bridge that connects the internal `MessageBus` to external UDP-based SIL clients.
+> Stateful transport bridge that connects the internal `MessageBus` to external UDP runtime clients. In the production Pi runtime it listens on port `9000`; the telemetry server is the primary peer, while SIL and other authorized clients use the same boundary.
 >
-> On ingress, the bridge binds a UDP socket on port `9000`, receives datagrams from the latest test harness peer, extracts the leading `uint16_t` message identifier, and republishes the remaining payload bytes through `publish_if_authorized`. That keeps external injection limited to the message types the bridge explicitly advertises in `Publishes`, and the downstream bus path retains ownership of payload-size checks before handlers see any data.
+> A client registers by sending a UDP datagram. The bridge remembers the most recent sender as the single active peer, so outbound messages always have one explicit return path. On ingress, the bridge extracts the leading `uint16_t` message identifier and republishes the remaining payload only when the ID is authorized by `Publishes` and the payload size is valid.
 >
-> On egress, the bridge remembers the most recent sender address and uses it as the return path for outbound telemetry and motor command traffic. Each authorized outbound message is encoded as the reflected message ID followed immediately by the trivially-copyable payload bytes:
+> On egress, each authorized subscribed message is encoded as the reflected message ID followed immediately by the trivially-copyable payload bytes:
 >
 > $$ \text{datagram} = \texttt{uint16\_t MsgId} \; || \; \texttt{Payload bytes} $$
 >
-> This makes the UDP contract symmetric with the Python bindings generated from the same message definitions. Ope
+> This makes the UDP contract symmetric with the generated Python bindings and keeps the external runtime API aligned with the reflected C++ message definitions. The dashboard receives and logs `SystemTelemetry`; deployment and process control remain separate SSH operations. The simulator scenario service uses a separate UDP endpoint on port `9001` and is not this bridge.
 
-- Publishes: `PhysicsTick`, `JoystickCommand`, `ImuRawData`, `SimStartRun`, `SimStopRun`
-- Subscribes: `MotorTargets`, `SystemTelemetry`, `SimulatorTelemetry`, `SimStartAck`, `SimRunDone`
+- Publishes: `PhysicsTick`, `ExternalJoystickCommand`, `ImuRawData`, `SimStartRun`, `SimStopRun`, `PidConfigOverride`
+- Subscribes: `MotorTargets`, `SystemTelemetry`, `SimulatorTelemetry`, `SimStartAck`, `SimRunDone`, `PidConfigStatus`
 
 ---
 
 ## Message Payloads
 
 Each section corresponds to one reflected balancer message. Some are exposed over UDP, while others are
-internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
+internal-only service messages. Wire sizes come directly from `sizeof(Payload)`. Nested struct types are
+listed as `Sub-struct` sections under the first message that references them; types that are also
+documented messages reuse their message section.
 
 ### `MsgId::PhysicsTick`
 
@@ -149,7 +151,7 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 - Payload type: `JoystickCommandPayload`
 - Python type: `JoystickCommandPayload`
 - Wire size: `16` bytes
-- Published by: `InputService`, `UdpBridge`
+- Published by: `InputService`
 - Consumed by: `ControlService`
 
 | Field | C++ Type | Python Type | Bytes | Offset | Description |
@@ -283,6 +285,43 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 | `joy_segments` | `std::array<SimJoySegmentPayload, 4>` | `list[SimJoySegmentPayload]` | 192 | 800 |  |
 | `pid_config_path` | `std::array<char, 128>` | `bytes` | 128 | 992 |  |
 
+#### Sub-struct: `SimDisturbancePayload`
+
+> One scheduled simulator plant disturbance segment. Step disturbances apply a constant external horizontal force and COM bias for the active window. Ramp disturbances interpolate from the start values to the end values across the window. Hold-bias disturbances apply a constant external force and COM bias from start_s until duration_s expires, or to the end of the run when duration_s is non-positive.
+
+- C++ type: `SimDisturbancePayload`
+- Python type: `SimDisturbancePayload`
+- Wire size: `56` bytes
+
+| Field | C++ Type | Python Type | Bytes | Offset | Description |
+|---|---|---|---:|---:|---|
+| `kind` | `uint8_t` | `int` | 1 | 0 |  |
+| `reserved0` | `uint8_t` | `int` | 1 | 1 |  |
+| `reserved1` | `uint16_t` | `int` | 2 | 2 |  |
+| `start_s` | `double` | `float` | 8 | 8 |  |
+| `duration_s` | `double` | `float` | 8 | 16 |  |
+| `force_n` | `double` | `float` | 8 | 24 |  |
+| `com_bias_rad` | `double` | `float` | 8 | 32 |  |
+| `force_n_end` | `double` | `float` | 8 | 40 |  |
+| `com_bias_rad_end` | `double` | `float` | 8 | 48 |  |
+
+#### Sub-struct: `SimJoySegmentPayload`
+
+> One deterministic joystick segment scheduled on the simulator timeline.
+
+- C++ type: `SimJoySegmentPayload`
+- Python type: `SimJoySegmentPayload`
+- Wire size: `48` bytes
+
+| Field | C++ Type | Python Type | Bytes | Offset | Description |
+|---|---|---|---:|---:|---|
+| `start_s` | `double` | `float` | 8 | 0 |  |
+| `duration_s` | `double` | `float` | 8 | 8 |  |
+| `forward` | `double` | `float` | 8 | 16 |  |
+| `turn` | `double` | `float` | 8 | 24 |  |
+| `forward_end` | `double` | `float` | 8 | 32 |  |
+| `turn_end` | `double` | `float` | 8 | 40 |  |
+
 ### `MsgId::SimStartAck`
 
 - Numeric ID: `3006`
@@ -401,6 +440,78 @@ internal-only service messages. Wire sizes come directly from `sizeof(Payload)`.
 | `wheel_equivalent_mass_kg` | `float` | `float` | 4 | 264 |  |
 | `force_saturated` | `bool` | `bool` | 1 | 268 |  |
 
+### `MsgId::ExternalJoystickCommand`
+
+- Numeric ID: `3011`
+- Payload type: `JoystickCommandPayload`
+- Python type: `JoystickCommandPayload`
+- Wire size: `16` bytes
+- Published by: `UdpBridge`
+- Consumed by: `InputService`
+
+| Field | C++ Type | Python Type | Bytes | Offset | Description |
+|---|---|---|---:|---:|---|
+| `forward` | `double` | `float` | 8 | 0 |  |
+| `turn` | `double` | `float` | 8 | 8 |  |
+
+### `MsgId::PidConfigOverride`
+
+- Numeric ID: `3012`
+- Payload type: `PidConfigOverridePayload`
+- Python type: `PidConfigOverridePayload`
+- Wire size: `128` bytes
+- Published by: `UdpBridge`
+- Consumed by: `ControlService`
+
+| Field | C++ Type | Python Type | Bytes | Offset | Description |
+|---|---|---|---:|---:|---|
+| `request_id` | `uint32_t` | `int` | 4 | 0 |  |
+| `reserved` | `uint32_t` | `int` | 4 | 4 |  |
+| `values` | `ConfigPidValuesPayload` | `ConfigPidValuesPayload` | 120 | 8 |  |
+
+#### Sub-struct: `ConfigPidValuesPayload`
+
+> The shared numeric PID configuration block carried by override and status messages.
+
+- C++ type: `ConfigPidValuesPayload`
+- Python type: `ConfigPidValuesPayload`
+- Wire size: `120` bytes
+
+| Field | C++ Type | Python Type | Bytes | Offset | Description |
+|---|---|---|---:|---:|---|
+| `rate_P` | `double` | `float` | 8 | 0 |  |
+| `rate_I` | `double` | `float` | 8 | 8 |  |
+| `rate_D` | `double` | `float` | 8 | 16 |  |
+| `rate_I_lim` | `double` | `float` | 8 | 24 |  |
+| `rate_FF` | `double` | `float` | 8 | 32 |  |
+| `drive_max_acceleration_mps2` | `double` | `float` | 8 | 40 |  |
+| `velocity_damping_per_s` | `double` | `float` | 8 | 48 |  |
+| `velocity_I` | `double` | `float` | 8 | 56 |  |
+| `velocity_I_limit_deg` | `double` | `float` | 8 | 64 |  |
+| `angle_P` | `double` | `float` | 8 | 72 |  |
+| `angle_D` | `double` | `float` | 8 | 80 |  |
+| `pitch_rate_max_sps` | `double` | `float` | 8 | 88 |  |
+| `drive_max_sps` | `double` | `float` | 8 | 96 |  |
+| `turn_max_sps` | `double` | `float` | 8 | 104 |  |
+| `balance_max_sps` | `double` | `float` | 8 | 112 |  |
+
+### `MsgId::PidConfigStatus`
+
+- Numeric ID: `3013`
+- Payload type: `PidConfigStatusPayload`
+- Python type: `PidConfigStatusPayload`
+- Wire size: `128` bytes
+- Published by: `ControlService`
+- Consumed by: `UdpBridge`
+
+| Field | C++ Type | Python Type | Bytes | Offset | Description |
+|---|---|---|---:|---:|---|
+| `request_id` | `uint32_t` | `int` | 4 | 0 |  |
+| `accepted` | `uint8_t` | `int` | 1 | 4 |  |
+| `result_code` | `uint8_t` | `int` | 1 | 5 |  |
+| `reserved` | `uint16_t` | `int` | 2 | 6 |  |
+| `values` | `ConfigPidValuesPayload` | `ConfigPidValuesPayload` | 120 | 8 |  |
+
 ---
 
 ## Regenerating This File
@@ -410,4 +521,4 @@ cmake -S . -B build
 cmake --build build --target balancer_docs
 ```
 
-_Generated with GCC trunk `-std=c++26 -freflection`._
+_Generated with standard C++26 reflection using GCC 16.1.0 `-std=c++26 -freflection`._

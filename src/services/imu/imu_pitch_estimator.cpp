@@ -236,7 +236,10 @@ ImuPitchEstimate ImuPitchEstimator::seed(const Acc3& acc, const Gyr3& gyr,
 
   auto result = make_estimate(filtered_acc_x, filtered_acc_z, filtered_gyro_y, 0.0,
                               gyr[2], ts);
-  if (result.valid) pitch_rad_ = result.sample.angle_rad;
+  if (result.valid) {
+    pitch_rad_ = 0.0;
+    result.sample.angle_rad = pitch_rad_;
+  }
   return result;
 }
 

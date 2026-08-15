@@ -1,12 +1,11 @@
 #pragma once
 
-#include <algorithm>
 #include <cmath>
 
-#include "services/main/config.h"
 #include "messages/balancer_msgs.h"
 #include "publisher.h"
 #include "services/control/rate_controller_core.h"
+#include "services/main/config_pid_io.h"
 
 namespace sil {
 
@@ -32,9 +31,10 @@ class DOC_DESC(kControlServiceDoc) ControlService {
  public:
   static constexpr const char* kDocDescription = kControlServiceDoc;
 
-  using Publishes = ipc::MsgList<MsgId::MotorTargets, MsgId::SystemTelemetry>;
+  using Publishes = ipc::MsgList<MsgId::MotorTargets, MsgId::SystemTelemetry,
+                                 MsgId::PidConfigStatus>;
   using Subscribes = ipc::MsgList<MsgId::PhysicsTick, MsgId::ImuData, MsgId::JoystickCommand,
-                                  MsgId::MotorFeedback>;
+                                  MsgId::MotorFeedback, MsgId::PidConfigOverride>;
 
   explicit ControlService(ipc::MessageBus& bus);
   ~ControlService() = default;
@@ -65,8 +65,13 @@ class DOC_DESC(kControlServiceDoc) ControlService {
 template <>
 inline void ControlService::on_message<MsgId::JoystickCommand>(
     const ipc::JoystickCommandPayload& p) {
-  JoyCmd cmd{p.forward, p.turn};
-  core_.setJoystick(cmd);
+  core_.setJoystick(JoyCmd{p.forward, p.turn});
+}
+
+template <>
+inline void ControlService::on_message<MsgId::PidConfigOverride>(
+    const ipc::PidConfigOverridePayload& p) {
+  bus_.publish<MsgId::PidConfigStatus>(apply_pid_config_override(p));
 }
 
 template <>

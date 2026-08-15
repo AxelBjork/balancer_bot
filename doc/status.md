@@ -1,27 +1,37 @@
 # Current Status
 
-This page is the short, candid status snapshot for the project. The rest of the handbook stays mostly happy-path; this page captures the important caveats.
+This page is the short, candid status snapshot for the project. The rest of the handbook stays mostly happy-path; this page captures the important caveats. For validation details, see [Testing Strategy](testing/strategy.md); for physical evidence, see the [data archive](../data/README.md).
+
+_Snapshot date: 2026-08-05. Run-specific claims still require the captured manifest and PID
+digest; this page is not a release record._
 
 ## What Is in Good Shape
 
-- the verified host gate passes 76 C++ and 15 Python tests with no skips or xfails
-- the full-rate transfer report passes all twenty scenarios; host fuzz smoke passes all fourteen
-  seeds; the Pi cross-build succeeds
+- the host gate is defined by `pytest --build`; do not rely on a hard-coded test count because the
+  registered suites change
+- transfer-matrix validation uses the ten-scenario acceptance set, while fuzz smoke runs the currently
+  registered seed corpus; run the commands before reporting a new pass
 - the runtime is tick-driven and the service split is wired through the message bus
-- generated bindings and generated IPC docs are part of the normal host build flow
+- generated bindings and generated IPC docs are part of the normal host build flow; cross-builds
+  consume the host-generated interface outputs rather than regenerating them
+- UDP port `9000` is the production external runtime boundary, with the telemetry dashboard as the
+  primary peer and the Python SIL client as an integration driver for `sil_app`
 - hardware control uses real `MotorFeedback` from `MotorRunner`, not just last-command estimates
 - simulator runs produce structured artifacts and plots under `build/sim`
-- controller safety states and plant parameters are observable in telemetry, and terminal run
-  metrics remain exact under telemetry downsampling
+- controller safety states and simulator plant parameters are observable in telemetry where the
+  relevant fields are populated, and terminal run metrics remain exact under telemetry downsampling
 
 ## Important Caveats
 
 - the physical robot has not been fully revalidated on hardware after the message-bus refactor
 - simulation validation does not make the current gains hardware-proven
-- `pid.conf` is shared, but exact physical charateriscts are only modeled after hardware adjustment
+- `pid.conf` is shared, but exact physical characteristics are only modeled after hardware adjustment
 - motor authority, tire coupling, damping, and missed-step limits remain uncertain until measured
-- the transfer report identifies a dirty working tree until these changes are committed; the
-  run-specific manifest and PID digest provide the remaining configuration provenance
+- transfer reports and telemetry captures must retain their run-specific manifest and PID digest for
+  configuration provenance
+- retained hardware sessions are historical evidence by default; a checksum-bound extract is not a
+  current verification result unless its repository, PID, protocol, and hardware context are
+  explicitly re-established
 
 ## Practical Confidence Model
 
@@ -31,8 +41,9 @@ This page is the short, candid status snapshot for the project. The rest of the 
 - reflection-generated docs and bindings
 - message-bus service integration
 - simulator artifact generation
-- nominal and one-at-a-time-margin simulator acceptance ladder
-- exact direct-versus-UDP all-tick equivalence and stride-invariant terminal summaries
+- the four nominal and six conservative margin cases in the transfer matrix
+- focused direct-versus-UDP all-tick equivalence for transfer catalog index `1`, plus stride-invariant
+  terminal summaries
 - warning-clean host compilation/execution of all registered fuzz seeds
 
 ### Moderate Confidence

@@ -17,7 +17,7 @@ if (NOT DOT_EXECUTABLE)
 endif()
 
 # ── generate_balancer_bindings (compile-time reflection) ─────────────────────
-# We use add_custom_command to invoke gcc-trunk DIRECTLY instead of
+# We use add_custom_command to invoke the reflection compiler DIRECTLY instead of
 # add_executable, because CMake does not support mixing compilers in one project.
 
 set(REFLECTION_SRC_DIR ${CMAKE_SOURCE_DIR}/src/reflection)
@@ -49,6 +49,7 @@ add_custom_command(
             ${REFLECTION_COMMON_HDR}
             ${REFLECTION_REGISTRY_HDR}
             ${CMAKE_SOURCE_DIR}/src/messages/msg_base.h
+            ${CMAKE_SOURCE_DIR}/src/messages/config_pid_values.h
             ${CMAKE_SOURCE_DIR}/src/messages/core_msgs.h
             ${CMAKE_SOURCE_DIR}/src/messages/balancer_msgs.h
             ${CMAKE_SOURCE_DIR}/src/ipc/udp_bridge.h
@@ -83,6 +84,7 @@ add_custom_command(
             ${REFLECTION_COMMON_HDR}
             ${REFLECTION_REGISTRY_HDR}
             ${CMAKE_SOURCE_DIR}/src/messages/msg_base.h
+            ${CMAKE_SOURCE_DIR}/src/messages/config_pid_values.h
             ${CMAKE_SOURCE_DIR}/src/messages/core_msgs.h
             ${CMAKE_SOURCE_DIR}/src/messages/balancer_msgs.h
             ${CMAKE_SOURCE_DIR}/src/ipc/udp_bridge.h
@@ -90,6 +92,8 @@ add_custom_command(
             ${CMAKE_SOURCE_DIR}/src/services/control/control_service.h
             ${CMAKE_SOURCE_DIR}/src/services/motor/motor_service.h
             ${CMAKE_SOURCE_DIR}/src/services/time/time_service.h
+            ${CMAKE_SOURCE_DIR}/src/services/input/input_service.h
+            ${CMAKE_SOURCE_DIR}/src/services/main/config_pid_io.h
     COMMENT "Compiling balancer docs generator with C++26 reflection..."
     VERBATIM
 )

@@ -9,6 +9,7 @@
 #include "services/control/control_service.h"
 #include "services/imu/imu_service.h"
 #include "services/motor/motor_service.h"
+#include "services/input/input_service.h"
 #include "udp_bridge.h"
 
 // Reuse the AppServices logic from control_app.h if possible,
@@ -19,9 +20,11 @@ struct AppServices {
   sil::MotorService ms;
   sil::ControlService cs;
   sil::ImuService is;
+  sil::InputService ins;
   ipc::UdpBridge udp;
 
-  AppServices(ipc::MessageBus& bus) : ms(bus, nullptr), cs(bus), is(bus, false), udp(bus) {
+  AppServices(ipc::MessageBus& bus)
+      : ms(bus, nullptr), cs(bus), is(bus, false), ins(bus), udp(bus) {
   }
 };
 
@@ -29,7 +32,7 @@ void sil_dispatcher(void* ctx, MsgId id, const void* payload) {
   auto* s = static_cast<AppServices*>(ctx);
   if (!s) return;
 
-  ipc::dispatch_to_services(id, payload, s->is, s->ms, s->cs, s->udp);
+  ipc::dispatch_to_services(id, payload, s->is, s->ms, s->cs, s->ins, s->udp);
 }
 
 struct BusContainer {
@@ -58,6 +61,7 @@ int main() {
   container.services.is.start();
   container.services.cs.start();
   container.services.ms.start();
+  container.services.ins.start();
 
   try {
     container.services.udp.start();
@@ -77,6 +81,7 @@ int main() {
   container.services.is.stop();
   container.services.cs.stop();
   container.services.ms.stop();
+  container.services.ins.stop();
 
   return 0;
 }

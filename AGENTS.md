@@ -13,6 +13,35 @@ The worktree may contain active hardware experiments and user edits. Inspect `gi
 editing, preserve unrelated changes, and never discard or rewrite captured data without an explicit
 request.
 
+## Exploration and Handoff Protocol
+
+For repository-review or documentation-discovery work, first inspect the repository state and state
+the intended audience and question being answered. Choose evidence in whatever order best serves the
+question: human Markdown, source code, tests, generated documentation, manifests, retained data, or
+safe local checks. Do not prescribe Markdown or source code as the universal starting point.
+
+Separate conclusions into:
+
+- **Verified facts** — directly confirmed in the repository, with the relevant path or command.
+- **Inferences** — interpretations supported by evidence but not directly stated by one source.
+- **Unresolved questions** — expected information that was not found or could not be verified.
+- **Recommendations** — proposed documentation, navigation, or structure improvements, clearly
+  distinguished from current behavior.
+
+Read-only reviewers must report a compact handoff containing:
+
+1. the audience and question they adopted;
+2. their first meaningful exploration path and evidence categories consulted;
+3. each route switch and why it happened;
+4. what they expected but could not find;
+5. verified facts, inferences, unresolved questions, and recommendations; and
+6. the route they would choose next time and why.
+
+During review, do not edit tracked files, generated files, captured data, or unrelated content, and
+do not execute hardware or deployment commands. Safe repository inspection, tests, builds, and
+analysis commands are allowed when they do not alter tracked outputs. Keep generated outputs under
+their existing ownership and report any unexpected changes rather than hiding them.
+
 ## Build and Verification
 
 Use focused builds or tests while iterating. Before handing off a completed code change, run the

@@ -16,22 +16,20 @@
 namespace ipc {
 
 inline constexpr char kUdpBridgeDoc[] =
-    "Stateful transport bridge that connects the internal `MessageBus` to external UDP-based SIL "
-    "clients.\n\n"
-    "On ingress, the bridge binds a UDP socket on port `9000`, receives datagrams from the latest "
-    "test harness peer, extracts the leading `uint16_t` message identifier, and republishes the "
-    "remaining payload bytes through `publish_if_authorized`. That keeps external injection limited "
-    "to the message types the bridge explicitly advertises in `Publishes`, and the downstream bus "
-    "path retains ownership of payload-size checks before handlers see any data.\n\n"
-    "On egress, the bridge remembers the most recent sender address and uses it as the return path "
-    "for outbound telemetry and motor command traffic. Each authorized outbound message is encoded "
-    "as the reflected message ID followed immediately by the trivially-copyable payload bytes:\n\n"
+    "Stateful transport bridge that connects the internal `MessageBus` to external UDP runtime "
+    "clients. In the production Pi runtime it listens on port `9000`; the telemetry server is the "
+    "primary peer, while SIL and other authorized clients use the same boundary.\n\n"
+    "A client registers by sending a UDP datagram. The bridge remembers the most recent sender as "
+    "the single active peer, so outbound messages always have one explicit return path. On ingress, "
+    "the bridge extracts the leading `uint16_t` message identifier and republishes the remaining "
+    "payload only when the ID is authorized by `Publishes` and the payload size is valid.\n\n"
+    "On egress, each authorized subscribed message is encoded as the reflected message ID followed "
+    "immediately by the trivially-copyable payload bytes:\n\n"
     "$$ \\text{datagram} = \\texttt{uint16\\_t MsgId} \\; || \\; \\texttt{Payload bytes} $$\n\n"
-    "This makes the UDP contract symmetric with the Python bindings generated from the same message "
-    "definitions. Operationally, `UdpBridge` is what turns the balancer into a SIL endpoint: it "
-    "lets pytest inject `PhysicsTick`, `JoystickCommand`, `ImuRawData`, and simulator-control "
-    "messages, while streaming `MotorTargets`, `SystemTelemetry`, and simulator-status "
-    "messages back out for observation and closed-loop test orchestration.";
+    "This makes the UDP contract symmetric with the generated Python bindings and keeps the external "
+    "runtime API aligned with the reflected C++ message definitions. The dashboard receives and logs "
+    "`SystemTelemetry`; deployment and process control remain separate SSH operations. The simulator "
+    "scenario service uses a separate UDP endpoint on port `9001` and is not this bridge.";
 
 struct PeerAddress {
   uint32_t ip;
@@ -48,9 +46,10 @@ class DOC_DESC(kUdpBridgeDoc) UdpBridge {
   static constexpr const char* kDocDescription = kUdpBridgeDoc;
 
   using Subscribes = MsgList<MsgId::MotorTargets, MsgId::SystemTelemetry, MsgId::SimulatorTelemetry,
-                             MsgId::SimStartAck, MsgId::SimRunDone>;
-  using Publishes = MsgList<MsgId::PhysicsTick, MsgId::JoystickCommand, MsgId::ImuRawData,
-                            MsgId::SimStartRun, MsgId::SimStopRun>;
+                             MsgId::SimStartAck, MsgId::SimRunDone, MsgId::PidConfigStatus>;
+  using Publishes = MsgList<MsgId::PhysicsTick, MsgId::ExternalJoystickCommand,
+                            MsgId::ImuRawData, MsgId::SimStartRun, MsgId::SimStopRun,
+                            MsgId::PidConfigOverride>;
 
   static constexpr uint16_t kDefaultPort = 9000;
 

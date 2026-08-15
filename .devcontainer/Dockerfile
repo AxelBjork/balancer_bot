@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     software-properties-common \
     sudo \
     wget \
+    curl \
     git \
     && rm -rf /var/lib/apt/lists/*
 
@@ -27,6 +28,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     bison \
     build-essential \
     flex \
+    linux-libc-dev=5.15.0-186.196 \
     xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
@@ -162,6 +164,18 @@ RUN dpkg --add-architecture arm64 \
          -o /usr/include/pigpio.h \
     && rm -rf /var/lib/apt/lists/*
 
+# Remote Codex app-server runtime. Ubuntu 22.04's nodejs package is too old
+# for current Codex CLI releases, so use the Node.js 22 LTS repository.
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        nodejs \
+        openssh-client \
+        openssh-server \
+        bubblewrap \
+    && npm install --global --no-fund --no-audit @openai/codex \
+    && rm -rf /var/lib/apt/lists/* /root/.npm
+
 # Setup a non-root user 'vscode' with sudo access
 ARG USERNAME=vscode
 ARG USER_UID=1000
@@ -171,7 +185,13 @@ RUN groupadd --gid $USER_GID $USERNAME \
     && useradd --uid $USER_UID --gid $USER_GID -m $USERNAME \
     && echo $USERNAME ALL=\(root\) NOPASSWD:ALL > /etc/sudoers.d/$USERNAME \
     && chmod 0440 /etc/sudoers.d/$USERNAME \
-    && usermod -aG dialout $USERNAME
+    && usermod -aG dialout $USERNAME \
+    && passwd --delete $USERNAME \
+    && install -d -m 0700 -o $USERNAME -g $USERNAME /home/$USERNAME/.ssh
+
+COPY .devcontainer/sshd_config /etc/ssh/sshd_config
+COPY .devcontainer/codex-sshd-entrypoint.sh /usr/local/bin/codex-sshd-entrypoint
+RUN chmod 0755 /usr/local/bin/codex-sshd-entrypoint
 
 # Python analysis and artifact dependencies
 COPY requirements-dev.txt /tmp/requirements-dev.txt
@@ -181,3 +201,5 @@ RUN pip3 install --no-cache-dir -r /tmp/requirements-dev.txt
 WORKDIR /workspace
 
 USER $USERNAME
+
+ENTRYPOINT ["/usr/local/bin/codex-sshd-entrypoint"]
