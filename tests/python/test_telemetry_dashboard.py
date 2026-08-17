@@ -83,7 +83,7 @@ def telemetry_packet(**changes: float | int) -> bytes:
 
 def test_generated_telemetry_wire_sizes_and_round_trip():
     assert SystemTelemetryPayload.WIRE_SIZE == 416
-    assert SimulatorTelemetryPayload.WIRE_SIZE == 544
+    assert SimulatorTelemetryPayload.WIRE_SIZE == 560
     sample = dataclasses.replace(
         SystemTelemetryPayload.unpack(bytes(SystemTelemetryPayload.WIRE_SIZE)),
         run_id=17,
@@ -291,7 +291,7 @@ def test_browser_cache_rollover_is_batched():
     source = dashboard.read_text(encoding="utf-8")
     assert "TRIM_BATCH_POINTS" in source
     assert "store.samples.shift()" not in source
-    assert 'id:"freeze-diagnostics"' in source
+    assert 'id:"transport-timing"' in source
     assert "dashboard-diagnostics" not in source
 
 
@@ -361,8 +361,8 @@ def test_pid_session_exposes_numeric_fields_and_applies_complete_snapshot():
     assert "values" not in snapshot["last_status"]
 
     invalid = dict(values)
-    invalid["balance_max_sps"] = 16001.0
-    with pytest.raises(ValueError, match="16000"):
+    invalid["balance_max_sps"] = 64001.0
+    with pytest.raises(ValueError, match="64000"):
         controller.update(invalid)
 
 
@@ -1019,9 +1019,8 @@ def test_dashboard_serves_assets_and_sse_to_multiple_clients():
         assert b"setData" in script
         assert b"updateMetrics(null)" in script
         assert b"updateMetrics(store.samples.at(-1)??null)" in script
-        assert b'numberAt(sample,"motion.corrected_axle_velocity_sps")' in script
-        assert b'sampleOrStatus("timing.imu_age_ms","imu_age_ms")' in script
-        assert b'sampleOrStatus("timing.feedback_age_ms","feedback_age_ms")' in script
+        assert b'numberAt(sample,"motion.velocity_feedback_estimate_mps")' in script
+        assert b'path:"motion.corrected_axle_velocity_sps"' in script
         assert b'motion.measured_velocity_sps' not in script
         assert b"function liveConnection(status)" in script
         assert b"telemetry_connected===true" in script
@@ -1032,9 +1031,8 @@ def test_dashboard_serves_assets_and_sse_to_multiple_clients():
         assert b"data-drive-pad" in script
         assert b"drivePadVectorAt" in script
         assert b"forward:-y" in script
-        assert b'id:"joystick"' in script
-        assert b'joystick.forward' in script
-        assert b'joystick.turn' in script
+        assert b'id:"joystick"' not in script
+        assert b'derived:"joystick' not in script
         assert b"joystick_command_valid" in script
         assert b"setPointerCapture" in script
         assert b"JOYSTICK_REPEAT_MS = 100" in script
@@ -1048,18 +1046,39 @@ def test_dashboard_serves_assets_and_sse_to_multiple_clients():
         assert b'id="pid-load"' in script
         assert b">Load<" in script
         assert b'title:"Command"' not in script
-        assert b'new Set(["performance","attitude","contributions","outer-loop"])' in script
-        assert b'Balance performance' in script
-        assert b'Composite activity' in script
-        assert b'PERFORMANCE_WINDOW_S = 1.5' in script
+        assert b'const PRIMARY_GROUP_IDS = ["attitude", "velocity-tracking", "outer-authority", "actuator-effort"]' in script
+        assert b'visible:new Set(PRIMARY_GROUP_IDS)' in script
+        assert b'Balance performance' not in script
+        assert b'Composite activity' not in script
+        assert b'ROLLING_WINDOW_S = 1.5' in script
+        assert b'Pitch RMS' in script
+        assert b'Velocity-est RMS' in script
+        assert b'Drive-pitch RMS' in script
+        assert b'Command RMS' in script
+        assert b'Slew active' in script
+        assert b'Final pitch target' in script
+        assert b'Velocity feedback estimate' in script
+        assert b'Drive pitch target' in script
+        assert b'Corrected STEP velocity' in script
+        assert b'Filtered STEP velocity' in script
+        assert b'Outer limited' in script
+        assert b'Balance rail' in script
+        assert b'Slew limited' in script
+        assert b'Observer' in script
+        assert b'diagnostics-panel' in script
+        assert b'id:"transport-timing"' in script
+        assert b'id:"wheel-position"' in script
+        assert b'pid-advanced' in script
+        assert b'Normal tuning' in script
         assert b'Filtered control rate' in script
         assert b'Balance contributions' in script
-        assert b'Pitch rate / gyro diagnostics' in script
+        assert b'Pitch-rate diagnostics' in script
         assert b'Raw sensor angle' not in script
         assert b"PID_MIN_STEP = 0.0001" in script
         assert b"Math.round(raw/magnitude)" in script
         assert b'<div class="pid-actions"><button id="pid-apply"' in script
-        assert b'<div class="pid-fields">${fields}</div>' in script
+        assert b'<div class="pid-fields">${normalFields}</div>' in script
+        assert b'<details class="pid-advanced"' in script
         assert b"lostpointercapture" in script
         assert b"sanity" not in script.lower()
         assert b"if(status.values)renderPidFields(status.values)" not in script
@@ -1072,6 +1091,9 @@ def test_dashboard_serves_assets_and_sse_to_multiple_clients():
         assert b"touch-action: none" in stylesheet_data
         assert b"overflow-x: auto" not in stylesheet_data
         assert b"max-width: 760px" in stylesheet_data
+        assert b".rolling-health" in stylesheet_data
+        assert b".diagnostics-panel" in stylesheet_data
+        assert b".status-chip" in stylesheet_data
         uplot = urllib.request.urlopen(base + "/vendor/uPlot-1.6.32.iife.min.js", timeout=1)
         assert uplot.headers.get_content_type() == "text/javascript"
         assert b"uPlot" in uplot.read()

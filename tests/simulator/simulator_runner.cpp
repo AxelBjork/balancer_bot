@@ -465,7 +465,7 @@ std::vector<SimulatorScenario> tuning_motion_scenario_set(PhysicsProfile physics
 }
 
 std::vector<SimulatorScenario> tuning_outer_motion_scenario_set(
-    PhysicsProfile physics_profile) {
+    PhysicsProfile physics_profile, std::optional<double> cart_damping_override) {
   // This set is intentionally expressed in physical target velocities. The
   // simulator still receives the same normalized joystick command as the
   // production path, but the conversion below compensates for the configured
@@ -481,8 +481,11 @@ std::vector<SimulatorScenario> tuning_outer_motion_scenario_set(
   // Match the existing fixed Python outer-loop behavioral surface while
   // obtaining every other parameter from the selected profile. This does not
   // alter StepperPhaseElectrical physics or duplicate its constants.
-  auto fixed_outer_physics = BalancerSimulator::physics_for_profile(physics_profile);
-  fixed_outer_physics.cart_damping = 40.0;
+  std::optional<SimulatorPhysics> fixed_outer_physics;
+  if (cart_damping_override.has_value()) {
+    fixed_outer_physics = BalancerSimulator::physics_for_profile(physics_profile);
+    fixed_outer_physics->cart_damping = std::max(0.0, *cart_damping_override);
+  }
   const auto motion = [physics_profile, &fixed_outer_physics](std::string name,
                                                                double duration_s) {
     SimulatorScenario scenario;
@@ -566,7 +569,7 @@ std::vector<SimulatorScenario> tuning_outer_motion_scenario_set(
 }
 
 std::vector<SimulatorScenario> tuning_leaky_integral_scenario_set(
-    PhysicsProfile physics_profile) {
+    PhysicsProfile physics_profile, std::optional<double> cart_damping_override) {
   // This is deliberately narrower than the broad outer-motion surface. It
   // gives a bounded integral several seconds of real hold time to accumulate
   // while keeping the planner, speed cap, and authority fixed for the P/I
@@ -579,8 +582,11 @@ std::vector<SimulatorScenario> tuning_leaky_integral_scenario_set(
     return std::copysign(kDeadzone + magnitude * (1.0 - kDeadzone), velocity_mps);
   };
 
-  auto fixed_outer_physics = BalancerSimulator::physics_for_profile(physics_profile);
-  fixed_outer_physics.cart_damping = 40.0;
+  std::optional<SimulatorPhysics> fixed_outer_physics;
+  if (cart_damping_override.has_value()) {
+    fixed_outer_physics = BalancerSimulator::physics_for_profile(physics_profile);
+    fixed_outer_physics->cart_damping = std::max(0.0, *cart_damping_override);
+  }
   const auto motion = [physics_profile, &fixed_outer_physics](std::string name,
                                                                double duration_s) {
     SimulatorScenario scenario;
@@ -642,6 +648,75 @@ std::vector<SimulatorScenario> tuning_leaky_integral_scenario_set(
   return {positive_005, negative_005, positive_010, negative_010, long_positive,
           long_negative, reversal, reverse_reversal, push_positive, push_negative, neutral,
           pitch_pos_1, pitch_neg_1, pitch_pos_4, pitch_neg_4, guard_push};
+}
+
+std::vector<SimulatorScenario> tuning_distance_scenario_set(
+    PhysicsProfile physics_profile, std::optional<double> cart_damping_override) {
+  // This keeps the existing fixed full-forward command timing: one second of
+  // quiet startup followed by five seconds of full command. The Python test
+  // uses the same cart-damping override. The distance-only tuner retains two
+  // seconds after release for diagnostic context, but scores only the signed
+  // position change over [1, 6] seconds and does not inherit release gates.
+  std::optional<SimulatorPhysics> physics;
+  if (cart_damping_override.has_value()) {
+    physics = BalancerSimulator::physics_for_profile(physics_profile);
+    physics->cart_damping = std::max(0.0, *cart_damping_override);
+  }
+
+  SimulatorScenario scenario;
+  scenario.name = "distance_full_forward_then_stop";
+  scenario.duration_s = 8.0;
+  scenario.physics_profile = physics_profile;
+  scenario.physics_override = physics;
+  scenario.joy_segments = {
+      SimulatorJoySegment{.start_s = 1.0,
+                           .duration_s = 5.0,
+                           .forward = 1.0,
+                           .turn = 0.0,
+                           .forward_end = 1.0,
+                           .turn_end = 0.0},
+  };
+  return {scenario};
+}
+
+std::vector<SimulatorScenario> tuning_speed_envelope_scenario_set(
+    PhysicsProfile physics_profile, std::optional<double> cart_damping_override) {
+  // Analog-like 0 -> 0.5 m/s -> 0 command.  With the 0.5 m/s drive cap this
+  // trajectory has 0.5 m of ramp-in travel, 9 m of hold travel, and 0.5 m of
+  // ramp-out travel: approximately 10 m of reference displacement.  It is a
+  // benchmark for the electrical envelope, not a production acceptance gate.
+  std::optional<SimulatorPhysics> physics;
+  if (cart_damping_override.has_value()) {
+    physics = BalancerSimulator::physics_for_profile(physics_profile);
+    physics->cart_damping = std::max(0.0, *cart_damping_override);
+  }
+
+  SimulatorScenario scenario;
+  scenario.name = "speed_envelope_05mps_ramp_hold_stop";
+  scenario.duration_s = 28.0;
+  scenario.physics_profile = physics_profile;
+  scenario.physics_override = physics;
+  scenario.joy_segments = {
+      SimulatorJoySegment{.start_s = 1.0,
+                           .duration_s = 2.0,
+                           .forward = 0.0,
+                           .turn = 0.0,
+                           .forward_end = 1.0,
+                           .turn_end = 0.0},
+      SimulatorJoySegment{.start_s = 3.0,
+                           .duration_s = 18.0,
+                           .forward = 1.0,
+                           .turn = 0.0,
+                           .forward_end = 1.0,
+                           .turn_end = 0.0},
+      SimulatorJoySegment{.start_s = 21.0,
+                           .duration_s = 2.0,
+                           .forward = 1.0,
+                           .turn = 0.0,
+                           .forward_end = 0.0,
+                           .turn_end = 0.0},
+  };
+  return {scenario};
 }
 
 std::vector<SimulatorScenario> tuning_trim_scenario_set(PhysicsProfile physics_profile) {

@@ -817,6 +817,11 @@ class SimulatorService {
     payload.tire_stiffness_n_per_m = static_cast<float>(physics.tire_stiffness_n_per_m);
     payload.tire_damping_n_s_per_m = static_cast<float>(physics.tire_damping_n_s_per_m);
     payload.wheel_equivalent_mass_kg = static_cast<float>(physics.wheel_equivalent_mass_kg);
+    payload.emitted_step_velocity_sps = static_cast<float>(row.emitted_step_velocity_sps);
+    payload.synthetic_estimator_velocity_sps =
+        static_cast<float>(row.synthetic_estimator_velocity_sps);
+    payload.controller_feedback_velocity_sps =
+        static_cast<float>(row.controller_feedback_velocity_sps);
     if (!endpoint_.send(active_peer_, MsgId::SimulatorTelemetry, payload,
                         simulator::SimulatorTxKind::Telemetry)) {
       run.telemetry_transport_failure = true;

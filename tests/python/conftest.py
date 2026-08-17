@@ -41,23 +41,15 @@ _BEHAVIORAL_XFAILS = (
     ),
     (
         "test_simple_behavioral_scenarios[stepper_phase_electrical-2001-",
-        "StepperPhaseElectrical noisy push reaches the controller fault/authority boundary before recovery",
-    ),
-    (
-        "test_full_forward_then_stop_moves_and_settles[stepper_phase_electrical]",
-        "StepperPhaseElectrical drive/stop path does not settle within the current DirectActuator-oriented outer-loop acceptance window",
+        "StepperPhaseElectrical noisy push reaches the current electrical authority boundary before recovery",
     ),
     (
         "test_pitch_authority_nominal_uncertainty_matrix_stays_within_reference_envelope[stepper_phase_electrical]",
-        "StepperPhaseElectrical authority/uncertainty envelope reaches the current diagnostic fault boundary",
+        "StepperPhaseElectrical direct authority under plant uncertainty reaches the current phase/safety boundary",
     ),
     (
         "test_outer_transient_authority_saturation_recovers_without_trim_growth[stepper_phase_electrical]",
-        "StepperPhaseElectrical sustained authority case remains velocity-authority limited after the transient",
-    ),
-    (
-        "test_outer_reduced_translation_authority_degrades_without_trim_runaway[stepper_phase_electrical]",
-        "StepperPhaseElectrical reduced-authority motion does not satisfy the current outer-loop degradation witness",
+        "StepperPhaseElectrical 7000-SPS initial-velocity recovery remains outside the sustained authority envelope",
     ),
 )
 
@@ -107,6 +99,8 @@ def pytest_runtest_logreport(report):
         status = "xfail" if report.outcome == "skipped" else "unexpected_pass"
     elif report.outcome == "passed":
         status = "pass"
+    elif report.outcome == "skipped":
+        status = "skip"
     else:
         status = "unexpected_failure"
     _BEHAVIORAL_REPORTS[report.nodeid] = {

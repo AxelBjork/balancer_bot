@@ -77,7 +77,6 @@ is for signs, poles, and local parameter checks.
   $x(t)$, $\theta(t)$, and $n(t)$
 - $N_{steps}$: configured motor steps per revolution in the completed-step
   observer correction
-  correction
 - $q_{steps,L/R}$: completed left/right motor-step counts
 - $v_{user}$, $v_{ref}$, $a_{ref}$: user velocity, planned velocity, and
   transition-derived planned acceleration
@@ -183,7 +182,7 @@ pitch-induced axle motion:
 $$
 \Delta u_{steps}=
 \frac{\Delta q_{steps,L}+\Delta q_{steps,R}}{2}
- +\frac{N_{steps}}{2\pi}\operatorname{wrap}(\Delta\theta).
+ +\frac{N_{steps}}{2\pi}\mathrm{wrap}(\Delta\theta).
 $$
 
 The corrected axle velocity passes through the compiled measurement filter
@@ -236,12 +235,12 @@ a_{raw}=a_{ref}+a_{fb},
 $$
 
 $$
-a_{cmd}=\operatorname{clamp}\left(
+a_{cmd}=\mathrm{clamp}\left(
 a_{raw},\;-g\tan\theta_{outer,max},\;+g\tan\theta_{outer,max}\right),
 $$
 
 $$
-\theta_{drive}=\operatorname{atan2}(a_{cmd},g),\qquad
+\theta_{drive}=\mathrm{atan2}(a_{cmd},g),\qquad
 \theta_{target}=\theta_{drive}+\theta_{COM}.
 $$
 

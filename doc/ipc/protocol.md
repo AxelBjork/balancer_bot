@@ -57,9 +57,9 @@ The architecture is divided into three logical areas:
 >
 > At 100 Hz, completed common-mode steps are corrected for chassis pitch to observe axle velocity and filtered at 10 Hz. A separate configurable velocity-control filter can add a slower velocity-feedback pole without changing that observer. A reversal-aware velocity reference planner produces v_ref and a_ref; velocity feedback then contributes to one shared acceleration authority before conversion to a motion pitch target:
 >
-> $$ a_{raw} = a_{ref} + K_v(v_{ref} - v_{feedback}), \quad a_{cmd} = \operatorname{clamp}(a_{raw}, \pm g\tan(\theta_{limit})) $$
+> $$ a_{raw} = a_{ref} + K_v(v_{ref} - v_{feedback}), \quad a_{cmd} = \mathrm{clamp}(a_{raw}, \pm g\tan(\theta_{limit})) $$
 >
-> $$ \theta_{sp} = \operatorname{atan2}(a_{cmd},g) + \theta_{COM} $$
+> $$ \theta_{sp} = \mathrm{atan2}(a_{cmd},g) + \theta_{COM} $$
 >
 > The optional adaptive COM learner is disabled in the v1 configuration; fixed COM trim is the only default trim input.
 >

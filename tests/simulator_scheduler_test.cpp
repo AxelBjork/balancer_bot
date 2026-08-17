@@ -66,7 +66,9 @@ TEST(SimulatorSchedulerTest, VerifiedOneThirtySecondAuthorityFitsTimestampedWave
             static_cast<unsigned>(Config::max_step_rate_sps));
   runner.setTargets(Config::max_step_rate_sps, Config::max_step_rate_sps, 0);
   const auto events = runner.getScheduledStepEvents(0, DualWave::kFrameUs);
-  ASSERT_EQ(events.size(), 40U);
+  const auto expected_events = static_cast<std::size_t>(
+      Config::max_step_rate_sps * static_cast<double>(DualWave::kFrameUs) / 1e6);
+  ASSERT_EQ(events.size(), expected_events);
   uint64_t previous_timestamp = 0;
   for (const auto& event : events) {
     EXPECT_GT(event.timestamp_us, previous_timestamp);
@@ -75,14 +77,15 @@ TEST(SimulatorSchedulerTest, VerifiedOneThirtySecondAuthorityFitsTimestampedWave
     EXPECT_EQ(event.right_step_delta, 1);
     previous_timestamp = event.timestamp_us;
   }
-  EXPECT_EQ(events.front().timestamp_us, 31U);
-  EXPECT_EQ(events.back().timestamp_us, 2469U);
+  EXPECT_EQ(events.front().timestamp_us, 8U);
+  EXPECT_EQ(events.back().timestamp_us, 2492U);
 }
 
 TEST(SimulatorSchedulerTest, EventCountsRemainAccurateAcrossSupportedRates) {
   constexpr uint64_t kFrameUs = 2500;
   constexpr unsigned kFrames = 40;
-  for (const double rate_sps : {100.0, 500.0, 1000.0, 3200.0, 8000.0, 10000.0}) {
+  for (const double rate_sps : {100.0, 500.0, 1000.0, 3200.0, 8000.0, 10000.0,
+                               32000.0, 64000.0}) {
     Stepper left(1, Stepper::Pins{5, 6, 13});
     Stepper right(1, Stepper::Pins{7, 8, 14});
     NoopWaveBackend backend;

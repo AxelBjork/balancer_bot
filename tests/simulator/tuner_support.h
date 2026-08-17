@@ -46,6 +46,25 @@ struct ScenarioMetrics {
   double mechanical_velocity_hold_direction_fraction = 0.0;
   double mechanical_velocity_hold_target_fraction = 0.0;
   double mechanical_velocity_hold_duration_s = 0.0;
+  // Distance-only experiment metrics. These describe the first nonzero
+  // joystick segment, not the post-release tail, so the isolated drive
+  // search cannot be rewarded by rebound or accumulated wheel travel.
+  double active_command_start_s = 0.0;
+  double active_command_end_s = 0.0;
+  double signed_distance_m = 0.0;
+  double reference_distance_m = 0.0;
+  double distance_tracking_fraction = 0.0;
+  double active_mean_reference_velocity_mps = 0.0;
+  double active_mean_mechanical_velocity_mps = 0.0;
+  double active_peak_mechanical_velocity_mps = 0.0;
+  double active_final_mechanical_velocity_mps = 0.0;
+  double active_mean_a_ref_mps2 = 0.0;
+  double active_mean_a_p_mps2 = 0.0;
+  double active_mean_a_i_mps2 = 0.0;
+  double active_peak_a_ref_mps2 = 0.0;
+  double active_peak_a_p_mps2 = 0.0;
+  double active_peak_a_i_mps2 = 0.0;
+  bool active_distance_valid = false;
   double drive_pitch_peak_deg = 0.0;
   double outer_limit_fraction = 0.0;
   bool growing_oscillation = false;

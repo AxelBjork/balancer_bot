@@ -4,12 +4,12 @@
 controller against a detailed stepper actuator realization. It is not part of
 the model-neutral physical plant standard. The shared rigid-body equations and
 controller-facing algebra are in [`control_plant.md`](../arch/control_plant.md); this
-page owns the actuator realization, fixed comparison constants, and profile
-test procedure.
+page defines the actuator's normative signal flow, physics, and profile test
+procedure. Numerical parameter values remain in the C++ sources.
 
 ## What this profile represents
 
-The profile models the actual 1/32 stepper command path rather than treating
+The profile models the configured stepper command path rather than treating
 SPS as a force input:
 
 ```text
@@ -30,61 +30,87 @@ resonance, or tire compliance.
 
 > [Open the interactive stepper electrical ringdown](../arch/interactive_stepper_electrical.html)
 
+## Actuator coordinates and equations
+
 The profile adds absolute wheel/rotor inertia to the common translational
 coordinate and keeps motor-relative phase as a separate actuator coordinate.
-With `u_wheel = r * psi` and the configured initial pitch as the zero-step
-reference:
+Let `u_wheel = r * psi`, and let `theta_0` be the configured initial pitch
+reference. The relative mechanical coordinate and velocity are
 
-```text
-q_m     = u_wheel - r * (theta - theta_0)
-qdot_m  = udot_wheel - r * thetadot
-```
+$$
+\begin{aligned}
+q_m &= \psi-(\theta-\theta_0)
+    = \frac{u_{\mathrm{wheel}}}{r}-(\theta-\theta_0),\\
+\dot{q}_m &= \dot{\psi}-\dot{\theta}
+    = \frac{\dot{u}_{\mathrm{wheel}}}{r}-\dot{\theta}.
+\end{aligned}
+$$
 
-The rotor electrical angle is `50 * q_m`. One 1/32 STEP advances the magnetic
-field by `2*pi/128` electrical radians. For phase currents `(i_a, i_b)` and
-rotor electrical angle `phi`, the actuator uses:
+The electrical rotor angle and relative angular velocity are
 
-```text
-tau = Kt * (-i_a * sin(phi) + i_b * cos(phi))
-e   = Ke * omega_relative * (-sin(phi), cos(phi))
-L di/dt = v - R i - e
-```
+$$
+\phi=N_e q_m,\qquad \omega_m=\dot{q}_m,
+$$
 
-The averaged bridge selects a voltage in `[-V_bus, +V_bus]` to move actual
-current toward the indexed field reference. This is a testing realization of
-the motor command path; SPS is not converted directly into force.
+where `N_e` is the maintained electrical-angle ratio for one mechanical
+radian. If `N_mu` is the configured number of commanded microsteps per
+mechanical revolution, one STEP advances the field by
 
-## Fixed profile comparison surface
+$$
+\Delta\phi_{\mathrm{step}}=\frac{2\pi N_e}{N_\mu}.
+$$
 
-| Parameter | Maintained value |
-| --- | ---: |
-| wheel radius | `0.0412 m` |
-| motor full steps/rev | `200` |
-| microsteps/full step | `32` |
-| commanded STEP/rev | `6400` |
-| wheel travel/STEP | `40.448 µm` |
-| electrical cycles/mechanical rev | `50` |
-| total mass | `1.032 kg` |
-| first mass moment | `0.06192 kg m` |
-| pitch inertia about axle | `0.0045 kg m²` |
-| wheel/rotor inertia per side | `3.24e-5 kg m²` |
-| phase resistance / inductance | `2.3 Ω / 4.4 mH` |
-| bus voltage / current limit | `11.1 V / 1.065 A` |
-| `K_t = K_e` | `0.212132` in the vector-current convention |
-| relative motor damping | `0.0027 N m s/rad` per side, provisional |
-| balance ceiling | `16000 SPS` |
+For field angle `phi_f`, the vector-current reference is
 
-These values come from `Config`, `HardwareNominal`, and
-`stepper_phase::ElectricalParameters`; they must not be duplicated as new
-tuning constants in scenario definitions. See the standard page for the
-common coordinate equations and the reason this profile keeps wheel/rotor
-inertia in the absolute wheel coordinate.
+$$
+\mathbf{i}_{\mathrm{ref}}=I_{\max}
+\begin{bmatrix}\cos\phi_f\\\sin\phi_f\end{bmatrix}.
+$$
+
+For phase currents `i_a`, `i_b` and rotor electrical angle `phi`, the
+actuator equations are
+
+$$
+\begin{aligned}
+\tau &= K_t\left(-i_a\sin\phi+i_b\cos\phi\right),\\
+\mathbf{e} &= K_e\omega_m
+\begin{bmatrix}-\sin\phi\\\cos\phi\end{bmatrix},\\
+L\dot{\mathbf{i}} &= \mathbf{v}-R\mathbf{i}-\mathbf{e}.
+\end{aligned}
+$$
+
+The averaged bridge constrains each phase voltage to the bus limit and chooses
+that voltage to move actual current toward the indexed field reference. SPS
+therefore determines field-step timing; it is not converted directly into
+force or torque.
+
+The actuator returns torque to the coupled wheel/body plant. It does not
+integrate an independent rotor-inertia state: the plant supplies the
+constrained mechanical coordinate, while the actuator maintains the separate
+relative phase coordinate.
+
+## Source of truth
+
+The numerical instantiation is deliberately not repeated here. It is defined
+by the production and simulator sources:
+
+- `Config` owns production wheel and command kinematics.
+- `HardwareNominal` owns common plant quantities and derived StepperPhase
+  nominal quantities.
+- `stepper_phase::ElectricalParameters` owns the electrical model interface.
+- `stepper_phase_actuator.cpp` owns the current update, torque, back-EMF, and
+  power implementation.
+
+Tests and tools must read these definitions rather than introducing copied
+values in Markdown, scenario files, or alternate tuning tables. See
+[`control_plant.md`](../arch/control_plant.md) for the model-neutral plant
+equations and coordinate conventions.
 
 ## Profile invariants and correlation checks
 
 The electrical actuator tests cover:
 
-- `6400` STEP events per wheel revolution and correct 1/32 field motion;
+- the configured STEP count per wheel revolution and corresponding field motion;
 - restoring torque while STEP is stopped and the rotor is displaced;
 - signed sinusoidal phase torque;
 - voltage-limited current rise and R/L convergence;
@@ -92,71 +118,41 @@ The electrical actuator tests cover:
 - no persistent force caused solely by constant field speed;
 - physical-step convergence when the integration interval is halved.
 
-The fixed-stator/free-wheel fixture predicts approximately `93.97 Hz`
-analytically and `93.74 Hz` numerically. Retained hardware evidence shows a
-`93–95 Hz` free-wheel mode and provisional damping around `0.04–0.08`; the
-electrical fixture gives `0.0706`. The coupled two-motor body mode is
-approximately `62.62 Hz` and is a different fixture. These are actuator/model
-correlation checks, not controller tuning targets and not grounds for changing
-the controller notch without new evidence.
+The fixed-stator/free-wheel fixture is used for analytical and numerical
+ringdown correlation. Retained hardware captures can provide evidence about
+frequency, phase sign, and current/torque timing, but they are not a license
+to fit controller gains or silently change the actuator model. The coupled
+two-motor body mode is a separate fixture from the one-motor ringdown.
 
 The retained optical input is in
 [`data/hardware_sessions/motor_tracking`](../../data/hardware_sessions/motor_tracking/).
 It supports frequency, phase-sign, and current/torque timing checks. It does
 not support fitting controller gains or adding a per-microstep correction.
 
-## Current controller profile
+## Controller and profile boundary
 
-The normal electrical profile is [`pid.conf`](../../pid.conf):
+Controller gains, motion limits, COM policy, and the normal electrical profile
+are owned by [`pid.conf`](../../pid.conf) and the explicit test fixtures. They
+are not reproduced here. The DirectActuator comparison uses its dedicated
+fixture at `tests/data/direct_actuator_pid.conf`; do not substitute that
+profile's controller settings for the electrical plant.
 
-```text
-inner gains: 203550 / 1932 / 0 SPS units
-user speed: 0.12 m/s
-velocity P: 8 1/s
-velocity feedback pole: 3 Hz
-planner acceleration/deceleration/jerk: 0.25 / 0.25 / 1
-outer pitch authority: 10 deg
-fixed COM trim: 0 deg
-adaptive COM trim: disabled
-velocity I: disabled
-turn / balance ceilings: 1600 / 16000 SPS
-```
+This document describes how the actuator realizes a command. It does not
+authorize changing physics or adding a `physics_override` while evaluating
+controller candidates.
 
-The DirectActuator comparison uses its explicit fixture at
-`tests/data/direct_actuator_pid.conf`. Do not substitute that profile's gains
-for the electrical plant. Do not change physics or add a `physics_override`
-when evaluating controller candidates.
+## Simulation and test boundary
 
-## Simulator clocks and scenarios
+The simulator owns the scheduler, timestamped STEP stream, coupled rigid-body
+plant, completed-step observer, and profile-specific diagnostics. The actuator
+must preserve event timing and keep controller time, mechanical time, and
+electrical phase distinct.
 
-- IMU/controller state is sampled at the nominal 400 Hz cadence.
-- The outer observer and velocity-reference planner run at 100 Hz.
-- STEP events are timestamped within 2.5 ms motor frames and are processed at
-  their event time.
-- The completed-step observer uses corrected axle motion and a compiled
-  approximately 10 Hz measurement filter; `velocity_feedback_cutoff_hz` is a
-  separate control-path pole.
-
-The maintained Python suite compares this profile against DirectActuator over
-quiet balance, signed attitude recovery, disturbance/noise, drive/stop/
-reversal, authority, COM, long-horizon, and startup cases. Composite scenarios
-retain their concrete signed and uncertainty sub-runs in `build/sim` artifacts.
-
-The current electrical result is `23 passed, 4 skipped, 8 strict xfailed` in
-the focused Python matrix. The checked-in [`pid.conf`](../../pid.conf) is the
-golden simulator configuration for this surface. The remaining xfails are
-specific evidence boundaries: noisy/sustained-authority recovery, direct
-constant-lean electrical authority, plant uncertainty, and the high-angle
-startup boundary. Adaptive COM acquisition/maintenance and the generic
-reduced-traction override are explicit skips rather than controller failures.
-
-The golden nominal motion result is approximately `0.61 m` of signed travel
-for `0.56 m` of active reference travel in the full-forward case, with roughly
-90% hold-velocity tracking and mirrored forward/reverse behavior. This does
-not imply that the direct constant-pitch diagnostic is a valid stationary-lean
-test: a constant lean continuously accelerates the electrical plant and can
-reach its phase/safety boundary, while the velocity-reference loop actively
-arrests that motion.
+The maintained test suite compares this profile against DirectActuator over
+balance, signed recovery, disturbance, drive/stop/reversal, authority, COM,
+long-horizon, and startup scenarios. Scenario outputs and retained evidence
+belong in the generated artifacts and source-controlled data manifests, not in
+this normative profile description.
 
 ## Required checks
 

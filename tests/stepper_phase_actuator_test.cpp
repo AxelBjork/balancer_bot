@@ -915,7 +915,8 @@ TEST(StepperPhaseElectricalTest, ConstantFieldSpeedHasNoPersistentSpsForce) {
   double max_high_speed_error = 0.0;
   bool high_speed_voltage_limited = false;
 
-  for (const double steps_per_second : {100.0, 1000.0, 8000.0, 32000.0}) {
+  for (const double steps_per_second : {100.0, 1000.0, 8000.0, 16000.0, 32000.0,
+                                        64000.0}) {
     stepper_phase::ElectricalActuator actuator(parameters);
     commanded_steps = 0.0;
     for (int sample = 0; sample < 1000; ++sample) {
@@ -2303,7 +2304,7 @@ TEST(StepperPhaseElectricalTuningTest, CorrectedPlantGainRegionAndRecoveryFronti
   ConfigPid::values.velocity_I = 0.0;
   ConfigPid::values.velocity_pitch_limit_deg = 0.0;
   ConfigPid::values.pitch_accel_gain = 0.0;
-  ConfigPid::values.balance_max_sps = Config::max_step_rate_sps;
+  ConfigPid::values.balance_max_sps = Config::nominal_balance_max_sps;
 
   struct Metrics {
     SimulatorRunResult result;
@@ -2337,7 +2338,7 @@ TEST(StepperPhaseElectricalTuningTest, CorrectedPlantGainRegionAndRecoveryFronti
 
   const auto run = [&](double pitch_gain, double pitch_rate_gain, double pitch_deg,
                        double duration_s,
-                       double balance_limit_sps = Config::max_step_rate_sps) {
+                       double balance_limit_sps = Config::nominal_balance_max_sps) {
     ConfigPid::values.pitch_gain = pitch_gain;
     ConfigPid::values.pitch_rate_gain = pitch_rate_gain;
     ConfigPid::values.balance_max_sps = balance_limit_sps;
@@ -2452,7 +2453,7 @@ TEST(StepperPhaseElectricalTuningTest, CorrectedPlantGainRegionAndRecoveryFronti
   const auto selected_negative = run(selected_pitch_gain, selected_pitch_rate_gain, -1.0, 3.0);
   EXPECT_FALSE(selected_positive.result.fell);
   EXPECT_FALSE(selected_negative.result.fell);
-  EXPECT_LE(selected_positive.requested_peak_sps, Config::max_step_rate_sps + 1.0e-9);
+  EXPECT_LE(selected_positive.requested_peak_sps, Config::nominal_balance_max_sps + 1.0e-9);
   EXPECT_LT(selected_positive.command_saturated_s, 0.05);
   EXPECT_LT(selected_positive.voltage_saturated_s, 0.01);
   EXPECT_NEAR(selected_positive.result.max_abs_pitch_deg,
@@ -2493,7 +2494,7 @@ TEST(StepperPhaseElectricalTuningTest, CorrectedPlantGainRegionAndRecoveryFronti
   for (const double pitch_deg : {4.0, 6.0}) {
     const double duration_s = pitch_deg <= 4.0 ? 3.0 : 10.0;
     const auto verified_limit = run(selected_pitch_gain, selected_pitch_rate_gain, pitch_deg,
-                                    duration_s, Config::max_step_rate_sps);
+                                    duration_s, Config::nominal_balance_max_sps);
     const auto historical_limit = run(selected_pitch_gain, selected_pitch_rate_gain, pitch_deg,
                                       duration_s, 8000.0);
     std::cout << "stepper_limit_comparison pitch_deg=" << pitch_deg

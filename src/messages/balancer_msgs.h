@@ -251,6 +251,14 @@ struct SimulatorTelemetryPayload {
   float tire_damping_n_s_per_m;
   float wheel_equivalent_mass_kg;
   bool force_saturated;
+  // Simulator-only velocity provenance appended after the established plant
+  // diagnostics. The emitted rate is the physical MotorFeedback counter rate;
+  // the synthetic term is nonzero only for explicit estimator perturbation
+  // fixtures; the controller-facing rate is the resulting counter rate after
+  // that optional term is applied.
+  float emitted_step_velocity_sps;
+  float synthetic_estimator_velocity_sps;
+  float controller_feedback_velocity_sps;
 };
 
 struct DOC_DESC(

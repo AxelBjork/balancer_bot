@@ -49,6 +49,10 @@ struct SimulatorPhysics {
   double no_load_speed_mps = 1.2;
   double traction_coefficient = 1.0;
   double motor_velocity_damping = 8.0;
+  // Linear viscous damping on chassis translation: generalized force
+  // F_cart = -cart_damping * x_dot, in N*s/m. It is not wheel, rotor, or
+  // relative motor damping; the coupled mass matrix propagates this force
+  // into pitch acceleration as appropriate.
   double cart_damping = 1.0;
   double pitch_damping = 0.02;
   // Gravity is configurable for conservative/passivity fixtures.  Production

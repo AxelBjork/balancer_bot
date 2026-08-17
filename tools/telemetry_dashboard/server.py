@@ -104,7 +104,7 @@ PID_CONFIG_LIMIT_FIELDS = frozenset({"turn_max_sps", "balance_max_sps"})
 # Keep the dashboard validation aligned with Config::max_step_rate_sps.  The
 # C++ configuration is authoritative for the runtime; this mirror prevents a
 # dashboard request from being rejected before it reaches that validator.
-MAX_STEP_RATE_SPS = 16000.0
+MAX_STEP_RATE_SPS = 64000.0
 MAX_MOTION_PITCH_SETPOINT_DEG = 45.0
 METERS_PER_STEP = 2.0 * math.pi * 0.0412 / 6400.0
 DISPLAY_HZ = 50.0
@@ -1140,6 +1140,7 @@ def load_playback_csv(path: Path) -> list[tuple[float, dict[str, Any]]]:
             "motion": {
                 "raw_completed_velocity_sps": _number(row, "raw_completed_velocity_sps", "vel_error"),
                 "corrected_axle_velocity_sps": _number(row, "corrected_axle_velocity_sps", "measured_vel_sps"),
+                "velocity_control_sps": _number(row, "velocity_control_sps"),
                 "left_target_sps": _number(row, "left_target_sps"),
                 "right_target_sps": _number(row, "right_target_sps"),
                 "left_slewed_sps": _number(row, "left_slewed_sps", "left_target_sps"),
@@ -1167,10 +1168,18 @@ def load_playback_csv(path: Path) -> list[tuple[float, dict[str, Any]]]:
                 "drive_pitch_target_deg": _number(row, "drive_pitch_target_deg"),
                 "final_pitch_target_deg": _number(row, "final_pitch_target_deg", "pitch_sp_deg"),
                 "pitch_error_deg": _number(row, "pitch_error_deg"),
+                "pitch_feedback_sps": _number(row, "pitch_feedback_sps"),
+                "pitch_rate_feedback_sps": _number(row, "pitch_rate_feedback_sps"),
+                "pitch_accel_feedback_sps": _number(row, "pitch_accel_feedback_sps"),
+                "balance_unclamped_sps": _number(row, "balance_unclamped_sps"),
+                "outer_acceleration_limited": bool(_number(row, "outer_acceleration_limited")),
+                "outer_pitch_target_limited": bool(_number(row, "outer_pitch_target_limited")),
                 "planner_acceleration_limited": bool(_number(row, "planner_acceleration_limited")),
                 "planner_jerk_limited": bool(_number(row, "planner_jerk_limited")),
                 "velocity_integral_limited": bool(_number(row, "velocity_integral_limited")),
                 "velocity_anti_windup_active": bool(_number(row, "velocity_anti_windup_active")),
+                "pitch_target_unclamped_deg": _number(row, "pitch_target_unclamped_deg"),
+                "pitch_target_limit_reason": int(_number(row, "pitch_target_limit_reason")),
                 "com_trim_deg": _number(row, "com_trim_deg"),
                 "fixed_com_trim_deg": _number(row, "fixed_com_trim_deg"),
             },

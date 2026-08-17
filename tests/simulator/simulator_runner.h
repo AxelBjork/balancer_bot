@@ -184,6 +184,13 @@ struct SimulatorTimelineRow {
   double right_slewed_sps = 0.0;
   double left_actual_steps = 0.0;
   double right_actual_steps = 0.0;
+  // Simulator-only velocity provenance. The emitted rate is derived from the
+  // physical MotorFeedback counters before any optional estimator fixture is
+  // applied. The controller-facing rate includes that fixture, while the
+  // production telemetry fields below remain the filtered observer stages.
+  double emitted_step_velocity_sps = 0.0;
+  double synthetic_estimator_velocity_sps = 0.0;
+  double controller_feedback_velocity_sps = 0.0;
   double plant_pitch_deg = 0.0;
   double plant_pitch_rate_dps = 0.0;
   double plant_position = 0.0;
@@ -322,9 +329,17 @@ std::vector<SimulatorScenario> tuning_drive_scenario_set(
 std::vector<SimulatorScenario> tuning_motion_scenario_set(
     PhysicsProfile physics_profile = PhysicsProfile::StepperPhaseElectrical);
 std::vector<SimulatorScenario> tuning_outer_motion_scenario_set(
-    PhysicsProfile physics_profile = PhysicsProfile::StepperPhaseElectrical);
+    PhysicsProfile physics_profile = PhysicsProfile::StepperPhaseElectrical,
+    std::optional<double> cart_damping_override = 1.0);
 std::vector<SimulatorScenario> tuning_leaky_integral_scenario_set(
-    PhysicsProfile physics_profile = PhysicsProfile::StepperPhaseElectrical);
+    PhysicsProfile physics_profile = PhysicsProfile::StepperPhaseElectrical,
+    std::optional<double> cart_damping_override = 1.0);
+std::vector<SimulatorScenario> tuning_distance_scenario_set(
+    PhysicsProfile physics_profile = PhysicsProfile::StepperPhaseElectrical,
+    std::optional<double> cart_damping_override = 1.0);
+std::vector<SimulatorScenario> tuning_speed_envelope_scenario_set(
+    PhysicsProfile physics_profile = PhysicsProfile::StepperPhaseElectrical,
+    std::optional<double> cart_damping_override = 1.0);
 std::vector<SimulatorScenario> tuning_trim_scenario_set(
     PhysicsProfile physics_profile = PhysicsProfile::Realistic);
 TransferAcceptance evaluate_transfer_scenario(const SimulatorRunResult& result);

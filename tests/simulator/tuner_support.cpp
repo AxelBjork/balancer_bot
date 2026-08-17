@@ -27,6 +27,84 @@ double dt_at(const std::vector<SimulatorTimelineRow>& rows, size_t index) {
   return std::max(0.0, rows[index].sim_time_s - rows[index - 1].sim_time_s);
 }
 
+struct ActiveCommandInterval {
+  double start_s = 0.0;
+  double end_s = 0.0;
+  bool valid = false;
+};
+
+ActiveCommandInterval first_active_command_interval(const SimulatorRunResult& result) {
+  if (result.scenario.name.rfind("speed_envelope_", 0) == 0) {
+    double start_s = std::numeric_limits<double>::infinity();
+    double end_s = 0.0;
+    for (const auto& segment : result.scenario.joy_segments) {
+      if (segment.duration_s <= 0.0 ||
+          (std::abs(segment.forward) <= 1e-9 && std::abs(segment.forward_end) <= 1e-9)) {
+        continue;
+      }
+      start_s = std::min(start_s, segment.start_s);
+      end_s = std::max(end_s, std::min(result.scenario.duration_s,
+                                       segment.start_s + segment.duration_s));
+    }
+    if (std::isfinite(start_s) && end_s > start_s + 1e-9) {
+      return {.start_s = start_s, .end_s = end_s, .valid = true};
+    }
+    return {};
+  }
+
+  for (const auto& segment : result.scenario.joy_segments) {
+    if (segment.duration_s <= 0.0 || std::abs(segment.forward) <= 1e-9) continue;
+    double end_s = std::min(result.scenario.duration_s, segment.start_s + segment.duration_s);
+    for (const auto& other : result.scenario.joy_segments) {
+      if (other.start_s > segment.start_s + 1e-9) end_s = std::min(end_s, other.start_s);
+    }
+    if (end_s > segment.start_s + 1e-9) {
+      return {.start_s = segment.start_s, .end_s = end_s, .valid = true};
+    }
+  }
+  return {};
+}
+
+template <typename Selector>
+double sample_at(const std::vector<SimulatorTimelineRow>& rows, double time_s,
+                 Selector selector) {
+  if (rows.empty()) return std::numeric_limits<double>::quiet_NaN();
+  if (time_s <= rows.front().sim_time_s) return selector(rows.front());
+  if (time_s >= rows.back().sim_time_s) return selector(rows.back());
+  const auto upper = std::lower_bound(
+      rows.begin(), rows.end(), time_s,
+      [](const SimulatorTimelineRow& row, double value) { return row.sim_time_s < value; });
+  if (upper == rows.begin()) return selector(*upper);
+  const auto& before = *(upper - 1);
+  const double span_s = upper->sim_time_s - before.sim_time_s;
+  if (span_s <= 0.0) return selector(*upper);
+  const double fraction = (time_s - before.sim_time_s) / span_s;
+  return selector(before) + fraction * (selector(*upper) - selector(before));
+}
+
+template <typename Selector>
+double integrate_interval(const std::vector<SimulatorTimelineRow>& rows, double start_s,
+                          double end_s, Selector selector) {
+  double integral = 0.0;
+  if (rows.size() < 2 || end_s <= start_s) return integral;
+  for (size_t index = 1; index < rows.size(); ++index) {
+    const auto& before = rows[index - 1];
+    const auto& after = rows[index];
+    const double overlap_start = std::max(start_s, before.sim_time_s);
+    const double overlap_end = std::min(end_s, after.sim_time_s);
+    if (overlap_end <= overlap_start) continue;
+    const double span_s = after.sim_time_s - before.sim_time_s;
+    if (span_s <= 0.0) continue;
+    const auto interpolate = [&](double time_s) {
+      const double fraction = (time_s - before.sim_time_s) / span_s;
+      return selector(before) + fraction * (selector(after) - selector(before));
+    };
+    integral += 0.5 * (interpolate(overlap_start) + interpolate(overlap_end)) *
+                (overlap_end - overlap_start);
+  }
+  return integral;
+}
+
 struct HoldWindowAccumulator {
   double duration_s = 0.0;
   double user_sum = 0.0;
@@ -151,6 +229,70 @@ void calculate_release_metrics(const SimulatorRunResult& result, ScenarioMetrics
   }
 }
 
+void calculate_active_distance_metrics(const SimulatorRunResult& result,
+                                       ScenarioMetrics& metrics) {
+  const auto interval = first_active_command_interval(result);
+  if (!interval.valid || result.rows.size() < 2) return;
+
+  const auto& rows = result.rows;
+  const double duration_s = interval.end_s - interval.start_s;
+  const auto position = [](const SimulatorTimelineRow& row) { return row.plant_position; };
+  const auto reference_velocity =
+      [](const SimulatorTimelineRow& row) { return row.reference_velocity_mps; };
+  const auto actual_velocity = [](const SimulatorTimelineRow& row) { return row.plant_velocity; };
+  const auto reference_acceleration =
+      [](const SimulatorTimelineRow& row) { return row.reference_acceleration_mps2; };
+  const auto p_acceleration =
+      [](const SimulatorTimelineRow& row) { return row.velocity_p_acceleration_mps2; };
+  const auto i_acceleration =
+      [](const SimulatorTimelineRow& row) { return row.velocity_i_acceleration_mps2; };
+
+  metrics.active_command_start_s = interval.start_s;
+  metrics.active_command_end_s = interval.end_s;
+  const double start_position = sample_at(rows, interval.start_s, position);
+  const double end_position = sample_at(rows, interval.end_s, position);
+  metrics.signed_distance_m = end_position - start_position;
+  metrics.reference_distance_m =
+      integrate_interval(rows, interval.start_s, interval.end_s, reference_velocity);
+  metrics.distance_tracking_fraction =
+      std::abs(metrics.reference_distance_m) > 1e-9
+          ? metrics.signed_distance_m / metrics.reference_distance_m
+          : 0.0;
+  metrics.active_mean_reference_velocity_mps =
+      integrate_interval(rows, interval.start_s, interval.end_s, reference_velocity) / duration_s;
+  metrics.active_mean_mechanical_velocity_mps =
+      integrate_interval(rows, interval.start_s, interval.end_s, actual_velocity) / duration_s;
+  metrics.active_final_mechanical_velocity_mps = sample_at(rows, interval.end_s, actual_velocity);
+  metrics.active_mean_a_ref_mps2 =
+      integrate_interval(rows, interval.start_s, interval.end_s, reference_acceleration) /
+      duration_s;
+  metrics.active_mean_a_p_mps2 =
+      integrate_interval(rows, interval.start_s, interval.end_s, p_acceleration) / duration_s;
+  metrics.active_mean_a_i_mps2 =
+      integrate_interval(rows, interval.start_s, interval.end_s, i_acceleration) / duration_s;
+  metrics.active_peak_mechanical_velocity_mps = 0.0;
+  metrics.active_peak_a_ref_mps2 = 0.0;
+  metrics.active_peak_a_p_mps2 = 0.0;
+  metrics.active_peak_a_i_mps2 = 0.0;
+  for (const auto& row : rows) {
+    if (row.sim_time_s < interval.start_s || row.sim_time_s > interval.end_s) continue;
+    metrics.active_peak_mechanical_velocity_mps =
+        std::max(metrics.active_peak_mechanical_velocity_mps, std::abs(row.plant_velocity));
+    metrics.active_peak_a_ref_mps2 =
+        std::max(metrics.active_peak_a_ref_mps2, std::abs(row.reference_acceleration_mps2));
+    metrics.active_peak_a_p_mps2 =
+        std::max(metrics.active_peak_a_p_mps2, std::abs(row.velocity_p_acceleration_mps2));
+    metrics.active_peak_a_i_mps2 =
+        std::max(metrics.active_peak_a_i_mps2, std::abs(row.velocity_i_acceleration_mps2));
+  }
+  metrics.active_distance_valid =
+      std::isfinite(metrics.signed_distance_m) && std::isfinite(metrics.reference_distance_m) &&
+      std::isfinite(metrics.distance_tracking_fraction) &&
+      std::isfinite(metrics.active_mean_mechanical_velocity_mps) &&
+      std::isfinite(metrics.active_final_mechanical_velocity_mps) &&
+      std::abs(metrics.reference_distance_m) > 1e-9;
+}
+
 }  // namespace
 
 ScenarioMetrics calculate_tuning_metrics(const SimulatorRunResult& result) {
@@ -264,7 +406,9 @@ ScenarioMetrics calculate_tuning_metrics(const SimulatorRunResult& result) {
     if (row.outer_pitch_target_limited > 0.5) {
       metrics.outer_pitch_target_limited_time_s += dt_s;
     }
-    if (std::abs(row.u_sps) >= 0.95 * Config::max_step_rate_sps) {
+    const double configured_balance_limit =
+        std::max(1.0, std::abs(ConfigPid::values.balance_max_sps));
+    if (std::abs(row.u_sps) >= 0.95 * configured_balance_limit) {
       metrics.command_near_rail_time_s += dt_s;
     }
 
@@ -392,6 +536,7 @@ ScenarioMetrics calculate_tuning_metrics(const SimulatorRunResult& result) {
   }
   if (!metrics.settled) metrics.settling_time_s = std::numeric_limits<double>::infinity();
   calculate_release_metrics(result, metrics);
+  calculate_active_distance_metrics(result, metrics);
   metrics.safe = !result.fell && result.actuator_fault_count == 0 &&
                  result.controller_fault_flags == 0 && std::isfinite(metrics.peak_pitch_deg) &&
                  std::isfinite(metrics.peak_rate_dps);
@@ -471,6 +616,12 @@ std::string tuning_metrics_csv_header() {
          "mechanical_velocity_hold_reference_mean_mps,mechanical_velocity_hold_actual_mean_mps,"
          "mechanical_velocity_hold_abs_error_mps,mechanical_velocity_hold_direction_fraction,"
          "mechanical_velocity_hold_target_fraction,mechanical_velocity_hold_duration_s,"
+         "active_command_start_s,active_command_end_s,signed_distance_m,reference_distance_m,"
+         "distance_tracking_fraction,active_mean_reference_velocity_mps,"
+         "active_mean_mechanical_velocity_mps,active_peak_mechanical_velocity_mps,"
+         "active_final_mechanical_velocity_mps,active_mean_a_ref_mps2,active_mean_a_p_mps2,"
+         "active_mean_a_i_mps2,active_peak_a_ref_mps2,active_peak_a_p_mps2,"
+         "active_peak_a_i_mps2,active_distance_valid,"
          "drive_pitch_peak_deg,outer_limit_fraction,"
          "growing_oscillation,settled,safe";
 }
@@ -497,8 +648,18 @@ std::string tuning_metrics_csv_row(const ScenarioMetrics& m) {
          << m.mechanical_velocity_hold_abs_error_mps << ','
          << m.mechanical_velocity_hold_direction_fraction << ','
          << m.mechanical_velocity_hold_target_fraction << ','
-         << m.mechanical_velocity_hold_duration_s << ',' << m.drive_pitch_peak_deg << ','
-         << m.outer_limit_fraction << ',' << m.growing_oscillation << ',' << m.settled << ','
+         << m.mechanical_velocity_hold_duration_s << ',' << m.active_command_start_s << ','
+         << m.active_command_end_s << ',' << m.signed_distance_m << ','
+         << m.reference_distance_m << ',' << m.distance_tracking_fraction << ','
+         << m.active_mean_reference_velocity_mps << ','
+         << m.active_mean_mechanical_velocity_mps << ','
+         << m.active_peak_mechanical_velocity_mps << ','
+         << m.active_final_mechanical_velocity_mps << ',' << m.active_mean_a_ref_mps2 << ','
+         << m.active_mean_a_p_mps2 << ',' << m.active_mean_a_i_mps2 << ','
+         << m.active_peak_a_ref_mps2 << ',' << m.active_peak_a_p_mps2 << ','
+         << m.active_peak_a_i_mps2 << ',' << m.active_distance_valid << ','
+         << m.drive_pitch_peak_deg << ',' << m.outer_limit_fraction << ','
+         << m.growing_oscillation << ',' << m.settled << ','
          << m.safe;
   return output.str();
 }
