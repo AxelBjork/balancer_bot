@@ -1,7 +1,6 @@
 #include "simulator/simulator_runner.h"
 
 #include <algorithm>
-#include <bit>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -42,7 +41,6 @@ SimulatorRunResult run_simulator_scenario_with_loaded_pid(const SimulatorScenari
   for (int i = 0; i < steps; ++i) {
     const SimulatorTimelineRow row = engine.step();
     result.rows.push_back(row);
-    result.timeline_hash = update_simulator_timeline_hash(result.timeline_hash, row);
     result.max_abs_pitch_deg = std::max(result.max_abs_pitch_deg, std::abs(row.plant_pitch_deg));
     result.controller_fault_flags |= row.controller_fault_flags;
     if (row.actuator_fault > 0.5) ++result.actuator_fault_count;
@@ -67,71 +65,6 @@ SimulatorRunResult run_simulator_scenario_with_loaded_pid(const SimulatorScenari
     result.tail_rms_pitch_deg = std::sqrt(tail_squared / static_cast<double>(tail_count));
   }
   return result;
-}
-
-uint64_t update_simulator_timeline_hash(uint64_t hash, const SimulatorTimelineRow& row) {
-  const auto add_u64 = [&hash](uint64_t value) {
-    for (int shift = 0; shift < 64; shift += 8) {
-      hash ^= (value >> shift) & 0xffU;
-      hash *= 1099511628211ULL;
-    }
-  };
-  const auto add_double = [&add_u64](double value) { add_u64(std::bit_cast<uint64_t>(value)); };
-  add_double(row.sim_time_s);
-  add_u64(row.imu_timestamp_us);
-  add_double(row.plant_pitch_deg);
-  add_double(row.plant_pitch_rate_dps);
-  add_double(row.plant_position);
-  add_double(row.plant_velocity);
-  add_double(row.u_sps);
-  add_double(row.turn_sps);
-  add_double(row.left_sps);
-  add_double(row.right_sps);
-  add_double(row.left_slewed_sps);
-  add_double(row.right_slewed_sps);
-  add_double(row.left_actual_steps);
-  add_double(row.right_actual_steps);
-  add_u64(row.controller_fault_flags);
-  add_u64(row.controller_saturation_flags);
-  add_u64(row.trim_learning_enabled > 0.5 ? 1u : 0u);
-  add_u64(row.trim_learning_block_reason);
-  add_u64(row.actuator_saturation_flags);
-  add_double(row.stepper_commanded_microsteps_left);
-  add_double(row.stepper_commanded_microsteps_right);
-  add_double(row.stepper_actual_relative_angle_left_rad);
-  add_double(row.stepper_actual_relative_angle_right_rad);
-  add_double(row.stepper_electrical_phase_error_left_rad);
-  add_double(row.stepper_electrical_phase_error_right_rad);
-  add_double(row.stepper_torque_left_nm);
-  add_double(row.stepper_torque_right_nm);
-  add_double(row.stepper_chassis_velocity_mps);
-  add_double(row.stepper_current_ref_a_left);
-  add_double(row.stepper_current_ref_b_left);
-  add_double(row.stepper_current_a_left);
-  add_double(row.stepper_current_b_left);
-  add_double(row.stepper_phase_voltage_a_left);
-  add_double(row.stepper_phase_voltage_b_left);
-  add_double(row.stepper_back_emf_a_left);
-  add_double(row.stepper_back_emf_b_left);
-  add_double(row.stepper_electrical_power_left_w);
-  add_double(row.stepper_mechanical_power_left_w);
-  add_double(row.stepper_resistive_loss_left_w);
-  add_double(row.stepper_magnetic_energy_left_j);
-  add_double(row.stepper_current_ref_a_right);
-  add_double(row.stepper_current_ref_b_right);
-  add_double(row.stepper_current_a_right);
-  add_double(row.stepper_current_b_right);
-  add_double(row.stepper_phase_voltage_a_right);
-  add_double(row.stepper_phase_voltage_b_right);
-  add_double(row.stepper_back_emf_a_right);
-  add_double(row.stepper_back_emf_b_right);
-  add_double(row.stepper_electrical_power_right_w);
-  add_double(row.stepper_mechanical_power_right_w);
-  add_double(row.stepper_resistive_loss_right_w);
-  add_double(row.stepper_magnetic_energy_right_j);
-  add_u64(row.stepper_voltage_saturated_left > 0.5 ? 1u : 0u);
-  add_u64(row.stepper_voltage_saturated_right > 0.5 ? 1u : 0u);
-  return hash;
 }
 
 SimulatorRunResult run_simulator_scenario(const SimulatorScenario& scenario,
@@ -433,12 +366,282 @@ std::vector<SimulatorScenario> tuning_drive_scenario_set(PhysicsProfile physics_
 }
 
 std::vector<SimulatorScenario> tuning_velocity_scenario_set(PhysicsProfile physics_profile) {
-  auto scenarios = tuning_authority_scenario_set(physics_profile);
-  for (auto& scenario : scenarios) scenario.name.replace(0, 17, "tuning_velocity_");
+  const auto release = [physics_profile](std::string name, double sign) {
+    SimulatorScenario scenario;
+    scenario.name = std::move(name);
+    scenario.duration_s = 10.0;
+    scenario.initial_velocity_mps = sign * 1500.0 * Config::meters_per_step;
+    scenario.physics_profile = physics_profile;
+    return scenario;
+  };
+  const auto push = [physics_profile](std::string name, double force_n) {
+    SimulatorScenario scenario;
+    scenario.name = std::move(name);
+    scenario.duration_s = 10.0;
+    scenario.physics_profile = physics_profile;
+    scenario.disturbances.push_back(SimulatorDisturbance{
+        .kind = SimulatorDisturbanceKind::Step,
+        .start_s = 2.0,
+        .duration_s = 0.10,
+        .force_n = force_n,
+    });
+    return scenario;
+  };
+
+  std::vector<SimulatorScenario> scenarios;
+  SimulatorScenario neutral;
+  neutral.name = "tuning_velocity_neutral";
+  neutral.duration_s = 6.0;
+  neutral.physics_profile = physics_profile;
+  scenarios.push_back(neutral);
+  scenarios.push_back(release("tuning_velocity_release_pos", 1.0));
+  scenarios.push_back(release("tuning_velocity_release_neg", -1.0));
+  scenarios.push_back(push("tuning_velocity_push_pos", 0.5));
+  scenarios.push_back(push("tuning_velocity_push_neg", -0.5));
+
   auto drive = tuning_drive_scenario_set(physics_profile);
   drive.front().name = "tuning_velocity_drive";
+  drive.front().duration_s = 10.0;
+  drive.front().disturbances.push_back(SimulatorDisturbance{
+      .kind = SimulatorDisturbanceKind::Step,
+      .start_s = 2.5,
+      .duration_s = 0.10,
+      .force_n = 0.5,
+  });
   scenarios.insert(scenarios.end(), drive.begin(), drive.end());
   return scenarios;
+}
+
+std::vector<SimulatorScenario> tuning_motion_scenario_set(PhysicsProfile physics_profile) {
+  // These scenarios exercise the planner contract directly. A normalized
+  // command of 0.46 is approximately +0.05 m/s with the conservative 0.12
+  // m/s user-speed cap; release is represented by the absence of a segment.
+  constexpr double kHalfSpeedCommand = 0.46;
+  constexpr double kFullSpeedCommand = 0.92;
+  const auto motion = [physics_profile](std::string name, double duration_s) {
+    SimulatorScenario scenario;
+    scenario.name = std::move(name);
+    scenario.duration_s = duration_s;
+    scenario.physics_profile = physics_profile;
+    return scenario;
+  };
+  auto positive = motion("motion_positive_hold_release", 8.0);
+  positive.joy_segments = {{1.0, 3.0, kHalfSpeedCommand, 0.0, kHalfSpeedCommand, 0.0}};
+
+  auto negative = motion("motion_negative_hold_release", 8.0);
+  negative.joy_segments = {{1.0, 3.0, -kHalfSpeedCommand, 0.0, -kHalfSpeedCommand, 0.0}};
+
+  auto reversal = motion("motion_reversal_through_zero", 9.0);
+  reversal.joy_segments = {
+      {1.0, 2.5, kHalfSpeedCommand, 0.0, kHalfSpeedCommand, 0.0},
+      {5.0, 2.5, -kHalfSpeedCommand, 0.0, -kHalfSpeedCommand, 0.0},
+  };
+
+  auto ramp = motion("motion_analog_ramp", 8.0);
+  ramp.joy_segments = {{1.0, 4.0, 0.0, 0.0, kHalfSpeedCommand, 0.0}};
+
+  auto high_speed = motion("motion_high_speed_hold_release", 8.0);
+  high_speed.joy_segments = {{1.0, 2.5, kFullSpeedCommand, 0.0, kFullSpeedCommand, 0.0}};
+
+  auto translating_push = motion("motion_push_while_translating", 9.0);
+  translating_push.joy_segments = {{1.0, 5.0, kHalfSpeedCommand, 0.0, kHalfSpeedCommand, 0.0}};
+  translating_push.disturbances.push_back(SimulatorDisturbance{
+      .kind = SimulatorDisturbanceKind::Step,
+      .start_s = 3.0,
+      .duration_s = 0.10,
+      .force_n = 0.5,
+  });
+
+  auto signed_push = motion("motion_negative_push_while_translating", 9.0);
+  signed_push.joy_segments = {{1.0, 5.0, -kHalfSpeedCommand, 0.0, -kHalfSpeedCommand, 0.0}};
+  signed_push.disturbances.push_back(SimulatorDisturbance{
+      .kind = SimulatorDisturbanceKind::Step,
+      .start_s = 3.0,
+      .duration_s = 0.10,
+      .force_n = -0.5,
+  });
+
+  return {positive, negative, reversal, ramp, high_speed, translating_push, signed_push};
+}
+
+std::vector<SimulatorScenario> tuning_outer_motion_scenario_set(
+    PhysicsProfile physics_profile) {
+  // This set is intentionally expressed in physical target velocities. The
+  // simulator still receives the same normalized joystick command as the
+  // production path, but the conversion below compensates for the configured
+  // deadzone so that the planner's v_user is exactly the requested value when
+  // drive_max_velocity_mps is the fixed 0.12 m/s tuning surface.
+  constexpr double kUserSpeedMps = 0.12;
+  constexpr double kDeadzone = Config::deadzone;
+  const auto command_for_velocity = [](double velocity_mps) {
+    if (std::abs(velocity_mps) <= 1e-12) return 0.0;
+    const double magnitude = std::clamp(std::abs(velocity_mps) / kUserSpeedMps, 0.0, 1.0);
+    return std::copysign(kDeadzone + magnitude * (1.0 - kDeadzone), velocity_mps);
+  };
+  // Match the existing fixed Python outer-loop behavioral surface while
+  // obtaining every other parameter from the selected profile. This does not
+  // alter StepperPhaseElectrical physics or duplicate its constants.
+  auto fixed_outer_physics = BalancerSimulator::physics_for_profile(physics_profile);
+  fixed_outer_physics.cart_damping = 40.0;
+  const auto motion = [physics_profile, &fixed_outer_physics](std::string name,
+                                                               double duration_s) {
+    SimulatorScenario scenario;
+    scenario.name = std::move(name);
+    scenario.duration_s = duration_s;
+    scenario.physics_profile = physics_profile;
+    scenario.physics_override = fixed_outer_physics;
+    return scenario;
+  };
+  const auto held = [&](std::string name, double target_mps, double duration_s,
+                        double hold_duration_s) {
+    auto scenario = motion(std::move(name), duration_s);
+    scenario.joy_segments = {{1.0, hold_duration_s, command_for_velocity(target_mps), 0.0,
+                              command_for_velocity(target_mps), 0.0}};
+    return scenario;
+  };
+
+  auto positive_005 = held("motion_target_pos_005_release", 0.05, 12.0, 5.0);
+  auto negative_005 = held("motion_target_neg_005_release", -0.05, 12.0, 5.0);
+  auto positive_010 = held("motion_target_pos_010_release", 0.10, 14.0, 6.0);
+  auto negative_010 = held("motion_target_neg_010_release", -0.10, 14.0, 6.0);
+
+  auto reversal = motion("motion_target_reversal_pos010_neg010", 18.0);
+  reversal.joy_segments = {
+      {1.0, 4.0, command_for_velocity(0.10), 0.0, command_for_velocity(0.10), 0.0},
+      {9.0, 5.0, command_for_velocity(-0.10), 0.0, command_for_velocity(-0.10), 0.0},
+  };
+
+  // Preserve the timing and command shape of the fixed behavioral drive/stop
+  // surface, without changing the plant or its scenario assertions.
+  auto drive_stop = motion("motion_fixed_drive_stop", 70.0);
+  drive_stop.physics_override = fixed_outer_physics;
+  drive_stop.joy_segments = {
+      {2.0, 12.0, 0.45, 0.0, 0.45, 0.0},
+      {12.0, 2.0, -0.55, 0.0, -0.55, 0.0},
+  };
+
+  auto push_positive = held("motion_target_pos_005_push", 0.05, 12.0, 8.0);
+  push_positive.disturbances.push_back({
+      .kind = SimulatorDisturbanceKind::Step, .start_s = 4.0, .duration_s = 0.15,
+      .force_n = 0.5});
+  auto push_negative = held("motion_target_neg_005_push", -0.05, 12.0, 8.0);
+  push_negative.disturbances.push_back({
+      .kind = SimulatorDisturbanceKind::Step, .start_s = 4.0, .duration_s = 0.15,
+      .force_n = -0.5});
+
+  auto initial_015 = motion("motion_initial_velocity_pos1500", 18.0);
+  initial_015.physics_override = fixed_outer_physics;
+  initial_015.initial_velocity_mps = 1500.0 * Config::meters_per_step;
+  auto initial_neg_015 = motion("motion_initial_velocity_neg1500", 18.0);
+  initial_neg_015.physics_override = fixed_outer_physics;
+  initial_neg_015.initial_velocity_mps = -1500.0 * Config::meters_per_step;
+  auto initial_035 = motion("motion_initial_velocity_pos3500", 24.0);
+  initial_035.physics_override = fixed_outer_physics;
+  initial_035.initial_velocity_mps = 3500.0 * Config::meters_per_step;
+  auto initial_neg_035 = motion("motion_initial_velocity_neg3500", 24.0);
+  initial_neg_035.physics_override = fixed_outer_physics;
+  initial_neg_035.initial_velocity_mps = -3500.0 * Config::meters_per_step;
+
+  // Compact guards keep the motion optimizer from trading away the known
+  // attitude envelope. They remain ordinary simulator scenarios and do not
+  // alter any fixed behavioral assertion.
+  auto neutral = motion("guard_neutral_balance", 8.0);
+  auto pitch_pos_1 = motion("guard_pitch_pos1", 8.0);
+  pitch_pos_1.initial_pitch_deg = 1.0;
+  auto pitch_neg_1 = motion("guard_pitch_neg1", 8.0);
+  pitch_neg_1.initial_pitch_deg = -1.0;
+  auto pitch_pos_4 = motion("guard_pitch_pos4", 10.0);
+  pitch_pos_4.initial_pitch_deg = 4.0;
+  auto pitch_neg_4 = motion("guard_pitch_neg4", 10.0);
+  pitch_neg_4.initial_pitch_deg = -4.0;
+  auto guard_push = motion("guard_push_recovery", 12.0);
+  guard_push.disturbances.push_back({
+      .kind = SimulatorDisturbanceKind::Step, .start_s = 3.0, .duration_s = 0.15,
+      .force_n = 0.5});
+
+  return {positive_005, negative_005, positive_010, negative_010, reversal, drive_stop,
+          push_positive, push_negative, initial_015, initial_neg_015, initial_035,
+          initial_neg_035, neutral, pitch_pos_1, pitch_neg_1, pitch_pos_4, pitch_neg_4,
+          guard_push};
+}
+
+std::vector<SimulatorScenario> tuning_leaky_integral_scenario_set(
+    PhysicsProfile physics_profile) {
+  // This is deliberately narrower than the broad outer-motion surface. It
+  // gives a bounded integral several seconds of real hold time to accumulate
+  // while keeping the planner, speed cap, and authority fixed for the P/I
+  // comparison.
+  constexpr double kUserSpeedMps = 0.12;
+  constexpr double kDeadzone = Config::deadzone;
+  const auto command_for_velocity = [](double velocity_mps) {
+    if (std::abs(velocity_mps) <= 1e-12) return 0.0;
+    const double magnitude = std::clamp(std::abs(velocity_mps) / kUserSpeedMps, 0.0, 1.0);
+    return std::copysign(kDeadzone + magnitude * (1.0 - kDeadzone), velocity_mps);
+  };
+
+  auto fixed_outer_physics = BalancerSimulator::physics_for_profile(physics_profile);
+  fixed_outer_physics.cart_damping = 40.0;
+  const auto motion = [physics_profile, &fixed_outer_physics](std::string name,
+                                                               double duration_s) {
+    SimulatorScenario scenario;
+    scenario.name = std::move(name);
+    scenario.duration_s = duration_s;
+    scenario.physics_profile = physics_profile;
+    scenario.physics_override = fixed_outer_physics;
+    return scenario;
+  };
+  const auto held = [&](std::string name, double target_mps, double duration_s,
+                        double hold_duration_s) {
+    auto scenario = motion(std::move(name), duration_s);
+    scenario.joy_segments = {{1.0, hold_duration_s, command_for_velocity(target_mps), 0.0,
+                              command_for_velocity(target_mps), 0.0}};
+    return scenario;
+  };
+
+  auto positive_005 = held("motion_pi_pos005_hold_release", 0.05, 14.0, 8.0);
+  auto negative_005 = held("motion_pi_neg005_hold_release", -0.05, 14.0, 8.0);
+  auto positive_010 = held("motion_pi_pos010_hold_release", 0.10, 16.0, 8.0);
+  auto negative_010 = held("motion_pi_neg010_hold_release", -0.10, 16.0, 8.0);
+  auto long_positive = held("motion_pi_long_pos005_hold_release", 0.05, 28.0, 20.0);
+  auto long_negative = held("motion_pi_long_neg005_hold_release", -0.05, 28.0, 20.0);
+
+  auto reversal = motion("motion_pi_reversal_pos010_neg010", 24.0);
+  reversal.joy_segments = {
+      {1.0, 6.0, command_for_velocity(0.10), 0.0, command_for_velocity(0.10), 0.0},
+      {11.0, 7.0, command_for_velocity(-0.10), 0.0, command_for_velocity(-0.10), 0.0},
+  };
+  auto reverse_reversal = motion("motion_pi_reversal_neg010_pos010", 24.0);
+  reverse_reversal.joy_segments = {
+      {1.0, 6.0, command_for_velocity(-0.10), 0.0, command_for_velocity(-0.10), 0.0},
+      {11.0, 7.0, command_for_velocity(0.10), 0.0, command_for_velocity(0.10), 0.0},
+  };
+
+  auto push_positive = held("motion_pi_pos005_push", 0.05, 14.0, 10.0);
+  push_positive.disturbances.push_back({
+      .kind = SimulatorDisturbanceKind::Step, .start_s = 4.0, .duration_s = 0.15,
+      .force_n = 0.5});
+  auto push_negative = held("motion_pi_neg005_push", -0.05, 14.0, 10.0);
+  push_negative.disturbances.push_back({
+      .kind = SimulatorDisturbanceKind::Step, .start_s = 4.0, .duration_s = 0.15,
+      .force_n = -0.5});
+
+  auto neutral = motion("guard_pi_neutral_balance", 8.0);
+  auto pitch_pos_1 = motion("guard_pi_pitch_pos1", 8.0);
+  pitch_pos_1.initial_pitch_deg = 1.0;
+  auto pitch_neg_1 = motion("guard_pi_pitch_neg1", 8.0);
+  pitch_neg_1.initial_pitch_deg = -1.0;
+  auto pitch_pos_4 = motion("guard_pi_pitch_pos4", 10.0);
+  pitch_pos_4.initial_pitch_deg = 4.0;
+  auto pitch_neg_4 = motion("guard_pi_pitch_neg4", 10.0);
+  pitch_neg_4.initial_pitch_deg = -4.0;
+  auto guard_push = motion("guard_pi_push_recovery", 12.0);
+  guard_push.disturbances.push_back({
+      .kind = SimulatorDisturbanceKind::Step, .start_s = 3.0, .duration_s = 0.15,
+      .force_n = 0.5});
+
+  return {positive_005, negative_005, positive_010, negative_010, long_positive,
+          long_negative, reversal, reverse_reversal, push_positive, push_negative, neutral,
+          pitch_pos_1, pitch_neg_1, pitch_pos_4, pitch_neg_4, guard_push};
 }
 
 std::vector<SimulatorScenario> tuning_trim_scenario_set(PhysicsProfile physics_profile) {
@@ -536,16 +739,13 @@ TransferAcceptance evaluate_transfer_scenario(const SimulatorRunResult& result) 
   }
 
   if (drive) {
-    // The drive segment is deliberately a 0.20 normalized command. With the
-    // shared acceleration and velocity-damping defaults its meaningful target
-    // is the damping-limited steady speed, not the old fixed 800 SPS fixture.
+    // The drive segment is deliberately a 0.20 normalized command. Its
+    // reference speed is now explicit SI configuration rather than an
+    // acceleration/damping equilibrium inferred from legacy fields.
     const double normalized_drive =
         std::clamp((0.20 - Config::deadzone) / (1.0 - Config::deadzone), 0.0, 1.0);
     const double expected_speed_sps =
-        ConfigPid::values.velocity_damping_per_s > 0.0
-            ? normalized_drive * ConfigPid::values.drive_max_acceleration_mps2 /
-                  (ConfigPid::values.velocity_damping_per_s * Config::meters_per_step)
-            : static_cast<double>(ConfigPid::values.drive_max_sps);
+        normalized_drive * ConfigPid::values.drive_max_velocity_mps / Config::meters_per_step;
     const double target_sps = std::clamp(0.70 * expected_speed_sps, 50.0, 800.0);
     const auto first_correct_output = [&](double start_s, double sign) {
       return std::any_of(result.rows.begin(), result.rows.end(), [&](const auto& row) {

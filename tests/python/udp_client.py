@@ -38,6 +38,42 @@ class UdpClient:
             if timeout is not None:
                 self._sock.settimeout(old_timeout)
 
+    def recv_batch(
+        self,
+        timeout: float | None = None,
+        max_packets: int | None = None,
+    ) -> list[tuple[int, bytes]]:
+        """Receive one blocking packet followed by a nonblocking burst drain.
+
+        The simulator can finish a deterministic run faster than Python can
+        decode one telemetry dataclass at a time.  Keep the socket drain
+        limited to recv/copy work so the kernel receive queue is emptied
+        before the caller performs any expensive payload processing.
+        """
+        if max_packets is not None and max_packets <= 0:
+            return []
+
+        old_timeout = self._sock.gettimeout()
+        if timeout is not None:
+            self._sock.settimeout(timeout)
+        packets: list[tuple[int, bytes]] = []
+        try:
+            while max_packets is None or len(packets) < max_packets:
+                try:
+                    data, _addr = self._sock.recvfrom(4096)
+                except (BlockingIOError, socket.timeout):
+                    if not packets:
+                        raise
+                    break
+                if len(data) < 2:
+                    continue
+                packets.append((int.from_bytes(data[:2], "little"), data[2:]))
+                if len(packets) == 1:
+                    self._sock.setblocking(False)
+        finally:
+            self._sock.settimeout(old_timeout)
+        return packets
+
     def drain(self) -> None:
         old_timeout = self._sock.gettimeout()
         self._sock.settimeout(0.0)

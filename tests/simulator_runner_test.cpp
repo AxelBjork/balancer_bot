@@ -19,6 +19,14 @@
 #include "services/motor/motor_runner.h"
 #include "simulator/tuner_support.h"
 
+// Transitional source aliases for the legacy outer-loop assertions in this
+// test file. The production schema and parser expose only v12 names.
+#define velocity_control_cutoff_hz velocity_feedback_cutoff_hz
+#define velocity_damping_per_s velocity_gain_per_s
+#define velocity_pitch_limit_deg outer_pitch_limit_deg
+#define velocity_I adaptive_com_trim_gain_deg_per_mps_s
+#define velocity_I_limit_deg adaptive_com_trim_limit_deg
+
 namespace {
 
 // Lowest pitch stiffness that passed the physical StepperPhase 1/32 sanity
@@ -382,10 +390,8 @@ EquilibriumAngleReplay replay_equilibrium_angle(const SimulatorRunResult& result
     // Reconstruct the controller's q_eq_raw from the signals already present
     // in the simulator timeline.  This is deliberately an offline replay;
     // it does not replace the production trim state machine.
-    const double drive_pitch_deg = row.pitch_target_unclamped_deg -
-                                    row.velocity_pitch_request_limited_deg - row.com_trim_deg;
-    const double raw_deg = row.pitch_deg - drive_pitch_deg -
-                           row.velocity_pitch_request_limited_deg;
+    const double raw_deg = row.pitch_deg - row.drive_pitch_target_deg -
+                           row.fixed_com_trim_deg;
     if (!seeded) {
       replay.candidate_deg = raw_deg;
       replay.estimate_deg = raw_deg;
@@ -400,7 +406,7 @@ EquilibriumAngleReplay replay_equilibrium_angle(const SimulatorRunResult& result
     const bool quiet = std::abs(row.velocity_control_sps) <= 100.0 &&
                        row.trim_quiet_rate_rms_dps <= 10.0 &&
                        std::abs(row.pitch_error_deg) <= 1.0 &&
-                       row.velocity_authority_limited < 0.5 &&
+                       row.outer_acceleration_limited < 0.5 &&
                        row.trim_learning_block_reason !=
                            static_cast<uint32_t>(ComTrimLearningBlockCommand) &&
                        row.controller_saturation_flags == 0;
@@ -741,6 +747,32 @@ TEST(TunerSupportTest, MetricsAndParetoUtilitiesAreDeterministic) {
   EXPECT_TRUE(tuning_metrics_dominate({1.0, 2.0}, {1.0, 3.0}));
   EXPECT_FALSE(tuning_metrics_dominate({2.0, 1.0}, {1.0, 2.0}));
   EXPECT_EQ(normalized_tuning_metric(2.0, 1.0), 2.0);
+}
+
+TEST(TunerSupportTest, HoldMetricsUseThePreReleaseWindow) {
+  SimulatorRunResult result;
+  result.scenario.name = "motion_pi_hold_release";
+  result.scenario.duration_s = 4.0;
+  result.scenario.joy_segments = {{1.0, 2.0, 0.5, 0.0, 0.5, 0.0}};
+  const auto row = [](double time_s, double reference_mps, double plant_mps) {
+    SimulatorTimelineRow value;
+    value.sim_time_s = time_s;
+    value.user_velocity_mps = reference_mps;
+    value.reference_velocity_mps = reference_mps;
+    value.plant_velocity = plant_mps;
+    return value;
+  };
+  result.rows = {row(0.0, 0.0, 0.0), row(1.0, 0.05, 0.01), row(2.0, 0.05, 0.01),
+                 row(2.5, 0.05, 0.01), row(3.0, 0.05, 0.01), row(3.5, 0.0, 0.0),
+                 row(4.0, 0.0, 0.0)};
+
+  const auto metrics = calculate_tuning_metrics(result);
+  EXPECT_NEAR(metrics.mechanical_velocity_hold_duration_s, 1.0, 1e-12);
+  EXPECT_NEAR(metrics.mechanical_velocity_hold_reference_mean_mps, 0.05, 1e-12);
+  EXPECT_NEAR(metrics.mechanical_velocity_hold_actual_mean_mps, 0.01, 1e-12);
+  EXPECT_NEAR(metrics.mechanical_velocity_hold_abs_error_mps, 0.04, 1e-12);
+  EXPECT_NEAR(metrics.mechanical_velocity_late_error_mps, 0.04, 1e-12);
+  EXPECT_NEAR(metrics.mechanical_velocity_target_fraction, 0.2, 1e-12);
 }
 
 TEST(TunerSupportTest, StageRankingObjectivesAndDampingTieBreakAreDeterministic) {
@@ -1163,19 +1195,19 @@ TEST(SimulatorRunnerTest, JoySegmentsDriveForwardAndTurnCommands) {
   ASSERT_FALSE(result.rows.empty());
 
   double max_pitch_sp = 0.0;
-  double max_nominal_acceleration = 0.0;
+  double max_reference_acceleration = 0.0;
   double max_turn_split = 0.0;
   for (const auto& row : result.rows) {
     if (row.sim_time_s >= 0.2 && row.sim_time_s <= 0.5) {
       max_pitch_sp = std::max(max_pitch_sp, std::abs(row.pitch_sp_deg));
-      max_nominal_acceleration =
-          std::max(max_nominal_acceleration, std::abs(row.nominal_acceleration_mps2));
+      max_reference_acceleration =
+          std::max(max_reference_acceleration, std::abs(row.reference_acceleration_mps2));
       max_turn_split = std::max(max_turn_split, std::abs(row.left_sps - row.right_sps));
     }
   }
 
   EXPECT_GT(max_pitch_sp, 0.25);
-  EXPECT_GT(max_nominal_acceleration, 0.1);
+  EXPECT_GT(max_reference_acceleration, 0.1);
   EXPECT_GT(max_turn_split, 100.0);
 }
 
@@ -1749,7 +1781,7 @@ TEST(SimulatorModelIdentificationTest, RetiredNoSlipAliasDoesNotReintroduceOuter
             [](const auto& row) { return row.plant_pitch_rate_dps; });
         const double authority_time = signal_rms_in_window(
             result, 0.0, result.rows.back().sim_time_s + 1e-9,
-            [](const auto& row) { return row.velocity_authority_limited; });
+            [](const auto& row) { return row.outer_acceleration_limited; });
         std::cout << "no_slip_outer_candidate name=" << candidate.name
                   << " kp=" << pitch_gain << " initial_velocity_sps=" << initial_velocity_sps
                   << " fell=" << result.fell << " peak_velocity_sps=" << peak_velocity
@@ -1850,7 +1882,7 @@ TEST(SimulatorReferenceTest, VelocityControlCutoffIsSeparateFromObserverAndObser
               << " fell=" << result.fell << " tail_rms_deg=" << result.tail_rms_pitch_deg
               << " peak_velocity_pitch_target_deg=" << peak_velocity_target_deg
               << " peak_command_sps=" << peak_command_sps << '\n';
-    EXPECT_DOUBLE_EQ(last.active_velocity_control_cutoff_hz, cutoff_hz);
+    EXPECT_DOUBLE_EQ(last.active_velocity_feedback_cutoff_hz, cutoff_hz);
     EXPECT_DOUBLE_EQ(last.active_velocity_observer_cutoff_hz, Config::fc_velocity_hz);
   }
 }
@@ -2245,10 +2277,10 @@ TEST(SimulatorReferenceTest, SlowSimpleVelocityBaselineIsMappedInsideRecoveryEnv
               [](const auto& row) { return row.u_sps; });
           const double pitch_target_peak = signal_peak_in_window(
               result, 0.0, result.rows.back().sim_time_s + 1e-9,
-              [](const auto& row) { return row.velocity_pitch_request_limited_deg; });
+              [](const auto& row) { return row.drive_pitch_target_deg; });
           const double authority_fraction = signal_rms_in_window(
               result, 0.0, result.rows.back().sim_time_s + 1e-9,
-              [](const auto& row) { return row.velocity_authority_limited; });
+            [](const auto& row) { return row.outer_acceleration_limited; });
           const double margin = recovery_margin(result);
           std::cout << "velocity_simple profile=" << BalancerSimulator::profile_name(profile)
                     << " cutoff_hz=" << cutoff_hz << " damping_per_s=" << damping_per_s
@@ -2385,6 +2417,7 @@ TEST(SimulatorReferenceTest, LargerStaticComOffsetsAcquireWithoutDynamicTrimDrif
   ConfigPid::values.velocity_control_cutoff_hz = 3.0;
   ConfigPid::values.velocity_damping_per_s = 8.0;
   ConfigPid::values.velocity_I = 0.001;
+  ConfigPid::values.adaptive_com_trim_enabled = 1.0;
 
   for (const double offset_rad : {0.004, -0.004, 0.008, -0.008}) {
     SimulatorScenario scenario;
@@ -2422,6 +2455,7 @@ TEST(SimulatorReferenceTest, EquilibriumAngleComEstimatorReplayCoversStaticAndCh
   ConfigPid::values.velocity_damping_per_s = 8.0;
   ConfigPid::values.velocity_pitch_limit_deg = 4.0;
   ConfigPid::values.velocity_I = 0.001;
+  ConfigPid::values.adaptive_com_trim_enabled = 1.0;
 
   for (const double offset_rad : {0.002, -0.002, 0.004, -0.004, 0.008, -0.008,
                                   0.020, -0.020}) {
@@ -2849,16 +2883,19 @@ TEST(SimulatorReferenceTest, StateFeedbackContributionTelemetryMatchesActiveConf
   EXPECT_DOUBLE_EQ(row.active_pitch_gain_sps_per_rad, 8000.0);
   EXPECT_DOUBLE_EQ(row.active_pitch_rate_gain_sps_per_rad_s, 500.0);
   EXPECT_DOUBLE_EQ(row.active_pitch_accel_gain_sps_per_rad_s2, 0.0);
-  EXPECT_DOUBLE_EQ(row.active_velocity_control_cutoff_hz, 3.0);
+  EXPECT_DOUBLE_EQ(row.active_velocity_feedback_cutoff_hz, 3.0);
+  EXPECT_DOUBLE_EQ(row.active_velocity_gain_per_s, 13.0);
+  EXPECT_DOUBLE_EQ(row.active_outer_pitch_limit_deg, 4.0);
   EXPECT_DOUBLE_EQ(row.active_velocity_observer_cutoff_hz, Config::fc_velocity_hz);
-  EXPECT_NEAR(row.active_com_trim_gain_deg_per_sps_s, 0.001, 1e-9);
-  EXPECT_DOUBLE_EQ(row.active_velocity_pitch_limit_deg, 4.0);
+  EXPECT_DOUBLE_EQ(row.active_fixed_com_trim_deg, 0.0);
+  EXPECT_DOUBLE_EQ(row.adaptive_com_trim_enabled, 0.0);
   EXPECT_TRUE(std::isfinite(row.pitch_feedback_sps));
   EXPECT_TRUE(std::isfinite(row.pitch_rate_feedback_sps));
   EXPECT_TRUE(std::isfinite(row.pitch_accel_feedback_sps));
   EXPECT_TRUE(std::isfinite(row.velocity_pitch_target_deg));
-  EXPECT_TRUE(std::isfinite(row.velocity_pitch_request_unclamped_deg));
-  EXPECT_TRUE(std::isfinite(row.velocity_pitch_request_limited_deg));
+  EXPECT_TRUE(std::isfinite(row.acceleration_raw_mps2));
+  EXPECT_TRUE(std::isfinite(row.acceleration_cmd_mps2));
+  EXPECT_FALSE(row.legacy_outer_fields_valid > 0.5);
   EXPECT_TRUE(std::isfinite(row.pitch_target_unclamped_deg));
   EXPECT_TRUE(std::isfinite(row.trim_quiet_rate_rms_dps));
   EXPECT_TRUE(std::isfinite(row.balance_unclamped_sps));
@@ -3050,9 +3087,9 @@ TEST(SimulatorTransferTest, DirectActuatorReferencePidWorksOnNominalPlant) {
   EXPECT_DOUBLE_EQ(ConfigPid::values.pitch_gain, 6000.0);
   EXPECT_DOUBLE_EQ(ConfigPid::values.pitch_rate_gain, 350.0);
   EXPECT_DOUBLE_EQ(ConfigPid::values.pitch_accel_gain, 0.0);
-  EXPECT_DOUBLE_EQ(ConfigPid::values.velocity_control_cutoff_hz, 3.0);
-  EXPECT_DOUBLE_EQ(ConfigPid::values.velocity_damping_per_s, 8.0);
-  EXPECT_DOUBLE_EQ(ConfigPid::values.velocity_I, 0.001);
+  EXPECT_DOUBLE_EQ(ConfigPid::values.velocity_feedback_cutoff_hz, 3.0);
+  EXPECT_DOUBLE_EQ(ConfigPid::values.velocity_gain_per_s, 0.5);
+  EXPECT_DOUBLE_EQ(ConfigPid::values.adaptive_com_trim_enabled, 0.0);
   auto scenario = simulator_named_scenario("neutral_hold", PhysicsProfile::DirectActuator);
   ASSERT_TRUE(scenario.has_value());
   scenario->duration_s = 180.0;
@@ -3066,7 +3103,7 @@ TEST(SimulatorTransferTest, DirectActuatorReferencePidWorksOnNominalPlant) {
   EXPECT_EQ(result.actuator_fault_count, 0U);
 }
 
-TEST(SimulatorTransferTest, CheckedInDefaultPidAcquiresTrimAndRecoversSmallPush) {
+TEST(SimulatorTransferTest, CheckedInDefaultPidKeepsAdaptiveTrimDisabledDuringSmallPush) {
   ConfigPid::load(sim_pid_path());
   auto scenario = simulator_named_scenario("neutral_hold", PhysicsProfile::DirectActuator);
   ASSERT_TRUE(scenario.has_value());
@@ -3088,16 +3125,12 @@ TEST(SimulatorTransferTest, CheckedInDefaultPidAcquiresTrimAndRecoversSmallPush)
   EXPECT_EQ(result.controller_fault_flags, 0U);
   EXPECT_EQ(result.actuator_fault_count, 0U);
 
-  const auto acquired_trim = std::any_of(
+  const auto adaptive_learning = std::any_of(
       result.rows.begin(), result.rows.end(), [](const auto& row) {
-        return std::abs(row.com_trim_deg) > 0.01;
+        return row.adaptive_com_trim_enabled > 0.5 || row.trim_learning_enabled > 0.5;
       });
-  const auto learning_resumed = std::any_of(
-      result.rows.begin(), result.rows.end(), [](const auto& row) {
-        return row.sim_time_s >= 60.0 && row.trim_learning_enabled > 0.5;
-      });
-  EXPECT_TRUE(acquired_trim);
-  EXPECT_TRUE(learning_resumed);
+  EXPECT_FALSE(adaptive_learning);
+  EXPECT_NEAR(result.rows.back().com_trim_deg, 0.0, 1e-9);
 }
 
 TEST(SimulatorReferenceTest, VelocityAuthorityGainAndLimitMatrixIsReported) {
@@ -3126,27 +3159,25 @@ TEST(SimulatorReferenceTest, VelocityAuthorityGainAndLimitMatrixIsReported) {
     });
     const auto result = run_simulator_scenario_with_loaded_pid(scenario);
     double max_velocity_sps = 0.0;
-    double max_unclamped_pitch_deg = 0.0;
-    double max_limited_pitch_deg = 0.0;
+    double max_raw_acceleration_mps2 = 0.0;
+    double max_commanded_acceleration_mps2 = 0.0;
     double authority_fraction = 0.0;
     for (const auto& row : result.rows) {
       max_velocity_sps = std::max(max_velocity_sps, std::abs(row.plant_velocity) /
                                                      Config::meters_per_step);
-      max_unclamped_pitch_deg =
-          std::max(max_unclamped_pitch_deg,
-                   std::abs(row.velocity_pitch_request_unclamped_deg));
-      max_limited_pitch_deg =
-          std::max(max_limited_pitch_deg,
-                   std::abs(row.velocity_pitch_request_limited_deg));
-      authority_fraction += row.velocity_authority_limited > 0.5 ? 1.0 : 0.0;
+      max_raw_acceleration_mps2 =
+          std::max(max_raw_acceleration_mps2, std::abs(row.acceleration_raw_mps2));
+      max_commanded_acceleration_mps2 =
+          std::max(max_commanded_acceleration_mps2, std::abs(row.acceleration_cmd_mps2));
+      authority_fraction += row.outer_acceleration_limited > 0.5 ? 1.0 : 0.0;
     }
     authority_fraction /= static_cast<double>(std::max<size_t>(1, result.rows.size()));
     std::cout << "velocity_authority label=" << label << " damping=" << damping
               << " limit_deg=" << limit_deg << " disturbance_sign_sps=" << disturbance_sign_sps
               << " disturbance_force_n=" << disturbance_force_n
               << " fell=" << result.fell << " max_velocity_sps=" << max_velocity_sps
-              << " max_unclamped_pitch_deg=" << max_unclamped_pitch_deg
-              << " max_limited_pitch_deg=" << max_limited_pitch_deg
+              << " max_raw_acceleration_mps2=" << max_raw_acceleration_mps2
+              << " max_commanded_acceleration_mps2=" << max_commanded_acceleration_mps2
               << " authority_fraction=" << authority_fraction
               << " final_velocity_sps="
               << result.rows.back().plant_velocity / Config::meters_per_step
@@ -3172,12 +3203,11 @@ TEST(SimulatorReferenceTest, VelocityAuthorityGainAndLimitMatrixIsReported) {
     const auto result = report("limit", 8.0, limit_deg, 1500.0, 3.0);
     ASSERT_FALSE(result.rows.empty());
     if (limit_deg > 0.0) {
-      EXPECT_LE(std::abs(result.rows.back().velocity_pitch_request_limited_deg),
-                limit_deg + 1e-6);
+      EXPECT_LE(std::abs(result.rows.back().drive_pitch_target_deg), limit_deg + 1e-6);
     }
     if (limit_deg == 3.0) {
       EXPECT_TRUE(std::any_of(result.rows.begin(), result.rows.end(), [](const auto& row) {
-        return row.velocity_authority_limited > 0.5;
+        return row.outer_acceleration_limited > 0.5;
       }));
     }
   }
@@ -3213,13 +3243,13 @@ TEST(SimulatorReferenceTest, InterruptedComTrimAcquisitionPausesAndResumes) {
   ConfigPid::values.pitch_rate_gain = 350.0;
   ConfigPid::values.pitch_accel_gain = 0.0;
   ConfigPid::values.velocity_control_cutoff_hz = 3.0;
-  // Use the upper sweep edge here to force the authority-limited branch; the
-  // selected default is evaluated separately at the lower, ordinary-motion
-  // gain. This keeps the regression about state protection rather than gain
-  // selection.
+  // Use a deliberately low motion-pitch limit here to force the canonical
+  // shared acceleration-authority branch; the selected default is evaluated
+  // separately at the ordinary-motion gain.
   ConfigPid::values.velocity_damping_per_s = 16.0;
-  ConfigPid::values.velocity_pitch_limit_deg = 4.0;
+  ConfigPid::values.velocity_pitch_limit_deg = 1.0;
   ConfigPid::values.velocity_I = 0.001;
+  ConfigPid::values.adaptive_com_trim_enabled = 1.0;
 
   SimulatorScenario scenario;
   scenario.name = "interrupted_com_acquisition";
@@ -3257,7 +3287,7 @@ TEST(SimulatorReferenceTest, InterruptedComTrimAcquisitionPausesAndResumes) {
       saw_command_block = saw_command_block ||
                           row.trim_learning_block_reason ==
                               static_cast<uint32_t>(ComTrimLearningBlockCommand);
-      saw_authority_block = saw_authority_block || row.velocity_authority_limited > 0.5;
+      saw_authority_block = saw_authority_block || row.outer_acceleration_limited > 0.5;
     }
     saw_trusted = saw_trusted || row.trim_trusted > 0.5;
     saw_learning_after_recovery =

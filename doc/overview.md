@@ -82,7 +82,9 @@ driver/test process that registers with it, injects inputs, and observes outputs
    estimate. In SIL, raw samples are injected over UDP instead of read from hardware.
 3. `InputService` polls the Xbox controller and publishes the resolved joystick intent. An external
    UDP client injects `ExternalJoystickCommand` through the normal bus; the Xbox source has priority
-   when available, otherwise the external command is accepted for a short watchdog interval.
+   when available, otherwise the latest external command remains active until an explicit neutral
+   command or the communication watchdog expires. Neutral is a velocity release, not a controller
+   fault.
 4. `ControlService` combines the tick, attitude estimate, joystick intent, and motor feedback to
    produce `MotorTargets` and `SystemTelemetry`.
 5. `MotorService` sends targets to the real motor runner when one exists and publishes completed-step
@@ -174,7 +176,7 @@ robot. The [current status](status.md) records that distinction and the remainin
 - Read [Runtime architecture](arch/runtime.md) for service ownership and the production/SIL/simulator boundaries.
 - Read [Testing strategy](testing/strategy.md) for what each validation layer proves.
 - Read [Control and plant model](arch/control_plant.md) for equations and controller/plant mapping.
-- Read [StepperPhaseElectrical scenario](arch/stepper_phase_electrical.md) for the maintained physical
-  actuator scenario and artifact interpretation.
+- Read [StepperPhaseElectrical test profile](testing/stepper_phase_electrical.md) for the maintained
+  actuator realization and artifact interpretation.
 - Read [IMU attitude design](arch/imu_attitude_design.md) for coordinate conventions and estimator limits.
 - Read [Running on Raspberry Pi](Running_on_Pi.md) only when you need physical deployment or bring-up.

@@ -63,6 +63,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxml2-utils \
     make \
     ninja-build \
+    linux-tools-common \
+    linux-tools-generic \
     python3 \
     python3-dev \
     python3-pip \

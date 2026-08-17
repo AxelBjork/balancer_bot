@@ -45,42 +45,68 @@ SYSTEM_TELEMETRY_SIZE = SystemTelemetryPayload.WIRE_SIZE
 EXTERNAL_JOYSTICK_COMMAND_ID = 3011
 PID_CONFIG_OVERRIDE_ID = 3012
 PID_CONFIG_STATUS_ID = 3013
-JOYSTICK_PULSE_S = 0.100
 PID_CONFIG_FIELDS = (
     "pitch_gain",
     "pitch_rate_gain",
     "pitch_accel_gain",
-    "drive_max_acceleration_mps2",
-    "velocity_damping_per_s",
-    "velocity_pitch_limit_deg",
-    "velocity_I",
-    "velocity_I_limit_deg",
-    "velocity_control_cutoff_hz",
-    "drive_max_sps",
+    "drive_max_velocity_mps",
+    "velocity_gain_per_s",
+    "velocity_feedback_cutoff_hz",
+    "outer_pitch_limit_deg",
+    "fixed_com_trim_deg",
+    "adaptive_com_trim_enabled",
+    "adaptive_com_trim_gain_deg_per_mps_s",
+    "adaptive_com_trim_limit_deg",
     "turn_max_sps",
     "balance_max_sps",
+    "planner_max_acceleration_mps2",
+    "planner_max_deceleration_mps2",
+    "planner_max_jerk_mps3",
+    "velocity_i_gain_per_s2",
+    "velocity_i_leak_time_s",
+    "velocity_i_acceleration_limit_mps2",
 )
 PID_CONFIG_NONNEGATIVE_FIELDS = frozenset(
     {
-        "drive_max_acceleration_mps2",
-        "velocity_damping_per_s",
-        "velocity_pitch_limit_deg",
-        "velocity_I",
-        "velocity_I_limit_deg",
+        "drive_max_velocity_mps",
+        "velocity_gain_per_s",
+        "velocity_feedback_cutoff_hz",
+        "outer_pitch_limit_deg",
+        "adaptive_com_trim_enabled",
+        "adaptive_com_trim_gain_deg_per_mps_s",
+        "adaptive_com_trim_limit_deg",
         "turn_max_sps",
         "pitch_gain",
         "pitch_rate_gain",
         "pitch_accel_gain",
+        "planner_max_acceleration_mps2",
+        "planner_max_deceleration_mps2",
+        "planner_max_jerk_mps3",
+        "velocity_i_gain_per_s2",
+        "velocity_i_leak_time_s",
+        "velocity_i_acceleration_limit_mps2",
     }
 )
 PID_CONFIG_POSITIVE_FIELDS = frozenset(
-    {"drive_max_sps", "balance_max_sps", "velocity_control_cutoff_hz"}
+    {
+        "drive_max_velocity_mps",
+        "balance_max_sps",
+        "velocity_feedback_cutoff_hz",
+        "outer_pitch_limit_deg",
+        "planner_max_acceleration_mps2",
+        "planner_max_deceleration_mps2",
+        "planner_max_jerk_mps3",
+        "velocity_i_leak_time_s",
+        "velocity_i_acceleration_limit_mps2",
+    }
 )
-PID_CONFIG_LIMIT_FIELDS = frozenset({"drive_max_sps", "turn_max_sps", "balance_max_sps"})
+PID_CONFIG_LIMIT_FIELDS = frozenset({"turn_max_sps", "balance_max_sps"})
 # Keep the dashboard validation aligned with Config::max_step_rate_sps.  The
 # C++ configuration is authoritative for the runtime; this mirror prevents a
 # dashboard request from being rejected before it reaches that validator.
 MAX_STEP_RATE_SPS = 16000.0
+MAX_MOTION_PITCH_SETPOINT_DEG = 45.0
+METERS_PER_STEP = 2.0 * math.pi * 0.0412 / 6400.0
 DISPLAY_HZ = 50.0
 DISPLAY_HISTORY_SECONDS = 120.0
 DISPLAY_HISTORY_POINTS = 6000
@@ -220,14 +246,31 @@ def _validate_pid_values(values: dict[str, Any], *, require_complete: bool = Tru
                 f"PID field {name} exceeds the supported {MAX_STEP_RATE_SPS:g} limit."
             )
     for name in (
-        "pitch_gain_sps_per_rad",
-        "pitch_rate_gain_sps_per_rad_s",
-        "pitch_accel_gain_sps_per_rad_s2",
+        "pitch_gain",
+        "pitch_rate_gain",
+        "pitch_accel_gain",
     ):
         if name in normalized and normalized[name] > 1.0e6:
             raise ValueError(f"PID field {name} exceeds the supported range.")
-    if normalized.get("velocity_pitch_limit_deg", 0.0) > 90.0:
-        raise ValueError("PID field velocity_pitch_limit_deg exceeds the supported 90 degree range.")
+    if normalized.get("outer_pitch_limit_deg", 0.0) > MAX_MOTION_PITCH_SETPOINT_DEG:
+        raise ValueError(
+            "PID field outer_pitch_limit_deg exceeds the supported "
+            f"{MAX_MOTION_PITCH_SETPOINT_DEG:g} degree range."
+        )
+    if abs(normalized.get("fixed_com_trim_deg", 0.0)) > 45.0:
+        raise ValueError("PID field fixed_com_trim_deg exceeds the supported range.")
+    if normalized.get("adaptive_com_trim_limit_deg", 0.0) > 45.0:
+        raise ValueError("PID field adaptive_com_trim_limit_deg exceeds the supported range.")
+    if normalized.get("adaptive_com_trim_enabled", 0.0) not in (0.0, 1.0):
+        raise ValueError("PID field adaptive_com_trim_enabled must be 0 or 1.")
+    if "turn_max_sps" in normalized and "balance_max_sps" in normalized:
+        if normalized["balance_max_sps"] <= normalized["turn_max_sps"]:
+            raise ValueError("PID balance_max_sps must exceed turn_max_sps.")
+    if "drive_max_velocity_mps" in normalized and "turn_max_sps" in normalized and "balance_max_sps" in normalized:
+        user_speed_sps = normalized["drive_max_velocity_mps"] / METERS_PER_STEP
+        available_sps = normalized["balance_max_sps"] - normalized["turn_max_sps"]
+        if user_speed_sps > 0.25 * available_sps:
+            raise ValueError("PID drive_max_velocity_mps exceeds the reserved actuator headroom.")
     return normalized
 
 
@@ -258,6 +301,10 @@ def _load_pid_values(path: Path) -> dict[str, float]:
         if not math.isfinite(value):
             raise ValueError(f"PID config value for {key} must be finite.")
         values[key] = value
+    if values.get("config_version") != 12.0:
+        raise ValueError(
+            f"PID configuration version mismatch: expected 12, got {values.get('config_version', 'missing')}"
+        )
     missing = [name for name in PID_CONFIG_FIELDS if name not in values]
     if missing:
         raise ValueError(f"Missing PID config fields: {', '.join(missing)}")
@@ -306,23 +353,41 @@ def telemetry_view(sample: SystemTelemetryPayload, sequence: int, received_at: f
             "right_slewed_sps": sample.right_slewed_sps,
             "left_actual_steps": sample.left_actual_steps,
             "right_actual_steps": sample.right_actual_steps,
+            "user_velocity_mps": sample.user_velocity_mps,
+            "reference_velocity_mps": sample.reference_velocity_mps,
+            "reference_acceleration_mps2": sample.reference_acceleration_mps2,
+            "reference_jerk_mps3": sample.reference_jerk_mps3,
+            "velocity_feedback_estimate_mps": sample.velocity_feedback_estimate_mps,
+            "velocity_error_mps": sample.velocity_error_mps,
+            "velocity_feedback_valid": bool(sample.velocity_feedback_valid),
+            "velocity_feedback_active": bool(sample.velocity_feedback_active),
         },
         "controller": {
             "command_sps": sample.u_sps,
-            "nominal_acceleration_mps2": sample.nominal_acceleration_mps2,
+            "reference_acceleration_mps2": sample.reference_acceleration_mps2,
+            "velocity_feedback_acceleration_mps2": sample.velocity_feedback_acceleration_mps2,
+            "velocity_p_acceleration_mps2": sample.velocity_p_acceleration_mps2,
+            "velocity_i_acceleration_mps2": sample.velocity_i_acceleration_mps2,
+            "velocity_integral_state_mps_s": sample.velocity_integral_state_mps_s,
+            "acceleration_raw_mps2": sample.acceleration_raw_mps2,
+            "acceleration_cmd_mps2": sample.acceleration_cmd_mps2,
+            "drive_pitch_target_deg": sample.drive_pitch_target_deg,
+            "final_pitch_target_deg": sample.final_pitch_target_deg,
             "pitch_error_deg": sample.pitch_error_deg,
             "pitch_feedback_sps": sample.pitch_feedback_sps,
             "pitch_rate_feedback_sps": sample.pitch_rate_feedback_sps,
             "pitch_accel_feedback_sps": sample.pitch_accel_feedback_sps,
             "balance_unclamped_sps": sample.balance_unclamped_sps,
-            "velocity_damping_acceleration_mps2": sample.velocity_damping_acceleration_mps2,
-            "velocity_pitch_target_deg": sample.velocity_pitch_target_deg,
-            "velocity_pitch_request_unclamped_deg": sample.velocity_pitch_request_unclamped_deg,
-            "velocity_pitch_request_limited_deg": sample.velocity_pitch_request_limited_deg,
-            "velocity_authority_limited": bool(sample.velocity_authority_limited),
+            "outer_acceleration_limited": bool(sample.outer_acceleration_limited),
+            "outer_pitch_target_limited": bool(sample.outer_pitch_target_limited),
+            "planner_acceleration_limited": bool(sample.planner_acceleration_limited),
+            "planner_jerk_limited": bool(sample.planner_jerk_limited),
+            "velocity_integral_limited": bool(sample.velocity_integral_limited),
+            "velocity_anti_windup_active": bool(sample.velocity_anti_windup_active),
             "pitch_target_unclamped_deg": sample.pitch_target_unclamped_deg,
             "pitch_target_limit_reason": sample.pitch_target_limit_reason,
             "com_trim_deg": sample.com_trim_deg,
+            "fixed_com_trim_deg": sample.fixed_com_trim_deg,
             "trim_learning_enabled": bool(sample.trim_learning_enabled),
             "trim_learning_block_reason": sample.trim_learning_block_reason,
             "trim_trusted": bool(sample.trim_trusted),
@@ -331,12 +396,22 @@ def telemetry_view(sample: SystemTelemetryPayload, sequence: int, received_at: f
             "active_pitch_gain_sps_per_rad": sample.active_pitch_gain_sps_per_rad,
             "active_pitch_rate_gain_sps_per_rad_s": sample.active_pitch_rate_gain_sps_per_rad_s,
             "active_pitch_accel_gain_sps_per_rad_s2": sample.active_pitch_accel_gain_sps_per_rad_s2,
-            "active_velocity_pitch_gain_rad_per_sps": sample.active_velocity_pitch_gain_rad_per_sps,
-            "active_velocity_control_cutoff_hz": sample.active_velocity_control_cutoff_hz,
-            "active_velocity_observer_cutoff_hz": sample.active_velocity_observer_cutoff_hz,
-            "active_com_trim_gain_deg_per_sps_s": sample.active_com_trim_gain_deg_per_sps_s,
-            "active_com_trim_limit_deg": sample.active_com_trim_limit_deg,
-            "active_velocity_pitch_limit_deg": sample.active_velocity_pitch_limit_deg,
+            "active_drive_max_velocity_mps": sample.active_drive_max_velocity_mps,
+            "active_drive_max_acceleration_mps2": sample.active_drive_max_acceleration_mps2,
+            "active_drive_max_deceleration_mps2": sample.active_drive_max_deceleration_mps2,
+            "active_planner_max_acceleration_mps2": sample.active_planner_max_acceleration_mps2,
+            "active_planner_max_deceleration_mps2": sample.active_planner_max_deceleration_mps2,
+            "active_planner_max_jerk_mps3": sample.active_planner_max_jerk_mps3,
+            "active_velocity_gain_per_s": sample.active_velocity_gain_per_s,
+            "active_velocity_i_gain_per_s2": sample.active_velocity_i_gain_per_s2,
+            "active_velocity_i_leak_time_s": sample.active_velocity_i_leak_time_s,
+            "active_velocity_i_acceleration_limit_mps2":
+                sample.active_velocity_i_acceleration_limit_mps2,
+            "active_velocity_feedback_cutoff_hz": sample.active_velocity_feedback_cutoff_hz,
+            "active_outer_pitch_limit_deg": sample.active_outer_pitch_limit_deg,
+            "active_fixed_com_trim_deg": sample.active_fixed_com_trim_deg,
+            "adaptive_com_trim_enabled": bool(sample.adaptive_com_trim_enabled),
+            "legacy_outer_fields_valid": bool(sample.legacy_outer_fields_valid),
             "active_accel_lpf_hz": sample.active_accel_lpf_hz,
             "active_gyro_lpf_hz": sample.active_gyro_lpf_hz,
             "active_gyro_derivative_lpf_hz": sample.active_gyro_derivative_lpf_hz,
@@ -1071,13 +1146,33 @@ def load_playback_csv(path: Path) -> list[tuple[float, dict[str, Any]]]:
                 "right_slewed_sps": _number(row, "right_slewed_sps", "right_target_sps"),
                 "left_actual_steps": _number(row, "left_actual_steps"),
                 "right_actual_steps": _number(row, "right_actual_steps"),
+                "user_velocity_mps": _number(row, "user_velocity_mps"),
+                "reference_velocity_mps": _number(row, "reference_velocity_mps"),
+                "reference_acceleration_mps2": _number(row, "reference_acceleration_mps2"),
+                "reference_jerk_mps3": _number(row, "reference_jerk_mps3"),
+                "velocity_feedback_estimate_mps": _number(row, "velocity_feedback_estimate_mps"),
+                "velocity_error_mps": _number(row, "velocity_error_mps"),
+                "velocity_feedback_valid": bool(_number(row, "velocity_feedback_valid")),
+                "velocity_feedback_active": bool(_number(row, "velocity_feedback_active")),
             },
             "controller": {
                 "command_sps": _number(row, "u_sps"),
-                "nominal_acceleration_mps2": _number(row, "nominal_acceleration_mps2", "target_velocity_sps"),
+                "reference_acceleration_mps2": _number(row, "reference_acceleration_mps2"),
+                "velocity_feedback_acceleration_mps2": _number(row, "velocity_feedback_acceleration_mps2"),
+                "velocity_p_acceleration_mps2": _number(row, "velocity_p_acceleration_mps2"),
+                "velocity_i_acceleration_mps2": _number(row, "velocity_i_acceleration_mps2"),
+                "velocity_integral_state_mps_s": _number(row, "velocity_integral_state_mps_s"),
+                "acceleration_raw_mps2": _number(row, "acceleration_raw_mps2"),
+                "acceleration_cmd_mps2": _number(row, "acceleration_cmd_mps2"),
+                "drive_pitch_target_deg": _number(row, "drive_pitch_target_deg"),
+                "final_pitch_target_deg": _number(row, "final_pitch_target_deg", "pitch_sp_deg"),
                 "pitch_error_deg": _number(row, "pitch_error_deg"),
-                "velocity_damping_acceleration_mps2": _number(row, "velocity_damping_acceleration_mps2", "velocity_p_term_deg"),
-                "com_trim_deg": _number(row, "com_trim_deg", "velocity_i_term_deg"),
+                "planner_acceleration_limited": bool(_number(row, "planner_acceleration_limited")),
+                "planner_jerk_limited": bool(_number(row, "planner_jerk_limited")),
+                "velocity_integral_limited": bool(_number(row, "velocity_integral_limited")),
+                "velocity_anti_windup_active": bool(_number(row, "velocity_anti_windup_active")),
+                "com_trim_deg": _number(row, "com_trim_deg"),
+                "fixed_com_trim_deg": _number(row, "fixed_com_trim_deg"),
             },
             "timing": {"imu_age_ms": _number(row, "age_ms"), "feedback_age_ms": _number(row, "motor_feedback_age_ms")},
             "flags": {
@@ -1419,13 +1514,11 @@ class PidSessionController:
 
 
 class JoystickCommandController:
-    """Validate and send short, run-gated joystick command pulses."""
+    """Validate and send run-gated joystick heartbeat commands."""
 
     def __init__(self, state: TelemetryState, receiver: UdpReceiver) -> None:
         self.state, self.receiver = state, receiver
         self.lock = threading.Lock()
-        self.release_timer: threading.Timer | None = None
-        self.generation = 0
         self.closed = False
 
     def send(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -1465,9 +1558,7 @@ class JoystickCommandController:
         payload = JoystickCommandPayload(forward=forward, turn=turn).pack()
         sent = self.receiver.send_message(EXTERNAL_JOYSTICK_COMMAND_ID, payload)
         if not sent:
-            self._cancel_timer()
             raise RuntimeError("The Pi UDP address is not available yet.")
-        self._arm_timer()
         return {"ok": True, "sent": True, "active": True, "forward": forward, "turn": turn}
 
     def release(self) -> None:
@@ -1479,7 +1570,6 @@ class JoystickCommandController:
         self._send_neutral()
 
     def _send_neutral(self) -> bool:
-        self._cancel_timer()
         with self.state.lock:
             live = self.state.source_mode == "live"
         if not live:
@@ -1487,40 +1577,6 @@ class JoystickCommandController:
         return self.receiver.send_message(
             EXTERNAL_JOYSTICK_COMMAND_ID, JoystickCommandPayload(0.0, 0.0).pack()
         )
-
-    def _cancel_timer(self) -> None:
-        with self.lock:
-            self.generation += 1
-            timer, self.release_timer = self.release_timer, None
-        if timer is not None:
-            timer.cancel()
-
-    def _arm_timer(self) -> None:
-        with self.lock:
-            self.generation += 1
-            generation = self.generation
-            old_timer, self.release_timer = self.release_timer, None
-            timer = None
-            if not self.closed:
-                timer = threading.Timer(JOYSTICK_PULSE_S, self._timer_release, args=(generation,))
-                timer.daemon = True
-                self.release_timer = timer
-        if old_timer is not None:
-            old_timer.cancel()
-        if timer is not None:
-            timer.start()
-
-    def _timer_release(self, generation: int) -> None:
-        with self.lock:
-            if self.closed or generation != self.generation:
-                return
-            self.release_timer = None
-        with self.state.lock:
-            live = self.state.source_mode == "live"
-        if live:
-            self.receiver.send_message(
-                EXTERNAL_JOYSTICK_COMMAND_ID, JoystickCommandPayload(0.0, 0.0).pack()
-            )
 
 
 class PiHeartbeat:

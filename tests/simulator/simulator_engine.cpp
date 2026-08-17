@@ -434,11 +434,22 @@ struct SimulatorEngine::Impl {
     // are then driven only by individual timestamped STEP events.
     double emitted_left_steps = 0.0;
     double emitted_right_steps = 0.0;
+    std::int64_t emitted_left_step_index = 0;
+    std::int64_t emitted_right_step_index = 0;
+    const bool use_integer_step_positions =
+        uses_step_events && !simulator.physics().stepper_phase_continuous_field;
     if (uses_step_events) {
       auto emitted = pipeline.services.motors.getScheduledStepPosition(start_us);
       emitted_left_steps = emitted.left_steps;
       emitted_right_steps = emitted.right_steps;
-      simulator.set_emitted_motor_steps(emitted_left_steps, emitted_right_steps);
+      if (use_integer_step_positions) {
+        emitted_left_step_index = static_cast<std::int64_t>(emitted_left_steps);
+        emitted_right_step_index = static_cast<std::int64_t>(emitted_right_steps);
+        simulator.set_emitted_motor_step_indices(emitted_left_step_index,
+                                                 emitted_right_step_index);
+      } else {
+        simulator.set_emitted_motor_steps(emitted_left_steps, emitted_right_steps);
+      }
     }
 
     while (scheduler.current_time_us() < target_us) {
@@ -447,7 +458,12 @@ struct SimulatorEngine::Impl {
       if (next_us > current_us) {
         setDisturbance(static_cast<double>(current_us) / 1e6);
         if (uses_step_events) {
-          simulator.set_emitted_motor_steps(emitted_left_steps, emitted_right_steps);
+          if (use_integer_step_positions) {
+            simulator.set_emitted_motor_step_indices(emitted_left_step_index,
+                                                     emitted_right_step_index);
+          } else {
+            simulator.set_emitted_motor_steps(emitted_left_steps, emitted_right_steps);
+          }
         }
         simulator.step(static_cast<double>(next_us - current_us) / 1e6);
         scheduler.advance_to(next_us);
@@ -457,9 +473,16 @@ struct SimulatorEngine::Impl {
       scheduler.pop_events_at(scheduler.current_time_us(), events_at_time);
       for (const auto& event : events_at_time) {
         if (event.kind == SimulatorEventKind::Step) {
-          emitted_left_steps += static_cast<double>(event.left_step_delta);
-          emitted_right_steps += static_cast<double>(event.right_step_delta);
-          simulator.set_emitted_motor_steps(emitted_left_steps, emitted_right_steps);
+          if (use_integer_step_positions) {
+            emitted_left_step_index += event.left_step_delta;
+            emitted_right_step_index += event.right_step_delta;
+            simulator.set_emitted_motor_step_indices(emitted_left_step_index,
+                                                     emitted_right_step_index);
+          } else {
+            emitted_left_steps += static_cast<double>(event.left_step_delta);
+            emitted_right_steps += static_cast<double>(event.right_step_delta);
+            simulator.set_emitted_motor_steps(emitted_left_steps, emitted_right_steps);
+          }
         } else if (event.kind == SimulatorEventKind::Scenario) {
           setDisturbance(static_cast<double>(scheduler.current_time_us()) / 1e6);
         } else if (event.kind == SimulatorEventKind::ImuSample) {
@@ -645,6 +668,48 @@ struct SimulatorEngine::Impl {
       row.velocity_control_sps = telemetry.velocity_control_sps;
       row.velocity_damping_acceleration_mps2 = telemetry.velocity_damping_acceleration_mps2;
       row.com_trim_deg = telemetry.com_trim_deg;
+      row.user_velocity_mps = telemetry.user_velocity_mps;
+      row.reference_velocity_mps = telemetry.reference_velocity_mps;
+      row.reference_acceleration_mps2 = telemetry.reference_acceleration_mps2;
+      row.reference_jerk_mps3 = telemetry.reference_jerk_mps3;
+      row.velocity_feedback_estimate_mps = telemetry.velocity_feedback_estimate_mps;
+      row.velocity_error_mps = telemetry.velocity_error_mps;
+      row.velocity_feedback_acceleration_mps2 =
+          telemetry.velocity_feedback_acceleration_mps2;
+      row.velocity_p_acceleration_mps2 = telemetry.velocity_p_acceleration_mps2;
+      row.velocity_i_acceleration_mps2 = telemetry.velocity_i_acceleration_mps2;
+      row.velocity_integral_state_mps_s = telemetry.velocity_integral_state_mps_s;
+      row.acceleration_raw_mps2 = telemetry.acceleration_raw_mps2;
+      row.acceleration_cmd_mps2 = telemetry.acceleration_cmd_mps2;
+      row.drive_pitch_target_deg = telemetry.drive_pitch_target_deg;
+      row.fixed_com_trim_deg = telemetry.fixed_com_trim_deg;
+      row.velocity_feedback_valid = telemetry.velocity_feedback_valid ? 1.0 : 0.0;
+      row.velocity_feedback_active = telemetry.velocity_feedback_active ? 1.0 : 0.0;
+      row.outer_acceleration_limited = telemetry.outer_acceleration_limited ? 1.0 : 0.0;
+      row.outer_pitch_target_limited = telemetry.outer_pitch_target_limited ? 1.0 : 0.0;
+      row.active_drive_max_velocity_mps = telemetry.active_drive_max_velocity_mps;
+      row.active_drive_max_acceleration_mps2 = telemetry.active_drive_max_acceleration_mps2;
+      row.active_drive_max_deceleration_mps2 = telemetry.active_drive_max_deceleration_mps2;
+      row.active_velocity_gain_per_s = telemetry.active_velocity_gain_per_s;
+      row.active_velocity_feedback_cutoff_hz = telemetry.active_velocity_feedback_cutoff_hz;
+      row.active_outer_pitch_limit_deg = telemetry.active_outer_pitch_limit_deg;
+      row.active_fixed_com_trim_deg = telemetry.active_fixed_com_trim_deg;
+      row.adaptive_com_trim_enabled = telemetry.adaptive_com_trim_enabled ? 1.0 : 0.0;
+      row.legacy_outer_fields_valid = telemetry.legacy_outer_fields_valid ? 1.0 : 0.0;
+      row.final_pitch_target_deg = telemetry.final_pitch_target_deg;
+      row.active_planner_max_acceleration_mps2 =
+          telemetry.active_planner_max_acceleration_mps2;
+      row.active_planner_max_deceleration_mps2 =
+          telemetry.active_planner_max_deceleration_mps2;
+      row.active_planner_max_jerk_mps3 = telemetry.active_planner_max_jerk_mps3;
+      row.active_velocity_i_gain_per_s2 = telemetry.active_velocity_i_gain_per_s2;
+      row.active_velocity_i_leak_time_s = telemetry.active_velocity_i_leak_time_s;
+      row.active_velocity_i_acceleration_limit_mps2 =
+          telemetry.active_velocity_i_acceleration_limit_mps2;
+      row.planner_acceleration_limited = telemetry.planner_acceleration_limited ? 1.0 : 0.0;
+      row.planner_jerk_limited = telemetry.planner_jerk_limited ? 1.0 : 0.0;
+      row.velocity_integral_limited = telemetry.velocity_integral_limited ? 1.0 : 0.0;
+      row.velocity_anti_windup_active = telemetry.velocity_anti_windup_active ? 1.0 : 0.0;
       row.trim_learning_enabled = telemetry.trim_learning_enabled ? 1.0 : 0.0;
       row.trim_learning_block_reason = telemetry.trim_learning_block_reason;
       row.pitch_error_deg = telemetry.pitch_error_deg;

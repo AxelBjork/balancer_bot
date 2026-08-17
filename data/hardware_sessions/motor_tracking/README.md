@@ -49,5 +49,6 @@ and do not fit controller gains to this fixture.
 
 The authoritative simulator geometry is 200 motor full steps/revolution,
 32 microsteps/full step, 6400 STEP/revolution, and a 0.0412 m wheel radius.
-The corrected simulator derivation, normalization, and numerical comparison are
-maintained in [the StepperPhase audit report](../../../doc/arch/stepper_phase_audit.md).
+The actuator equations, electrical constants, normalization, and current
+controller comparison are maintained in the
+[StepperPhaseElectrical testing profile](../../../doc/testing/stepper_phase_electrical.md).

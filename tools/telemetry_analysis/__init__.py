@@ -2,6 +2,7 @@ from .frames import (
     band_rms_equivalent,
     canonicalize_telemetry_frame,
     read_telemetry_csv,
+    write_telemetry_frame,
     write_telemetry_csv,
 )
 from .metrics import actuator_stage_metrics, band_frequency_response
@@ -25,6 +26,7 @@ __all__ = [
     "band_rms_equivalent",
     "read_telemetry_csv",
     "write_multiplot_svg",
+    "write_telemetry_frame",
     "write_telemetry_csv",
     "lagged_correlation",
     "reconstruct_final_pitch_target",

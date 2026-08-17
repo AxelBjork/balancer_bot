@@ -39,7 +39,7 @@ These terms refer to different layers of the same validation workflow:
 When other pages say “transfer matrix” or “acceptance catalog,” they mean the legacy seven-case
 workflow unless they explicitly describe the behavioral matrix. The [simulator behavioral matrix]
 (simulator_behavioral_matrix.md) is the Python cross-model controller-behavior gate. The
-[StepperPhaseElectrical scenario](../arch/stepper_phase_electrical.md) explains plant limits; the
+[StepperPhaseElectrical test profile](stepper_phase_electrical.md) explains actuator/profile limits; the
 [current status](../status.md) reports confidence rather than redefining either gate.
 
 ## Component Coverage
@@ -61,7 +61,7 @@ workflow unless they explicitly describe the behavioral matrix. The [simulator b
 - `motor_runner_test.cpp`
   time-based motor slew, pulse-frame scheduling, completed-step accumulation, reversal, and faults
 - `control_loop_test.cpp`
-  controller v2 equations, signs, cadence, saturation, reset paths, and completed-pulse feedback
+  v12 planner/outer-loop equations, signs, cadence, saturation, reset paths, and completed-pulse feedback
 - `simulator_runner_test.cpp`
   sign conventions, engine equivalence, all seven transfer scenarios, plant/IMU parameter A/B
   coverage, and physical invariants
@@ -195,25 +195,31 @@ Each invocation writes a new directory under `build/sim/transfer/` and updates
 `build/sim/transfer_summary.md`. Use `--telemetry-stride N` for investigative runs; the release
 evidence uses stride `1`.
 
-Run the direct closed-loop tuner with:
+Run the staged velocity-reference tuner with, for example:
 
 ```bash
-./build/balancer_simulator_tuner --base pid.conf \
-  --output build/sim/tuning --top-k 12 --budget 350
+./build/balancer_simulator_tuner --stage feedback \
+  --base tests/data/stepper_phase_electrical_pid.conf \
+  --output build/sim/velocity_reference_tuning/feedback \
+  --budget 140
 ```
 
-The direct tuner evaluates every candidate against the complete transfer matrix from the start. It
-first sweeps each gain independently from the configured PID, then runs deterministic local
-two-axis refinements from the best observed candidates. This suits the measured low-inertia plant:
-rate authority, pitch damping, and wheel damping interact, so a gain should not be discarded
-because an artificial intermediate stage cannot settle on its own.
+The supported stages are `feedforward`, `observer`, `feedback`, `integral`, and
+`joint`. They search only translational weights while keeping the electrical
+physics, estimator, inner gains, adaptive COM trim, and fixed balance/turn
+ceilings unchanged. Use feedforward to check planner motion, observer to
+compare the slow velocity-feedback pole against plant truth, feedback for P,
+integral for bounded leaky I, and joint only after the preceding regions are
+understood. Every promoted candidate must still run the complete Python
+behavioral matrix.
 
-Candidates are ordered by transfer cases passed, hard faults/falls, then continuous recovery cost
-(pitch, tail RMS, saturation, velocity residual, and command activity). The artifacts are
-`candidate_summary.csv`, `scenario_metrics.csv`, and `validation_results.csv`. The tool always
-writes `best_observed.pid.conf` and a companion text file recording its transfer result. It writes
-`transfer_qualified.pid.conf` only if that candidate passes every transfer case. Neither file is an
-automatic authorization to apply a configuration to hardware.
+Candidates are ordered by hard faults/falls, bounded behavior, scenario
+acceptance, and continuous recovery cost including pitch/rate RMS, saturation,
+velocity residual, release distance, and rebound velocity. Each run writes
+`candidate_summary.csv`, `scenario_metrics.csv`, `validation_results.csv`,
+`search_bounds.txt`, `best_observed.pid.conf`, and a companion result note.
+These files are simulator evidence and are never automatic authorization to
+apply a configuration to hardware.
 
 Artifacts are written under:
 
@@ -262,4 +268,4 @@ They are not treated as golden replay traces for the simulator.
   timeline equivalence with the direct engine for the representative transfer case they exercise.
 - AFL++ harness validation proves the fuzz targets still build, execute, and produce coverage on their seed corpora without changing the normal pytest gate.
 
-For the deeper simulator and control scenario, read [StepperPhaseElectrical](../arch/stepper_phase_electrical.md). For the SIL-specific transport path, read [SIL Guide](sil_guide.md).
+For the deeper simulator and control scenario, read [StepperPhaseElectrical](stepper_phase_electrical.md). For the SIL-specific transport path, read [SIL Guide](sil_guide.md).

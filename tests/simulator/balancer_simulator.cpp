@@ -258,6 +258,14 @@ std::string_view BalancerSimulator::profile_name(PhysicsProfile profile) {
 BalancerSimulator::StepperMassMatrix BalancerSimulator::stepper_mass_matrix(
     const SimulatorPhysics& physics, double pitch_rad, double total_mass_scale,
     double first_mass_moment_scale, double pitch_inertia_scale) {
+  return stepper_mass_matrix_with_cosine(
+      physics, std::cos(pitch_rad), total_mass_scale, first_mass_moment_scale,
+      pitch_inertia_scale);
+}
+
+BalancerSimulator::StepperMassMatrix BalancerSimulator::stepper_mass_matrix_with_cosine(
+    const SimulatorPhysics& physics, double cos_pitch, double total_mass_scale,
+    double first_mass_moment_scale, double pitch_inertia_scale) {
   const double total_mass = HardwareNominal::total_mass_kg * std::max(0.1, total_mass_scale);
   const double first_mass_moment =
       HardwareNominal::first_mass_moment_kg_m * std::max(0.1, first_mass_moment_scale);
@@ -271,7 +279,7 @@ BalancerSimulator::StepperMassMatrix BalancerSimulator::stepper_mass_matrix(
   //     + 1/2 J theta_dot^2.  I_w is the absolute wheel/rotor inertia;
   // theta_relative = x/r - theta is not a kinetic-energy coordinate.
   const double d11 = total_mass + 2.0 * rotating_inertia / (radius * radius);
-  const double d12 = first_mass_moment * std::cos(pitch_rad);
+  const double d12 = first_mass_moment * cos_pitch;
   const double d22 = pitch_inertia;
   return StepperMassMatrix{.d11 = d11,
                            .d12 = d12,
@@ -341,6 +349,16 @@ void BalancerSimulator::set_emitted_motor_steps(double left_steps, double right_
   emitted_right_steps_ = right_steps;
   emitted_steps_avg_ = 0.5 * (left_steps + right_steps);
   have_external_emitted_steps_ = true;
+  have_external_emitted_step_indices_ = false;
+}
+
+void BalancerSimulator::set_emitted_motor_step_indices(std::int64_t left_steps,
+                                                        std::int64_t right_steps) {
+  emitted_left_steps_ = static_cast<double>(left_steps);
+  emitted_right_steps_ = static_cast<double>(right_steps);
+  emitted_steps_avg_ = 0.5 * (emitted_left_steps_ + emitted_right_steps_);
+  have_external_emitted_steps_ = true;
+  have_external_emitted_step_indices_ = true;
 }
 
 void BalancerSimulator::set_stepper_direct_torque_for_test(double left_torque_nm,
@@ -408,23 +426,37 @@ void BalancerSimulator::step_once(double dt_s) {
       emitted_left_steps_ = continuous_field_left_steps_;
       emitted_right_steps_ = continuous_field_right_steps_;
       emitted_steps_avg_ = 0.5 * (emitted_left_steps_ + emitted_right_steps_);
+      have_external_emitted_step_indices_ = false;
     } else if (!have_external_emitted_steps_) {
       emitted_left_steps_ += left_target_sps_ * dt_s;
       emitted_right_steps_ += right_target_sps_ * dt_s;
       emitted_steps_avg_ = 0.5 * (emitted_left_steps_ + emitted_right_steps_);
+      have_external_emitted_step_indices_ = false;
     }
     StepperSnapshot left_snapshot{};
     StepperSnapshot right_snapshot{};
     if (physics_.stepper_phase_electrical) {
-      stepper_phase_electrical_actuator_.set_commanded_microstep_positions(
-          emitted_left_steps_, emitted_right_steps_);
+      if (have_external_emitted_step_indices_) {
+        stepper_phase_electrical_actuator_.set_commanded_microstep_indices(
+            static_cast<std::int64_t>(emitted_left_steps_),
+            static_cast<std::int64_t>(emitted_right_steps_));
+      } else {
+        stepper_phase_electrical_actuator_.set_commanded_microstep_positions(
+            emitted_left_steps_, emitted_right_steps_);
+      }
       const auto actuator = stepper_phase_electrical_actuator_.evaluate(
           dt_s, state_.velocity, state_.pitch_rate);
       left_snapshot = make_stepper_snapshot(actuator.left);
       right_snapshot = make_stepper_snapshot(actuator.right);
     } else {
-      stepper_phase_actuator_.set_commanded_microstep_positions(emitted_left_steps_,
-                                                                 emitted_right_steps_);
+      if (have_external_emitted_step_indices_) {
+        stepper_phase_actuator_.set_commanded_microstep_indices(
+            static_cast<std::int64_t>(emitted_left_steps_),
+            static_cast<std::int64_t>(emitted_right_steps_));
+      } else {
+        stepper_phase_actuator_.set_commanded_microstep_positions(emitted_left_steps_,
+                                                                   emitted_right_steps_);
+      }
       const auto actuator = stepper_phase_actuator_.evaluate(
           dt_s, state_.velocity, state_.pitch_rate);
       left_snapshot = make_stepper_snapshot(actuator.left);
@@ -458,8 +490,8 @@ void BalancerSimulator::step_once(double dt_s) {
     const double cQ = std::cos(Q);
     const double H = Nominal::first_mass_moment_kg_m *
                      std::max(0.1, cfg_.first_mass_moment_scale);
-    const auto mass_matrix = stepper_mass_matrix(
-        physics_, Q, cfg_.total_mass_scale, cfg_.first_mass_moment_scale,
+    const auto mass_matrix = stepper_mass_matrix_with_cosine(
+        physics_, cQ, cfg_.total_mass_scale, cfg_.first_mass_moment_scale,
         cfg_.pitch_inertia_scale);
     const double d11 = mass_matrix.d11;
     const double d12 = mass_matrix.d12;

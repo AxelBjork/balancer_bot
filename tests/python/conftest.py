@@ -56,10 +56,6 @@ _BEHAVIORAL_XFAILS = (
         "StepperPhaseElectrical sustained authority case remains velocity-authority limited after the transient",
     ),
     (
-        "test_outer_drive_stop_and_reversal_are_symmetric[stepper_phase_electrical]",
-        "StepperPhaseElectrical drive/reversal command path exceeds the current bounded speed envelope",
-    ),
-    (
         "test_outer_reduced_translation_authority_degrades_without_trim_runaway[stepper_phase_electrical]",
         "StepperPhaseElectrical reduced-authority motion does not satisfy the current outer-loop degradation witness",
     ),
@@ -676,16 +672,33 @@ def simulator_port():
 def simulator_process(simulator_port):
     proc = subprocess.Popen(
         [str(_sim_binary()), "--port", str(simulator_port)],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=0,
         preexec_fn=os.setsid,
     )
 
-    deadline = time.monotonic() + 0.05
+    deadline = time.monotonic() + 5.0
+    startup_output = bytearray()
+    marker = b"Starting balancer_simulator service on UDP port"
     while time.monotonic() < deadline:
         if proc.poll() is not None:
-            pytest.fail(f"balancer_simulator exited during startup (rc={proc.returncode})")
-        time.sleep(0.001)
+            output = startup_output.decode(errors="replace")
+            pytest.fail(
+                f"balancer_simulator exited during startup (rc={proc.returncode})\n{output}"
+            )
+
+        ready, _, _ = select.select([proc.stdout], [], [], 0.1)
+        if not ready:
+            continue
+        chunk = os.read(proc.stdout.fileno(), 4096)
+        startup_output.extend(chunk)
+        if marker in startup_output:
+            break
+    else:
+        _stop_sil_process(proc)
+        output = startup_output.decode(errors="replace")
+        pytest.fail(f"balancer_simulator did not become ready within 5 seconds\n{output}")
 
     yield proc
     _stop_sil_process(proc)

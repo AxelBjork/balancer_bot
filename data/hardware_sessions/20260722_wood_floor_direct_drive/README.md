@@ -4,12 +4,13 @@
 
 [Analysis workflow](../../../doc/testing/telemetry_analysis_cli.md) · [Manifest](manifest.json)
 
-This is a short, fault-free excerpt from
+This is a short, fault-free **pre-v12** excerpt from
 `data/server/telemetry_20260722-193855_00.csv`, captured after removing the direct motor
 velocity feed-forward from the controller allocation. The operator reported stable balancing,
 small translational control, and steering on a wooden floor. This fixture is qualitative evidence
-that the simplified controller can balance and move; it is not a calibrated plant-identification or
-controller-tuning dataset.
+that the earlier simplified controller could balance and move; it is not evidence that the current
+velocity-reference planner has passed hardware validation, and it is not a calibrated
+plant-identification or controller-tuning dataset.
 
 `session1_55p8_to_58p0.csv` is the newest fault-free complete forward-command stage in the source:
 session 1, controller time 55.802502–58.000000 s. The target ramps to +1200 SPS, the motor command
@@ -30,8 +31,8 @@ The command window is intentionally a real joystick transient rather than a stea
 large RMS values reflect the acceleration and release, not a claim of settled drive performance.
 
 The source was recorded while the temporary `applied_velocity_feedforward_sps` protocol field was
-still present. That field is preserved only as historical capture data; it is not part of the live
-protocol after the controller cleanup.
+still present and before the v12 velocity-reference outer loop. That field is preserved only as
+historical capture data; it is not part of the live protocol after the controller cleanup.
 
 Do not use this fixture to fit PID values. Reproduce the extraction from the checksum-bound source
 with session selection before applying the controller-time window; the source file contains a

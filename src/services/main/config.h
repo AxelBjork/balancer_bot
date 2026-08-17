@@ -59,6 +59,11 @@ struct Config {
   // error/missed-step plant supplies the physical acceleration limit.
   static constexpr double motor_slew_sps_per_s = 200000.0;
 
+  // Motion authority is deliberately separate from fall protection. The
+  // outer loop may request up to this setpoint, while the controller keeps a
+  // margin before the no-command fallover disarm threshold below.
+  static constexpr double max_motion_pitch_setpoint_deg = 45.0;
+  static constexpr double fallover_margin_deg = 5.0;
   static constexpr double max_tilt_rad = 25.0 * (M_PI / 180.0);
 
   static constexpr int command_hz = 100;
@@ -77,6 +82,9 @@ static_assert(Config::sampling_hz > 0.0);
 static_assert(Config::commanded_steps_per_rev == 6400);
 static_assert(Config::microsteps_per_full_step == 32);
 static_assert(Config::max_step_rate_sps == 16000.0);
+static_assert(Config::max_motion_pitch_setpoint_deg > 0.0 &&
+              Config::max_motion_pitch_setpoint_deg < 90.0);
+static_assert(Config::fallover_margin_deg > 0.0);
 static_assert(Config::wheel_diam_m == 0.0824);
 static_assert(Config::imu_accel_lpf_hz > 0.0 &&
               Config::imu_accel_lpf_hz < Config::sampling_hz / 2.0);

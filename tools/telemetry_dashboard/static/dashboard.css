@@ -131,8 +131,9 @@ h1 { margin: 3px 0 0; font-size: 1.45rem; letter-spacing: -.035em; }
 .workspace-title { flex: 0 0 auto; display: flex; align-items: center; gap: 7px; color: #f8fbff; }
 .workspace-title svg { color: #38bdf8; }
 .workspace-title h2 { margin: 0; font-size: 1.02rem; letter-spacing: -.01em; }
-.plot-controls { min-width: 0; flex: 1; display: flex; align-items: center; justify-content: flex-end; gap: 8px; overflow-x: auto; scrollbar-width: thin; padding-bottom: 1px; }
+.plot-controls { min-width: 0; flex: 1; display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding-bottom: 1px; }
 .tabs, .ranges { flex: 0 0 auto; display: flex; align-items: center; gap: 5px; flex-wrap: nowrap; }
+.tabs { min-width: 0; flex: 1 1 0; max-width: 760px; justify-content: flex-end; flex-wrap: wrap; row-gap: 5px; }
 .tabs button, .ranges button { padding: .36rem .53rem; font-size: .76rem; white-space: nowrap; }
 .tabs button.active { color: #fff; background: linear-gradient(180deg, #17678e, #165170); border-color: #5fc3ee; }
 .toolbar-divider { flex: 0 0 auto; width: 1px; height: 24px; background: #3a5269; }
@@ -298,6 +299,7 @@ h1 { margin: 3px 0 0; font-size: 1.45rem; letter-spacing: -.035em; }
   .metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .workspace-head { align-items: flex-start; flex-direction: column; }
   .plot-controls { width: 100%; justify-content: flex-start; }
+  .tabs { max-width: none; justify-content: flex-start; }
   .plot-grid { grid-template-columns: 1fr; }
   .right-rail { grid-template-columns: 1fr; }
   .run-controls { grid-template-columns: 1fr; }

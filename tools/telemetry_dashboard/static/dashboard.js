@@ -11,15 +11,22 @@ const PID_FIELDS = [
   ["pitch_gain", "Pitch gain (SPS/rad)"],
   ["pitch_rate_gain", "Pitch-rate gain (SPS/(rad/s))"],
   ["pitch_accel_gain", "Pitch-acceleration gain (SPS/(rad/s²))"],
-  ["drive_max_acceleration_mps2", "Drive acceleration (m/s²)"],
-  ["velocity_damping_per_s", "Velocity damping (1/s)"],
-  ["velocity_pitch_limit_deg", "Velocity pitch authority limit (deg)"],
-  ["velocity_I", "Velocity I (deg/(SPS·s))"],
-  ["velocity_I_limit_deg", "Velocity I limit (deg)"],
-  ["velocity_control_cutoff_hz", "Velocity control cutoff (Hz)"],
-  ["drive_max_sps", "Drive limit (steps/s)"],
+  ["drive_max_velocity_mps", "Maximum drive velocity (m/s)"],
+  ["velocity_gain_per_s", "Velocity feedback gain (1/s)"],
+  ["velocity_feedback_cutoff_hz", "Velocity feedback cutoff (Hz)"],
+  ["outer_pitch_limit_deg", "Outer pitch limit (deg)"],
+  ["fixed_com_trim_deg", "Fixed COM trim (deg)"],
+  ["adaptive_com_trim_enabled", "Adaptive COM enabled (0/1)"],
+  ["adaptive_com_trim_gain_deg_per_mps_s", "Adaptive COM gain (deg/(m/s·s))"],
+  ["adaptive_com_trim_limit_deg", "Adaptive COM limit (deg)"],
   ["turn_max_sps", "Turn limit (steps/s)"],
   ["balance_max_sps", "Balance limit (steps/s)"],
+  ["planner_max_acceleration_mps2", "Planner acceleration (m/s²)"],
+  ["planner_max_deceleration_mps2", "Planner deceleration (m/s²)"],
+  ["planner_max_jerk_mps3", "Planner jerk (m/s³)"],
+  ["velocity_i_gain_per_s2", "Velocity I gain (1/s²)"],
+  ["velocity_i_leak_time_s", "Velocity I leak time (s)"],
+  ["velocity_i_acceleration_limit_mps2", "Velocity I limit (m/s²)"],
 ];
 const groups = [
   { id:"performance", title:"Balance performance", unit:"% reference", help:"1.5 s rolling windows. Pitch error is referenced to 1°, rate to 30°/s, command and velocity to 1000 SPS; lower is quieter.", series:[
@@ -52,12 +59,18 @@ const groups = [
     {id:"accel",label:"Acceleration",path:"controller.pitch_accel_feedback_sps",decimals:1},
     {id:"command",label:"Command",path:"controller.command_sps",decimals:1},
   ]},
-  { id:"outer-loop", title:"Outer loop / trim", unit:"deg", help:"Velocity and COM terms that shape the pitch target", series:[
+  { id:"outer-loop", title:"Velocity-reference outer loop", unit:"SI", help:"Planner, velocity feedback, acceleration authority, and fixed trim", series:[
     {id:"target",label:"Pitch target",path:"attitude.pitch_setpoint_deg",decimals:2},
-    {id:"velocity-unclamped",label:"Velocity request",path:"controller.velocity_pitch_request_unclamped_deg",decimals:2},
-    {id:"velocity-limited",label:"Velocity limited",path:"controller.velocity_pitch_request_limited_deg",decimals:2},
-    {id:"total-unclamped",label:"Total target request",path:"controller.pitch_target_unclamped_deg",decimals:2},
-    {id:"trim",label:"COM trim",path:"controller.com_trim_deg",decimals:2},
+    {id:"user-velocity",label:"User velocity",path:"motion.user_velocity_mps",decimals:3},
+    {id:"reference-velocity",label:"Reference velocity",path:"motion.reference_velocity_mps",decimals:3},
+    {id:"feedback-velocity",label:"Feedback estimate",path:"motion.velocity_feedback_estimate_mps",decimals:3},
+    {id:"acceleration",label:"Acceleration command",path:"controller.acceleration_cmd_mps2",decimals:3},
+    {id:"drive-pitch",label:"Drive pitch",path:"controller.drive_pitch_target_deg",decimals:2},
+    {id:"trim",label:"Fixed/COM trim",path:"controller.com_trim_deg",decimals:2},
+  ]},
+  { id:"joystick", title:"Joystick command", unit:"normalized", help:"Forward and turn values sent by this dashboard session; unavailable for preloaded history", series:[
+    {id:"forward",label:"Forward",derived:"joystick.forward",decimals:2},
+    {id:"turn",label:"Turn",derived:"joystick.turn",decimals:2},
   ]},
   { id:"motion", title:"Motion feedback", unit:"steps/s", help:"Commanded motion versus completed-step feedback", series:[
     {id:"command",label:"Command",path:"controller.command_sps",decimals:1},
@@ -194,8 +207,16 @@ function diagnosticValuesAt(index) {
     "diagnostics.sample_age_ms": browser.sample_age_ms??null,
   };
 }
+function joystickValuesAt(index) {
+  const sample=store.plotSamples[index];
+  if(!sample) return null;
+  const browser=sample.browserDiagnostics??{};
+  if(browser.joystick_command_valid!==true) return null;
+  const value=name=>typeof browser[name]==="number"&&Number.isFinite(browser[name])?browser[name]:null;
+  return {"joystick.forward":value("joystick_forward"),"joystick.turn":value("joystick_turn")};
+}
 function derivedValuesAt(index) {
-  return {...(performanceValuesAt(index)??{}),...(diagnosticValuesAt(index)??{})};
+  return {...(performanceValuesAt(index)??{}),...(diagnosticValuesAt(index)??{}),...(joystickValuesAt(index)??{})};
 }
 function rebuildDerivedArrays() {
   store.derived = new Map(derivedSeries.map(series => [series.derived, []]));
@@ -255,6 +276,11 @@ function append(sample) {
   if ((store.samples.at(-1)?.sequence ?? -1) >= sample.sequence) return;
   const appendStarted=performance.now();
   state.ingestedSamples++;
+  sample.browserDiagnostics={...(sample.browserDiagnostics??{}),
+    joystick_command_valid:true,
+    joystick_forward:state.joystick.forward,
+    joystick_turn:state.joystick.turn,
+  };
   if (store.origin == null) store.origin=sample.received_at;
   const previous=store.samples.at(-1);
   store.samples.push(sample);

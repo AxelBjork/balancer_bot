@@ -84,31 +84,35 @@ from `/api/stream`.
 Returns the dashboard's in-memory controller snapshot, the local `pid.conf` baseline loaded when the
 server started, and the last delivery status:
 
-The maps are abbreviated below for readability; the actual response contains all 12 numeric fields in both
+The maps are abbreviated below for readability; the actual response contains all 19 numeric fields in both
 `values` and `baseline`.
 
 ```jsonc
 {
   "ok": true,
-  "values": { "pitch_gain": 6000.0 /* ...11 more fields... */ },
-  "baseline": { "pitch_gain": 6000.0 /* ...11 more fields... */ },
+  "values": { "pitch_gain": 203550.0 /* ...18 more fields... */ },
+  "baseline": { "pitch_gain": 203550.0 /* ...18 more fields... */ },
   "override_active": false,
   "pending": false,
   "last_status": null
 }
 ```
 
-The complete numeric snapshot has these 12 fields, presented in the same order as `pid.conf`:
+The complete numeric snapshot has these 19 fields, presented in the same order as the dashboard
+and reflected PID payload:
 
 ```text
-pitch_gain, pitch_rate_gain, pitch_accel_gain,
-drive_max_acceleration_mps2, velocity_damping_per_s, velocity_pitch_limit_deg, velocity_I,
-velocity_I_limit_deg, velocity_control_cutoff_hz, drive_max_sps,
-turn_max_sps, balance_max_sps
+pitch_gain, pitch_rate_gain, pitch_accel_gain, drive_max_velocity_mps,
+velocity_gain_per_s, velocity_feedback_cutoff_hz, outer_pitch_limit_deg, fixed_com_trim_deg,
+adaptive_com_trim_enabled, adaptive_com_trim_gain_deg_per_mps_s, adaptive_com_trim_limit_deg,
+turn_max_sps, balance_max_sps, planner_max_acceleration_mps2,
+planner_max_deceleration_mps2, planner_max_jerk_mps3, velocity_i_gain_per_s2,
+velocity_i_leak_time_s, velocity_i_acceleration_limit_mps2
 ```
 
-This is presentation order only; the nested binary PID payload retains its established wire
-layout for compatibility.
+The v12 payload intentionally rejects v11 configurations so the old acceleration/damping
+semantics cannot be loaded under the new names. Telemetry remains append-only; the canonical
+outer-loop telemetry fields are the source of truth.
 
 ### `GET /api/history`
 
@@ -213,26 +217,34 @@ durations, and the latest sample age; it is not an always-on status readout.
 ```json
 {
   "values": {
-    "pitch_gain": 6000.0,
-    "pitch_rate_gain": 500.0,
+    "pitch_gain": 203550.0,
+    "pitch_rate_gain": 1932.0,
     "pitch_accel_gain": 0.0,
-    "drive_max_acceleration_mps2": 1.0,
-    "velocity_damping_per_s": 8.0,
-    "velocity_pitch_limit_deg": 4.0,
-    "velocity_I": 0.001,
-    "velocity_I_limit_deg": 4.0,
-    "velocity_control_cutoff_hz": 3.0,
-    "drive_max_sps": 1200.0,
-    "turn_max_sps": 1200.0,
-    "balance_max_sps": 16000.0
+    "drive_max_velocity_mps": 0.12,
+    "velocity_gain_per_s": 0.5,
+    "velocity_feedback_cutoff_hz": 0.68,
+    "outer_pitch_limit_deg": 10.0,
+    "fixed_com_trim_deg": 0.0,
+    "adaptive_com_trim_enabled": 0.0,
+    "adaptive_com_trim_gain_deg_per_mps_s": 0.0,
+    "adaptive_com_trim_limit_deg": 4.0,
+    "turn_max_sps": 1600.0,
+    "balance_max_sps": 16000.0,
+    "planner_max_acceleration_mps2": 0.25,
+    "planner_max_deceleration_mps2": 0.25,
+    "planner_max_jerk_mps3": 1.0,
+    "velocity_i_gain_per_s2": 0.0,
+    "velocity_i_leak_time_s": 2.0,
+    "velocity_i_acceleration_limit_mps2": 0.25
   }
 }
 ```
 
 The values must be numeric and finite. The server rejects unknown or missing fields, negative values
-where non-negative values are required, non-positive required limits, `velocity_pitch_limit_deg`
-above 90° (zero is the explicit diagnostic no-limit value), and `drive_max_sps`, `turn_max_sps`,
-or `balance_max_sps` above the current verified-1/32 limit of `16000`.
+where non-negative values are required, non-positive required limits, `outer_pitch_limit_deg`
+above 90°, invalid adaptive-trim enable values, and `turn_max_sps` or `balance_max_sps` above
+the current verified-1/32 limit of `16000`. `drive_max_velocity_mps` must also preserve the
+configured 25%-of-available-SPS nominal recovery headroom.
 
 The immediate response reports `request_id`, `sent`, and `pending`. Delivery and validation on the
 Pi are asynchronous. The eventual `pid_status` in a `status` SSE event, or `last_status` from

@@ -102,6 +102,44 @@ struct SimulatorTimelineRow {
   double velocity_control_sps = 0.0;
   double velocity_damping_acceleration_mps2 = 0.0;
   double com_trim_deg = 0.0;
+  double user_velocity_mps = 0.0;
+  double reference_velocity_mps = 0.0;
+  double reference_acceleration_mps2 = 0.0;
+  double reference_jerk_mps3 = 0.0;
+  double velocity_feedback_estimate_mps = 0.0;
+  double velocity_error_mps = 0.0;
+  double velocity_feedback_acceleration_mps2 = 0.0;
+  double velocity_p_acceleration_mps2 = 0.0;
+  double velocity_i_acceleration_mps2 = 0.0;
+  double velocity_integral_state_mps_s = 0.0;
+  double acceleration_raw_mps2 = 0.0;
+  double acceleration_cmd_mps2 = 0.0;
+  double drive_pitch_target_deg = 0.0;
+  double fixed_com_trim_deg = 0.0;
+  double velocity_feedback_valid = 0.0;
+  double velocity_feedback_active = 0.0;
+  double outer_acceleration_limited = 0.0;
+  double outer_pitch_target_limited = 0.0;
+  double active_drive_max_velocity_mps = 0.0;
+  double active_drive_max_acceleration_mps2 = 0.0;
+  double active_drive_max_deceleration_mps2 = 0.0;
+  double active_velocity_gain_per_s = 0.0;
+  double active_velocity_feedback_cutoff_hz = 0.0;
+  double active_outer_pitch_limit_deg = 0.0;
+  double active_fixed_com_trim_deg = 0.0;
+  double adaptive_com_trim_enabled = 0.0;
+  double legacy_outer_fields_valid = 0.0;
+  double final_pitch_target_deg = 0.0;
+  double active_planner_max_acceleration_mps2 = 0.0;
+  double active_planner_max_deceleration_mps2 = 0.0;
+  double active_planner_max_jerk_mps3 = 0.0;
+  double active_velocity_i_gain_per_s2 = 0.0;
+  double active_velocity_i_leak_time_s = 0.0;
+  double active_velocity_i_acceleration_limit_mps2 = 0.0;
+  double planner_acceleration_limited = 0.0;
+  double planner_jerk_limited = 0.0;
+  double velocity_integral_limited = 0.0;
+  double velocity_anti_windup_active = 0.0;
   double trim_learning_enabled = 0.0;
   uint32_t trim_learning_block_reason = ComTrimLearningBlockFault;
   double pitch_error_deg = 0.0;
@@ -238,7 +276,6 @@ struct SimulatorRunResult {
   double max_continuous_saturation_s = 0.0;
   uint32_t actuator_fault_count = 0;
   uint32_t controller_fault_flags = 0;
-  uint64_t timeline_hash = 1469598103934665603ULL;
 };
 
 struct TransferAcceptance {
@@ -282,7 +319,12 @@ std::vector<SimulatorScenario> tuning_velocity_scenario_set(
     PhysicsProfile physics_profile = PhysicsProfile::Realistic);
 std::vector<SimulatorScenario> tuning_drive_scenario_set(
     PhysicsProfile physics_profile = PhysicsProfile::Realistic);
+std::vector<SimulatorScenario> tuning_motion_scenario_set(
+    PhysicsProfile physics_profile = PhysicsProfile::StepperPhaseElectrical);
+std::vector<SimulatorScenario> tuning_outer_motion_scenario_set(
+    PhysicsProfile physics_profile = PhysicsProfile::StepperPhaseElectrical);
+std::vector<SimulatorScenario> tuning_leaky_integral_scenario_set(
+    PhysicsProfile physics_profile = PhysicsProfile::StepperPhaseElectrical);
 std::vector<SimulatorScenario> tuning_trim_scenario_set(
     PhysicsProfile physics_profile = PhysicsProfile::Realistic);
 TransferAcceptance evaluate_transfer_scenario(const SimulatorRunResult& result);
-uint64_t update_simulator_timeline_hash(uint64_t hash, const SimulatorTimelineRow& row);

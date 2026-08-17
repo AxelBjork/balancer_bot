@@ -64,6 +64,11 @@ def write_telemetry_csv(path: str | Path, rows: Iterable[Mapping[str, Any]]) -> 
     telemetry_frame(rows).to_csv(path, index=False)
 
 
+def write_telemetry_frame(path: str | Path, frame: pd.DataFrame) -> None:
+    """Write an already canonicalized telemetry frame without rebuilding it."""
+    frame.to_csv(path, index=False)
+
+
 def band_rms_equivalent(
     frame: pd.DataFrame,
     signal: str,

@@ -27,6 +27,8 @@ class JoystickInputArbiter {
       return;
     }
     if (payload.forward == 0.0 && payload.turn == 0.0) {
+      // Zero is the explicit external-release boundary. Dashboard heartbeats are
+      // nonzero packets and are refreshed before the watchdog expires.
       clear_locked();
       return;
     }
@@ -77,7 +79,8 @@ inline constexpr char kInputServiceDoc[] =
     "`JoystickCommand` messages to the bus.\n\n"
     "This service isolates the platform-dependent gamepad reading (SDL2) from the main "
     "application logic. An available Xbox controller has priority; otherwise a validated "
-    "external command may be used until its short watchdog expires.";
+    "external command is held until its short watchdog expires or an explicit neutral "
+    "command is received.";
 
 class DOC_DESC(kInputServiceDoc) InputService {
  public:

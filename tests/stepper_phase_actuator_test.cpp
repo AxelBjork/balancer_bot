@@ -15,6 +15,12 @@
 
 #include "services/main/config.h"
 
+// These actuator tests use old zeroed-outer-loop setup spellings; keep the
+// test source buildable while the behavioral assertions move to v12 fields.
+#define velocity_damping_per_s velocity_gain_per_s
+#define velocity_pitch_limit_deg outer_pitch_limit_deg
+#define velocity_I adaptive_com_trim_gain_deg_per_mps_s
+
 namespace {
 
 constexpr double kPi = 3.14159265358979323846;
@@ -516,6 +522,23 @@ TEST(StepperPhaseActuatorTest, HardwareKinematicsUseAuthoritativeOneThirtySecond
               1e-12);
 }
 
+TEST(StepperPhaseActuatorTest, IntegerCommandPathWrapsSignedStepIndices) {
+  const auto parameters = nominal_stepper_parameters();
+  stepper_phase::Actuator actuator(parameters);
+  actuator.set_commanded_microstep_indices(-1, 6400 + 17);
+  const auto output = actuator.evaluate(1.0e-4, 0.0, 0.0);
+
+  EXPECT_EQ(output.left.commanded_microstep_index, 6399);
+  EXPECT_EQ(output.right.commanded_microstep_index, 17);
+  const double step_angle = actuator.electrical_radians_per_step();
+  const auto expected_left = stepper_phase::Actuator::phase_for_electrical_angle(-step_angle);
+  const auto expected_right = stepper_phase::Actuator::phase_for_electrical_angle(17.0 * step_angle);
+  EXPECT_NEAR(output.left.phase.a, expected_left.a, 1.0e-14);
+  EXPECT_NEAR(output.left.phase.b, expected_left.b, 1.0e-14);
+  EXPECT_NEAR(output.right.phase.a, expected_right.a, 1.0e-14);
+  EXPECT_NEAR(output.right.phase.b, expected_right.b, 1.0e-14);
+}
+
 TEST(StepperPhaseActuatorTest, OneEighthToOneThirtySecondPreservesFieldMotionAtFourfoldSps) {
   constexpr double radius_m = Config::wheel_radius_m;
   constexpr double one_eighth_steps_per_rev =
@@ -574,6 +597,30 @@ TEST(StepperPhaseElectricalTest, UsesAuthoritativeGeometryAndOneThirtySecondStep
   EXPECT_NEAR(output.left.commanded_mechanical_angle_rad, 0.05625 * kPi / 180.0, 1e-15);
   EXPECT_NEAR(output.left.commanded_field_electrical_angle_rad, 2.8125 * kPi / 180.0,
               1e-14);
+}
+
+TEST(StepperPhaseElectricalTest, IntegerCommandPathUsesNominalLutAndCustomFallback) {
+  auto nominal = nominal_electrical_parameters();
+  stepper_phase::ElectricalActuator nominal_actuator(nominal);
+  nominal_actuator.set_commanded_microstep_indices(-1, 17);
+  const auto nominal_output = nominal_actuator.evaluate(1.0e-4, 0.0, 0.0);
+  const double nominal_step_angle = nominal_actuator.electrical_radians_per_step();
+  const auto expected_negative =
+      stepper_phase::ElectricalActuator::phase_for_electrical_angle(-nominal_step_angle);
+  EXPECT_EQ(nominal_output.left.commanded_microstep_index, 6399);
+  EXPECT_NEAR(nominal_output.left.phase.a, expected_negative.a, 1.0e-14);
+  EXPECT_NEAR(nominal_output.left.phase.b, expected_negative.b, 1.0e-14);
+
+  auto custom = nominal;
+  custom.microsteps_per_full_step = 16;
+  stepper_phase::ElectricalActuator custom_actuator(custom);
+  custom_actuator.set_commanded_microstep_indices(3, 3);
+  const auto custom_output = custom_actuator.evaluate(1.0e-4, 0.0, 0.0);
+  const auto expected_custom =
+      stepper_phase::ElectricalActuator::phase_for_electrical_angle(
+          custom_output.left.commanded_field_electrical_angle_rad);
+  EXPECT_NEAR(custom_output.left.phase.a, expected_custom.a, 1.0e-14);
+  EXPECT_NEAR(custom_output.left.phase.b, expected_custom.b, 1.0e-14);
 }
 
 TEST(StepperPhaseElectricalTest, FreeWheelFixtureUsesTimestampedOneThirtySecondEvents) {
@@ -1085,6 +1132,29 @@ TEST(StepperPhaseModelTest, MassMatrixUsesAbsoluteWheelRotorKineticCoordinate) {
              2.0 * matrix.d12 * x_dot * theta_dot +
              matrix.d22 * theta_dot * theta_dot);
   EXPECT_NEAR(matrix_energy, explicit_energy, 1e-15);
+}
+
+TEST(StepperPhaseModelTest, MassMatrixScalesRemainCorrectAroundNominal) {
+  using Nominal = BalancerSimulator::HardwareNominal;
+  const auto physics = BalancerSimulator::physics_for_profile(PhysicsProfile::StepperPhase);
+  constexpr double pitch_rad = 0.37;
+  for (const double scale : {0.9, 1.0, 1.1}) {
+    const auto matrix = BalancerSimulator::stepper_mass_matrix(
+        physics, pitch_rad, scale, scale, scale);
+    const double total_mass = Nominal::total_mass_kg * scale;
+    const double first_mass_moment = Nominal::first_mass_moment_kg_m * scale;
+    const double pitch_inertia = Nominal::pitch_inertia_about_axle_kg_m2 * scale;
+    const double rotating_inertia = Nominal::stepper_rotating_inertia_kg_m2_per_motor;
+    const double radius = Nominal::stepper_phase_wheel_radius;
+    const double expected_d11 = total_mass + 2.0 * rotating_inertia / (radius * radius);
+    const double expected_d12 = first_mass_moment * std::cos(pitch_rad);
+    const double expected_d22 = pitch_inertia;
+    EXPECT_NEAR(matrix.d11, expected_d11, 1.0e-15);
+    EXPECT_NEAR(matrix.d12, expected_d12, 1.0e-15);
+    EXPECT_NEAR(matrix.d22, expected_d22, 1.0e-15);
+    EXPECT_NEAR(matrix.determinant, expected_d11 * expected_d22 - expected_d12 * expected_d12,
+                1.0e-15);
+  }
 }
 
 TEST(StepperPhaseModelTest, GravityOnlyAccelerationMatchesIndependentBalanceDerivation) {

@@ -96,7 +96,7 @@ def main() -> int:
             udp.register()
             for index, scenario in enumerate(catalog):
                 name = str(scenario["name"])
-                summary, metadata, done = run_scenario_live(
+                result = run_scenario_live(
                     udp,
                     run_id=10_000 + index,
                     output_dir=output / name,
@@ -128,6 +128,9 @@ def main() -> int:
                     done_timeout=30.0,
                 )
                 passed, failures = _direct_acceptance(args.sim_bin, args.pid, index)
+                summary = result.summary
+                metadata = result.metadata
+                done = result.done
                 if done.reason_code not in (DONE_COMPLETED, DONE_ACCEPTANCE_FAILED):
                     passed = False
                     failures.append(f"udp_done={done.reason_code}")

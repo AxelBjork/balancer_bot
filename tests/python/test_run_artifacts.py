@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import csv
+import json
 import math
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
+from tests.python.support.simulator_service import DONE_COMPLETED, validate_telemetry_packets
 from tests.python.support.run_artifacts import (
     RunRecorder,
     analyze_timeline_rows,
@@ -14,6 +17,11 @@ from tests.python.support.run_artifacts import (
     summarize_reference_file,
 )
 from tools.telemetry_analysis import actuator_stage_metrics, band_rms_equivalent
+from tools.telemetry_analysis.frames import read_telemetry_csv
+
+
+def _telemetry_stub(packet_seq: int):
+    return type("TelemetryStub", (), {"system": type("SystemStub", (), {"packet_seq": packet_seq})()})()
 
 
 def test_band_rms_equivalent_isolates_hann_windowed_command_vibration():
@@ -45,6 +53,17 @@ def test_band_rms_equivalent_rejects_nonuniform_or_missing_signal_data():
     assert band_rms_equivalent(frame, "missing", 30.0, 100.0)["rms"] is None
 
 
+def test_telemetry_packet_validation_rejects_gaps_and_count_mismatches():
+    done = type("DoneStub", (), {"reason_code": DONE_COMPLETED, "sample_count": 4})()
+    valid = [_telemetry_stub(seq) for seq in range(1, 5)]
+    validate_telemetry_packets(valid, done, telemetry_stride=1)
+
+    with pytest.raises(AssertionError, match="sequence"):
+        validate_telemetry_packets([_telemetry_stub(1), _telemetry_stub(3)], done, 1)
+    with pytest.raises(AssertionError, match="count"):
+        validate_telemetry_packets(valid[:2], done, 1)
+
+
 def test_run_recorder_writes_summary_and_flags_fall(tmp_path):
     recorder = RunRecorder()
     recorder.begin_run({"run_id": "unit_recorder"})
@@ -71,7 +90,9 @@ def test_run_recorder_writes_summary_and_flags_fall(tmp_path):
         }
     )
 
+    frame = recorder.materialize_frame()
     summary = recorder.write_csv_json_plots(tmp_path)
+    assert recorder.materialize_frame() is frame
     assert summary["fell"]
     assert summary["max_abs_pitch_deg"] == 90.0
     assert summary["tail_rms_pitch_deg"] is not None
@@ -88,6 +109,12 @@ def test_run_recorder_writes_summary_and_flags_fall(tmp_path):
     assert (tmp_path / "summary.json").exists()
     assert (tmp_path / "overview_plot.svg").exists()
     assert (tmp_path / "actuator_plot.svg").exists()
+    pd.testing.assert_frame_equal(
+        frame,
+        read_telemetry_csv(tmp_path / "timeline.csv"),
+        check_dtype=False,
+    )
+    assert json.loads((tmp_path / "summary.json").read_text()) == summary
     assert not (tmp_path / "pitch_plot.svg").exists()
     assert not (tmp_path / "command_plot.svg").exists()
     assert not (tmp_path / "wheel_plot.svg").exists()

@@ -114,6 +114,10 @@ class Actuator {
   // motor runner.  They are not a force command and are not integrated a
   // second time inside this actuator.
   void set_commanded_microstep_positions(double left_steps, double right_steps);
+  // Fast path for the simulator's timestamped STEP stream. The positions are
+  // already integral, so no floating-point rounding is needed in the actuator.
+  void set_commanded_microstep_indices(std::int64_t left_steps,
+                                       std::int64_t right_steps);
 
   Output evaluate(double dt_s, double chassis_velocity_mps, double body_pitch_rate_rad_s);
 
@@ -155,7 +159,8 @@ class Actuator {
 
   MotorOutput evaluate_motor(double commanded_steps, double previous_commanded_steps,
                              MotorState& state, double dt_s, double chassis_velocity_mps,
-                             double body_pitch_rate_rad_s) const;
+                             double body_pitch_rate_rad_s, bool have_commanded_index,
+                             std::int64_t commanded_index) const;
 
   Parameters parameters_{};
   MotorState left_state_{};
@@ -164,6 +169,9 @@ class Actuator {
   double commanded_right_steps_ = 0.0;
   double previous_left_steps_ = 0.0;
   double previous_right_steps_ = 0.0;
+  std::int64_t commanded_left_step_index_ = 0;
+  std::int64_t commanded_right_step_index_ = 0;
+  bool have_commanded_indices_ = false;
   Output output_{};
 };
 
@@ -176,6 +184,10 @@ class ElectricalActuator {
   void reset(double left_actual_relative_angle_rad = 0.0,
              double right_actual_relative_angle_rad = 0.0);
   void set_commanded_microstep_positions(double left_steps, double right_steps);
+  // Fast path for the simulator's timestamped STEP stream. The positions are
+  // already integral, so no floating-point rounding is needed in the actuator.
+  void set_commanded_microstep_indices(std::int64_t left_steps,
+                                       std::int64_t right_steps);
   ElectricalOutput evaluate(double dt_s, double chassis_velocity_mps,
                             double body_pitch_rate_rad_s);
   void advance_mechanical_state(double dt_s, double chassis_velocity_before_mps,
@@ -206,6 +218,15 @@ class ElectricalActuator {
   void set_actual_relative_angles_for_test(double left_angle_rad, double right_angle_rad);
 
  private:
+  struct CurrentUpdateCoefficients {
+    double resistance = 0.0;
+    double inverse_resistance = 0.0;
+    double bus_voltage = 0.0;
+    double decay = 1.0;
+    double one_minus_decay = 0.0;
+    bool active = false;
+  };
+
   struct MotorState {
     double actual_relative_angle_rad = 0.0;
     double current_a = 0.0;
@@ -216,9 +237,14 @@ class ElectricalActuator {
                                         double previous_commanded_steps,
                                         MotorState& state, double dt_s,
                                         double chassis_velocity_mps,
-                                        double body_pitch_rate_rad_s) const;
+                                        double body_pitch_rate_rad_s,
+                                        bool have_commanded_index,
+                                        std::int64_t commanded_index,
+                                        const CurrentUpdateCoefficients& coefficients) const;
+  CurrentUpdateCoefficients make_current_update_coefficients(double dt_s) const;
   double update_current(double current_a, double current_ref, double back_emf,
-                        double dt_s, double* phase_voltage, bool* voltage_saturated) const;
+                        const CurrentUpdateCoefficients& coefficients, double* phase_voltage,
+                        bool* voltage_saturated) const;
 
   ElectricalParameters parameters_{};
   MotorState left_state_{};
@@ -227,6 +253,9 @@ class ElectricalActuator {
   double commanded_right_steps_ = 0.0;
   double previous_left_steps_ = 0.0;
   double previous_right_steps_ = 0.0;
+  std::int64_t commanded_left_step_index_ = 0;
+  std::int64_t commanded_right_step_index_ = 0;
+  bool have_commanded_indices_ = false;
   ElectricalOutput output_{};
 };
 

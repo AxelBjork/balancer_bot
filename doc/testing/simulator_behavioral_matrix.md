@@ -1,104 +1,98 @@
 # Simulator behavioral matrix
 
-The maintained controller-level scenario suite is the Python UDP/SIL suite in
-[`tests/python/test_sim_scenarios.py`](../../tests/python/test_sim_scenarios.py). Each shared
-behavior is defined once and parameterized over two explicit simulator/model configurations:
+The maintained controller-level comparison is the Python suite in
+[`tests/python/test_sim_scenarios.py`](../../tests/python/test_sim_scenarios.py).
+Every shared behavior runs against two explicit configurations:
 
-| Model | Physics profile | PID file | Attitude gains | Balance limit |
+| Model | Physics profile | PID file | Inner gains | Balance ceiling |
 | --- | --- | --- | ---: | ---: |
 | `DirectActuator` | `direct_actuator` | `tests/data/direct_actuator_pid.conf` | `6000 / 350 / 0` | `16000 SPS` |
-| `StepperPhaseElectrical` | `stepper_phase_electrical` | `pid.conf` | `203550 / 1932 / 14.7` | `16000 SPS` |
+| `StepperPhaseElectrical` | `stepper_phase_electrical` | `pid.conf` | `203550 / 1932 / 0` | `16000 SPS` |
 
-The PID files are intentionally separate. `pid.conf` is now the rounded
-StepperPhaseElectrical-calibrated shared default. The old DirectActuator values remain in an
-explicit reference fixture so controller changes can still be compared against that model without
-silently changing the production/default profile.
+The physics profiles, geometry, estimator, scenario definitions, and assertions
+are fixed comparison inputs. Tuning changes controller weights only. The
+common plant equations and controller law are documented in
+[`doc/arch/control_plant.md`](../arch/control_plant.md); the electrical
+actuator realization is documented in the
+[`StepperPhaseElectrical test profile`](stepper_phase_electrical.md).
 
-## Shared scope
+## Scope
 
-The Python suite currently maintains 35 model-independent scenario definitions and executes each
-against both models. The scope includes:
+The suite contains 35 named scenario definitions, with composite definitions
+retaining their concrete sub-runs. It covers:
 
-- quiet balance, sensor stress, and bounded long-horizon behavior;
-- symmetric known-attitude `±1°`, `±2°`, `±4°`, and `±6°` recovery;
-- the retained 50° estimator-limited high-angle boundary proxy;
-- moderate disturbance recovery;
-- drive, stop, and reversal;
-- COM acquisition, motion-time learning freeze, and maintenance reacquisition;
-- pitch-authority diagnostics and uncertainty/authority cases.
+- neutral balance, noise, disturbances, and long-horizon behavior;
+- signed `±1°`, `±2°`, `±4°`, and harder high-angle recovery;
+- drive, stop, reversal, initial velocity, and reduced-authority behavior;
+- pitch authority and estimator/uncertainty cases;
+- fixed-trim motion and disturbance behavior; adaptive COM acquisition,
+  motion-time COM freeze, and maintenance behavior are explicitly deferred;
+- startup and fallover/re-arm boundaries.
 
-Some definitions are intentionally composite: they contain several signed, disturbance, gain, or
-uncertainty sub-runs. They remain one pytest item so the suite retains its scenario-level meaning;
-the runner records each concrete sub-run and continues collecting later cases after an earlier
-behavioral gate fails. The generated matrix therefore reports both the aggregate pytest
-model/scenario execution count and the concrete sub-run evidence. This is diagnostic expansion,
-not a flattening of the maintained scenario catalog.
+Acceptance rejects falls, controller or actuator faults, non-finite state,
+extreme persistent pitch/rate, sustained rail operation, and clear late-window
+growth. Bounded oscillation remains distinguishable from divergence. Composite
+diagnostics record each signed, disturbance, gain, or uncertainty sub-run in
+the build tree.
 
-Acceptance is behavioral rather than trajectory-identical. It rejects falls, controller or
-actuator faults, non-finite state, extreme persistent pitch/rate, sustained rail behavior, and
-clear late-window growth. `_assert_no_growing_oscillation()` uses early/middle/late envelope
-evidence plus a shorter late-window check, so a bounded residual oscillation is distinguishable
-from an unstable one. DirectActuator retains its historical scenario scope and reference gates;
-a few shared residual bounds are deliberately wider for the current StepperPhaseElectrical
-candidate only when the behavior remains bounded and semantically useful.
+## Current result
 
-## Strict model-specific xfails
+The current host result is:
 
-Known gaps are applied centrally by `tests/python/conftest.py` with strict xfail semantics. An
-unexpected pass is therefore visible and requires removing the corresponding expectation. The
-current StepperPhaseElectrical xfails are grouped as:
+| Model/surface | Result |
+| --- | ---: |
+| `StepperPhaseElectrical` focused matrix | `23 passed, 4 skipped, 8 strict xfailed` |
+| `DirectActuator` focused matrix | `31 passed, 3 skipped, 1 strict xfailed` |
+| Complete `pytest --build` Python run | `130 passed, 7 skipped, 11 expected xfailed` |
+| C++ controller/simulator suite | `259/259 passed` |
 
-- noisy push and high-authority attitude diagnostics;
-- repeated ±1° authority pulses that lack a StepperPhaseElectrical zero-recovery witness (the
-  DirectActuator hardware-envelope check remains a reference-only gate);
-- drive/stop/reversal and external or initial-velocity recovery;
-- velocity-estimator, authority-region, and reduced-translation cases;
-- COM acquisition/maintenance and combined startup;
-- long-horizon outer-loop behavior.
+The StepperPhaseElectrical xfails are intentional and currently represent:
 
-The DirectActuator 50° and StepperPhaseElectrical 50° cold-start proxy remain strict xfails. The
-older 67° duplicate was removed from this maintained suite because the 50° case is the agreed
-equivalent estimator/righting-authority boundary proxy; the design issue is still represented and
-is not declared solved.
+- noisy push and sustained initial-velocity authority boundaries;
+- direct constant-lean pitch-authority and plant-uncertainty boundaries;
+- the retained 50° estimator-limited startup boundary.
 
-## Deliberate exclusions
+The focused matrix deliberately skips adaptive COM acquisition/maintenance and
+the generic reduced-traction override for StepperPhaseElectrical. Two precise
+standalone boundary tests are also expected to xfail: `P=8/s` with `2.5°`
+motion authority, and `100 ms` controller-velocity latency.
 
-The cross-model parameterization is limited to controller-level behavioral scenarios. Dedicated
-tests remain model-specific for:
+The DirectActuator 50° startup case remains its single strict xfail. An
+unexpected pass is a failure under strict xfail semantics and must be reviewed
+before removing a marker.
 
-- StepperPhase current dynamics, phase geometry, free-wheel frequency, electrical power/passivity,
-  and actuator convergence;
-- STEP scheduling and timestamp/event behavior;
-- UDP framing, artifact serialization, and direct-versus-UDP equivalence;
-- the legacy transfer catalog and fuzz corpus;
-- the non-ideal diagnostic profiles (`realistic` and `actuator_stress`).
+## Artifacts and interpretation
 
-Those tests do not acquire a DirectActuator twin merely to increase counts. The C++ GTest suite
-also does not run this long UDP scenario matrix; it remains the fast in-process unit/integration
-layer.
-
-## Result artifacts
-
-Run the maintained behavioral suite with:
+Run the matrix with:
 
 ```bash
 pytest -q tests/python/test_sim_scenarios.py
 ```
 
-`tests/python/conftest.py` writes generated results under the build tree:
+The test harness writes:
 
-- `build/sim/simulator_behavioral_matrix.json` — machine-readable rows, statuses, configs, and
-  principal metrics, aggregate/sub-run counts, and grouped xfail evidence;
-- `build/sim/simulator_behavioral_matrix.md` — human-readable summary and matrix.
+- `build/sim/simulator_behavioral_matrix.json` — machine-readable scenario,
+  model, status, config, and principal metrics;
+- `build/sim/simulator_behavioral_matrix.md` — generated human-readable table;
+- per-sub-run `behavioral_diagnostics.json` files under the model artifact
+  directories.
 
-Each composite simulator artifact may also contain
-`behavioral_diagnostics.json`. It records named gates, model-specific diagnostic observations,
-early/middle/late oscillation metrics, actuator authority, saturation, and the sub-run's principal
-state metrics. The matrix uses the concrete artifact matching that sub-run and attaches aggregate
-diagnostic records once, avoiding duplicate partial snapshots.
+The artifacts are simulator evidence only. They do not authorize a hardware
+configuration. Preserve the PID file, repository revision, scenario metadata,
+and physics profile whenever quoting a result.
 
-The artifacts are simulator/test evidence only; they are not hardware validation or permission to
-apply the StepperPhaseElectrical candidate to the robot.
+## What is deliberately separate
 
-The numeric profile value `3` and the spelling `ideal_force` remain accepted as compatibility
-aliases, while maintained source, CLI output, reports, and tests use `DirectActuator`.
+The behavioral matrix is not the entire simulator test surface. Dedicated C++
+tests cover:
+
+- StepperPhaseElectrical current dynamics, phase geometry, power consistency,
+  fixed-field ringdown, and numerical convergence;
+- STEP scheduling and timestamp/event behavior;
+- direct-versus-UDP transport and artifact serialization;
+- the legacy seven-case transfer catalog and actuator-stress profiles;
+- estimator, input, safety, and message-schema invariants.
+
+These are separate because they answer different questions; adding a
+DirectActuator twin to every physics or transport test would obscure rather
+than improve the comparison.

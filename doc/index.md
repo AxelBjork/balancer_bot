@@ -24,13 +24,13 @@ control equations, or deployment instructions.
 | How do I prepare a host checkout and run the first build? | [Host setup](host_setup.md) | [Testing strategy](testing/strategy.md) |
 | What is this project and why are there several executables? | [Project overview](overview.md) | [Runtime architecture](arch/runtime.md) |
 | How does a sensor reading become wheel motion? | [Runtime architecture](arch/runtime.md) | [Control and plant model](arch/control_plant.md) |
-| What is the difference between SIL and the direct simulator? | [Project overview](overview.md) | [SIL guide](testing/sil_guide.md) or [StepperPhaseElectrical scenario](arch/stepper_phase_electrical.md) |
-| What does the simulator actually test? | [Testing strategy](testing/strategy.md) | [StepperPhaseElectrical scenario](arch/stepper_phase_electrical.md) |
-| What equations and plant assumptions does the controller use? | [Control and plant model](arch/control_plant.md) | [StepperPhaseElectrical scenario](arch/stepper_phase_electrical.md) |
+| What is the difference between SIL and the direct simulator? | [Project overview](overview.md) | [SIL guide](testing/sil_guide.md) or [StepperPhaseElectrical test profile](testing/stepper_phase_electrical.md) |
+| What does the simulator actually test? | [Testing strategy](testing/strategy.md) | [StepperPhaseElectrical test profile](testing/stepper_phase_electrical.md) |
+| What equations and plant assumptions does the controller use? | [Control and plant model](arch/control_plant.md) | [StepperPhaseElectrical test profile](testing/stepper_phase_electrical.md) |
 | How does the estimator interpret the IMU? | [IMU attitude design](arch/imu_attitude_design.md) | [Generated IPC protocol](ipc/protocol.md) |
-| What are the StepperPhase equations, fixes, and tune evidence? | [StepperPhase audit report](arch/stepper_phase_audit.md) | [StepperPhaseElectrical scenario](arch/stepper_phase_electrical.md) |
-| Why do current 1/32 controller gains differ from historical gains? | [Stepper controller gain-scale audit](arch/stepper_gain_scale_audit.md) | [StepperPhase audit report](arch/stepper_phase_audit.md) |
-| Which controller behaviors pass on each simulator plant? | [Simulator behavioral matrix](testing/simulator_behavioral_matrix.md) | [StepperPhaseElectrical scenario](arch/stepper_phase_electrical.md) |
+| What are the StepperPhase equations, electrical constants, and profile limits? | [StepperPhaseElectrical test profile](testing/stepper_phase_electrical.md) | [Control and plant model](arch/control_plant.md) |
+| What is the current velocity-reference outer loop? | [Control and plant model](arch/control_plant.md) | [Simulator behavioral matrix](testing/simulator_behavioral_matrix.md) |
+| Which controller behaviors pass on each simulator plant? | [Simulator behavioral matrix](testing/simulator_behavioral_matrix.md) | [StepperPhaseElectrical test profile](testing/stepper_phase_electrical.md) |
 | What can cross the UDP boundary? | [Project overview](overview.md#messages-and-boundaries) | [Generated IPC protocol](ipc/protocol.md) or [MessageBus and UDP Bridge](arch/message_hub.md) |
 | How do generated bindings and IPC docs stay synchronized? | [Reflection system](reflection/system.md) | [Reflection quick reference](reflection/cheat_sheet.md) |
 | How do I run or deploy the physical robot? | [Running on Raspberry Pi](Running_on_Pi.md) | [Hardware reference](../hardware/README.md) |
@@ -52,7 +52,7 @@ Use the [generated protocol](ipc/protocol.md) only when you need exact fields or
 
 ### Understanding validation
 
-Read [Testing strategy](testing/strategy.md), then [StepperPhaseElectrical scenario](arch/stepper_phase_electrical.md),
+Read [Testing strategy](testing/strategy.md), then [StepperPhaseElectrical test profile](testing/stepper_phase_electrical.md),
 and finally [Current status](status.md). The key distinction is that simulator acceptance is strong
 software evidence but is not final proof of physical balancing behavior.
 
@@ -77,12 +77,10 @@ and which conclusions they cannot support.
 
 ## Validation and maintainer notes
 
-- [StepperPhaseElectrical scenario](arch/stepper_phase_electrical.md) — the maintained physical
-  actuator model and reproducible simulator correlation scenario.
-- [StepperPhase audit report](arch/stepper_phase_audit.md) — first-principles equations, corrected
-  constants, validation results, and preliminary inner-loop tuning evidence.
-- [Stepper controller gain-scale audit](arch/stepper_gain_scale_audit.md) — 1/32 pulse authority,
-  controller units, historical command evidence, balance invariants, and the focused corrected-plant tune.
+- [StepperPhaseElectrical test profile](testing/stepper_phase_electrical.md) — the maintained
+  actuator realization, fixed simulator constants, and reproducible correlation scenario.
+- [Control and plant model](arch/control_plant.md) — the model-neutral mass/coordinate equations,
+  velocity-reference outer-loop algebra, safety limits, and controller-facing plant mapping.
 - [Simulator behavioral matrix](testing/simulator_behavioral_matrix.md) — the shared controller-level
   scenario slice evaluated against DirectActuator and StepperPhaseElectrical with explicit configs;
   the same Python suite retains the full DirectActuator scope and the explicit 50-degree boundary
@@ -97,5 +95,4 @@ and which conclusions they cannot support.
 | Active handbook pages | Human-written guidance for project behavior, architecture, testing, deployment, and evidence interpretation |
 | `doc/ipc/` and `tests/python/generated_balancer.py` | Generated interface products; derive from reflected C++ definitions and do not edit by hand |
 | `data/hardware_sessions/` | Retained historical evidence bounded by each manifest and session README |
-| `doc/archive/` | Historical or reference-only material, outside the active reading path |
-| `doc/arch/stepper_phase_electrical.md` | High-level physical actuator model and reproducible simulator scenario |
+| `doc/testing/stepper_phase_electrical.md` | High-level actuator realization and reproducible simulator test profile |

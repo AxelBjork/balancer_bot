@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
+import struct
 import time
-from dataclasses import fields
+from dataclasses import dataclass, fields
 from functools import lru_cache
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from generated_balancer import (
     SimStartAckPayload,
     SimStartRunPayload,
     SimStopRunPayload,
+    SystemTelemetryPayload,
     SimulatorTelemetryPayload,
 )
 
@@ -45,6 +47,39 @@ DONE_ACCEPTANCE_FAILED = 4
 DISTURBANCE_STEP = 0
 DISTURBANCE_RAMP = 1
 DISTURBANCE_HOLD_BIAS = 2
+
+_TELEMETRY_RUN_ID_OFFSET = 0
+_TELEMETRY_PLANT_PITCH_OFFSET = SystemTelemetryPayload.WIRE_SIZE + struct.calcsize("<I")
+
+
+def _inspect_telemetry_header(payload: bytes) -> tuple[int, float]:
+    """Read only the fields needed while the UDP socket is being drained."""
+    if len(payload) < SimulatorTelemetryPayload.WIRE_SIZE:
+        raise AssertionError(
+            "Simulator telemetry payload is truncated: "
+            f"received={len(payload)} expected={SimulatorTelemetryPayload.WIRE_SIZE}"
+        )
+    (run_id,) = struct.unpack_from("<I", payload, _TELEMETRY_RUN_ID_OFFSET)
+    (plant_pitch_deg,) = struct.unpack_from(
+        "<f", payload, _TELEMETRY_PLANT_PITCH_OFFSET
+    )
+    return run_id, plant_pitch_deg
+
+
+@dataclass(frozen=True)
+class RunScenarioResult:
+    """One live run's terminal data and the canonical received telemetry frame."""
+
+    summary: dict
+    metadata: dict
+    done: SimRunDonePayload
+    frame: object
+
+    def __iter__(self):
+        """Keep the old three-value unpacking usable for external test helpers."""
+        yield self.summary
+        yield self.metadata
+        yield self.done
 
 
 @lru_cache(maxsize=None)
@@ -346,6 +381,37 @@ def wait_for_done(udp, run_id: int, timeout: float = 2.0) -> SimRunDonePayload:
     raise AssertionError(f"Timed out waiting for SimRunDone for run_id={run_id}")
 
 
+def validate_telemetry_packets(
+    telemetry: list[SimulatorTelemetryPayload],
+    done: SimRunDonePayload,
+    telemetry_stride: int,
+) -> None:
+    """Require ordered packet sequence numbers and the exact completed count."""
+    sequences = [int(sample.system.packet_seq) for sample in telemetry]
+    expected_sequence = list(range(1, len(sequences) + 1))
+    if sequences != expected_sequence:
+        raise AssertionError(
+            "Simulator telemetry packet sequence is not contiguous: "
+            f"received={sequences[:5]}...{sequences[-5:] if sequences else []}"
+        )
+
+    if done.reason_code == DONE_INTERNAL_ERROR:
+        raise AssertionError("Simulator reported an internal transport failure")
+
+    if done.reason_code in (DONE_COMPLETED, DONE_ACCEPTANCE_FAILED):
+        expected_count = (
+            0
+            if telemetry_stride <= 0
+            else (int(done.sample_count) + telemetry_stride - 1) // telemetry_stride
+        )
+        if len(telemetry) != expected_count:
+            raise AssertionError(
+                "Simulator telemetry packet count mismatch: "
+                f"received={len(telemetry)} expected={expected_count} "
+                f"sample_count={done.sample_count} stride={telemetry_stride}"
+            )
+
+
 def run_scenario_live(
     udp,
     *,
@@ -387,7 +453,7 @@ def run_scenario_live(
     write_plots: bool = False,
     fail_fast_pitch_deg: float = 75.0,
     done_timeout: float = 15.0,
-) -> tuple[dict, dict, SimRunDonePayload]:
+) -> RunScenarioResult:
     output_dir.mkdir(parents=True, exist_ok=True)
     recorder = RunRecorder()
 
@@ -485,33 +551,45 @@ def run_scenario_live(
         raise AssertionError(f"Simulator rejected run_id={run_id} with status={ack.status_code}")
 
     done = None
-    # Drain the UDP stream as cheaply as possible while the simulator is
-    # running.  Expanding every dataclass field and copying it into a row per
-    # packet can make the receiver slower than long high-rate runs, filling
-    # the simulator's UDP send buffer before SimRunDone is emitted.  Keep the
-    # decoded payloads in order, perform the existing row conversion after
-    # the terminal packet, and retain the same artifact contents.
-    received_telemetry: list[SimulatorTelemetryPayload] = []
+    # Drain the UDP stream in raw bursts.  Full dataclass expansion and row
+    # reflection happen only after SimRunDone; otherwise the receiver can be
+    # slower than a deterministic full-rate simulator burst.  The run ID and
+    # plant pitch are inspected from each datagram during reception so the
+    # existing live fail-fast behavior remains active.
+    received_payloads: list[bytes] = []
+    stop_sent = False
     deadline = time.monotonic() + done_timeout
     while time.monotonic() < deadline:
         try:
-            msg_id, payload = udp.recv(timeout=min(0.1, max(0.01, deadline - time.monotonic())))
+            packets = udp.recv_batch(
+                timeout=min(0.1, max(0.01, deadline - time.monotonic()))
+            )
         except TimeoutError:
             continue
-        if msg_id == int(BalancerMsgId.SimulatorTelemetry):
-            telemetry = SimulatorTelemetryPayload.unpack(payload)
-            if telemetry.system.run_id != run_id:
-                continue
-            received_telemetry.append(telemetry)
-            if abs(telemetry.plant_pitch_deg) > fail_fast_pitch_deg:
-                udp.send(BalancerMsgId.SimStopRun, SimStopRunPayload(run_id=run_id).pack())
-        elif msg_id == int(BalancerMsgId.SimRunDone):
-            done = SimRunDonePayload.unpack(payload)
-            if done.run_id == run_id:
-                break
+        for msg_id, payload in packets:
+            if msg_id == int(BalancerMsgId.SimulatorTelemetry):
+                telemetry_run_id, plant_pitch_deg = _inspect_telemetry_header(payload)
+                if telemetry_run_id != run_id:
+                    continue
+                received_payloads.append(payload)
+                if not stop_sent and abs(plant_pitch_deg) > fail_fast_pitch_deg:
+                    udp.send(BalancerMsgId.SimStopRun, SimStopRunPayload(run_id=run_id).pack())
+                    stop_sent = True
+            elif msg_id == int(BalancerMsgId.SimRunDone):
+                candidate = SimRunDonePayload.unpack(payload)
+                if candidate.run_id == run_id:
+                    done = candidate
+                    break
+        if done is not None:
+            break
 
     if done is None:
         raise AssertionError(f"Timed out waiting for SimRunDone for run_id={run_id}")
+
+    received_telemetry = [
+        SimulatorTelemetryPayload.unpack(payload) for payload in received_payloads
+    ]
+    validate_telemetry_packets(received_telemetry, done, telemetry_stride)
 
     for telemetry in received_telemetry:
         # Keep simulator artifacts flat while the wire API remains a single,
@@ -555,10 +633,14 @@ def run_scenario_live(
                 "max_continuous_saturation_s": done.max_continuous_saturation_s,
                 "actuator_fault_count": done.actuator_fault_count,
                 "controller_fault_flags": done.controller_fault_flags,
-                "timeline_hash": done.timeline_hash,
             },
             indent=2,
         ),
         encoding="utf-8",
     )
-    return summary, metadata, done
+    return RunScenarioResult(
+        summary=summary,
+        metadata=metadata,
+        done=done,
+        frame=recorder.materialize_frame(),
+    )

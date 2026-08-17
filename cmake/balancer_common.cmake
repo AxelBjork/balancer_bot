@@ -44,6 +44,7 @@ function(add_balancer_common_target)
   set(input_dir ${CMAKE_SOURCE_DIR}/src/services/input)
   set(main_dir ${CMAKE_SOURCE_DIR}/src/services/main)
   set(balancer_sources
+    ${control_dir}/velocity_reference_planner.cpp
     ${control_dir}/rate_controller_core.cpp
     ${control_dir}/control_service.cpp
     ${imu_dir}/ism330_iio_reader.cpp

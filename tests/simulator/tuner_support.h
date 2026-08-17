@@ -16,10 +16,38 @@ struct ScenarioMetrics {
   double command_total_variation_sps = 0.0;
   double saturation_time_s = 0.0;
   double max_continuous_saturation_s = 0.0;
+  double command_near_rail_time_s = 0.0;
+  double outer_acceleration_limited_time_s = 0.0;
+  double outer_pitch_target_limited_time_s = 0.0;
   double rebound_ratio = 0.0;
+  double rebound_velocity_mps = 0.0;
+  double release_distance_m = 0.0;
   double drive_tracking_mae_sps = 0.0;
   double stop_speed_rms_sps = 0.0;
   double final_velocity_mean_sps = 0.0;
+  double final_velocity_mean_mps = 0.0;
+  double velocity_feedback_mae_mps = 0.0;
+  double velocity_feedback_bias_mps = 0.0;
+  double velocity_feedback_rms_mps = 0.0;
+  // Mechanical plant velocity is the primary motion objective. The
+  // completed-step and feedback estimates remain separate observer metrics.
+  double mechanical_velocity_target_iae_m_s = 0.0;
+  double mechanical_velocity_late_error_mps = 0.0;
+  double mechanical_velocity_peak_mps = 0.0;
+  double mechanical_velocity_direction_fraction = 0.0;
+  double mechanical_velocity_target_fraction = 0.0;
+  // Explicit final pre-release hold-window metrics. These are intentionally
+  // separate from the all-active-reference metrics above so post-release
+  // settling samples cannot make a weak hold look accurate.
+  double mechanical_velocity_hold_user_mean_mps = 0.0;
+  double mechanical_velocity_hold_reference_mean_mps = 0.0;
+  double mechanical_velocity_hold_actual_mean_mps = 0.0;
+  double mechanical_velocity_hold_abs_error_mps = 0.0;
+  double mechanical_velocity_hold_direction_fraction = 0.0;
+  double mechanical_velocity_hold_target_fraction = 0.0;
+  double mechanical_velocity_hold_duration_s = 0.0;
+  double drive_pitch_peak_deg = 0.0;
+  double outer_limit_fraction = 0.0;
   bool growing_oscillation = false;
   bool settled = false;
   bool safe = false;
@@ -42,7 +70,10 @@ struct TunerRankingSummary {
   double total_velocity_iae_sps_s = 0.0;
   double total_drive_tracking_mae_sps = 0.0;
   double total_stop_speed_rms_sps = 0.0;
-  double velocity_damping_per_s = 0.0;
+  double total_velocity_feedback_mae_mps = 0.0;
+  double total_release_distance_m = 0.0;
+  double total_rebound_velocity_mps = 0.0;
+  double velocity_gain_per_s = 0.0;
   double trim_speed_magnitude_sps = 0.0;
   double trim_symmetry_sps = 0.0;
 };

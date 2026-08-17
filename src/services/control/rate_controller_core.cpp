@@ -6,6 +6,7 @@
 #include <utility>
 
 #include "services/main/config.h"
+#include "services/control/velocity_reference_planner.h"
 
 namespace rate_controller_detail {
 double wrap_angle_delta(double angle_rad) {
@@ -17,7 +18,7 @@ namespace {
 
 constexpr double kMaxImuAgeS = 0.030;
 constexpr double kMaxImuFutureS = 0.002;
-constexpr double kFalloverMarginRad = 5.0 * M_PI / 180.0;
+constexpr double kFalloverMarginRad = Config::fallover_margin_deg * M_PI / 180.0;
 constexpr double kFalloverRearmPitchRad = 10.0 * M_PI / 180.0;
 constexpr double kFalloverRearmRateRadS = 30.0 * M_PI / 180.0;
 constexpr double kVelocityLoopPeriodS = 1.0 / 100.0;
@@ -41,9 +42,8 @@ constexpr double kComTrimMotionRateExitDps = 8.0;
 constexpr double kComTrimMotionPitchErrorEnterDeg = 2.0;
 constexpr double kComTrimQuietPitchErrorDeg = 1.0;
 constexpr double kComTrimUntrustedBiasPitchErrorMaxDeg = 3.0;
-// The derivative is velocity_I multiplied by the SPS-domain velocity
-// estimate. Preserve the same physical quiet threshold after 1/32 doubles
-// the SPS representation of a given wheel speed.
+// The derivative is the optional adaptive COM gain multiplied by the SI
+// velocity estimate.
 constexpr double kComTrimQuietDerivativeDegPerS = 0.20;
 constexpr double kComTrimQuietDwellS = 2.0;
 // The equilibrium candidate is the measured body angle after removing the
@@ -61,8 +61,6 @@ constexpr double kComTrimEquilibriumConvergenceDwellS = 1.0;
 // the controller to its ordinary outer-loop path automatically.
 constexpr double kPitchAuthorityDiagnosticMinDurationS = 0.025;
 constexpr double kPitchAuthorityDiagnosticMaxDurationS = 5.0;
-// A fixed command-slew safety limit, deliberately not a PID tuning parameter.
-constexpr double kDriveMaxJerkMps3 = 6.0;
 double normalized_forward_command(double command) {
   const double magnitude = std::abs(command);
   if (magnitude <= Config::deadzone) return 0.0;
@@ -71,29 +69,9 @@ double normalized_forward_command(double command) {
   return std::copysign(normalized, command);
 }
 
-double move_toward(double value, double target, double max_delta) {
-  if (value < target) return std::min(value + max_delta, target);
-  if (value > target) return std::max(value - max_delta, target);
-  return value;
-}
-
-double drive_pitch_limit_rad() {
-  // For the compact plant model, theta_ddot = 0 requires theta = x_ddot / g.
-  // atan2 extends that equilibrium relation away from the small-angle limit.
-  const double drive_equilibrium_rad =
-      std::atan2(std::max(0.0, ConfigPid::values.drive_max_acceleration_mps2), Config::g0);
-  const double trim_limit_rad =
-      std::max(0.0, ConfigPid::values.velocity_I_limit_deg) * M_PI / 180.0;
-  return std::min(kMaxPitchSetpointRad, std::max(drive_equilibrium_rad, trim_limit_rad));
-}
-
-double velocity_pitch_limit_rad() {
-  const double configured_limit_deg =
-      std::max(0.0, ConfigPid::values.velocity_pitch_limit_deg);
-  // A zero setting is retained as an explicit diagnostic escape hatch for
-  // comparing the bounded and historical unbounded velocity paths.
-  if (configured_limit_deg <= 0.0) return kMaxPitchSetpointRad;
-  return std::min(kMaxPitchSetpointRad, configured_limit_deg * M_PI / 180.0);
+double outer_pitch_limit_rad() {
+  return std::clamp(ConfigPid::values.outer_pitch_limit_deg, 0.0,
+                   Config::max_motion_pitch_setpoint_deg) * M_PI / 180.0;
 }
 
 constexpr double kStepsPerRad = Config::steps_per_rev / (2.0 * M_PI);
@@ -131,6 +109,28 @@ struct RateControllerCore::Impl {
   double filtered_raw_completed_velocity_sps{0.0};
   double completed_step_acceleration_sps2{0.0};
   double velocity_control_sps{0.0};
+  bool velocity_feedback_valid{false};
+  bool velocity_feedback_active{false};
+  double user_velocity_mps{0.0};
+  double reference_velocity_mps{0.0};
+  double reference_acceleration_mps2{0.0};
+  double reference_jerk_mps3{0.0};
+  double velocity_feedback_estimate_mps{0.0};
+  double velocity_error_mps{0.0};
+  double velocity_feedback_acceleration_mps2{0.0};
+  double velocity_p_acceleration_mps2{0.0};
+  double velocity_i_acceleration_mps2{0.0};
+  double velocity_integral_state_mps_s{0.0};
+  bool velocity_integral_limited{false};
+  bool velocity_anti_windup_active{false};
+  double acceleration_raw_mps2{0.0};
+  double acceleration_cmd_mps2{0.0};
+  double drive_pitch_target_rad{0.0};
+  bool outer_acceleration_limited{false};
+  bool outer_pitch_target_limited{false};
+  bool planner_acceleration_limited{false};
+  bool planner_jerk_limited{false};
+  VelocityReferencePlanner velocity_planner;
   double nominal_acceleration_mps2{0.0};
   double velocity_damping_acceleration_mps2{0.0};
   double com_trim_rad{0.0};
@@ -174,8 +174,24 @@ RateControllerCore::RateControllerCore() : p_(new Impl) {
 
 void RateControllerCore::applyPidConfig() {
   const double trim_limit_rad =
-      std::max(0.0, ConfigPid::values.velocity_I_limit_deg) * M_PI / 180.0;
+      std::max(0.0, ConfigPid::values.adaptive_com_trim_limit_deg) * M_PI / 180.0;
   p_->com_trim_rad = std::clamp(p_->com_trim_rad, -trim_limit_rad, trim_limit_rad);
+  if (ConfigPid::values.adaptive_com_trim_enabled < 0.5) {
+    p_->com_trim_rad = 0.0;
+    p_->com_trim_acquired = false;
+  }
+  // A configuration reload changes the outer-loop state-space. Start the
+  // reference and integral states from zero so a stale command or integral
+  // cannot become a reload-induced acceleration kick.
+  p_->velocity_planner.reset();
+  p_->reference_velocity_mps = 0.0;
+  p_->reference_acceleration_mps2 = 0.0;
+  p_->reference_jerk_mps3 = 0.0;
+  p_->velocity_integral_state_mps_s = 0.0;
+  p_->velocity_p_acceleration_mps2 = 0.0;
+  p_->velocity_i_acceleration_mps2 = 0.0;
+  p_->velocity_integral_limited = false;
+  p_->velocity_anti_windup_active = false;
   p_->pid_generation = ConfigPid::generation();
 }
 
@@ -217,7 +233,7 @@ bool RateControllerCore::setPitchAuthorityDiagnostic(bool active, double target_
                                 std::abs(target_abs - 2.0) <= 1e-9 ||
                                 std::abs(target_abs - 4.0) <= 1e-9;
   const double trim_limit_deg =
-      std::max(0.0, ConfigPid::values.velocity_I_limit_deg);
+      std::max(0.0, ConfigPid::values.adaptive_com_trim_limit_deg);
   if (!supported_target || std::abs(com_trim_deg) > trim_limit_deg + 1e-9 || request_id == 0 ||
       (p_->pitch_authority_diagnostic_active &&
        request_id <= p_->pitch_authority_diagnostic_last_request_id)) {
@@ -286,18 +302,40 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
 
   const auto invalidate_velocity_observer = [this]() {
     p_->velocity_observer_seeded = false;
+    p_->velocity_feedback_valid = false;
+    p_->velocity_feedback_active = false;
     p_->raw_completed_velocity_sps = 0.0;
     p_->corrected_axle_velocity_sps = 0.0;
     p_->filtered_raw_completed_velocity_sps = 0.0;
     p_->completed_step_acceleration_sps2 = 0.0;
     p_->velocity_control_sps = 0.0;
+    p_->velocity_feedback_estimate_mps = 0.0;
+    p_->velocity_error_mps = 0.0;
+    p_->velocity_feedback_acceleration_mps2 = 0.0;
+    p_->velocity_p_acceleration_mps2 = 0.0;
+    p_->velocity_i_acceleration_mps2 = 0.0;
+    p_->velocity_integral_state_mps_s = 0.0;
+    p_->velocity_integral_limited = false;
+    p_->velocity_anti_windup_active = false;
   };
   const auto reset_outputs = [this, &invalidate_velocity_observer]() {
+    p_->velocity_planner.reset();
+    p_->user_velocity_mps = 0.0;
+    p_->reference_velocity_mps = 0.0;
+    p_->reference_acceleration_mps2 = 0.0;
+    p_->reference_jerk_mps3 = 0.0;
+    p_->acceleration_raw_mps2 = 0.0;
+    p_->acceleration_cmd_mps2 = 0.0;
+    p_->drive_pitch_target_rad = 0.0;
+    p_->outer_acceleration_limited = false;
+    p_->outer_pitch_target_limited = false;
+    p_->planner_acceleration_limited = false;
+    p_->planner_jerk_limited = false;
     p_->nominal_acceleration_mps2 = 0.0;
     p_->velocity_damping_acceleration_mps2 = 0.0;
     invalidate_velocity_observer();
-    // com_trim_rad is the bounded physical COM trim. Preserve it across a
-    // transient fault/fallover; only dynamic command and balance state reset.
+    // com_trim_rad is the optional bounded adaptive trim. Preserve it across
+    // a transient fault/fallover; only dynamic command and balance state reset.
     p_->pitch_setpoint_rad = 0.0;
     p_->turn_sps = 0.0;
     p_->last_u_sps = 0.0;
@@ -340,21 +378,60 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
     t.filtered_pitch_rate_dps = t.pitch_rate_dps;
     t.u_sps = p_->last_u_sps;
     t.turn_sps = p_->turn_sps;
-    t.nominal_acceleration_mps2 = p_->nominal_acceleration_mps2;
+    // The old acceleration/damping aliases remain zero and deprecated. The
+    // canonical SI fields below are the only authoritative outer-loop data.
     t.raw_completed_velocity_sps = p_->filtered_raw_completed_velocity_sps;
     t.completed_step_acceleration_sps2 = p_->completed_step_acceleration_sps2;
     t.corrected_axle_velocity_sps = p_->corrected_axle_velocity_sps;
     t.velocity_control_sps = p_->velocity_control_sps;
-    t.velocity_damping_acceleration_mps2 = p_->velocity_damping_acceleration_mps2;
     const double telemetry_trim_rad = p_->pitch_authority_diagnostic_active
                                           ? p_->pitch_authority_diagnostic_com_trim_rad
-                                          : p_->com_trim_rad;
+                                          : ConfigPid::values.fixed_com_trim_deg * M_PI / 180.0 +
+                                                (ConfigPid::values.adaptive_com_trim_enabled >= 0.5
+                                                     ? p_->com_trim_rad
+                                                     : 0.0);
     t.com_trim_deg = telemetry_trim_rad * 180.0 / M_PI;
-    t.target_vel_sps = t.nominal_acceleration_mps2;
-    t.vel_error = -t.corrected_axle_velocity_sps;
-    t.vel_p_term_deg = t.velocity_damping_acceleration_mps2;
-    t.vel_i_term_deg = t.com_trim_deg;
-    t.measured_vel_sps = t.corrected_axle_velocity_sps;
+    t.user_velocity_mps = p_->user_velocity_mps;
+    t.reference_velocity_mps = p_->reference_velocity_mps;
+    t.reference_acceleration_mps2 = p_->reference_acceleration_mps2;
+    t.reference_jerk_mps3 = p_->reference_jerk_mps3;
+    t.velocity_feedback_estimate_mps = p_->velocity_feedback_estimate_mps;
+    t.velocity_error_mps = p_->velocity_error_mps;
+    t.velocity_feedback_acceleration_mps2 = p_->velocity_feedback_acceleration_mps2;
+    t.velocity_p_acceleration_mps2 = p_->velocity_p_acceleration_mps2;
+    t.velocity_i_acceleration_mps2 = p_->velocity_i_acceleration_mps2;
+    t.velocity_integral_state_mps_s = p_->velocity_integral_state_mps_s;
+    t.velocity_integral_limited = p_->velocity_integral_limited;
+    t.velocity_anti_windup_active = p_->velocity_anti_windup_active;
+    t.acceleration_raw_mps2 = p_->acceleration_raw_mps2;
+    t.acceleration_cmd_mps2 = p_->acceleration_cmd_mps2;
+    t.drive_pitch_target_deg = p_->drive_pitch_target_rad * 180.0 / M_PI;
+    t.fixed_com_trim_deg = ConfigPid::values.fixed_com_trim_deg;
+    t.velocity_feedback_valid = p_->velocity_feedback_valid;
+    t.velocity_feedback_active = p_->velocity_feedback_active;
+    t.outer_acceleration_limited = p_->outer_acceleration_limited;
+    t.outer_pitch_target_limited = p_->outer_pitch_target_limited;
+    t.active_drive_max_velocity_mps = ConfigPid::values.drive_max_velocity_mps;
+    t.active_drive_max_acceleration_mps2 = 0.0;
+    t.active_drive_max_deceleration_mps2 = 0.0;
+    t.active_planner_max_acceleration_mps2 =
+        ConfigPid::values.planner_max_acceleration_mps2;
+    t.active_planner_max_deceleration_mps2 =
+        ConfigPid::values.planner_max_deceleration_mps2;
+    t.active_planner_max_jerk_mps3 = ConfigPid::values.planner_max_jerk_mps3;
+    t.active_velocity_gain_per_s = ConfigPid::values.velocity_gain_per_s;
+    t.active_velocity_i_gain_per_s2 = ConfigPid::values.velocity_i_gain_per_s2;
+    t.active_velocity_i_leak_time_s = ConfigPid::values.velocity_i_leak_time_s;
+    t.active_velocity_i_acceleration_limit_mps2 =
+        ConfigPid::values.velocity_i_acceleration_limit_mps2;
+    t.active_velocity_feedback_cutoff_hz = ConfigPid::values.velocity_feedback_cutoff_hz;
+    t.active_outer_pitch_limit_deg = ConfigPid::values.outer_pitch_limit_deg;
+    t.active_fixed_com_trim_deg = ConfigPid::values.fixed_com_trim_deg;
+    t.adaptive_com_trim_enabled = ConfigPid::values.adaptive_com_trim_enabled >= 0.5;
+    t.legacy_outer_fields_valid = false;
+    t.planner_acceleration_limited = p_->planner_acceleration_limited;
+    t.planner_jerk_limited = p_->planner_jerk_limited;
+    t.final_pitch_target_deg = p_->pitch_setpoint_rad * 180.0 / M_PI;
     t.pitch_error_deg = (p_->pitch_setpoint_rad - pitch_rad) * 180.0 / M_PI;
     t.pitch_sp_deg = p_->pitch_setpoint_rad * 180.0 / M_PI;
     t.command_saturated = p_->command_saturated;
@@ -366,32 +443,27 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
     t.pitch_feedback_sps = p_->pitch_feedback_sps;
     t.pitch_rate_feedback_sps = p_->pitch_rate_feedback_sps;
     t.pitch_accel_feedback_sps = p_->pitch_accel_feedback_sps;
-    t.velocity_pitch_target_deg =
-        (std::atan2(p_->nominal_acceleration_mps2 + p_->velocity_damping_acceleration_mps2,
-                    Config::g0) -
-         std::atan2(p_->nominal_acceleration_mps2, Config::g0)) *
-        180.0 / M_PI;
+    t.velocity_pitch_target_deg = 0.0;
     t.balance_unclamped_sps = p_->balance_unclamped_sps;
     t.active_pitch_gain_sps_per_rad = ConfigPid::values.pitch_gain;
     t.active_pitch_rate_gain_sps_per_rad_s = ConfigPid::values.pitch_rate_gain;
     t.active_pitch_accel_gain_sps_per_rad_s2 = ConfigPid::values.pitch_accel_gain;
-    t.active_velocity_pitch_gain_rad_per_sps =
-        ConfigPid::values.velocity_damping_per_s * Config::meters_per_step / Config::g0;
-    t.active_velocity_control_cutoff_hz = ConfigPid::values.velocity_control_cutoff_hz;
+    t.active_velocity_pitch_gain_rad_per_sps = 0.0;
+    t.active_velocity_control_cutoff_hz = 0.0;
     t.active_velocity_observer_cutoff_hz = Config::fc_velocity_hz;
-    t.active_com_trim_gain_deg_per_sps_s = ConfigPid::values.velocity_I;
-    t.active_com_trim_limit_deg = ConfigPid::values.velocity_I_limit_deg;
-    t.active_velocity_pitch_limit_deg = ConfigPid::values.velocity_pitch_limit_deg;
+    t.active_com_trim_gain_deg_per_sps_s = 0.0;
+    t.active_com_trim_limit_deg = 0.0;
+    t.active_velocity_pitch_limit_deg = 0.0;
     t.active_accel_lpf_hz = Config::imu_accel_lpf_hz;
     t.active_gyro_lpf_hz = Config::imu_gyro_lpf_hz;
     t.active_gyro_derivative_lpf_hz = Config::imu_gyro_derivative_lpf_hz;
     t.active_config_generation = ConfigPid::generation();
-    t.velocity_pitch_request_unclamped_deg =
-        p_->velocity_pitch_request_unclamped_rad * 180.0 / M_PI;
-    t.velocity_pitch_request_limited_deg =
-        p_->velocity_pitch_request_limited_rad * 180.0 / M_PI;
+    t.velocity_pitch_request_unclamped_deg = 0.0;
+    t.velocity_pitch_request_limited_deg = 0.0;
     t.pitch_target_unclamped_deg = p_->pitch_target_unclamped_rad * 180.0 / M_PI;
-    t.velocity_authority_limited = p_->velocity_authority_limited;
+    // This field belonged to the removed damping/pitch outer loop. Keep it as
+    // an append-only compatibility field, but do not give it new semantics.
+    t.velocity_authority_limited = false;
     t.trim_trusted = p_->com_trim_acquired;
     t.trim_learning_allowed = p_->trim_learning_allowed;
     t.trim_quiet_rate_rms_dps = std::sqrt(std::max(0.0, p_->trim_quiet_rate_squared_dps2));
@@ -436,7 +508,7 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
     };
   };
   const double imu_age_s = std::chrono::duration<double>(now - p_->latest_imu.t).count();
-  const double pitch_limit_rad = drive_pitch_limit_rad();
+  const double pitch_limit_rad = kMaxPitchSetpointRad;
   const double fallover_limit_rad =
       std::max(Config::max_tilt_rad, pitch_limit_rad + kFalloverMarginRad);
   const bool pitch_authority_diagnostic = p_->pitch_authority_diagnostic_active;
@@ -505,13 +577,23 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
             (delta_q_steps + kStepsPerRad * delta_pitch_rad) / outer_dt;
         const double alpha = std::exp(-2.0 * M_PI * Config::fc_velocity_hz * outer_dt);
         p_->raw_completed_velocity_sps = raw_velocity_sps;
-        const double previous_filtered_velocity = p_->filtered_raw_completed_velocity_sps;
-        p_->filtered_raw_completed_velocity_sps =
-            alpha * p_->filtered_raw_completed_velocity_sps + (1.0 - alpha) * raw_velocity_sps;
-        p_->completed_step_acceleration_sps2 =
-            (p_->filtered_raw_completed_velocity_sps - previous_filtered_velocity) / outer_dt;
-        p_->corrected_axle_velocity_sps =
-            alpha * p_->corrected_axle_velocity_sps + (1.0 - alpha) * corrected_velocity_sps;
+        if (!p_->velocity_feedback_valid) {
+          // The first valid delta initializes both filter stages. It is a
+          // measurement, not an acceleration kick into the controller.
+          p_->filtered_raw_completed_velocity_sps = raw_velocity_sps;
+          p_->corrected_axle_velocity_sps = corrected_velocity_sps;
+          p_->velocity_control_sps = corrected_velocity_sps;
+          p_->completed_step_acceleration_sps2 = 0.0;
+          p_->velocity_feedback_valid = true;
+        } else {
+          const double previous_filtered_velocity = p_->filtered_raw_completed_velocity_sps;
+          p_->filtered_raw_completed_velocity_sps =
+              alpha * p_->filtered_raw_completed_velocity_sps + (1.0 - alpha) * raw_velocity_sps;
+          p_->completed_step_acceleration_sps2 =
+              (p_->filtered_raw_completed_velocity_sps - previous_filtered_velocity) / outer_dt;
+          p_->corrected_axle_velocity_sps =
+              alpha * p_->corrected_axle_velocity_sps + (1.0 - alpha) * corrected_velocity_sps;
+        }
         p_->previous_common_steps = common_steps;
         p_->previous_pitch_rad = pitch_rad;
       }
@@ -521,6 +603,27 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
       // The observer continues to run so the future diagnostic capture still
       // reports completed-step and corrected velocity. None of that estimate
       // is allowed to enter the pitch target or COM state machine.
+      p_->velocity_planner.reset();
+      p_->user_velocity_mps = 0.0;
+      p_->reference_velocity_mps = 0.0;
+      p_->reference_acceleration_mps2 = 0.0;
+      p_->reference_jerk_mps3 = 0.0;
+      p_->velocity_feedback_estimate_mps = p_->velocity_control_sps * Config::meters_per_step;
+      p_->velocity_error_mps = 0.0;
+      p_->velocity_feedback_acceleration_mps2 = 0.0;
+      p_->velocity_p_acceleration_mps2 = 0.0;
+      p_->velocity_i_acceleration_mps2 = 0.0;
+      p_->velocity_integral_state_mps_s = 0.0;
+      p_->velocity_integral_limited = false;
+      p_->velocity_anti_windup_active = false;
+      p_->velocity_feedback_active = false;
+      p_->acceleration_raw_mps2 = 0.0;
+      p_->acceleration_cmd_mps2 = 0.0;
+      p_->drive_pitch_target_rad = 0.0;
+      p_->outer_acceleration_limited = false;
+      p_->outer_pitch_target_limited = false;
+      p_->planner_acceleration_limited = false;
+      p_->planner_jerk_limited = false;
       p_->nominal_acceleration_mps2 = 0.0;
       p_->velocity_damping_acceleration_mps2 = 0.0;
       p_->velocity_pitch_request_unclamped_rad = 0.0;
@@ -533,88 +636,158 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
           p_->pitch_authority_diagnostic_target_rad +
           p_->pitch_authority_diagnostic_com_trim_rad;
       p_->pitch_target_limit_reason = PitchTargetLimitNone;
-      if (std::abs(p_->pitch_target_unclamped_rad) > pitch_limit_rad) {
+      if (std::abs(p_->pitch_target_unclamped_rad) > kMaxPitchSetpointRad) {
         p_->pitch_target_limit_reason |= PitchTargetLimitTotalPitch;
       }
       p_->pitch_setpoint_rad = std::clamp(p_->pitch_target_unclamped_rad,
-                                          -pitch_limit_rad, pitch_limit_rad);
+                                          -kMaxPitchSetpointRad, kMaxPitchSetpointRad);
     } else {
-    const double control_cutoff_hz = std::max(0.001, ConfigPid::values.velocity_control_cutoff_hz);
-    if (std::abs(control_cutoff_hz - Config::fc_velocity_hz) < 1e-9) {
-      // Avoid double-filtering the historical/current path. The control-path
-      // parameter is still independent: any lower cutoff adds a second pole.
-      p_->velocity_control_sps = p_->corrected_axle_velocity_sps;
-    } else {
-      const double control_alpha = std::exp(-2.0 * M_PI * control_cutoff_hz * outer_dt);
-      p_->velocity_control_sps =
-          control_alpha * p_->velocity_control_sps +
-          (1.0 - control_alpha) * p_->corrected_axle_velocity_sps;
-    }
-    const double corrected_velocity_mps = p_->velocity_control_sps * Config::meters_per_step;
-    double requested_nominal_acceleration_mps2 =
-        forward_command * ConfigPid::values.drive_max_acceleration_mps2;
-    const double speed_limit_sps = std::max(1.0, ConfigPid::values.drive_max_sps);
-    if (requested_nominal_acceleration_mps2 * p_->corrected_axle_velocity_sps > 0.0) {
-      const double taper_start_sps = 0.75 * speed_limit_sps;
-      const double taper = std::clamp((speed_limit_sps - std::abs(p_->corrected_axle_velocity_sps)) /
-                                          (speed_limit_sps - taper_start_sps),
-                                      0.0, 1.0);
-      requested_nominal_acceleration_mps2 *= taper;
-    }
-    p_->nominal_acceleration_mps2 = move_toward(
-        p_->nominal_acceleration_mps2, requested_nominal_acceleration_mps2,
-        kDriveMaxJerkMps3 * outer_dt);
-    p_->velocity_damping_acceleration_mps2 =
-        -ConfigPid::values.velocity_damping_per_s * corrected_velocity_mps;
+      const double control_cutoff_hz =
+          std::max(0.001, ConfigPid::values.velocity_feedback_cutoff_hz);
+      if (std::abs(control_cutoff_hz - Config::fc_velocity_hz) < 1e-9) {
+        p_->velocity_control_sps = p_->corrected_axle_velocity_sps;
+      } else if (p_->velocity_feedback_valid) {
+        const double control_alpha = std::exp(-2.0 * M_PI * control_cutoff_hz * outer_dt);
+        p_->velocity_control_sps =
+            control_alpha * p_->velocity_control_sps +
+            (1.0 - control_alpha) * p_->corrected_axle_velocity_sps;
+      }
 
-    const double velocity_pitch_request_unclamped_rad = std::atan2(
-        p_->velocity_damping_acceleration_mps2, Config::g0);
-    const double velocity_limit_rad = velocity_pitch_limit_rad();
-    const double velocity_pitch_request_limited_rad = std::clamp(
-        velocity_pitch_request_unclamped_rad, -velocity_limit_rad, velocity_limit_rad);
-    p_->velocity_pitch_request_unclamped_rad = velocity_pitch_request_unclamped_rad;
-    p_->velocity_pitch_request_limited_rad = velocity_pitch_request_limited_rad;
-    p_->velocity_authority_limited =
-        std::abs(velocity_pitch_request_unclamped_rad) > velocity_limit_rad + 1e-12;
+      const VelocityReferenceState reference = p_->velocity_planner.update(
+          forward_command * ConfigPid::values.drive_max_velocity_mps, outer_dt,
+          ConfigPid::values.planner_max_acceleration_mps2,
+          ConfigPid::values.planner_max_deceleration_mps2,
+          ConfigPid::values.planner_max_jerk_mps3);
+      p_->user_velocity_mps = reference.user_velocity_mps;
+      p_->reference_velocity_mps = reference.reference_velocity_mps;
+      p_->reference_acceleration_mps2 = reference.reference_acceleration_mps2;
+      p_->reference_jerk_mps3 = reference.reference_jerk_mps3;
+      p_->planner_acceleration_limited = reference.acceleration_limited;
+      p_->planner_jerk_limited = reference.jerk_limited;
+      p_->velocity_feedback_estimate_mps =
+          p_->velocity_control_sps * Config::meters_per_step;
+      p_->velocity_error_mps =
+          p_->reference_velocity_mps - p_->velocity_feedback_estimate_mps;
+      p_->velocity_feedback_active = p_->velocity_feedback_valid;
+      p_->velocity_p_acceleration_mps2 =
+          p_->velocity_feedback_active
+              ? ConfigPid::values.velocity_gain_per_s * p_->velocity_error_mps
+              : 0.0;
 
-    // COM trim has two deliberately separate concepts: trust is a historical
-    // property of the estimate, while learning permission is a current-cycle
-    // motion decision. An untrusted estimate may learn while the robot is
-    // gently settling, but it must pause once the body enters a substantial
-    // velocity/attitude excursion.
-    const bool trim_base_conditions =
-        forward_command == 0.0 && p_->nominal_acceleration_mps2 == 0.0;
-    const double integral_limit_rad = ConfigPid::values.velocity_I_limit_deg * M_PI / 180.0;
-    const double unrestricted_integral_delta =
-        -ConfigPid::values.velocity_I * p_->corrected_axle_velocity_sps * outer_dt * M_PI / 180.0;
-    const double trim_derivative_deg_per_s =
-        std::abs(-ConfigPid::values.velocity_I * p_->velocity_control_sps);
+      // The integral state is in m/s*s. Use the exact first-order leaky
+      // update so the result is stable for long outer-loop periods and does
+      // not depend on Euler-step size. Integral accumulation is inhibited
+      // when it would push the outer command farther into its authority
+      // limit, or when the previous inner command was already saturated.
+      p_->velocity_integral_limited = false;
+      p_->velocity_anti_windup_active = false;
+      if (!p_->velocity_feedback_active || ConfigPid::values.velocity_i_gain_per_s2 <= 0.0) {
+        p_->velocity_integral_state_mps_s = 0.0;
+        p_->velocity_i_acceleration_mps2 = 0.0;
+      } else {
+        const double integral_gain = ConfigPid::values.velocity_i_gain_per_s2;
+        const double leak_time_s = std::max(1e-6, ConfigPid::values.velocity_i_leak_time_s);
+        const double leak = std::exp(-outer_dt / leak_time_s);
+        const double state_limit =
+            ConfigPid::values.velocity_i_acceleration_limit_mps2 / integral_gain;
+        const double previous_state = p_->velocity_integral_state_mps_s;
+        double next_state = previous_state * leak +
+                            p_->velocity_error_mps * leak_time_s * (1.0 - leak);
+        if (std::abs(next_state) > state_limit) {
+          next_state = std::copysign(state_limit, next_state);
+          p_->velocity_integral_limited = true;
+        }
+        double next_i_acceleration = integral_gain * next_state;
+        const double motion_pitch_limit_rad = outer_pitch_limit_rad();
+        const double max_outer_acceleration_mps2 =
+            Config::g0 * std::tan(std::min(motion_pitch_limit_rad, kMaxPitchSetpointRad));
+        const double candidate_raw_acceleration =
+            p_->reference_acceleration_mps2 + p_->velocity_p_acceleration_mps2 +
+            next_i_acceleration;
+        const bool integral_pushes_outer_limit =
+            (candidate_raw_acceleration > max_outer_acceleration_mps2 &&
+             p_->velocity_error_mps > 0.0) ||
+            (candidate_raw_acceleration < -max_outer_acceleration_mps2 &&
+             p_->velocity_error_mps < 0.0);
+        const bool integral_pushes_inner_limit =
+            controller_was_saturated && std::abs(p_->velocity_error_mps) > 1e-12;
+        if (integral_pushes_outer_limit || integral_pushes_inner_limit) {
+          next_state = previous_state * leak;
+          next_state = std::clamp(next_state, -state_limit, state_limit);
+          next_i_acceleration = integral_gain * next_state;
+          p_->velocity_anti_windup_active = true;
+        }
+        p_->velocity_integral_state_mps_s = next_state;
+        p_->velocity_i_acceleration_mps2 = std::clamp(
+            next_i_acceleration,
+            -ConfigPid::values.velocity_i_acceleration_limit_mps2,
+            ConfigPid::values.velocity_i_acceleration_limit_mps2);
+        p_->velocity_integral_limited =
+            p_->velocity_integral_limited ||
+            std::abs(p_->velocity_i_acceleration_mps2) >=
+                ConfigPid::values.velocity_i_acceleration_limit_mps2 - 1e-12;
+      }
+      p_->velocity_feedback_acceleration_mps2 =
+          p_->velocity_p_acceleration_mps2 + p_->velocity_i_acceleration_mps2;
+      p_->acceleration_raw_mps2 =
+          p_->reference_acceleration_mps2 + p_->velocity_feedback_acceleration_mps2;
+      const double motion_pitch_limit_rad = outer_pitch_limit_rad();
+      const double max_outer_acceleration_mps2 =
+          Config::g0 * std::tan(std::min(motion_pitch_limit_rad, kMaxPitchSetpointRad));
+      p_->acceleration_cmd_mps2 = std::clamp(
+          p_->acceleration_raw_mps2, -max_outer_acceleration_mps2, max_outer_acceleration_mps2);
+      p_->outer_acceleration_limited =
+          std::abs(p_->acceleration_cmd_mps2 - p_->acceleration_raw_mps2) > 1e-12;
+      p_->drive_pitch_target_rad = std::atan2(p_->acceleration_cmd_mps2, Config::g0);
+      p_->outer_pitch_target_limited = p_->outer_acceleration_limited;
+      p_->velocity_authority_limited = p_->outer_acceleration_limited;
+      p_->nominal_acceleration_mps2 = 0.0;
+      p_->velocity_damping_acceleration_mps2 = 0.0;
+      p_->velocity_pitch_request_unclamped_rad = 0.0;
+      p_->velocity_pitch_request_limited_rad = 0.0;
+
+      // The optional learner is deliberately isolated from v1. When enabled
+      // it uses the same quiet-state witness as before, but its trim is never
+      // part of the default controller configuration or tuner search.
+      const bool adaptive_trim_enabled =
+          ConfigPid::values.adaptive_com_trim_enabled >= 0.5;
+      const bool trim_base_conditions =
+          p_->user_velocity_mps == 0.0 &&
+          std::abs(p_->reference_acceleration_mps2) <= 1e-12;
+      const double integral_limit_rad =
+          ConfigPid::values.adaptive_com_trim_limit_deg * M_PI / 180.0;
+      const double unrestricted_integral_delta =
+          -ConfigPid::values.adaptive_com_trim_gain_deg_per_mps_s *
+          p_->velocity_feedback_estimate_mps * outer_dt * M_PI / 180.0;
+      const double trim_derivative_deg_per_s =
+          std::abs(ConfigPid::values.adaptive_com_trim_gain_deg_per_mps_s *
+                   p_->velocity_feedback_estimate_mps);
 
     // Estimate low-frequency rate energy for the state machine only.  The
     // squared-rate envelope avoids repeated instantaneous threshold crossings
     // from the locked 29 Hz attitude residual while retaining sensitivity to
     // the 0.15--0.25 Hz motion seen in the hardware failure.
-    const double quiet_rate_alpha =
-        std::exp(-2.0 * M_PI * kComTrimQuietRateMetricLpfHz * outer_dt);
-    const double pitch_rate_dps = pitch_rate_rad_s * 180.0 / M_PI;
-    p_->trim_quiet_rate_squared_dps2 =
-        quiet_rate_alpha * p_->trim_quiet_rate_squared_dps2 +
-        (1.0 - quiet_rate_alpha) * pitch_rate_dps * pitch_rate_dps;
-    const double trim_quiet_rate_rms_dps =
-        std::sqrt(std::max(0.0, p_->trim_quiet_rate_squared_dps2));
+      const double quiet_rate_alpha =
+          std::exp(-2.0 * M_PI * kComTrimQuietRateMetricLpfHz * outer_dt);
+      const double pitch_rate_dps = pitch_rate_rad_s * 180.0 / M_PI;
+      p_->trim_quiet_rate_squared_dps2 =
+          quiet_rate_alpha * p_->trim_quiet_rate_squared_dps2 +
+          (1.0 - quiet_rate_alpha) * pitch_rate_dps * pitch_rate_dps;
+      const double trim_quiet_rate_rms_dps =
+          std::sqrt(std::max(0.0, p_->trim_quiet_rate_squared_dps2));
 
-    const double candidate_acceleration_pitch_rad = std::atan2(
-        p_->nominal_acceleration_mps2, Config::g0);
-    const double candidate_pitch_without_trim =
-        candidate_acceleration_pitch_rad + velocity_pitch_request_limited_rad;
-    const double candidate_pitch = candidate_pitch_without_trim + p_->com_trim_rad;
-    const bool pitch_would_saturate = std::abs(candidate_pitch) > pitch_limit_rad;
-    const double trim_balance_limit_sps =
-        std::clamp(ConfigPid::values.balance_max_sps, 0.0, kMaxSps);
-    const auto candidate_terms = feedback_terms(candidate_pitch);
-    const bool balance_would_saturate =
-        std::abs(candidate_terms[0] + candidate_terms[1] + candidate_terms[2]) >
-        trim_balance_limit_sps;
+      const double candidate_pitch_without_trim = p_->drive_pitch_target_rad;
+      const double configured_fixed_trim_rad =
+          ConfigPid::values.fixed_com_trim_deg * M_PI / 180.0;
+      const double candidate_pitch = candidate_pitch_without_trim + configured_fixed_trim_rad +
+                                     (adaptive_trim_enabled ? p_->com_trim_rad : 0.0);
+      const bool pitch_would_saturate = std::abs(candidate_pitch) > kMaxPitchSetpointRad;
+      const double trim_balance_limit_sps =
+          std::clamp(ConfigPid::values.balance_max_sps, 0.0, kMaxSps);
+      const auto candidate_terms = feedback_terms(candidate_pitch);
+      const bool balance_would_saturate =
+          std::abs(candidate_terms[0] + candidate_terms[1] + candidate_terms[2]) >
+          trim_balance_limit_sps;
     const bool previous_saturation_blocked = controller_was_saturated;
     const bool trim_saturation_blocked =
         previous_saturation_blocked || p_->velocity_authority_limited ||
@@ -622,21 +795,21 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
 
     const double pitch_error_deg =
         std::abs(p_->pitch_setpoint_rad - pitch_rad) * 180.0 / M_PI;
-    const bool quiet_equilibrium_sample =
-        trim_base_conditions &&
-        std::abs(p_->velocity_control_sps) <= kComTrimMotionVelocityExitSps &&
-        trim_quiet_rate_rms_dps <= kComTrimQuietRateRmsDps &&
-        pitch_error_deg <= kComTrimQuietPitchErrorDeg &&
-        trim_derivative_deg_per_s <= kComTrimQuietDerivativeDegPerS &&
-        !trim_saturation_blocked;
+      const bool quiet_equilibrium_sample =
+          trim_base_conditions &&
+          std::abs(p_->velocity_control_sps) <= kComTrimMotionVelocityExitSps &&
+          trim_quiet_rate_rms_dps <= kComTrimQuietRateRmsDps &&
+          pitch_error_deg <= kComTrimQuietPitchErrorDeg &&
+          trim_derivative_deg_per_s <= kComTrimQuietDerivativeDegPerS &&
+          !trim_saturation_blocked;
 
     // Keep this estimate independent of the learned trim itself.  At a quiet
     // equilibrium, actual pitch minus the drive/velocity command is the
     // observable angle that the acquisition state must see settle.  Motion
     // does not update the estimate and clears only its convergence dwell; a
     // later quiet period must prove convergence again if the candidate moved.
-    const double raw_equilibrium_candidate_rad = rate_controller_detail::wrap_angle_delta(
-        pitch_rad - candidate_pitch_without_trim);
+      const double raw_equilibrium_candidate_rad = rate_controller_detail::wrap_angle_delta(
+          pitch_rad - candidate_pitch_without_trim - configured_fixed_trim_rad);
     if (!p_->com_trim_equilibrium_candidate_seeded) {
       p_->com_trim_equilibrium_candidate_rad = raw_equilibrium_candidate_rad;
       p_->com_trim_equilibrium_candidate_seeded = true;
@@ -693,8 +866,8 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
     // acquisition candidate to reduce the bias; ordinary commands, fast
     // motion, authority limiting, saturation, and an already-entered motion
     // state remain hard blocks.
-    const bool static_bias_learning_candidate =
-        !p_->com_trim_acquired && !p_->trim_motion_active && trim_base_conditions &&
+      const bool static_bias_learning_candidate =
+        adaptive_trim_enabled && !p_->com_trim_acquired && !p_->trim_motion_active && trim_base_conditions &&
         std::abs(p_->velocity_control_sps) > kComTrimMotionVelocityExitSps &&
         std::abs(p_->velocity_control_sps) <= kComTrimUntrustedBiasVelocityMaxSps &&
         trim_quiet_rate_rms_dps <= kComTrimQuietRateRmsDps &&
@@ -702,7 +875,7 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
         pitch_error_deg <= kComTrimUntrustedBiasPitchErrorMaxDeg &&
         !trim_saturation_blocked;
 
-    const bool motion_entered =
+      const bool motion_entered =
         (!static_bias_learning_candidate &&
          (std::abs(p_->velocity_control_sps) > kComTrimMotionVelocityEnterSps ||
           trim_quiet_rate_rms_dps > kComTrimMotionRateEnterDps ||
@@ -728,22 +901,20 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
       quiet_dwell_reached = false;
     }
 
-    p_->trim_learning_allowed =
-        (trim_base_conditions && !p_->trim_motion_active && !trim_saturation_blocked) ||
-        static_bias_learning_candidate;
-    const bool com_trim_learning =
-        p_->trim_learning_allowed && (!p_->com_trim_acquired || quiet_dwell_reached);
+      p_->trim_learning_allowed = adaptive_trim_enabled &&
+          ((trim_base_conditions && !p_->trim_motion_active && !trim_saturation_blocked) ||
+           static_bias_learning_candidate);
+      const bool com_trim_learning =
+          p_->trim_learning_allowed && (!p_->com_trim_acquired || quiet_dwell_reached);
     const double integral_delta = com_trim_learning ? unrestricted_integral_delta : 0.0;
     const double candidate_i =
         std::clamp(p_->com_trim_rad + integral_delta, -integral_limit_rad, integral_limit_rad);
-    if (com_trim_learning) {
-      p_->com_trim_rad = candidate_i;
-    }
+      if (com_trim_learning) p_->com_trim_rad = candidate_i;
     if (!p_->com_trim_acquired && trim_base_conditions && quiet_dwell_reached &&
         quiet_equilibrium_converged && !trim_saturation_blocked) {
       p_->com_trim_acquired = true;
     }
-    p_->trim_learning_enabled = com_trim_learning;
+      p_->trim_learning_enabled = com_trim_learning;
     if (com_trim_learning) {
       p_->trim_learning_block_reason = ComTrimLearningBlockNone;
     } else if (forward_command != 0.0) {
@@ -763,16 +934,25 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
     } else {
       p_->trim_learning_block_reason = ComTrimLearningBlockQuietDwell;
     }
-    p_->pitch_target_unclamped_rad = candidate_pitch_without_trim + p_->com_trim_rad;
-    p_->pitch_target_limit_reason = PitchTargetLimitNone;
-    if (p_->velocity_authority_limited) {
-      p_->pitch_target_limit_reason |= PitchTargetLimitVelocityAuthority;
-    }
-    if (std::abs(p_->pitch_target_unclamped_rad) > pitch_limit_rad) {
-      p_->pitch_target_limit_reason |= PitchTargetLimitTotalPitch;
-    }
-    p_->pitch_setpoint_rad = std::clamp(p_->pitch_target_unclamped_rad,
-                                        -pitch_limit_rad, pitch_limit_rad);
+      if (!adaptive_trim_enabled) {
+        p_->com_trim_rad = 0.0;
+        p_->com_trim_acquired = false;
+        p_->trim_learning_allowed = false;
+        p_->trim_learning_enabled = false;
+      }
+      const double effective_trim_rad = configured_fixed_trim_rad +
+                                        (adaptive_trim_enabled ? p_->com_trim_rad : 0.0);
+      p_->pitch_target_unclamped_rad = candidate_pitch_without_trim + effective_trim_rad;
+      p_->pitch_target_limit_reason = PitchTargetLimitNone;
+      if (p_->velocity_authority_limited) {
+        p_->pitch_target_limit_reason |= PitchTargetLimitVelocityAuthority;
+      }
+      if (std::abs(p_->pitch_target_unclamped_rad) > kMaxPitchSetpointRad) {
+        p_->pitch_target_limit_reason |= PitchTargetLimitTotalPitch;
+        p_->outer_pitch_target_limited = true;
+      }
+      p_->pitch_setpoint_rad = std::clamp(p_->pitch_target_unclamped_rad,
+                                          -kMaxPitchSetpointRad, kMaxPitchSetpointRad);
     }
   }
   if (pitch_authority_diagnostic) {

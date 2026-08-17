@@ -4,8 +4,8 @@
 
 [Analysis workflow](../../../doc/testing/telemetry_analysis_cli.md) · [Manifest](manifest.json)
 
-This Raspberry Pi capture records the robot balancing undisturbed on a wooden floor with zero
-joystick target. At capture and simulator-comparison time, hardware and simulator used identical
+This **pre-v12** Raspberry Pi capture records the robot balancing undisturbed on a wooden floor with
+zero joystick target. At capture and simulator-comparison time, hardware and simulator used identical
 PID values (SHA-256
 `b1a7ec6663c111ce4311944d1ca2077ca8370d241d32f6878e8c2015e2a7830d`). The first 10 seconds are
 treated as release and settling; steady-state statistics and spectra use `t >= 10.0 s`.
