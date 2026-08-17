@@ -83,10 +83,10 @@ inline void app_dispatcher(void* ctx, MsgId id, const void* payload) {
             static_cast<double>(p.pitch_rate_dps), static_cast<double>(p.u_sps),
             (std::abs(p.u_sps) >= 0.99f * static_cast<float>(kMaxSps)) ? "*" : "",
             static_cast<double>(p.pitch_sp_deg),
-            static_cast<double>(p.velocity_damping_acceleration_mps2),
-            static_cast<double>(p.com_trim_deg), static_cast<double>(p.pitch_error_deg),
-            static_cast<double>(p.nominal_acceleration_mps2),
-            static_cast<double>(p.corrected_axle_velocity_sps), p.left_actual_steps,
+            static_cast<double>(p.velocity_feedback_acceleration_mps2),
+            static_cast<double>(p.fixed_com_trim_deg), static_cast<double>(p.pitch_error_deg),
+            static_cast<double>(p.reference_velocity_mps),
+            static_cast<double>(p.velocity_feedback_estimate_mps), p.left_actual_steps,
             p.right_actual_steps, motor_dt_warning ? "  MOTOR_DT!" : "",
             static_cast<double>(p.turn_sps));
       }

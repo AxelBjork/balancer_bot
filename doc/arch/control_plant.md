@@ -1,338 +1,297 @@
-# Control and Plant Model
+# Control and plant model
 
-## Aggregate Simulator Parameters
+This is the authoritative description of the robot's physical coordinates,
+aggregate rigid-body model, and controller-facing equations. It is deliberately
+model-neutral: it does not choose a simulator actuator realization, a PID
+file, or a tuning result. Those belong to the simulator profile and behavioral
+test documents.
 
-The nonlinear simulator uses aggregate rigid-body parameters rather than an arbitrary split between
-cart and body mass: total translating mass `T`, first mass moment `H` about the axle, and pitch
-inertia `J` about the axle. Its mass matrix is
+The implementation mapping below describes the production controller and the
+common plant interface. Exact message fields come from the generated
+[IPC protocol](../ipc/protocol.md); exact behavior is enforced by the source
+and tests named here.
+
+> [Open the interactive plant view](interactive_balancer_plant.html)
+
+## Aggregate simulator parameters
+
+The nonlinear simulator uses aggregate rigid-body parameters rather than an
+arbitrary split between cart and body mass: total translating mass `T`, first
+mass moment `H` about the axle, and pitch inertia `J` about the axle. Its
+common rigid-body mass matrix is
 
 $$
+D(\theta)=
 \begin{bmatrix}
 T & H\cos\theta \\
 H\cos\theta & J
 \end{bmatrix}.
 $$
 
-The authoritative nominal mass, geometry, and inertia values are defined by
-[`HardwareNominal`](../../tests/simulator/balancer_simulator.h). Pitch inertia should be updated
-from the physical-pendulum procedure documented in the Pi runtime guide; these values are
-intentionally not duplicated here.
+The maintained nominal values used by the simulator's common plant are:
 
-The controller-design reference simulator uses `J = 0.0045 kg m^2`, `cart_damping = 1 N s/m`,
-and direct applied-force authority. Its purpose is to evaluate the controller against the
-identified rigid-body dynamics without assigning unmeasured phase-position parameters physical
-meaning. Its direct N/SPS authority is an explicit reference scale, independent of wheel STEP
-geometry. `StepperPhaseElectrical` is the maintained physical-actuator profile: it uses timestamped
-1/32 STEP events (6400 STEP/rev), indexed field position, and voltage-limited averaged winding
-currents. The
-older SPS-to-force and phase/tire experiments are historical diagnostics only; their aggregate
-lag, phase envelope, tire, and force-limit parameters are not calibrated well enough to select
-production gains. In particular, an aggregate 20 ms response must not be interpreted as the
-measured approximately 1.95 ms electrical motor time constant.
+| Quantity | Value |
+| --- | ---: |
+| gravity `g` | `9.81 m/s²` |
+| total translating mass `T` | `1.032 kg` |
+| first mass moment `H` | `0.06192 kg m` |
+| pitch inertia `J` | `0.0045 kg m²` |
+| wheel radius `r` | `0.0412 m` |
+| nominal chassis damping | `1 N s/m` |
 
-The variables and equations through the transfer-function section form a compact, linearized audit
-model. The implementation mapping below describes the richer nonlinear simulator and controller;
-assumptions in the compact model should not be read as claims that the simulator has no slip,
-actuator lag, or left/right asymmetry.
+The authoritative code constants are in
+[`HardwareNominal`](../../tests/simulator/balancer_simulator.h). The `J`
+value comes from the retained passive-pendulum measurement in
+[`20260722_pitch_inertia`](../../data/hardware_sessions/20260722_pitch_inertia/).
+That experiment was supported at the axle with the wheels held against motor
+detent/friction, so it is a provisional pitch-inertia measurement rather than
+a friction-free wheel-spin calibration.
 
-## Variables
+Actuator-specific additions to this common model—such as absolute wheel/rotor
+inertia, electrical current states, phase coordinates, force realization, or
+command delay—are owned by the corresponding simulator profile. They must not
+be silently folded into the aggregate equations above.
 
-- $x$, $\dot{x}$, $\ddot{x}$: forward wheel-axle position, velocity, and acceleration
-- $\theta$, $\dot{\theta}$, $\ddot{\theta}$: body pitch angle from upright, pitch rate, and
-  pitch angular acceleration
+The full nonlinear plant includes gravity, the mass matrix, chassis damping,
+external horizontal force and COM-bias disturbances, wheel/tire coupling where
+the selected profile provides it, and the selected actuator's applied torque
+or force. It is richer than the compact audit model below; the compact model
+is for signs, poles, and local parameter checks.
+
+## Variables and compact-model assumptions
+
+- $x$, $\dot{x}$, $\ddot{x}$: forward wheel-axle position, velocity, and
+  acceleration
+- $\theta$, $\dot{\theta}$, $\ddot{\theta}$: body pitch angle from upright,
+  pitch rate, and pitch angular acceleration
 - $n$, $\dot{n}$: common wheel speed in RPM and its rate in RPM/s
 - $r$: wheel radius
 - $g$: gravitational acceleration
 - $T$: total translating mass
 - $H$: first mass moment about the axle
 - $J$: pitch inertia about the axle
-- $m$: body mass; $l$: axle-to-body-COM distance; $I$: body pitch inertia about its COM. These
-  are the equivalent lumped parameters used only in the compact small-angle model.
+- $m$, $l$, $I$: equivalent body mass, axle-to-COM distance, and body inertia
+  used only by the compact small-angle form
 - $k$, $a$, $b$: compact-model constants defined below
-- $s$: Laplace variable; $X(s)$, $\Theta(s)$, and $N(s)$: Laplace transforms of $x(t)$,
-  $\theta(t)$, and $n(t)$
-- $a_{\mathrm{nominal}}$: jerk-limited requested forward acceleration;
-  $v_{\mathrm{axle}}$: corrected axle velocity derived from completed motor steps
-- $k_v$: corrected-velocity damping gain
-- $\theta_{\mathrm{ref}}$: requested pitch angle; $\theta_{\mathrm{COM}}$: bounded
-  center-of-mass trim
-- $\theta_f$, $\dot{\theta}_f$, $\ddot{\theta}_f$: filtered pitch, rate, and acceleration
-  signals used by the explicit attitude controller
-- $K_{\mathrm{pitch}}$, $K_{\mathrm{rate}}$, $K_{\mathrm{accel}}$: independent state-feedback
-  gains; $u_{\mathrm{sps}}$: common wheel command in steps/s
-- $\psi$: absolute wheel angle; $u_{wheel} = r\psi$: absolute circumferential wheel motion;
-  $q_m$: rotor motion relative to the chassis; $q_{steps,L/R}$: completed motor-step counts used
-  by the observer; $\theta_0$: configured initial pitch
-- $F_m$, $F_t$: motor and tire/contact forces
+- $s$: Laplace variable; $X(s)$, $\Theta(s)$, and $N(s)$: transforms of
+  $x(t)$, $\theta(t)$, and $n(t)$
+- $N_{steps}$: configured motor steps per revolution in the completed-step
+  observer correction
+- $q_{steps,L/R}$: completed left/right motor-step counts
+- $v_{user}$, $v_{ref}$, $a_{ref}$: user velocity, planned velocity, and
+  transition-derived planned acceleration
+- $v_{feedback}$: slow velocity-feedback estimate derived from corrected
+  completed steps; $K_v$: velocity feedback gain
+- $a_{raw}$, $a_{cmd}$: shared acceleration request before and after motion
+  authority limiting
+- $\theta_{ref}$: requested pitch angle; $\theta_{COM}$: fixed physical COM
+  trim, with optional adaptive learning
+- $\theta_f$, $\dot{\theta}_f$, $\ddot{\theta}_f$: filtered pitch, rate, and
+  acceleration signals used by the attitude controller
+- $K_{pitch}$, $K_{rate}$, $K_{accel}$: independent state-feedback gains;
+  $u_{sps}$: common wheel command in steps/s
 
-Compact audit-model assumptions:
+The compact audit model assumes:
 
-- no gearbox
-- no slipping
-- both wheels have identical RPM
-- small-angle linearization around upright
-- zero initial conditions for Laplace transfer functions
+- no gearbox;
+- no slipping;
+- both wheels have identical speed;
+- small angle around upright;
+- zero initial conditions for the Laplace transfer functions.
 
----
-
-## Compact Constants
-
-> $$
-> k = \frac{2\pi r}{60}
-> $$
-
-> $$
-> a = \frac{mgl}{I+ml^2}
-> $$
-
-> $$
-> b = \frac{ml}{I+ml^2}\frac{2\pi r}{60}
-> $$
-
----
-
-## Small-Angle Equations of Motion
-
-> $$
-> \ddot x = k\dot n
-> $$
-
-> $$
-> \ddot\theta = a\theta - b\dot n
-> $$
-
-Expanded form:
-
-> $$
-> \ddot x = \frac{2\pi r}{60}\dot n
-> $$
-
-> $$
-> \ddot\theta = \frac{mgl}{I+ml^2}\theta - \frac{ml}{I+ml^2}\frac{2\pi r}{60}\dot n
-> $$
-
----
-
-## Transfer Functions
-
-> $$
-> \boxed{\frac{X(s)}{N(s)} = \frac{k}{s}}
-> $$
-
-> $$
-> \boxed{\frac{\Theta(s)}{N(s)} = -\frac{bs}{s^2-a}}
-> $$
-
-Equivalent expanded forms:
-
-> $$
-> \boxed{\frac{X(s)}{N(s)} = \frac{\frac{2\pi r}{60}}{s}}
-> $$
-
-> $$
-> \boxed{
-> \frac{\Theta(s)}{N(s)} =
-> -\frac{
-> \left(\frac{ml}{I+ml^2}\frac{2\pi r}{60}\right)s
-> }{
-> s^2-\frac{mgl}{I+ml^2}
-> }
-> }
-> $$
-
----
-
-## Stability Derivatives
-
-### Pitch Dynamics
-
-> $$
-> \boxed{\frac{\partial \ddot\theta}{\partial \theta} = a = \frac{mgl}{I+ml^2}}
-> $$
-
-> $$
-> \boxed{\frac{\partial \ddot\theta}{\partial \dot\theta} = 0}
-> $$
-
-> $$
-> \boxed{\frac{\partial \ddot\theta}{\partial n} = 0}
-> $$
-
-> $$
-> \boxed{\frac{\partial \ddot\theta}{\partial \dot n} = -b = -\frac{ml}{I+ml^2}\frac{2\pi r}{60}}
-> $$
-
-### Translational Dynamics
-
-> $$
-> \boxed{\frac{\partial \ddot x}{\partial \dot n} = k = \frac{2\pi r}{60}}
-> $$
-
-> $$
-> \boxed{\frac{\partial \ddot x}{\partial n} = 0}
-> $$
-
-> $$
-> \boxed{\frac{\partial \ddot x}{\partial \theta} = 0}
-> $$
-
-> $$
-> \boxed{\frac{\partial \ddot x}{\partial \dot\theta} = 0}
-> $$
-
----
-
-## Open-Loop Pitch Poles
-
-From
-
-> $$
-> \frac{\Theta(s)}{N(s)} = -\frac{bs}{s^2-a}
-> $$
-
-The poles are
-
-> $$
-> \boxed{s = \pm\sqrt{a}}
-> $$
-
-that is,
-
-> $$
-> \boxed{s = \pm\sqrt{\frac{mgl}{I+ml^2}}}
-> $$
-
-Since one pole is positive, the upright system is open-loop unstable.
-
-The transfer function also has a zero at
-
-> $$
-> \boxed{s = 0}
-> $$
-
----
-
-## Implementation Mapping
-
-The equations above are the compact small-angle audit model. The current code adds damping, actuator lag, and estimator filtering on top of this idealized plant.
-
-### Rate hierarchy
-
-The project has several intentional rates rather than one universal loop rate:
-
-- `PhysicsTick` and the inner rate controller run at the nominal 400 Hz control cadence.
-- The completed-step axle-velocity observer, velocity filter update, jerk limiter, and COM-trim
-  integration run in the 100 Hz outer-loop interval.
-- The completed-step observer retains its 10 Hz measurement filter; the production controller
-  adds a separate configurable velocity-control pole, currently 3 Hz, so observer bandwidth and
-  translational-control bandwidth are not conflated.
-- The motor runner keeps a separate 50 ms completed-step average for actuator diagnostics; the
-  controller does not use that diagnostic average as its feedback observer.
-
-This distinction prevents the 100 Hz observer, 10 Hz filter, 50 ms diagnostic window, and 400 Hz
-control tick from being mistaken for competing controller clocks.
-
-Current controller structure in code:
-
-At 100 Hz, common completed motor steps are first corrected to axle motion. The observer is
-
-> $$
-> \Delta u_{\mathrm{steps}} = \frac{\Delta q_{steps,L} + \Delta q_{steps,R}}{2}
-> + \frac{N}{2\pi}\mathrm{wrap}(\Delta\theta).
-> $$
-
-The velocity is calculated from the elapsed observer interval and passed through the configured
-10 Hz single-pole filter. Filtering, jerk limiting, and COM-trim integration all use that measured
-outer-loop interval, including under control-tick jitter. `MotorRunner` also maintains a separate
-50 ms completed-step average for actuator diagnostics; that field is not controller feedback.
-
-The jerk-limited nominal acceleration and corrected-velocity damping then form the pitch reference;
-a bounded integral term still learns only stationary center-of-mass trim:
+## Compact constants and small-angle equations
 
 $$
-\theta_{\mathrm{ref}} = \mathrm{clamp}\left(
-\mathrm{atan2}(a_{\mathrm{nominal}} - k_v v_{\mathrm{axle}}, g) + \theta_{\mathrm{COM}}
-\right)
+k=\frac{2\pi r}{60},\qquad
+a=\frac{mgl}{I+ml^2},\qquad
+b=\frac{ml}{I+ml^2}\frac{2\pi r}{60}.
 $$
 
-The drive-generated portion is bounded by the configured acceleration equilibrium,
-`atan2(drive_max_acceleration_mps2, g)`: this is the nonlinear form of the small-angle
-condition `theta_ddot = 0`. The bounded COM trim remains available at zero drive command.
+The local audit equations are
 
-Explicit attitude state feedback:
+$$
+\ddot{x}=k\dot{n},\qquad
+\ddot{\theta}=a\theta-b\dot{n}.
+$$
 
-The production controller keeps pitch stiffness, pitch-rate damping, and optional acceleration
-feedback independent:
+Equivalently,
 
-> $$
-> e_\theta = \theta - \theta_{\mathrm{ref}},\\
-> u_{\mathrm{sps}} = K_{\mathrm{pitch}}e_\theta
-> + K_{\mathrm{rate}}\dot\theta_f
-> + K_{\mathrm{accel}}\ddot\theta_f.
-> $$
+$$
+\ddot{x}=\frac{2\pi r}{60}\dot{n},\qquad
+\ddot{\theta}=\frac{mgl}{I+ml^2}\theta
+-\frac{ml}{I+ml^2}\frac{2\pi r}{60}\dot{n}.
+$$
 
-The plus signs are the robot-forward motor-boundary form: positive wheel acceleration produces
-negative initial body pitch acceleration. They are equivalent to negative feedback after including
-that mechanical polarity. `pitch_gain`, `pitch_rate_gain`, and `pitch_accel_gain` are expressed in
-SPS/rad, SPS/(rad/s), and SPS/(rad/s²). Acceleration feedback is supported but zero in the checked-in
-default. The separate `velocity_control_cutoff_hz` pole keeps translational feedback below the fast
-attitude path.
+The associated transfer functions are
 
-Motor scaling and safety:
+$$
+\boxed{\frac{X(s)}{N(s)}=\frac{k}{s}},\qquad
+\boxed{\frac{\Theta(s)}{N(s)}=-\frac{bs}{s^2-a}}.
+$$
 
-- the outer loop requests motion only through the pitch reference; it adds no direct wheel-speed
-  feed-forward
-- `balance_max_sps` is the hard common-mode clamp, then turn allocation consumes only remaining
-  balance authority; `drive_max_sps` and `turn_max_sps` remain explicit safety/allocation limits
-- the motor runner limits command slope to 200,000 SPS/s and applies pulses through two synchronous
-  2.5 ms frames (one active and one queued); telemetry separates the target, continuous post-slew
-  command, and quantized active-frame rate
-- positive wheel acceleration produces negative initial pitch acceleration, while sustained
-  positive vehicle acceleration requires positive equilibrium pitch; motor output may therefore
-  initially reduce or reverse while acquiring a forward lean
+The important local derivatives are
 
-Notes:
+$$
+\frac{\partial\ddot{\theta}}{\partial\theta}=a,\qquad
+\frac{\partial\ddot{\theta}}{\partial\dot{n}}=-b,
+$$
 
-- `theta_dot_f` is the 30 Hz two-pole filtered pitch gyro rate, not the raw gyro debug signal;
-  its controller derivative input is filtered separately at 10 Hz
-- the simulator now applies disturbances as exogenous plant inputs:
-  external horizontal force and optional COM bias
-- the simulator plant is intentionally richer than the cheat-sheet model: scheduled pulses advance
-  commanded motor phase; completed pulses supply controller feedback; a separate rotor/wheel state,
-  torque-speed limit, actuator lag, missed-step estimate, and traction-limited tire coupling produce
-  force on the nonlinear cart-pole
-- the simulator's continuous field-speed term consumes the post-slew command; exact pulse-frame
-  quantization enters separately through emitted motor position and is not applied twice
+$$
+\frac{\partial\ddot{x}}{\partial\dot{n}}=k,qquad
+\frac{\partial\ddot{x}}{\partial n}=0.
+$$
 
-### Simulator wheel and motor coordinates
+The open-loop pitch poles are
 
-The nonlinear simulator keeps the wheel coordinate `u_wheel = r psi` as absolute circumferential wheel
-motion. Tire deformation and tire speed therefore remain $u_{wheel} - x$ and
-$\dot u_{wheel} - \dot x$.
-Motor steps,
-however, measure rotor motion relative to the chassis. With the configured initial pitch as the
-zero-step reference, the motor coordinates are
+$$
+s=\pm\sqrt{a}=\pm\sqrt{\frac{mgl}{I+ml^2}}.
+$$
 
-> $$
-> q_m = u_{wheel}-r(\theta-\theta_0), \qquad \dot q_m = \dot u_{wheel}-r\dot\theta.
-> $$
+One pole is positive, so upright balance is open-loop unstable. The transfer
+function also has a zero at $s=0$.
 
-The phase-error controller and torque-speed limit use `q_m` and `q_m_dot`. A motor force `F_m` applies
-`+F_m` to the wheel and the equal-and-opposite torque `-r F_m` to the chassis. The tire/contact force
-and motor force are consequently distinct inputs to the linearized audit model; adding their input
-vectors is only the quasi-static, no-wheel-acceleration approximation where `F_t = F_m`.
+## Controller-facing model
 
-## Audit Command
+The physical actuator is reached through the existing attitude loop. The
+outer motion controller requests a pitch target; it does not bypass the inner
+balance authority.
 
-To inspect the current linearized upright model used by the simulator profiles:
+### Inner attitude loop
+
+The production inner loop keeps the state-feedback terms independent:
+
+$$
+e_\theta=\theta-\theta_{target},\qquad
+u_{sps}=K_{pitch}e_\theta
+       +K_{rate}\dot{\theta}_f
+       +K_{accel}\ddot{\theta}_f.
+$$
+
+The configured units are `SPS/rad`, `SPS/(rad/s)`, and
+`SPS/(rad/s²)`. Positive wheel acceleration produces negative initial body
+pitch acceleration; the motor-boundary signs above therefore implement the
+required negative feedback. The acceleration term is optional and remains an
+independent weight; its value is a profile/configuration decision, not a plant
+constant.
+
+### Completed-step velocity observer
+
+At the outer-loop cadence, common completed motor steps are corrected for
+pitch-induced axle motion:
+
+$$
+\Delta u_{steps}=
+\frac{\Delta q_{steps,L}+\Delta q_{steps,R}}{2}
+ +\frac{N_{steps}}{2\pi}\mathrm{wrap}(\Delta\theta).
+$$
+
+The corrected axle velocity passes through the compiled measurement filter
+and then through a separate, configurable velocity-feedback pole. The
+measurement filter describes signal conditioning; the slower pole is an
+outer-loop bandwidth choice and must not be described as the physical
+observer's bandwidth.
+
+After startup, counter discontinuity, invalid timing, or another observer
+reset, the observer is cleared and marked invalid. Feedback remains zero until
+the first valid completed-step interval seeds the estimate. A diagnostic
+completed-step average maintained by the motor service is not automatically
+controller feedback.
+
+### Velocity-reference outer loop
+
+The normalized forward command is a persistent user velocity request:
+
+```text
+v_user = normalized_forward_command * drive_max_velocity_mps
+```
+
+The pure planner maintains `v_ref` and `a_ref`. It brakes through zero before
+changing direction, selects acceleration versus deceleration by speed
+magnitude, and derives `a_ref` from the actual state transition:
+
+```text
+active_target = v_user
+if v_ref and v_user have opposite signs:
+    active_target = 0
+
+slowing_down = abs(active_target) < abs(v_ref)
+limit = slowing_down ? max_deceleration : max_acceleration
+v_ref_new = move_toward(v_ref, active_target, limit * dt)
+a_ref = (v_ref_new - v_ref) / dt
+```
+
+The planner never overshoots its active target. An optional jerk limit smooths
+the acceleration transition; it does not change the velocity-reference
+semantics.
+
+Velocity feedback and motion authority share one acceleration budget:
+
+$$
+e_v=v_{ref}-v_{feedback},\qquad a_{fb}=K_v e_v
+$$
+
+$$
+a_{raw}=a_{ref}+a_{fb},
+$$
+
+$$
+a_{cmd}=\mathrm{clamp}\left(
+a_{raw},\;-g\tan\theta_{outer,max},\;+g\tan\theta_{outer,max}\right),
+$$
+
+$$
+\theta_{drive}=\mathrm{atan2}(a_{cmd},g),\qquad
+\theta_{target}=\theta_{drive}+\theta_{COM}.
+$$
+
+The optional velocity integral, when enabled by a profile, is bounded and
+anti-windup protected. It is not part of the first-order plant model. Adaptive
+COM learning is likewise a controller feature, not an actuator or plant
+parameter; fixed trim is composed after motion pitch.
+
+The outer authority limit applies only to motion demand. It must not lower the
+independent balance recovery clamp. Observer validity gates feedback, while a
+joystick watchdog only changes the user request to zero so the planner can
+perform normal braking.
+
+## Timing, safety, and control authority
+
+The production loop intentionally uses several clocks:
+
+- IMU sampling: approximately `833 Hz`;
+- inner attitude controller: `400 Hz`;
+- outer planner, observer, and velocity feedback: `100 Hz`;
+- compiled completed-step measurement filter: approximately `10 Hz`.
+
+The exact actuator frame and pulse scheduling are profile-specific. The
+controller's balance ceiling, turn allocation, pitch safety limits, stale/future
+IMU checks, actuator-fault handling, fallover boundary, and re-arm conditions
+remain independent of the motion-pitch authority limit.
+
+The final target still passes through the existing safety path, including the
+controller setpoint limit, fallover boundary, and re-arm checks. A controller
+candidate must preserve inner recovery authority while reserving actuator
+headroom for translation and turning.
+
+## Validation boundary
+
+This page defines the common plant and control equations. The following pages
+own the questions that are intentionally outside this standard:
+
+- the maintained electrical actuator realization and its fixed constants:
+  [StepperPhaseElectrical test profile](../testing/stepper_phase_electrical.md);
+- cross-profile scenario definitions, strict xfails, and pass/fail evidence:
+  [simulator behavioral matrix](../testing/simulator_behavioral_matrix.md);
+- retained hardware captures and their claim limits:
+  [hardware data guide](../../data/README.md).
+
+The linearized audit is run with:
 
 ```bash
 ./build/balancer_plant_audit --all
 ```
 
-That prints, for each simulator profile:
-
-- the plant parameters actually used
-- the linearized `A` matrix and separate horizontal-force and motor-force input vectors
-- the controllability rank
-- the current candidate overdamped pole set
+Controller equations and reset paths are covered by
+[`tests/control_loop_test.cpp`](../../tests/control_loop_test.cpp). Do not use
+this page's compact equations as permission to change simulator physics or to
+select hardware gains.

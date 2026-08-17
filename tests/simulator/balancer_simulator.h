@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <deque>
 #include <optional>
 #include <string_view>
@@ -48,6 +49,10 @@ struct SimulatorPhysics {
   double no_load_speed_mps = 1.2;
   double traction_coefficient = 1.0;
   double motor_velocity_damping = 8.0;
+  // Linear viscous damping on chassis translation: generalized force
+  // F_cart = -cart_damping * x_dot, in N*s/m. It is not wheel, rotor, or
+  // relative motor damping; the coupled mass matrix propagates this force
+  // into pitch acceleration as appropriate.
   double cart_damping = 1.0;
   double pitch_damping = 0.02;
   // Gravity is configurable for conservative/passivity fixtures.  Production
@@ -213,6 +218,7 @@ class BalancerSimulator {
   void set_motor_targets(double left_sps, double right_sps);
   void set_emitted_steps(double left_steps, double right_steps);
   void set_emitted_motor_steps(double left_steps, double right_steps);
+  void set_emitted_motor_step_indices(std::int64_t left_steps, std::int64_t right_steps);
   // Simulator-only analytical fixture. When set, the StepperPhase mechanical
   // equations use these two torques instead of the actuator's phase torque.
   // This lets tests compare direct generalized torque with phase-generated
@@ -264,6 +270,9 @@ class BalancerSimulator {
 
  private:
   void step_once(double dt_s);
+  static StepperMassMatrix stepper_mass_matrix_with_cosine(
+      const SimulatorPhysics& physics, double cos_pitch, double total_mass_scale,
+      double first_mass_moment_scale, double pitch_inertia_scale);
 
   Config cfg_;
   SimulatorPhysics physics_{};
@@ -286,6 +295,7 @@ class BalancerSimulator {
   double emitted_right_steps_{0.0};
   double continuous_field_left_steps_{0.0};
   double continuous_field_right_steps_{0.0};
+  bool have_external_emitted_step_indices_{false};
   double missed_distance_m_{0.0};
   bool have_external_emitted_steps_{false};
   std::optional<std::array<double, 2>> stepper_direct_torque_for_test_;

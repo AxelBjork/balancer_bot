@@ -4,6 +4,7 @@ set -Eeuo pipefail
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 readonly IMAGE="${CODEX_CONTAINER_IMAGE:-localhost/balancer-bot-codex:local}"
+readonly REBUILD_IMAGE="${CODEX_REBUILD_IMAGE:-0}"
 readonly CONTAINER_NAME="${CODEX_CONTAINER_NAME:-balancer-bot-codex-gui}"
 readonly SSH_ALIAS=codex-devcontainer
 readonly SSH_PORT="${CODEX_SSH_PORT:-2222}"
@@ -11,7 +12,7 @@ readonly SSH_KEY_PATH="${CODEX_SSH_KEY_PATH:-$HOME/.ssh/codex-devcontainer}"
 readonly SSH_CONFIG_PATH="${CODEX_SSH_CONFIG_PATH:-$HOME/.ssh/config}"
 readonly DATA_VOLUME="${CODEX_DATA_VOLUME:-balancer-bot-codex-data}"
 readonly HOSTKEY_VOLUME="${CONTAINER_NAME}-hostkeys"
-readonly HOST_GUI="${CODEX_HOST_GUI:-/usr/bin/codex-desktop}"
+readonly HOST_GUI="${CODEX_HOST_GUI:-/usr/bin/chatgpt}"
 readonly HOST_UID="$(id -u)"
 
 container_started=0
@@ -52,17 +53,20 @@ host_gui_is_running() {
     while read -r pid; do
         [[ -n "$pid" ]] || continue
         executable="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
-        if [[ "$executable" == /opt/codex-desktop/electron ]]; then
+        if [[ "$executable" == /opt/codex-desktop/electron ||
+            "$executable" == /usr/lib/chatgpt/ChatGPT ]]; then
             return 0
         fi
-    done < <(pgrep -u "$HOST_UID" -f '/opt/codex-desktop/(electron|start\.sh)' 2>/dev/null || true)
+    done < <(pgrep -u "$HOST_UID" -f \
+        '/opt/codex-desktop/(electron|start\.sh)|/usr/lib/chatgpt/ChatGPT' \
+        2>/dev/null || true)
 
     return 1
 }
 
 command -v podman >/dev/null 2>&1 || fail "Podman is not installed."
 command -v ssh >/dev/null 2>&1 || fail "The host ssh client is not installed."
-[[ -x "$HOST_GUI" ]] || fail "Host Codex GUI not found at $HOST_GUI."
+[[ -x "$HOST_GUI" ]] || fail "Host ChatGPT app not found at $HOST_GUI."
 [[ -d "$REPO_ROOT" ]] || fail "Repository directory not found: $REPO_ROOT"
 
 if host_gui_is_running; then
@@ -126,7 +130,24 @@ if command -v getenforce >/dev/null 2>&1 && [[ "$(getenforce)" == Enforcing ]]; 
     run_security_args+=(--security-opt label=disable)
 fi
 
-if ! podman image exists "$IMAGE" >/dev/null 2>&1; then
+# Allow Linux perf to collect user/kernel call graphs and CPU counters from
+# inside the development container.  The explicit capability set keeps this
+# narrower than --privileged while covering perf_event_open, stack unwinding,
+# scheduling/resource limits, and large perf ring buffers.  Host PID visibility
+# is needed for system-wide perf stat/profile modes; per-process profiling also
+# works with it enabled.
+run_profile_args=(
+    --cap-add=PERFMON
+    --cap-add=SYS_ADMIN
+    --cap-add=SYS_PTRACE
+    --cap-add=SYS_NICE
+    --cap-add=SYS_RESOURCE
+    --cap-add=IPC_LOCK
+    --security-opt=seccomp=unconfined
+    --pid=host
+)
+
+if [[ "$REBUILD_IMAGE" == "1" ]] || ! podman image exists "$IMAGE" >/dev/null 2>&1; then
     printf 'Building %s; the first build can take a while.\n' "$IMAGE" >&2
     podman build \
         "${build_security_args[@]}" \
@@ -147,6 +168,7 @@ podman run -d \
     --env HOME=/home/vscode \
     --env USER=vscode \
     --env CODEX_HOME=/home/vscode/.codex \
+    "${run_profile_args[@]}" \
     "${run_security_args[@]}" \
     --volume "$REPO_ROOT:/workspaces/balancer_bot:rw" \
     --volume "$DATA_VOLUME:/home/vscode/.codex:rw" \

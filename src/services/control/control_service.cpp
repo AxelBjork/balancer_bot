@@ -122,6 +122,51 @@ ControlService::ControlService(ipc::MessageBus& bus) : bus_(bus), run_id_(make_r
         static_cast<float>(t.pitch_authority_diagnostic_command_age_ms);
     p.completed_step_acceleration_sps2 =
         static_cast<float>(t.completed_step_acceleration_sps2);
+    p.user_velocity_mps = static_cast<float>(t.user_velocity_mps);
+    p.reference_velocity_mps = static_cast<float>(t.reference_velocity_mps);
+    p.reference_acceleration_mps2 = static_cast<float>(t.reference_acceleration_mps2);
+    p.velocity_feedback_estimate_mps = static_cast<float>(t.velocity_feedback_estimate_mps);
+    p.velocity_error_mps = static_cast<float>(t.velocity_error_mps);
+    p.velocity_feedback_acceleration_mps2 =
+        static_cast<float>(t.velocity_feedback_acceleration_mps2);
+    p.acceleration_raw_mps2 = static_cast<float>(t.acceleration_raw_mps2);
+    p.acceleration_cmd_mps2 = static_cast<float>(t.acceleration_cmd_mps2);
+    p.drive_pitch_target_deg = static_cast<float>(t.drive_pitch_target_deg);
+    p.fixed_com_trim_deg = static_cast<float>(t.fixed_com_trim_deg);
+    p.velocity_feedback_valid = t.velocity_feedback_valid;
+    p.velocity_feedback_active = t.velocity_feedback_active;
+    p.outer_acceleration_limited = t.outer_acceleration_limited;
+    p.outer_pitch_target_limited = t.outer_pitch_target_limited;
+    p.active_drive_max_velocity_mps = static_cast<float>(t.active_drive_max_velocity_mps);
+    p.active_drive_max_acceleration_mps2 =
+        static_cast<float>(t.active_drive_max_acceleration_mps2);
+    p.active_drive_max_deceleration_mps2 =
+        static_cast<float>(t.active_drive_max_deceleration_mps2);
+    p.active_velocity_gain_per_s = static_cast<float>(t.active_velocity_gain_per_s);
+    p.active_velocity_feedback_cutoff_hz =
+        static_cast<float>(t.active_velocity_feedback_cutoff_hz);
+    p.active_outer_pitch_limit_deg = static_cast<float>(t.active_outer_pitch_limit_deg);
+    p.active_fixed_com_trim_deg = static_cast<float>(t.active_fixed_com_trim_deg);
+    p.adaptive_com_trim_enabled = t.adaptive_com_trim_enabled;
+    p.legacy_outer_fields_valid = t.legacy_outer_fields_valid;
+    p.reference_jerk_mps3 = static_cast<float>(t.reference_jerk_mps3);
+    p.velocity_p_acceleration_mps2 = static_cast<float>(t.velocity_p_acceleration_mps2);
+    p.velocity_i_acceleration_mps2 = static_cast<float>(t.velocity_i_acceleration_mps2);
+    p.velocity_integral_state_mps_s = static_cast<float>(t.velocity_integral_state_mps_s);
+    p.final_pitch_target_deg = static_cast<float>(t.final_pitch_target_deg);
+    p.active_planner_max_acceleration_mps2 =
+        static_cast<float>(t.active_planner_max_acceleration_mps2);
+    p.active_planner_max_deceleration_mps2 =
+        static_cast<float>(t.active_planner_max_deceleration_mps2);
+    p.active_planner_max_jerk_mps3 = static_cast<float>(t.active_planner_max_jerk_mps3);
+    p.active_velocity_i_gain_per_s2 = static_cast<float>(t.active_velocity_i_gain_per_s2);
+    p.active_velocity_i_leak_time_s = static_cast<float>(t.active_velocity_i_leak_time_s);
+    p.active_velocity_i_acceleration_limit_mps2 =
+        static_cast<float>(t.active_velocity_i_acceleration_limit_mps2);
+    p.planner_acceleration_limited = t.planner_acceleration_limited;
+    p.planner_jerk_limited = t.planner_jerk_limited;
+    p.velocity_integral_limited = t.velocity_integral_limited;
+    p.velocity_anti_windup_active = t.velocity_anti_windup_active;
     bus_.publish<MsgId::SystemTelemetry>(p);
   });
 }

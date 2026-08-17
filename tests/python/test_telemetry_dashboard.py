@@ -82,8 +82,8 @@ def telemetry_packet(**changes: float | int) -> bytes:
 
 
 def test_generated_telemetry_wire_sizes_and_round_trip():
-    assert SystemTelemetryPayload.WIRE_SIZE == 288
-    assert SimulatorTelemetryPayload.WIRE_SIZE == 416
+    assert SystemTelemetryPayload.WIRE_SIZE == 416
+    assert SimulatorTelemetryPayload.WIRE_SIZE == 560
     sample = dataclasses.replace(
         SystemTelemetryPayload.unpack(bytes(SystemTelemetryPayload.WIRE_SIZE)),
         run_id=17,
@@ -291,7 +291,7 @@ def test_browser_cache_rollover_is_batched():
     source = dashboard.read_text(encoding="utf-8")
     assert "TRIM_BATCH_POINTS" in source
     assert "store.samples.shift()" not in source
-    assert 'id:"freeze-diagnostics"' in source
+    assert 'id:"transport-timing"' in source
     assert "dashboard-diagnostics" not in source
 
 
@@ -315,15 +315,22 @@ def test_pid_session_exposes_numeric_fields_and_applies_complete_snapshot():
         "pitch_gain",
         "pitch_rate_gain",
         "pitch_accel_gain",
-        "drive_max_acceleration_mps2",
-        "velocity_damping_per_s",
-        "velocity_pitch_limit_deg",
-        "velocity_I",
-        "velocity_I_limit_deg",
-        "velocity_control_cutoff_hz",
-        "drive_max_sps",
+        "drive_max_velocity_mps",
+        "velocity_gain_per_s",
+        "velocity_feedback_cutoff_hz",
+        "outer_pitch_limit_deg",
+        "fixed_com_trim_deg",
+        "adaptive_com_trim_enabled",
+        "adaptive_com_trim_gain_deg_per_mps_s",
+        "adaptive_com_trim_limit_deg",
         "turn_max_sps",
         "balance_max_sps",
+        "planner_max_acceleration_mps2",
+        "planner_max_deceleration_mps2",
+        "planner_max_jerk_mps3",
+        "velocity_i_gain_per_s2",
+        "velocity_i_leak_time_s",
+        "velocity_i_acceleration_limit_mps2",
     )
     assert set(initial["values"]) == set(PID_CONFIG_FIELDS)
     assert set(initial["baseline"]) == set(PID_CONFIG_FIELDS)
@@ -354,8 +361,8 @@ def test_pid_session_exposes_numeric_fields_and_applies_complete_snapshot():
     assert "values" not in snapshot["last_status"]
 
     invalid = dict(values)
-    invalid["drive_max_sps"] = 16001.0
-    with pytest.raises(ValueError, match="16000"):
+    invalid["balance_max_sps"] = 64001.0
+    with pytest.raises(ValueError, match="64000"):
         controller.update(invalid)
 
 
@@ -364,14 +371,14 @@ def test_controller_payloads_share_nested_block_with_current_wire_size():
     override = PidConfigOverridePayload(request_id=9, reserved=0, values=values)
     status = PidConfigStatusPayload(request_id=9, accepted=1, result_code=0, reserved=0, values=values)
 
-    assert ConfigPidValuesPayload.WIRE_SIZE == 96
-    assert len(override.pack()) == 104
-    assert len(status.pack()) == 104
+    assert ConfigPidValuesPayload.WIRE_SIZE == 152
+    assert len(override.pack()) == 160
+    assert len(status.pack()) == 160
     assert PidConfigOverridePayload.unpack(override.pack()).values == values
     assert PidConfigStatusPayload.unpack(status.pack()).values == values
 
 
-def test_joystick_command_is_run_gated_and_auto_neutralizes():
+def test_joystick_command_is_run_gated_until_explicit_release():
     state = TelemetryState("rpi4")
     receiver = Mock()
     receiver.send_message.return_value = True
@@ -391,8 +398,12 @@ def test_joystick_command_is_run_gated_and_auto_neutralizes():
     time.sleep(0.15)
     _, encoded = receiver.send_message.call_args.args
     payload = JoystickCommandPayload.unpack(encoded)
+    assert payload.forward == 0.1 and payload.turn == 0.0
+    result = controller.send({"release": True})
+    assert result["ok"] and result["sent"]
+    _, encoded = receiver.send_message.call_args.args
+    payload = JoystickCommandPayload.unpack(encoded)
     assert payload.forward == 0.0 and payload.turn == 0.0
-    controller.send({"release": True})
 
 
 def test_dashboard_control_http_endpoints_enforce_pid_snapshot_and_run_gate():
@@ -444,7 +455,7 @@ def test_dashboard_control_http_endpoints_enforce_pid_snapshot_and_run_gate():
     assert not status["pi_ready"]
 
 
-def test_joystick_hold_renews_pulse_and_neutral_cleanup_is_best_effort():
+def test_joystick_heartbeat_and_neutral_cleanup_are_explicit():
     state = TelemetryState("rpi4")
     state.set_run_active(True)
     receiver = Mock()
@@ -453,6 +464,8 @@ def test_joystick_hold_renews_pulse_and_neutral_cleanup_is_best_effort():
 
     controller.send({"forward": 0.25, "turn": 0.0})
     time.sleep(0.06)
+    _, encoded = receiver.send_message.call_args.args
+    assert JoystickCommandPayload.unpack(encoded).forward == 0.25
     controller.send({"forward": 0.5, "turn": 0.0})
     time.sleep(0.05)
     _, encoded = receiver.send_message.call_args.args
@@ -460,7 +473,7 @@ def test_joystick_hold_renews_pulse_and_neutral_cleanup_is_best_effort():
 
     time.sleep(0.08)
     _, encoded = receiver.send_message.call_args.args
-    assert JoystickCommandPayload.unpack(encoded).forward == 0.0
+    assert JoystickCommandPayload.unpack(encoded).forward == 0.5
 
     receiver.send_message.return_value = False
     with pytest.raises(RuntimeError, match="address"):
@@ -1006,9 +1019,8 @@ def test_dashboard_serves_assets_and_sse_to_multiple_clients():
         assert b"setData" in script
         assert b"updateMetrics(null)" in script
         assert b"updateMetrics(store.samples.at(-1)??null)" in script
-        assert b'numberAt(sample,"motion.corrected_axle_velocity_sps")' in script
-        assert b'sampleOrStatus("timing.imu_age_ms","imu_age_ms")' in script
-        assert b'sampleOrStatus("timing.feedback_age_ms","feedback_age_ms")' in script
+        assert b'numberAt(sample,"motion.velocity_feedback_estimate_mps")' in script
+        assert b'path:"motion.corrected_axle_velocity_sps"' in script
         assert b'motion.measured_velocity_sps' not in script
         assert b"function liveConnection(status)" in script
         assert b"telemetry_connected===true" in script
@@ -1019,6 +1031,9 @@ def test_dashboard_serves_assets_and_sse_to_multiple_clients():
         assert b"data-drive-pad" in script
         assert b"drivePadVectorAt" in script
         assert b"forward:-y" in script
+        assert b'id:"joystick"' not in script
+        assert b'derived:"joystick' not in script
+        assert b"joystick_command_valid" in script
         assert b"setPointerCapture" in script
         assert b"JOYSTICK_REPEAT_MS = 100" in script
         assert b"data-joystick-track" not in script
@@ -1031,18 +1046,39 @@ def test_dashboard_serves_assets_and_sse_to_multiple_clients():
         assert b'id="pid-load"' in script
         assert b">Load<" in script
         assert b'title:"Command"' not in script
-        assert b'new Set(["performance","attitude","contributions","outer-loop"])' in script
-        assert b'Balance performance' in script
-        assert b'Composite activity' in script
-        assert b'PERFORMANCE_WINDOW_S = 1.5' in script
+        assert b'const PRIMARY_GROUP_IDS = ["attitude", "velocity-tracking", "outer-authority", "actuator-effort"]' in script
+        assert b'visible:new Set(PRIMARY_GROUP_IDS)' in script
+        assert b'Balance performance' not in script
+        assert b'Composite activity' not in script
+        assert b'ROLLING_WINDOW_S = 1.5' in script
+        assert b'Pitch RMS' in script
+        assert b'Velocity-est RMS' in script
+        assert b'Drive-pitch RMS' in script
+        assert b'Command RMS' in script
+        assert b'Slew active' in script
+        assert b'Final pitch target' in script
+        assert b'Velocity feedback estimate' in script
+        assert b'Drive pitch target' in script
+        assert b'Corrected STEP velocity' in script
+        assert b'Filtered STEP velocity' in script
+        assert b'Outer limited' in script
+        assert b'Balance rail' in script
+        assert b'Slew limited' in script
+        assert b'Observer' in script
+        assert b'diagnostics-panel' in script
+        assert b'id:"transport-timing"' in script
+        assert b'id:"wheel-position"' in script
+        assert b'pid-advanced' in script
+        assert b'Normal tuning' in script
         assert b'Filtered control rate' in script
         assert b'Balance contributions' in script
-        assert b'Pitch rate / gyro diagnostics' in script
+        assert b'Pitch-rate diagnostics' in script
         assert b'Raw sensor angle' not in script
         assert b"PID_MIN_STEP = 0.0001" in script
         assert b"Math.round(raw/magnitude)" in script
         assert b'<div class="pid-actions"><button id="pid-apply"' in script
-        assert b'<div class="pid-fields">${fields}</div>' in script
+        assert b'<div class="pid-fields">${normalFields}</div>' in script
+        assert b'<details class="pid-advanced"' in script
         assert b"lostpointercapture" in script
         assert b"sanity" not in script.lower()
         assert b"if(status.values)renderPidFields(status.values)" not in script
@@ -1053,6 +1089,11 @@ def test_dashboard_serves_assets_and_sse_to_multiple_clients():
         assert b'grid-template-areas: "left" "right" "main"' in stylesheet_data
         assert b".drive-pad" in stylesheet_data
         assert b"touch-action: none" in stylesheet_data
+        assert b"overflow-x: auto" not in stylesheet_data
+        assert b"max-width: 760px" in stylesheet_data
+        assert b".rolling-health" in stylesheet_data
+        assert b".diagnostics-panel" in stylesheet_data
+        assert b".status-chip" in stylesheet_data
         uplot = urllib.request.urlopen(base + "/vendor/uPlot-1.6.32.iife.min.js", timeout=1)
         assert uplot.headers.get_content_type() == "text/javascript"
         assert b"uPlot" in uplot.read()

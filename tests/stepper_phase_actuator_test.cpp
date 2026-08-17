@@ -15,6 +15,12 @@
 
 #include "services/main/config.h"
 
+// These actuator tests use old zeroed-outer-loop setup spellings; keep the
+// test source buildable while the behavioral assertions move to v12 fields.
+#define velocity_damping_per_s velocity_gain_per_s
+#define velocity_pitch_limit_deg outer_pitch_limit_deg
+#define velocity_I adaptive_com_trim_gain_deg_per_mps_s
+
 namespace {
 
 constexpr double kPi = 3.14159265358979323846;
@@ -516,6 +522,23 @@ TEST(StepperPhaseActuatorTest, HardwareKinematicsUseAuthoritativeOneThirtySecond
               1e-12);
 }
 
+TEST(StepperPhaseActuatorTest, IntegerCommandPathWrapsSignedStepIndices) {
+  const auto parameters = nominal_stepper_parameters();
+  stepper_phase::Actuator actuator(parameters);
+  actuator.set_commanded_microstep_indices(-1, 6400 + 17);
+  const auto output = actuator.evaluate(1.0e-4, 0.0, 0.0);
+
+  EXPECT_EQ(output.left.commanded_microstep_index, 6399);
+  EXPECT_EQ(output.right.commanded_microstep_index, 17);
+  const double step_angle = actuator.electrical_radians_per_step();
+  const auto expected_left = stepper_phase::Actuator::phase_for_electrical_angle(-step_angle);
+  const auto expected_right = stepper_phase::Actuator::phase_for_electrical_angle(17.0 * step_angle);
+  EXPECT_NEAR(output.left.phase.a, expected_left.a, 1.0e-14);
+  EXPECT_NEAR(output.left.phase.b, expected_left.b, 1.0e-14);
+  EXPECT_NEAR(output.right.phase.a, expected_right.a, 1.0e-14);
+  EXPECT_NEAR(output.right.phase.b, expected_right.b, 1.0e-14);
+}
+
 TEST(StepperPhaseActuatorTest, OneEighthToOneThirtySecondPreservesFieldMotionAtFourfoldSps) {
   constexpr double radius_m = Config::wheel_radius_m;
   constexpr double one_eighth_steps_per_rev =
@@ -574,6 +597,30 @@ TEST(StepperPhaseElectricalTest, UsesAuthoritativeGeometryAndOneThirtySecondStep
   EXPECT_NEAR(output.left.commanded_mechanical_angle_rad, 0.05625 * kPi / 180.0, 1e-15);
   EXPECT_NEAR(output.left.commanded_field_electrical_angle_rad, 2.8125 * kPi / 180.0,
               1e-14);
+}
+
+TEST(StepperPhaseElectricalTest, IntegerCommandPathUsesNominalLutAndCustomFallback) {
+  auto nominal = nominal_electrical_parameters();
+  stepper_phase::ElectricalActuator nominal_actuator(nominal);
+  nominal_actuator.set_commanded_microstep_indices(-1, 17);
+  const auto nominal_output = nominal_actuator.evaluate(1.0e-4, 0.0, 0.0);
+  const double nominal_step_angle = nominal_actuator.electrical_radians_per_step();
+  const auto expected_negative =
+      stepper_phase::ElectricalActuator::phase_for_electrical_angle(-nominal_step_angle);
+  EXPECT_EQ(nominal_output.left.commanded_microstep_index, 6399);
+  EXPECT_NEAR(nominal_output.left.phase.a, expected_negative.a, 1.0e-14);
+  EXPECT_NEAR(nominal_output.left.phase.b, expected_negative.b, 1.0e-14);
+
+  auto custom = nominal;
+  custom.microsteps_per_full_step = 16;
+  stepper_phase::ElectricalActuator custom_actuator(custom);
+  custom_actuator.set_commanded_microstep_indices(3, 3);
+  const auto custom_output = custom_actuator.evaluate(1.0e-4, 0.0, 0.0);
+  const auto expected_custom =
+      stepper_phase::ElectricalActuator::phase_for_electrical_angle(
+          custom_output.left.commanded_field_electrical_angle_rad);
+  EXPECT_NEAR(custom_output.left.phase.a, expected_custom.a, 1.0e-14);
+  EXPECT_NEAR(custom_output.left.phase.b, expected_custom.b, 1.0e-14);
 }
 
 TEST(StepperPhaseElectricalTest, FreeWheelFixtureUsesTimestampedOneThirtySecondEvents) {
@@ -868,7 +915,8 @@ TEST(StepperPhaseElectricalTest, ConstantFieldSpeedHasNoPersistentSpsForce) {
   double max_high_speed_error = 0.0;
   bool high_speed_voltage_limited = false;
 
-  for (const double steps_per_second : {100.0, 1000.0, 8000.0, 32000.0}) {
+  for (const double steps_per_second : {100.0, 1000.0, 8000.0, 16000.0, 32000.0,
+                                        64000.0}) {
     stepper_phase::ElectricalActuator actuator(parameters);
     commanded_steps = 0.0;
     for (int sample = 0; sample < 1000; ++sample) {
@@ -1085,6 +1133,29 @@ TEST(StepperPhaseModelTest, MassMatrixUsesAbsoluteWheelRotorKineticCoordinate) {
              2.0 * matrix.d12 * x_dot * theta_dot +
              matrix.d22 * theta_dot * theta_dot);
   EXPECT_NEAR(matrix_energy, explicit_energy, 1e-15);
+}
+
+TEST(StepperPhaseModelTest, MassMatrixScalesRemainCorrectAroundNominal) {
+  using Nominal = BalancerSimulator::HardwareNominal;
+  const auto physics = BalancerSimulator::physics_for_profile(PhysicsProfile::StepperPhase);
+  constexpr double pitch_rad = 0.37;
+  for (const double scale : {0.9, 1.0, 1.1}) {
+    const auto matrix = BalancerSimulator::stepper_mass_matrix(
+        physics, pitch_rad, scale, scale, scale);
+    const double total_mass = Nominal::total_mass_kg * scale;
+    const double first_mass_moment = Nominal::first_mass_moment_kg_m * scale;
+    const double pitch_inertia = Nominal::pitch_inertia_about_axle_kg_m2 * scale;
+    const double rotating_inertia = Nominal::stepper_rotating_inertia_kg_m2_per_motor;
+    const double radius = Nominal::stepper_phase_wheel_radius;
+    const double expected_d11 = total_mass + 2.0 * rotating_inertia / (radius * radius);
+    const double expected_d12 = first_mass_moment * std::cos(pitch_rad);
+    const double expected_d22 = pitch_inertia;
+    EXPECT_NEAR(matrix.d11, expected_d11, 1.0e-15);
+    EXPECT_NEAR(matrix.d12, expected_d12, 1.0e-15);
+    EXPECT_NEAR(matrix.d22, expected_d22, 1.0e-15);
+    EXPECT_NEAR(matrix.determinant, expected_d11 * expected_d22 - expected_d12 * expected_d12,
+                1.0e-15);
+  }
 }
 
 TEST(StepperPhaseModelTest, GravityOnlyAccelerationMatchesIndependentBalanceDerivation) {
@@ -2233,7 +2304,7 @@ TEST(StepperPhaseElectricalTuningTest, CorrectedPlantGainRegionAndRecoveryFronti
   ConfigPid::values.velocity_I = 0.0;
   ConfigPid::values.velocity_pitch_limit_deg = 0.0;
   ConfigPid::values.pitch_accel_gain = 0.0;
-  ConfigPid::values.balance_max_sps = Config::max_step_rate_sps;
+  ConfigPid::values.balance_max_sps = Config::nominal_balance_max_sps;
 
   struct Metrics {
     SimulatorRunResult result;
@@ -2267,7 +2338,7 @@ TEST(StepperPhaseElectricalTuningTest, CorrectedPlantGainRegionAndRecoveryFronti
 
   const auto run = [&](double pitch_gain, double pitch_rate_gain, double pitch_deg,
                        double duration_s,
-                       double balance_limit_sps = Config::max_step_rate_sps) {
+                       double balance_limit_sps = Config::nominal_balance_max_sps) {
     ConfigPid::values.pitch_gain = pitch_gain;
     ConfigPid::values.pitch_rate_gain = pitch_rate_gain;
     ConfigPid::values.balance_max_sps = balance_limit_sps;
@@ -2382,7 +2453,7 @@ TEST(StepperPhaseElectricalTuningTest, CorrectedPlantGainRegionAndRecoveryFronti
   const auto selected_negative = run(selected_pitch_gain, selected_pitch_rate_gain, -1.0, 3.0);
   EXPECT_FALSE(selected_positive.result.fell);
   EXPECT_FALSE(selected_negative.result.fell);
-  EXPECT_LE(selected_positive.requested_peak_sps, Config::max_step_rate_sps + 1.0e-9);
+  EXPECT_LE(selected_positive.requested_peak_sps, Config::nominal_balance_max_sps + 1.0e-9);
   EXPECT_LT(selected_positive.command_saturated_s, 0.05);
   EXPECT_LT(selected_positive.voltage_saturated_s, 0.01);
   EXPECT_NEAR(selected_positive.result.max_abs_pitch_deg,
@@ -2423,7 +2494,7 @@ TEST(StepperPhaseElectricalTuningTest, CorrectedPlantGainRegionAndRecoveryFronti
   for (const double pitch_deg : {4.0, 6.0}) {
     const double duration_s = pitch_deg <= 4.0 ? 3.0 : 10.0;
     const auto verified_limit = run(selected_pitch_gain, selected_pitch_rate_gain, pitch_deg,
-                                    duration_s, Config::max_step_rate_sps);
+                                    duration_s, Config::nominal_balance_max_sps);
     const auto historical_limit = run(selected_pitch_gain, selected_pitch_rate_gain, pitch_deg,
                                       duration_s, 8000.0);
     std::cout << "stepper_limit_comparison pitch_deg=" << pitch_deg

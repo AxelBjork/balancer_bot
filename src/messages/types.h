@@ -84,14 +84,54 @@ struct Telemetry {
   double filtered_pitch_rate_dps{};
   double u_sps{};     // wheel command [steps/s]
   double turn_sps{};  // differential steering command [steps/s]
-  // Translational outer-loop diagnostics.  These names intentionally match the
-  // stable wire slots, whose types/order are retained across the v4 migration.
+  // Deprecated compatibility diagnostics.  New analysis must use the
+  // canonical SI fields below; these remain only for decoding old captures.
   double nominal_acceleration_mps2{};
   double raw_completed_velocity_sps{};
   double corrected_axle_velocity_sps{};
   double velocity_control_sps{};
   double velocity_damping_acceleration_mps2{};
   double com_trim_deg{};
+  double user_velocity_mps{};
+  double reference_velocity_mps{};
+  double reference_acceleration_mps2{};
+  double velocity_feedback_estimate_mps{};
+  double velocity_error_mps{};
+  double velocity_feedback_acceleration_mps2{};
+  double acceleration_raw_mps2{};
+  double acceleration_cmd_mps2{};
+  double drive_pitch_target_deg{};
+  double fixed_com_trim_deg{};
+  bool velocity_feedback_valid{};
+  bool velocity_feedback_active{};
+  bool outer_acceleration_limited{};
+  bool outer_pitch_target_limited{};
+  double active_drive_max_velocity_mps{};
+  double active_drive_max_acceleration_mps2{};
+  double active_drive_max_deceleration_mps2{};
+  double active_velocity_gain_per_s{};
+  double active_velocity_feedback_cutoff_hz{};
+  double active_outer_pitch_limit_deg{};
+  double active_fixed_com_trim_deg{};
+  bool adaptive_com_trim_enabled{};
+  bool legacy_outer_fields_valid{};
+  // Revised planner/PI diagnostics. These are canonical for the v12 outer
+  // loop; the older damping and velocity-pitch aliases above remain zero.
+  double reference_jerk_mps3{};
+  double velocity_p_acceleration_mps2{};
+  double velocity_i_acceleration_mps2{};
+  double velocity_integral_state_mps_s{};
+  double final_pitch_target_deg{};
+  double active_planner_max_acceleration_mps2{};
+  double active_planner_max_deceleration_mps2{};
+  double active_planner_max_jerk_mps3{};
+  double active_velocity_i_gain_per_s2{};
+  double active_velocity_i_leak_time_s{};
+  double active_velocity_i_acceleration_limit_mps2{};
+  bool planner_acceleration_limited{};
+  bool planner_jerk_limited{};
+  bool velocity_integral_limited{};
+  bool velocity_anti_windup_active{};
   // Compatibility aliases for in-process test harnesses. Wire payloads use
   // the current telemetry names above.
   double target_vel_sps{};
@@ -163,7 +203,7 @@ enum class ConfigPidValidationCode : uint8_t {
 // zero-initialized block; the application must load pid.conf before enabling control.
 #define BALANCER_STRINGIFY_DETAIL(value) #value
 #define BALANCER_STRINGIFY(value) BALANCER_STRINGIFY_DETAIL(value)
-#define BALANCER_PID_CONFIG_VERSION 10
+#define BALANCER_PID_CONFIG_VERSION 12
 
 struct ConfigPid {
   inline static constexpr int config_version = BALANCER_PID_CONFIG_VERSION;

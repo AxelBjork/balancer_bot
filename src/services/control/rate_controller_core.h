@@ -7,9 +7,10 @@
 #include "services/main/config.h"
 
 // Fixed scheduling/safety constants. Tunable limits and state-feedback gains
-// live in the v10 ConfigPid schema.
+// live in the v12 ConfigPid schema.
 static constexpr double kMaxSps = Config::max_step_rate_sps;
-static constexpr double kMaxPitchSetpointRad = 45.0 * 3.14159265358979323846 / 180.0;
+static constexpr double kMaxPitchSetpointRad =
+    Config::max_motion_pitch_setpoint_deg * 3.14159265358979323846 / 180.0;
 
 namespace rate_controller_detail {
 // Kept separate so the circular observer convention is directly testable.

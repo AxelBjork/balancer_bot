@@ -132,9 +132,11 @@ struct EngineObserver {
 
   ipc::SystemTelemetryPayload telemetry{};
   ipc::MotorFeedbackPayload feedback{};
+  ipc::MotorFeedbackPayload controller_feedback{};
   ipc::MotorTargetsPayload targets{};
   bool have_telemetry{false};
   bool have_feedback{false};
+  bool have_controller_feedback{false};
 };
 
 template <>
@@ -181,8 +183,16 @@ struct EnginePipeline {
   ipc::MessageBus bus;
   EngineServices services;
 
-  double rolling_residual_velocity_mps = 0.0;
+  // This residual exists only for explicit simulator estimator-perturbation
+  // scenarios.  Nominal operation delivers the emitted STEP counters to the
+  // controller unchanged.
+  double synthetic_residual_velocity_mps = 0.0;
   double rolling_residual_steps = 0.0;
+  double emitted_step_velocity_sps = 0.0;
+  double controller_feedback_velocity_sps = 0.0;
+  double previous_emitted_common_steps = 0.0;
+  double previous_controller_common_steps = 0.0;
+  bool have_velocity_sample = false;
 
   explicit EnginePipeline(double initial_fused_pitch_deg)
       : bus(this, &EnginePipeline::dispatch), services(bus) {
@@ -196,8 +206,20 @@ struct EnginePipeline {
     services.control.on_message<MsgId::MotorFeedback>(initial_feedback);
   }
 
-  void setRollingResidualVelocity(double velocity_mps) {
-    rolling_residual_velocity_mps = velocity_mps;
+  void setSyntheticResidualVelocity(double velocity_mps) {
+    synthetic_residual_velocity_mps = velocity_mps;
+  }
+
+  double emitted_step_velocity_sps_for_telemetry() const {
+    return emitted_step_velocity_sps;
+  }
+
+  double synthetic_residual_velocity_sps_for_telemetry() const {
+    return synthetic_residual_velocity_mps / BalancerSimulator::HardwareNominal::meters_per_step;
+  }
+
+  double controller_feedback_velocity_sps_for_telemetry() const {
+    return controller_feedback_velocity_sps;
   }
 
   static void dispatch(void* context, MsgId id, const void* payload) {
@@ -212,13 +234,30 @@ struct EnginePipeline {
       // telemetry remains a ground truth.
       self->services.observer.on_message<MsgId::MotorFeedback>(feedback);
       const double dt_s = std::max(1e-6, feedback.update_dt_ms) / 1000.0;
-      self->rolling_residual_steps += self->rolling_residual_velocity_mps * dt_s /
+      self->rolling_residual_steps += self->synthetic_residual_velocity_mps * dt_s /
                                       BalancerSimulator::HardwareNominal::meters_per_step;
       auto ground_feedback = feedback;
       ground_feedback.left_actual_steps +=
           static_cast<int64_t>(std::llround(self->rolling_residual_steps));
       ground_feedback.right_actual_steps +=
           static_cast<int64_t>(std::llround(self->rolling_residual_steps));
+      const double emitted_common_steps =
+          0.5 * (static_cast<double>(feedback.left_actual_steps) +
+                 static_cast<double>(feedback.right_actual_steps));
+      const double controller_common_steps =
+          0.5 * (static_cast<double>(ground_feedback.left_actual_steps) +
+                 static_cast<double>(ground_feedback.right_actual_steps));
+      if (dt_s > 0.0 && self->have_velocity_sample) {
+        self->emitted_step_velocity_sps =
+            (emitted_common_steps - self->previous_emitted_common_steps) / dt_s;
+        self->controller_feedback_velocity_sps =
+            (controller_common_steps - self->previous_controller_common_steps) / dt_s;
+      }
+      self->previous_emitted_common_steps = emitted_common_steps;
+      self->previous_controller_common_steps = controller_common_steps;
+      self->have_velocity_sample = dt_s > 0.0;
+      self->services.observer.controller_feedback = ground_feedback;
+      self->services.observer.have_controller_feedback = true;
       self->services.control.on_message<MsgId::MotorFeedback>(ground_feedback);
       return;
     }
@@ -363,12 +402,22 @@ struct SimulatorEngine::Impl {
   }
 
   void setControllerVelocityEstimate(double time_s) {
+    const bool perturbation_requested =
+        std::abs(scenario.velocity_estimator_bias_mps) > 1e-12 ||
+        std::abs(scenario.velocity_estimator_bias_drift_mps_per_s) > 1e-12 ||
+        std::abs(scenario.velocity_estimator_scale - 1.0) > 1e-12 ||
+        scenario.velocity_estimator_latency_s > 1e-12;
+    if (!perturbation_requested) {
+      pipeline.setSyntheticResidualVelocity(0.0);
+      return;
+    }
     const double estimated_velocity_mps =
         scenario.velocity_estimator_bias_mps +
         scenario.velocity_estimator_bias_drift_mps_per_s * time_s +
         scenario.velocity_estimator_scale * delayedPhysicalVelocity(time_s);
-    pipeline.setRollingResidualVelocity(
-        estimated_velocity_mps - simulator.diagnostics().target_wheel_velocity);
+    const double emitted_velocity_mps =
+        pipeline.emitted_step_velocity_sps_for_telemetry() * Config::meters_per_step;
+    pipeline.setSyntheticResidualVelocity(estimated_velocity_mps - emitted_velocity_mps);
   }
 
   void scheduleScenarioBoundaries(uint64_t start_us, uint64_t target_us) {
@@ -434,11 +483,22 @@ struct SimulatorEngine::Impl {
     // are then driven only by individual timestamped STEP events.
     double emitted_left_steps = 0.0;
     double emitted_right_steps = 0.0;
+    std::int64_t emitted_left_step_index = 0;
+    std::int64_t emitted_right_step_index = 0;
+    const bool use_integer_step_positions =
+        uses_step_events && !simulator.physics().stepper_phase_continuous_field;
     if (uses_step_events) {
       auto emitted = pipeline.services.motors.getScheduledStepPosition(start_us);
       emitted_left_steps = emitted.left_steps;
       emitted_right_steps = emitted.right_steps;
-      simulator.set_emitted_motor_steps(emitted_left_steps, emitted_right_steps);
+      if (use_integer_step_positions) {
+        emitted_left_step_index = static_cast<std::int64_t>(emitted_left_steps);
+        emitted_right_step_index = static_cast<std::int64_t>(emitted_right_steps);
+        simulator.set_emitted_motor_step_indices(emitted_left_step_index,
+                                                 emitted_right_step_index);
+      } else {
+        simulator.set_emitted_motor_steps(emitted_left_steps, emitted_right_steps);
+      }
     }
 
     while (scheduler.current_time_us() < target_us) {
@@ -447,7 +507,12 @@ struct SimulatorEngine::Impl {
       if (next_us > current_us) {
         setDisturbance(static_cast<double>(current_us) / 1e6);
         if (uses_step_events) {
-          simulator.set_emitted_motor_steps(emitted_left_steps, emitted_right_steps);
+          if (use_integer_step_positions) {
+            simulator.set_emitted_motor_step_indices(emitted_left_step_index,
+                                                     emitted_right_step_index);
+          } else {
+            simulator.set_emitted_motor_steps(emitted_left_steps, emitted_right_steps);
+          }
         }
         simulator.step(static_cast<double>(next_us - current_us) / 1e6);
         scheduler.advance_to(next_us);
@@ -457,9 +522,16 @@ struct SimulatorEngine::Impl {
       scheduler.pop_events_at(scheduler.current_time_us(), events_at_time);
       for (const auto& event : events_at_time) {
         if (event.kind == SimulatorEventKind::Step) {
-          emitted_left_steps += static_cast<double>(event.left_step_delta);
-          emitted_right_steps += static_cast<double>(event.right_step_delta);
-          simulator.set_emitted_motor_steps(emitted_left_steps, emitted_right_steps);
+          if (use_integer_step_positions) {
+            emitted_left_step_index += event.left_step_delta;
+            emitted_right_step_index += event.right_step_delta;
+            simulator.set_emitted_motor_step_indices(emitted_left_step_index,
+                                                     emitted_right_step_index);
+          } else {
+            emitted_left_steps += static_cast<double>(event.left_step_delta);
+            emitted_right_steps += static_cast<double>(event.right_step_delta);
+            simulator.set_emitted_motor_steps(emitted_left_steps, emitted_right_steps);
+          }
         } else if (event.kind == SimulatorEventKind::Scenario) {
           setDisturbance(static_cast<double>(scheduler.current_time_us()) / 1e6);
         } else if (event.kind == SimulatorEventKind::ImuSample) {
@@ -629,6 +701,11 @@ struct SimulatorEngine::Impl {
       row.motor_feedback_age_ms = observer.feedback.feedback_age_ms;
       row.actuator_saturation_flags = observer.feedback.actuator_saturation_flags;
     }
+    row.emitted_step_velocity_sps = pipeline.emitted_step_velocity_sps_for_telemetry();
+    row.synthetic_estimator_velocity_sps =
+        pipeline.synthetic_residual_velocity_sps_for_telemetry();
+    row.controller_feedback_velocity_sps =
+        pipeline.controller_feedback_velocity_sps_for_telemetry();
     if (observer.have_telemetry) {
       const auto& telemetry = observer.telemetry;
       row.pitch_deg = telemetry.pitch_deg;
@@ -645,6 +722,48 @@ struct SimulatorEngine::Impl {
       row.velocity_control_sps = telemetry.velocity_control_sps;
       row.velocity_damping_acceleration_mps2 = telemetry.velocity_damping_acceleration_mps2;
       row.com_trim_deg = telemetry.com_trim_deg;
+      row.user_velocity_mps = telemetry.user_velocity_mps;
+      row.reference_velocity_mps = telemetry.reference_velocity_mps;
+      row.reference_acceleration_mps2 = telemetry.reference_acceleration_mps2;
+      row.reference_jerk_mps3 = telemetry.reference_jerk_mps3;
+      row.velocity_feedback_estimate_mps = telemetry.velocity_feedback_estimate_mps;
+      row.velocity_error_mps = telemetry.velocity_error_mps;
+      row.velocity_feedback_acceleration_mps2 =
+          telemetry.velocity_feedback_acceleration_mps2;
+      row.velocity_p_acceleration_mps2 = telemetry.velocity_p_acceleration_mps2;
+      row.velocity_i_acceleration_mps2 = telemetry.velocity_i_acceleration_mps2;
+      row.velocity_integral_state_mps_s = telemetry.velocity_integral_state_mps_s;
+      row.acceleration_raw_mps2 = telemetry.acceleration_raw_mps2;
+      row.acceleration_cmd_mps2 = telemetry.acceleration_cmd_mps2;
+      row.drive_pitch_target_deg = telemetry.drive_pitch_target_deg;
+      row.fixed_com_trim_deg = telemetry.fixed_com_trim_deg;
+      row.velocity_feedback_valid = telemetry.velocity_feedback_valid ? 1.0 : 0.0;
+      row.velocity_feedback_active = telemetry.velocity_feedback_active ? 1.0 : 0.0;
+      row.outer_acceleration_limited = telemetry.outer_acceleration_limited ? 1.0 : 0.0;
+      row.outer_pitch_target_limited = telemetry.outer_pitch_target_limited ? 1.0 : 0.0;
+      row.active_drive_max_velocity_mps = telemetry.active_drive_max_velocity_mps;
+      row.active_drive_max_acceleration_mps2 = telemetry.active_drive_max_acceleration_mps2;
+      row.active_drive_max_deceleration_mps2 = telemetry.active_drive_max_deceleration_mps2;
+      row.active_velocity_gain_per_s = telemetry.active_velocity_gain_per_s;
+      row.active_velocity_feedback_cutoff_hz = telemetry.active_velocity_feedback_cutoff_hz;
+      row.active_outer_pitch_limit_deg = telemetry.active_outer_pitch_limit_deg;
+      row.active_fixed_com_trim_deg = telemetry.active_fixed_com_trim_deg;
+      row.adaptive_com_trim_enabled = telemetry.adaptive_com_trim_enabled ? 1.0 : 0.0;
+      row.legacy_outer_fields_valid = telemetry.legacy_outer_fields_valid ? 1.0 : 0.0;
+      row.final_pitch_target_deg = telemetry.final_pitch_target_deg;
+      row.active_planner_max_acceleration_mps2 =
+          telemetry.active_planner_max_acceleration_mps2;
+      row.active_planner_max_deceleration_mps2 =
+          telemetry.active_planner_max_deceleration_mps2;
+      row.active_planner_max_jerk_mps3 = telemetry.active_planner_max_jerk_mps3;
+      row.active_velocity_i_gain_per_s2 = telemetry.active_velocity_i_gain_per_s2;
+      row.active_velocity_i_leak_time_s = telemetry.active_velocity_i_leak_time_s;
+      row.active_velocity_i_acceleration_limit_mps2 =
+          telemetry.active_velocity_i_acceleration_limit_mps2;
+      row.planner_acceleration_limited = telemetry.planner_acceleration_limited ? 1.0 : 0.0;
+      row.planner_jerk_limited = telemetry.planner_jerk_limited ? 1.0 : 0.0;
+      row.velocity_integral_limited = telemetry.velocity_integral_limited ? 1.0 : 0.0;
+      row.velocity_anti_windup_active = telemetry.velocity_anti_windup_active ? 1.0 : 0.0;
       row.trim_learning_enabled = telemetry.trim_learning_enabled ? 1.0 : 0.0;
       row.trim_learning_block_reason = telemetry.trim_learning_block_reason;
       row.pitch_error_deg = telemetry.pitch_error_deg;

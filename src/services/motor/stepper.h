@@ -4,6 +4,8 @@
 #include <cmath>
 #include <stdexcept>
 
+#include "services/main/config.h"
+
 class Stepper {
  public:
   struct Pins {
@@ -47,7 +49,8 @@ class Stepper {
     return last_dir_forward_;
   }
 
-  static unsigned clampSpsToHz(double sps, unsigned kMinPulseUs = 2, double kMaxFreqHz = 50'000.0) {
+  static unsigned clampSpsToHz(double sps, unsigned kMinPulseUs = 2,
+                               double kMaxFreqHz = Config::max_step_rate_sps) {
     double f = std::fabs(sps);
     const double max_by_pulse = 1e6 / (2.0 * kMinPulseUs);
     if (f > kMaxFreqHz) f = kMaxFreqHz;

@@ -15,8 +15,10 @@ def test_protocol_documents_nested_struct_formats():
 
     pid_override = protocol.index("### `MsgId::PidConfigOverride`")
     pid_values = protocol.index("#### Sub-struct: `ConfigPidValuesPayload`", pid_override)
-    assert "| `drive_max_acceleration_mps2` | `double` | `float` | 8 | 0 |  |" in protocol[pid_values:]
-    assert "| `pitch_gain` | `double` | `float` | 8 | 64 |  |" in protocol[pid_values:]
+    assert "| `drive_max_velocity_mps` | `double` | `float` | 8 | 0 |  |" in protocol[pid_values:]
+    assert "| `velocity_gain_per_s` | `double` | `float` | 8 | 8 |  |" in protocol[pid_values:]
+    assert "| `pitch_gain` | `double` | `float` | 8 | 80 |  |" in protocol[pid_values:]
+    assert "| `planner_max_jerk_mps3` | `double` | `float` | 8 | 120 |  |" in protocol[pid_values:]
 
 
 def test_protocol_keeps_full_udp_bridge_description():

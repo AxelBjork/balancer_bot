@@ -165,6 +165,7 @@ if (BUILD_TESTS)
     ${TEST_DIR}/stepper_phase_actuator_test.cpp
     ${TEST_DIR}/time_service_test.cpp
     ${TEST_DIR}/udp_bridge_test.cpp
+    ${TEST_DIR}/simulator_tx_queue_test.cpp
     ${TEST_DIR}/runtime_correctness_test.cpp
     ${TEST_DIR}/latency_test.cpp
     ${TEST_DIR}/stubs/pigpiod_stub.cpp

@@ -9,6 +9,7 @@ from generated_balancer import BalancerMsgId, SimRunDonePayload, SimStopRunPaylo
 from tests.python.support.simulator_service import (
     ACK_ACCEPTED,
     ACK_BUSY,
+    DONE_COMPLETED,
     DONE_STOPPED_BY_CLIENT,
     PHYSICS_SIMPLIFIED,
     make_start_payload,
@@ -93,14 +94,14 @@ def test_run_summary_is_independent_of_telemetry_stride(simulator_udp, sim_artif
         "duration_s": 1.0,
         "disturbances": [{"start_s": 0.2, "duration_s": 0.1, "force_n": 1.0}],
     }
-    _summary_full, _metadata_full, full = run_scenario_live(
+    full_result = run_scenario_live(
         simulator_udp,
         run_id=5401,
         output_dir=root / "stride_full",
         telemetry_stride=1,
         **common,
     )
-    _summary_sparse, _metadata_sparse, sparse = run_scenario_live(
+    sparse_result = run_scenario_live(
         simulator_udp,
         run_id=5402,
         output_dir=root / "stride_sparse",
@@ -108,12 +109,43 @@ def test_run_summary_is_independent_of_telemetry_stride(simulator_udp, sim_artif
         **common,
     )
 
+    full = full_result.done
+    sparse = sparse_result.done
     assert full.sample_count == sparse.sample_count
     assert full.max_abs_pitch_deg == sparse.max_abs_pitch_deg
     assert full.tail_rms_pitch_deg == sparse.tail_rms_pitch_deg
     assert full.max_continuous_saturation_s == sparse.max_continuous_saturation_s
     assert full.actuator_fault_count == sparse.actuator_fault_count
     assert full.controller_fault_flags == sparse.controller_fault_flags
+
+
+def test_full_rate_run_delivers_every_telemetry_packet_before_done(
+    simulator_udp, sim_artifact_settings
+):
+    result = run_scenario_live(
+        simulator_udp,
+        run_id=5403,
+        output_dir=Path(sim_artifact_settings["temp_root"]) / "full_rate_20s",
+        physics_profile=PHYSICS_SIMPLIFIED,
+        duration_s=20.0,
+        telemetry_stride=1,
+        done_timeout=15.0,
+    )
+
+    assert result.done.reason_code == DONE_COMPLETED
+    assert result.done.sample_count == 8000
+    assert len(result.frame) == 8000
+    assert result.frame["packet_seq"].tolist() == list(range(1, 8001))
+    assert result.frame["loop_seq"].tolist() == list(range(1, 8001))
+    assert result.summary["sample_count"] == 8000
+
+
+def test_sim_run_done_payload_has_no_timeline_hash():
+    payload = SimRunDonePayload.unpack(bytes(SimRunDonePayload.WIRE_SIZE))
+
+    assert SimRunDonePayload.WIRE_SIZE == 96
+    assert len(payload.pack_wire()) == 96
+    assert not hasattr(payload, "timeline_hash")
 
 
 def test_udp_transfer_scenario_matches_direct_engine_exactly(
@@ -125,7 +157,7 @@ def test_udp_transfer_scenario_matches_direct_engine_exactly(
             [str(simulator_binary), "--direct-summary", str(scenario_index)], text=True
         )
     )
-    _summary, _metadata, udp_done = run_scenario_live(
+    udp_result = run_scenario_live(
         simulator_udp,
         run_id=5501,
         output_dir=Path(sim_artifact_settings["temp_root"]) / "direct_udp_equivalence",
@@ -135,6 +167,12 @@ def test_udp_transfer_scenario_matches_direct_engine_exactly(
         transfer_scenario_index=scenario_index,
     )
 
+    udp_done = udp_result.done
+    done_json = json.loads(
+        (Path(sim_artifact_settings["temp_root"]) / "direct_udp_equivalence" / "done.json")
+        .read_text(encoding="utf-8")
+    )
+    assert "timeline_hash" not in done_json
     for field in (
         "sample_count",
         "elapsed_s",
@@ -144,6 +182,5 @@ def test_udp_transfer_scenario_matches_direct_engine_exactly(
         "max_continuous_saturation_s",
         "actuator_fault_count",
         "controller_fault_flags",
-        "timeline_hash",
     ):
         assert getattr(udp_done, field) == direct[field]

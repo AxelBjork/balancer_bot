@@ -23,11 +23,14 @@ struct Config {
       static_cast<double>(commanded_steps_per_rev);
   static constexpr double meters_per_step =
       2.0 * M_PI * wheel_radius_m / steps_per_rev;
-  // The verified 1/32 migration preserves the previous physical field-speed
-  // authority by allowing four times the historical 1/8 raw STEP rate.  This
-  // is the single scheduler/controller rail; PID files may select a lower
-  // balance_max_sps for a particular experiment.
-  static constexpr double max_step_rate_sps = 16000.0;
+  // Internal scheduler/controller implementation rail.  The checked-in
+  // controller configurations continue to use balance_max_sps=16000 while
+  // simulator experiments can explore the electrical plant above that
+  // nominal balance ceiling without changing the pulse/event representation.
+  static constexpr double max_step_rate_sps = 64000.0;
+  // The checked-in v12 configs deliberately retain this lower balance limit;
+  // it is the fixed comparison surface for controller tuning.
+  static constexpr double nominal_balance_max_sps = 16000.0;
 
   // ========= IMU =========
   static constexpr double sampling_hz = 833.000;  // available 12.5 26 52 104 208 416 833
@@ -59,6 +62,11 @@ struct Config {
   // error/missed-step plant supplies the physical acceleration limit.
   static constexpr double motor_slew_sps_per_s = 200000.0;
 
+  // Motion authority is deliberately separate from fall protection. The
+  // outer loop may request up to this setpoint, while the controller keeps a
+  // margin before the no-command fallover disarm threshold below.
+  static constexpr double max_motion_pitch_setpoint_deg = 45.0;
+  static constexpr double fallover_margin_deg = 5.0;
   static constexpr double max_tilt_rad = 25.0 * (M_PI / 180.0);
 
   static constexpr int command_hz = 100;
@@ -76,7 +84,12 @@ struct Config {
 static_assert(Config::sampling_hz > 0.0);
 static_assert(Config::commanded_steps_per_rev == 6400);
 static_assert(Config::microsteps_per_full_step == 32);
-static_assert(Config::max_step_rate_sps == 16000.0);
+static_assert(Config::max_step_rate_sps == 64000.0);
+static_assert(Config::nominal_balance_max_sps > 0.0 &&
+              Config::nominal_balance_max_sps < Config::max_step_rate_sps);
+static_assert(Config::max_motion_pitch_setpoint_deg > 0.0 &&
+              Config::max_motion_pitch_setpoint_deg < 90.0);
+static_assert(Config::fallover_margin_deg > 0.0);
 static_assert(Config::wheel_diam_m == 0.0824);
 static_assert(Config::imu_accel_lpf_hz > 0.0 &&
               Config::imu_accel_lpf_hz < Config::sampling_hz / 2.0);

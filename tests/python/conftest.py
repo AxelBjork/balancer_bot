@@ -41,27 +41,15 @@ _BEHAVIORAL_XFAILS = (
     ),
     (
         "test_simple_behavioral_scenarios[stepper_phase_electrical-2001-",
-        "StepperPhaseElectrical noisy push reaches the controller fault/authority boundary before recovery",
-    ),
-    (
-        "test_full_forward_then_stop_moves_and_settles[stepper_phase_electrical]",
-        "StepperPhaseElectrical drive/stop path does not settle within the current DirectActuator-oriented outer-loop acceptance window",
+        "StepperPhaseElectrical noisy push reaches the current electrical authority boundary before recovery",
     ),
     (
         "test_pitch_authority_nominal_uncertainty_matrix_stays_within_reference_envelope[stepper_phase_electrical]",
-        "StepperPhaseElectrical authority/uncertainty envelope reaches the current diagnostic fault boundary",
+        "StepperPhaseElectrical direct authority under plant uncertainty reaches the current phase/safety boundary",
     ),
     (
         "test_outer_transient_authority_saturation_recovers_without_trim_growth[stepper_phase_electrical]",
-        "StepperPhaseElectrical sustained authority case remains velocity-authority limited after the transient",
-    ),
-    (
-        "test_outer_drive_stop_and_reversal_are_symmetric[stepper_phase_electrical]",
-        "StepperPhaseElectrical drive/reversal command path exceeds the current bounded speed envelope",
-    ),
-    (
-        "test_outer_reduced_translation_authority_degrades_without_trim_runaway[stepper_phase_electrical]",
-        "StepperPhaseElectrical reduced-authority motion does not satisfy the current outer-loop degradation witness",
+        "StepperPhaseElectrical 7000-SPS initial-velocity recovery remains outside the sustained authority envelope",
     ),
 )
 
@@ -111,6 +99,8 @@ def pytest_runtest_logreport(report):
         status = "xfail" if report.outcome == "skipped" else "unexpected_pass"
     elif report.outcome == "passed":
         status = "pass"
+    elif report.outcome == "skipped":
+        status = "skip"
     else:
         status = "unexpected_failure"
     _BEHAVIORAL_REPORTS[report.nodeid] = {
@@ -676,16 +666,33 @@ def simulator_port():
 def simulator_process(simulator_port):
     proc = subprocess.Popen(
         [str(_sim_binary()), "--port", str(simulator_port)],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=0,
         preexec_fn=os.setsid,
     )
 
-    deadline = time.monotonic() + 0.05
+    deadline = time.monotonic() + 5.0
+    startup_output = bytearray()
+    marker = b"Starting balancer_simulator service on UDP port"
     while time.monotonic() < deadline:
         if proc.poll() is not None:
-            pytest.fail(f"balancer_simulator exited during startup (rc={proc.returncode})")
-        time.sleep(0.001)
+            output = startup_output.decode(errors="replace")
+            pytest.fail(
+                f"balancer_simulator exited during startup (rc={proc.returncode})\n{output}"
+            )
+
+        ready, _, _ = select.select([proc.stdout], [], [], 0.1)
+        if not ready:
+            continue
+        chunk = os.read(proc.stdout.fileno(), 4096)
+        startup_output.extend(chunk)
+        if marker in startup_output:
+            break
+    else:
+        _stop_sil_process(proc)
+        output = startup_output.decode(errors="replace")
+        pytest.fail(f"balancer_simulator did not become ready within 5 seconds\n{output}")
 
     yield proc
     _stop_sil_process(proc)

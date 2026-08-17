@@ -58,53 +58,79 @@ ConfigPidValues ConfigPid::numeric_values() {
 
 ConfigPidValidationCode ConfigPid::validate_numeric(const ConfigPidValues& values) {
   for (const double value : {
-           values.drive_max_acceleration_mps2,
-           values.velocity_damping_per_s,
-           values.velocity_pitch_limit_deg,
-           values.velocity_I,
-           values.velocity_I_limit_deg,
-           values.drive_max_sps,
+           values.drive_max_velocity_mps,
+           values.velocity_gain_per_s,
+           values.velocity_feedback_cutoff_hz,
+           values.outer_pitch_limit_deg,
+           values.fixed_com_trim_deg,
+           values.adaptive_com_trim_enabled,
+           values.adaptive_com_trim_gain_deg_per_mps_s,
+           values.adaptive_com_trim_limit_deg,
            values.turn_max_sps,
            values.balance_max_sps,
            values.pitch_gain,
            values.pitch_rate_gain,
            values.pitch_accel_gain,
-           values.velocity_control_cutoff_hz,
+           values.planner_max_acceleration_mps2,
+           values.planner_max_deceleration_mps2,
+           values.planner_max_jerk_mps3,
+           values.velocity_i_gain_per_s2,
+           values.velocity_i_leak_time_s,
+           values.velocity_i_acceleration_limit_mps2,
        }) {
     if (!std::isfinite(value)) return ConfigPidValidationCode::NonFinite;
   }
 
   for (const double value : {
-           values.drive_max_acceleration_mps2,
-           values.velocity_damping_per_s,
-           values.velocity_pitch_limit_deg,
-           values.velocity_I,
-           values.velocity_I_limit_deg,
+           values.drive_max_velocity_mps,
+           values.velocity_gain_per_s,
+           values.velocity_feedback_cutoff_hz,
+           values.outer_pitch_limit_deg,
+           values.adaptive_com_trim_enabled,
+           values.adaptive_com_trim_gain_deg_per_mps_s,
+           values.adaptive_com_trim_limit_deg,
            values.turn_max_sps,
            values.pitch_gain,
            values.pitch_rate_gain,
            values.pitch_accel_gain,
+           values.planner_max_acceleration_mps2,
+           values.planner_max_deceleration_mps2,
+           values.planner_max_jerk_mps3,
+           values.velocity_i_gain_per_s2,
+           values.velocity_i_leak_time_s,
+           values.velocity_i_acceleration_limit_mps2,
        }) {
     if (value < 0.0) return ConfigPidValidationCode::Negative;
   }
 
-  if (values.drive_max_sps <= 0.0 || values.balance_max_sps <= 0.0 ||
-      values.velocity_control_cutoff_hz <= 0.0) {
+  if (values.drive_max_velocity_mps <= 0.0 || values.balance_max_sps <= 0.0 ||
+      values.velocity_feedback_cutoff_hz <= 0.0 || values.outer_pitch_limit_deg <= 0.0) {
+    return ConfigPidValidationCode::NonPositive;
+  }
+  if (values.planner_max_acceleration_mps2 <= 0.0 ||
+      values.planner_max_deceleration_mps2 <= 0.0 || values.planner_max_jerk_mps3 <= 0.0 ||
+      values.velocity_i_leak_time_s <= 0.0 ||
+      values.velocity_i_acceleration_limit_mps2 <= 0.0) {
     return ConfigPidValidationCode::NonPositive;
   }
   if (values.pitch_gain > 1.0e6 || values.pitch_rate_gain > 1.0e6 ||
       values.pitch_accel_gain > 1.0e6) {
     return ConfigPidValidationCode::OutOfRange;
   }
-  // Zero disables the dedicated velocity contribution limit for diagnostics;
-  // positive values are expressed in degrees and must remain within a
-  // physically meaningful pitch envelope.
-  if (values.velocity_pitch_limit_deg > 90.0) {
+  if (values.outer_pitch_limit_deg > Config::max_motion_pitch_setpoint_deg ||
+      std::abs(values.fixed_com_trim_deg) > 45.0 ||
+      values.adaptive_com_trim_limit_deg > 45.0 ||
+      (values.adaptive_com_trim_enabled != 0.0 && values.adaptive_com_trim_enabled != 1.0)) {
     return ConfigPidValidationCode::OutOfRange;
   }
-  if (values.drive_max_sps > Config::max_step_rate_sps ||
-      values.turn_max_sps > Config::max_step_rate_sps ||
-      values.balance_max_sps > Config::max_step_rate_sps) {
+  if (values.turn_max_sps > Config::max_step_rate_sps ||
+      values.balance_max_sps > Config::max_step_rate_sps ||
+      values.balance_max_sps <= values.turn_max_sps) {
+    return ConfigPidValidationCode::OutOfRange;
+  }
+  const double user_speed_sps = values.drive_max_velocity_mps / Config::meters_per_step;
+  const double available_sps = values.balance_max_sps - values.turn_max_sps;
+  if (user_speed_sps > 0.25 * available_sps) {
     return ConfigPidValidationCode::OutOfRange;
   }
   return ConfigPidValidationCode::Accepted;
@@ -139,11 +165,15 @@ void ConfigPid::load(const std::string& path) {
   };
   std::vector<ParsedLine> parsed_lines;
   std::unordered_set<std::string> allowed = {
-      "config_version", "drive_max_acceleration_mps2", "velocity_damping_per_s",
-      "velocity_pitch_limit_deg", "velocity_I", "velocity_I_limit_deg", "drive_max_sps",
-      "turn_max_sps", "balance_max_sps", "pitch_gain", "pitch_rate_gain",
-      "pitch_accel_gain",
-      "velocity_control_cutoff_hz", "controller_enabled"};
+      "config_version", "drive_max_velocity_mps", "velocity_gain_per_s",
+      "velocity_feedback_cutoff_hz",
+      "outer_pitch_limit_deg", "fixed_com_trim_deg", "adaptive_com_trim_enabled",
+      "adaptive_com_trim_gain_deg_per_mps_s", "adaptive_com_trim_limit_deg", "turn_max_sps",
+      "balance_max_sps", "pitch_gain", "pitch_rate_gain", "pitch_accel_gain",
+      "planner_max_acceleration_mps2", "planner_max_deceleration_mps2",
+      "planner_max_jerk_mps3", "velocity_i_gain_per_s2", "velocity_i_leak_time_s",
+      "velocity_i_acceleration_limit_mps2",
+      "controller_enabled"};
   std::string line;
   size_t line_number = 0;
   while (std::getline(f, line)) {
@@ -233,18 +263,25 @@ void ConfigPid::load(const std::string& path) {
   }
 
   const ConfigPidValues numeric{
-      parsed_values.at("drive_max_acceleration_mps2"),
-      parsed_values.at("velocity_damping_per_s"),
-      parsed_values.at("velocity_pitch_limit_deg"),
-      parsed_values.at("velocity_I"),
-      parsed_values.at("velocity_I_limit_deg"),
-      parsed_values.at("drive_max_sps"),
+      parsed_values.at("drive_max_velocity_mps"),
+      parsed_values.at("velocity_gain_per_s"),
+      parsed_values.at("velocity_feedback_cutoff_hz"),
+      parsed_values.at("outer_pitch_limit_deg"),
+      parsed_values.at("fixed_com_trim_deg"),
+      parsed_values.at("adaptive_com_trim_enabled"),
+      parsed_values.at("adaptive_com_trim_gain_deg_per_mps_s"),
+      parsed_values.at("adaptive_com_trim_limit_deg"),
       parsed_values.at("turn_max_sps"),
       parsed_values.at("balance_max_sps"),
       parsed_values.at("pitch_gain"),
       parsed_values.at("pitch_rate_gain"),
       parsed_values.at("pitch_accel_gain"),
-      parsed_values.at("velocity_control_cutoff_hz"),
+      parsed_values.at("planner_max_acceleration_mps2"),
+      parsed_values.at("planner_max_deceleration_mps2"),
+      parsed_values.at("planner_max_jerk_mps3"),
+      parsed_values.at("velocity_i_gain_per_s2"),
+      parsed_values.at("velocity_i_leak_time_s"),
+      parsed_values.at("velocity_i_acceleration_limit_mps2"),
   };
   switch (validate_numeric(numeric)) {
     case ConfigPidValidationCode::Accepted:
@@ -275,16 +312,25 @@ void ConfigPid::save(const std::string& path) {
     write_param(f, "pitch_gain", values.pitch_gain);
     write_param(f, "pitch_rate_gain", values.pitch_rate_gain);
     write_param(f, "pitch_accel_gain", values.pitch_accel_gain);
-    f << "\n# --- Acceleration / velocity control / stationary COM trim / allocation ---\n";
-    write_param(f, "drive_max_acceleration_mps2", values.drive_max_acceleration_mps2);
-    write_param(f, "velocity_damping_per_s", values.velocity_damping_per_s);
-    write_param(f, "velocity_pitch_limit_deg", values.velocity_pitch_limit_deg);
-    write_param(f, "velocity_I", values.velocity_I);
-    write_param(f, "velocity_I_limit_deg", values.velocity_I_limit_deg);
-    write_param(f, "velocity_control_cutoff_hz", values.velocity_control_cutoff_hz);
-    write_param(f, "drive_max_sps", values.drive_max_sps);
+    f << "\n# --- Velocity-reference outer loop / fixed COM trim ---\n";
+    write_param(f, "drive_max_velocity_mps", values.drive_max_velocity_mps);
+    write_param(f, "velocity_gain_per_s", values.velocity_gain_per_s);
+    write_param(f, "velocity_feedback_cutoff_hz", values.velocity_feedback_cutoff_hz);
+    write_param(f, "outer_pitch_limit_deg", values.outer_pitch_limit_deg);
+    write_param(f, "fixed_com_trim_deg", values.fixed_com_trim_deg);
+    write_param(f, "adaptive_com_trim_enabled", values.adaptive_com_trim_enabled);
+    write_param(f, "adaptive_com_trim_gain_deg_per_mps_s",
+                values.adaptive_com_trim_gain_deg_per_mps_s);
+    write_param(f, "adaptive_com_trim_limit_deg", values.adaptive_com_trim_limit_deg);
     write_param(f, "turn_max_sps", values.turn_max_sps);
     write_param(f, "balance_max_sps", values.balance_max_sps);
+    write_param(f, "planner_max_acceleration_mps2", values.planner_max_acceleration_mps2);
+    write_param(f, "planner_max_deceleration_mps2", values.planner_max_deceleration_mps2);
+    write_param(f, "planner_max_jerk_mps3", values.planner_max_jerk_mps3);
+    write_param(f, "velocity_i_gain_per_s2", values.velocity_i_gain_per_s2);
+    write_param(f, "velocity_i_leak_time_s", values.velocity_i_leak_time_s);
+    write_param(f, "velocity_i_acceleration_limit_mps2",
+                values.velocity_i_acceleration_limit_mps2);
     write_param(f, "controller_enabled", controller_enabled ? 1.0 : 0.0);
     f << "\n";
   } else {

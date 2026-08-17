@@ -5,71 +5,83 @@ const MAX_POINTS = 6000;
 const TRIM_BATCH_POINTS = 50;
 const FRAME_INTERVAL_MS = 1000 / 30;
 const DISPLAY_SAMPLE_HZ = 50;
-const PERFORMANCE_WINDOW_S = 1.5;
+const ROLLING_WINDOW_S = 1.5;
 const JOYSTICK_REPEAT_MS = 100;
-const PID_FIELDS = [
+const PID_NORMAL_FIELDS = [
   ["pitch_gain", "Pitch gain (SPS/rad)"],
   ["pitch_rate_gain", "Pitch-rate gain (SPS/(rad/s))"],
-  ["pitch_accel_gain", "Pitch-acceleration gain (SPS/(rad/s²))"],
-  ["drive_max_acceleration_mps2", "Drive acceleration (m/s²)"],
-  ["velocity_damping_per_s", "Velocity damping (1/s)"],
-  ["velocity_pitch_limit_deg", "Velocity pitch authority limit (deg)"],
-  ["velocity_I", "Velocity I (deg/(SPS·s))"],
-  ["velocity_I_limit_deg", "Velocity I limit (deg)"],
-  ["velocity_control_cutoff_hz", "Velocity control cutoff (Hz)"],
-  ["drive_max_sps", "Drive limit (steps/s)"],
-  ["turn_max_sps", "Turn limit (steps/s)"],
-  ["balance_max_sps", "Balance limit (steps/s)"],
+  ["drive_max_velocity_mps", "Max velocity (m/s)"],
+  ["velocity_gain_per_s", "Velocity P gain (1/s)"],
+  ["velocity_feedback_cutoff_hz", "Velocity cutoff (Hz)"],
+  ["outer_pitch_limit_deg", "Outer pitch limit (deg)"],
+  ["planner_max_acceleration_mps2", "Planner acceleration (m/s²)"],
+  ["planner_max_deceleration_mps2", "Planner deceleration (m/s²)"],
+  ["planner_max_jerk_mps3", "Planner jerk (m/s³)"],
+  ["balance_max_sps", "Balance limit (SPS)"],
 ];
+const PID_ADVANCED_FIELDS = [
+  ["pitch_accel_gain", "Pitch-acceleration gain (SPS/(rad/s²))"],
+  ["fixed_com_trim_deg", "Fixed COM trim (deg)"],
+  ["adaptive_com_trim_enabled", "Adaptive COM enabled (0/1)"],
+  ["adaptive_com_trim_gain_deg_per_mps_s", "Adaptive COM gain (deg/(m/s·s))"],
+  ["adaptive_com_trim_limit_deg", "Adaptive COM limit (deg)"],
+  ["turn_max_sps", "Turn limit (steps/s)"],
+  ["velocity_i_gain_per_s2", "Velocity I gain (1/s²)"],
+  ["velocity_i_leak_time_s", "Velocity I leak time (s)"],
+  ["velocity_i_acceleration_limit_mps2", "Velocity I limit (m/s²)"],
+];
+const PID_FIELDS = [...PID_NORMAL_FIELDS, ...PID_ADVANCED_FIELDS];
+const PRIMARY_GROUP_IDS = ["attitude", "velocity-tracking", "outer-authority", "actuator-effort"];
 const groups = [
-  { id:"performance", title:"Balance performance", unit:"% reference", help:"1.5 s rolling windows. Pitch error is referenced to 1°, rate to 30°/s, command and velocity to 1000 SPS; lower is quieter.", series:[
-    {id:"composite",label:"Composite activity",derived:"performance.composite",decimals:1,width:3},
-    {id:"pitch",label:"Pitch error RMS",derived:"performance.pitch",decimals:1},
-    {id:"rate",label:"Rate RMS",derived:"performance.rate",decimals:1},
-    {id:"command",label:"Command RMS",derived:"performance.command",decimals:1},
-    {id:"velocity",label:"Velocity RMS",derived:"performance.velocity",decimals:1},
-    {id:"saturation",label:"Saturation",derived:"performance.saturation",decimals:1},
+  { id:"attitude", primary:true, title:"Attitude", unit:"deg", help:"Fused body pitch versus the final pitch target", series:[
+    {id:"fused",label:"Fused pitch",path:"attitude.fused_pitch_deg",decimals:2},
+    {id:"target",label:"Final pitch target",path:"controller.final_pitch_target_deg",decimals:2},
   ]},
-  { id:"freeze-diagnostics", title:"Freeze diagnostics", unit:"ms", help:"Opt-in timing view. Sender and receiver gaps separate control/transport pauses from browser append/render work.", series:[
+  { id:"velocity-tracking", primary:true, title:"Velocity tracking", unit:"m/s", help:"User command, planned reference, and feedback estimate in vehicle-forward m/s", series:[
+    {id:"user-velocity",label:"User velocity",path:"motion.user_velocity_mps",decimals:3},
+    {id:"reference-velocity",label:"Reference velocity",path:"motion.reference_velocity_mps",decimals:3},
+    {id:"feedback-velocity",label:"Velocity feedback estimate",path:"motion.velocity_feedback_estimate_mps",decimals:3},
+  ]},
+  { id:"outer-authority", primary:true, title:"Outer-loop authority", unit:"deg", help:"The velocity loop's requested drive pitch; expand details for acceleration decomposition", series:[
+    {id:"drive-pitch",label:"Drive pitch target",path:"controller.drive_pitch_target_deg",decimals:2},
+  ]},
+  { id:"actuator-effort", primary:true, title:"Actuator / balance effort", unit:"SPS", help:"Final balance command and the corrected and filtered completed-step response", series:[
+    {id:"command",label:"Balance command",path:"controller.command_sps",decimals:1},
+    {id:"corrected",label:"Corrected STEP velocity",path:"motion.corrected_axle_velocity_sps",decimals:1},
+    {id:"control-filtered",label:"Filtered STEP velocity",path:"motion.velocity_control_sps",decimals:1},
+  ]},
+  { id:"pitch-rate", diagnostic:true, title:"Pitch-rate diagnostics", unit:"deg/s", help:"Collapsed by default: compare the filtered control rate with the raw gyro when investigating modes or notch behavior", series:[
+    {id:"filtered",label:"Filtered control rate",path:"rate.filtered_pitch_rate_dps",decimals:2},
+    {id:"raw",label:"Raw gyro",path:"rate.gyro_pitch_rate_dps",decimals:2},
+  ]},
+  { id:"outer-details", diagnostic:true, title:"Outer-loop details", unit:"m/s²", help:"Acceleration authority decomposition for outer-loop tuning", series:[
+    {id:"p-acceleration",label:"P acceleration",path:"controller.velocity_p_acceleration_mps2",decimals:3},
+    {id:"i-acceleration",label:"I acceleration",path:"controller.velocity_i_acceleration_mps2",decimals:3},
+    {id:"feedforward",label:"Reference/feedforward acceleration",path:"motion.reference_acceleration_mps2",decimals:3},
+    {id:"acceleration-command",label:"Acceleration command",path:"controller.acceleration_cmd_mps2",decimals:3},
+  ]},
+  { id:"actuator-details", diagnostic:true, title:"Actuator details", unit:"SPS", help:"Raw completed velocity and left/right applied targets for asymmetry and slew diagnosis", series:[
+    {id:"applied-left",label:"Applied left",path:"motion.left_slewed_sps",decimals:1},
+    {id:"applied-right",label:"Applied right",path:"motion.right_slewed_sps",decimals:1},
+    {id:"completed",label:"Raw completed velocity",path:"motion.raw_completed_velocity_sps",decimals:1},
+  ]},
+  { id:"contributions", diagnostic:true, title:"Balance contributions", unit:"SPS", help:"Advanced inner-loop terms; normally the final balance command is enough", series:[
+    {id:"pitch",label:"Pitch",path:"controller.pitch_feedback_sps",decimals:1},
+    {id:"rate",label:"Rate",path:"controller.pitch_rate_feedback_sps",decimals:1},
+    {id:"accel",label:"Acceleration",path:"controller.pitch_accel_feedback_sps",decimals:1},
+    {id:"command",label:"Command",path:"controller.command_sps",decimals:1},
+  ]},
+  { id:"wheel-position", diagnostic:true, title:"Wheel position", unit:"steps", help:"Slow-moving travel and differential view; the derived summary below is usually easier to read", series:[
+    {id:"left",label:"Left actual",path:"motion.left_actual_steps",decimals:0},
+    {id:"right",label:"Right actual",path:"motion.right_actual_steps",decimals:0},
+  ]},
+  { id:"transport-timing", diagnostic:true, title:"Transport timing", unit:"ms", help:"Secondary timing view for telemetry gaps and browser delivery/render pauses", series:[
     {id:"receive-gap",label:"Receiver gap",derived:"diagnostics.receive_gap_ms",decimals:1},
     {id:"sender-gap",label:"Sender gap",derived:"diagnostics.sender_gap_ms",decimals:1},
     {id:"sse-gap",label:"Browser SSE gap",derived:"diagnostics.sse_gap_ms",decimals:1},
     {id:"append",label:"Browser append",derived:"diagnostics.append_ms",decimals:1},
     {id:"render",label:"Browser render",derived:"diagnostics.render_ms",decimals:1},
     {id:"sample-age",label:"Browser sample age",derived:"diagnostics.sample_age_ms",decimals:1},
-  ]},
-  { id:"attitude", title:"Attitude", unit:"deg", help:"Fused body pitch versus the total target", series:[
-    {id:"fused",label:"Fused pitch",path:"attitude.fused_pitch_deg",decimals:2},
-    {id:"target",label:"Pitch target",path:"attitude.pitch_setpoint_deg",decimals:2},
-  ]},
-  { id:"rate", title:"Pitch rate / gyro diagnostics", unit:"deg/s", help:"Optional diagnostic view: compare the noisy raw gyro with the filtered control rate.", series:[
-    {id:"filtered",label:"Filtered control rate",path:"rate.filtered_pitch_rate_dps",decimals:2},
-    {id:"raw",label:"Raw gyro",path:"rate.gyro_pitch_rate_dps",decimals:2},
-  ]},
-  { id:"contributions", title:"Balance contributions", unit:"SPS", help:"Signed inner-loop terms and final balance command", series:[
-    {id:"pitch",label:"Pitch",path:"controller.pitch_feedback_sps",decimals:1},
-    {id:"rate",label:"Rate",path:"controller.pitch_rate_feedback_sps",decimals:1},
-    {id:"accel",label:"Acceleration",path:"controller.pitch_accel_feedback_sps",decimals:1},
-    {id:"command",label:"Command",path:"controller.command_sps",decimals:1},
-  ]},
-  { id:"outer-loop", title:"Outer loop / trim", unit:"deg", help:"Velocity and COM terms that shape the pitch target", series:[
-    {id:"target",label:"Pitch target",path:"attitude.pitch_setpoint_deg",decimals:2},
-    {id:"velocity-unclamped",label:"Velocity request",path:"controller.velocity_pitch_request_unclamped_deg",decimals:2},
-    {id:"velocity-limited",label:"Velocity limited",path:"controller.velocity_pitch_request_limited_deg",decimals:2},
-    {id:"total-unclamped",label:"Total target request",path:"controller.pitch_target_unclamped_deg",decimals:2},
-    {id:"trim",label:"COM trim",path:"controller.com_trim_deg",decimals:2},
-  ]},
-  { id:"motion", title:"Motion feedback", unit:"steps/s", help:"Commanded motion versus completed-step feedback", series:[
-    {id:"command",label:"Command",path:"controller.command_sps",decimals:1},
-    {id:"applied-left",label:"Applied left",path:"motion.left_slewed_sps",decimals:1},
-    {id:"applied-right",label:"Applied right",path:"motion.right_slewed_sps",decimals:1},
-    {id:"corrected",label:"Corrected velocity",path:"motion.corrected_axle_velocity_sps",decimals:1},
-    {id:"control-filtered",label:"Control-filtered velocity",path:"motion.velocity_control_sps",decimals:1},
-    {id:"completed",label:"Completed steps",path:"motion.raw_completed_velocity_sps",decimals:1},
-  ]},
-  { id:"wheel-steps", title:"Wheel position", unit:"steps", help:"Completed wheel-step counters", series:[
-    {id:"left",label:"Left actual",path:"motion.left_actual_steps",decimals:0},
-    {id:"right",label:"Right actual",path:"motion.right_actual_steps",decimals:0},
   ]},
 ];
 const derivedSeries = groups.flatMap(group => group.series.filter(series => series.derived));
@@ -88,7 +100,7 @@ const store = {
 };
 const state = {
   charts:new Map(), observers:[],
-  visible:new Set(["performance","attitude","contributions","outer-loop"]),
+  visible:new Set(PRIMARY_GROUP_IDS),
   seconds:DEFAULT_WINDOW_S, end:null, follow:true, source:null,
   events:null, paused:false, displayRun:0,
   navigator:null,
@@ -128,46 +140,41 @@ function isTelemetryGap(previous, current) {
 function rms(values) {
   return values.length ? Math.sqrt(values.reduce((sum,value) => sum + value * value, 0) / values.length) : null;
 }
-function performanceValuesAt(index) {
+function peak(values) {
+  return values.length ? Math.max(...values.map(value => Math.abs(value))) : null;
+}
+function rollingHealthAt(index) {
   const sample = store.plotSamples[index];
   if (!sample) return null;
   const end = sample.received_at;
-  const pitchErrors = [], rates = [], commands = [], velocities = [];
-  let saturationSamples = 0, samples = 0;
+  const pitch = [], rates = [], velocityEstimates = [], driveTargets = [], commands = [];
+  let slewSamples = 0, samples = 0;
   for (let cursor = index; cursor >= 0; cursor--) {
     const candidate = store.plotSamples[cursor];
     if (!candidate) break;
-    if (end - candidate.received_at > PERFORMANCE_WINDOW_S) break;
+    if (end - candidate.received_at > ROLLING_WINDOW_S) break;
+    const fusedPitch = numberAt(candidate,"attitude.fused_pitch_deg");
+    const finalTarget = numberAt(candidate,"controller.final_pitch_target_deg") ??
+      numberAt(candidate,"attitude.pitch_setpoint_deg");
     const pitchError = numberAt(candidate,"controller.pitch_error_deg") ??
-      ((numberAt(candidate,"attitude.fused_pitch_deg") ?? 0) -
-       (numberAt(candidate,"attitude.pitch_setpoint_deg") ?? 0));
+      (fusedPitch != null && finalTarget != null ? fusedPitch - finalTarget : null);
     const rate = numberAt(candidate,"rate.filtered_pitch_rate_dps");
+    const velocityEstimate = numberAt(candidate,"motion.velocity_feedback_estimate_mps");
+    const driveTarget = numberAt(candidate,"controller.drive_pitch_target_deg");
     const command = numberAt(candidate,"controller.command_sps");
-    const velocity = numberAt(candidate,"motion.corrected_axle_velocity_sps");
-    if (pitchError != null) pitchErrors.push(pitchError);
+    if (pitchError != null) pitch.push(pitchError);
     if (rate != null) rates.push(rate);
+    if (velocityEstimate != null) velocityEstimates.push(velocityEstimate);
+    if (driveTarget != null) driveTargets.push(driveTarget);
     if (command != null) commands.push(command);
-    if (velocity != null) velocities.push(velocity);
-    const controllerSaturation = numberAt(candidate,"flags.saturation") ?? 0;
-    const actuatorSaturation = numberAt(candidate,"flags.actuator_saturation") ?? 0;
-    if (controllerSaturation !== 0 || actuatorSaturation !== 0) saturationSamples++;
+    if ((numberAt(candidate,"flags.actuator_saturation") ?? 0) !== 0) slewSamples++;
     samples++;
   }
-  const pitch = rms(pitchErrors);
-  const rate = rms(rates);
-  const command = rms(commands);
-  const velocity = rms(velocities);
-  const normalized = [pitch == null ? null : pitch / 1.0 * 100,
-    rate == null ? null : rate / 30.0 * 100,
-    command == null ? null : command / 1000.0 * 100,
-    velocity == null ? null : velocity / 1000.0 * 100].filter(value => value != null);
   return {
-    "performance.pitch": pitch == null ? null : pitch / 1.0 * 100,
-    "performance.rate": rate == null ? null : rate / 30.0 * 100,
-    "performance.command": command == null ? null : command / 1000.0 * 100,
-    "performance.velocity": velocity == null ? null : velocity / 1000.0 * 100,
-    "performance.composite": normalized.length ? rms(normalized) : null,
-    "performance.saturation": samples ? saturationSamples / samples * 100 : null,
+    pitchRms:rms(pitch), peakPitch:peak(pitch), rateRms:rms(rates),
+    velocityEstimateRms:rms(velocityEstimates), drivePitchRms:rms(driveTargets),
+    commandRms:rms(commands), peakCommand:peak(commands),
+    slewFraction:samples ? slewSamples / samples : null,
   };
 }
 function previousTelemetryAt(index) {
@@ -195,7 +202,7 @@ function diagnosticValuesAt(index) {
   };
 }
 function derivedValuesAt(index) {
-  return {...(performanceValuesAt(index)??{}),...(diagnosticValuesAt(index)??{})};
+  return diagnosticValuesAt(index);
 }
 function rebuildDerivedArrays() {
   store.derived = new Map(derivedSeries.map(series => [series.derived, []]));
@@ -255,6 +262,11 @@ function append(sample) {
   if ((store.samples.at(-1)?.sequence ?? -1) >= sample.sequence) return;
   const appendStarted=performance.now();
   state.ingestedSamples++;
+  sample.browserDiagnostics={...(sample.browserDiagnostics??{}),
+    joystick_command_valid:true,
+    joystick_forward:state.joystick.forward,
+    joystick_turn:state.joystick.turn,
+  };
   if (store.origin == null) store.origin=sample.received_at;
   const previous=store.samples.at(-1);
   store.samples.push(sample);
@@ -297,22 +309,104 @@ function viewRange() {
   const end=Math.min(horizonEnd,Math.max(origin+state.seconds,state.end??latest));
   return [end-state.seconds,end];
 }
-function updateMetrics(sample) {
-  const status=state.status??{};
-  const statusNumber = name => typeof status[name]==="number" && Number.isFinite(status[name]) ? status[name] : null;
-  const sampleOrStatus = (path,statusName) => numberAt(sample,path) ?? statusNumber(statusName);
-  const metrics = [
-    ["Pitch",numberAt(sample,"attitude.fused_pitch_deg"),"deg",2],
-    ["Pitch rate",numberAt(sample,"rate.filtered_pitch_rate_dps"),"deg/s",1],
-    ["Balance command",numberAt(sample,"controller.command_sps"),"SPS",0],
-    ["Velocity",numberAt(sample,"motion.corrected_axle_velocity_sps"),"steps/s",0],
-    ["IMU age",sampleOrStatus("timing.imu_age_ms","imu_age_ms"),"ms",1],
-    ["Feedback age",sampleOrStatus("timing.feedback_age_ms","feedback_age_ms"),"ms",1],
+function displayNumber(value, decimals) {
+  return value == null ? "—" : value.toFixed(decimals);
+}
+function displayWithUnit(value, decimals, unit) {
+  return value == null ? "—" : `${displayNumber(value,decimals)} ${unit}`;
+}
+function statusChip(label, active, kind="") {
+  const stateName=active==null?"unknown":active?(kind||"active"):"inactive";
+  const mark=active==null?"—":active?"✓":"—";
+  return `<span class="status-chip ${stateName}"><span>${label}</span><b>${mark}</b></span>`;
+}
+function renderRollingHealth(index) {
+  const health=rollingHealthAt(index);
+  const cards=[
+    ["Pitch RMS",health?.pitchRms,"°",2],
+    ["Rate RMS",health?.rateRms,"°/s",1],
+    ["Velocity-est RMS",health?.velocityEstimateRms,"m/s",3],
+    ["Drive-pitch RMS",health?.drivePitchRms,"°",2],
+    ["Command RMS",health?.commandRms,"SPS",0],
+    ["Slew active",health?.slewFraction==null?null:health.slewFraction*100,"%",0],
+    ["Peak pitch",health?.peakPitch,"°",2],
+    ["Peak command",health?.peakCommand,"SPS",0],
   ];
-  $("#metrics").innerHTML=metrics.map(([name,value,unit,decimals])=>`<div class="metric"><small>${name}</small><strong>${value==null?"—":`${value.toFixed(decimals)} ${unit}`}</strong></div>`).join("");
-  $("#events-text").textContent=sample?.flags
-    ? `controller 0x${sample.flags.controller.toString(16)} · saturation 0x${sample.flags.saturation.toString(16)} · actuator 0x${sample.flags.actuator.toString(16)}`
-    : "No telemetry received.";
+  const element=$("#rolling-health");
+  if(element) element.innerHTML=cards.map(([name,value,unit,decimals])=>`<div class="health-card"><small>${name}</small><strong>${displayWithUnit(value,decimals,unit)}</strong></div>`).join("");
+  return health;
+}
+function renderFlagStatus(sample) {
+  const flags=sample?.flags??{};
+  const outerLimited=sample==null?null:[
+    sample.controller?.outer_acceleration_limited,
+    sample.controller?.outer_pitch_target_limited,
+    sample.controller?.planner_acceleration_limited,
+    sample.controller?.planner_jerk_limited,
+    sample.controller?.velocity_integral_limited,
+    (numberAt(sample,"controller.pitch_target_limit_reason")??0)!==0,
+  ].some(Boolean);
+  const balanceRail=sample==null?null:(((numberAt(flags,"saturation")??0)&(1<<2))!==0);
+  const slewLimited=sample==null?null:(numberAt(flags,"actuator_saturation")??0)!==0;
+  const observerValid=sample==null?null:(sample.motion?.velocity_feedback_valid===true);
+  const latched=state.status?.latched_flags??{};
+  const latchedItems=[
+    ["Controller fault",(latched.controller??0)!==0,"fault"],
+    ["Saturation",(latched.saturation??0)!==0||(latched.actuator_saturation??0)!==0,"fault"],
+    ["Actuator fault",(latched.actuator??0)!==0,"fault"],
+  ];
+  const element=$("#events-text");
+  if(element) element.innerHTML=`<div class="flag-row">${statusChip("Observer",observerValid,observerValid?"ok":"warn")}${statusChip("Outer limited",outerLimited,"warn")}${statusChip("Slew limited",slewLimited,"warn")}${statusChip("Balance rail",balanceRail,"warn")}</div><div class="flag-row flag-row-latched"><span class="flag-caption">Latched</span>${latchedItems.map(([label,active,kind])=>statusChip(label,active,kind)).join("")}</div>`;
+  return latchedItems.filter(([,active])=>active).length;
+}
+function renderTransportStatus() {
+  const status=state.status??{};
+  const rate=typeof status.raw_packet_rate_hz==="number"?status.raw_packet_rate_hz:null;
+  const age=typeof status.last_packet_age_ms==="number"?status.last_packet_age_ms:null;
+  const gaps=typeof status.telemetry_gap_count==="number"?status.telemetry_gap_count:null;
+  const element=$("#transport-summary");
+  if(!element)return;
+  element.textContent=`${rate==null?"—":rate} Hz · last sample ${age==null?"—":`${Math.round(age)} ms`} ago · ${gaps==null?"—":gaps} gaps`;
+  element.className=`transport-summary ${age!=null&&age>100?"warn":""} ${gaps!=null&&gaps>0?"fault":""}`;
+}
+// Matches METERS_PER_STEP in tools/telemetry_dashboard/server.py and the 0.0412 m,
+// 6400-step wheel configuration in src/services/main/config.h.
+const METERS_PER_STEP=2*Math.PI*0.0412/6400;
+function signedNumber(value, decimals) {
+  return value==null?"—":`${value>=0?"+":""}${value.toFixed(decimals)}`;
+}
+function renderWheelSummary(sample) {
+  const element=$("#wheel-summary");
+  if(!element)return;
+  const left=numberAt(sample,"motion.left_actual_steps");
+  const right=numberAt(sample,"motion.right_actual_steps");
+  if(left==null||right==null) {
+    element.innerHTML=`<span>Wheel counters unavailable.</span>`;
+    return;
+  }
+  const average=(left+right)/2;
+  const differential=left-right;
+  element.innerHTML=`<div class="wheel-raw">L: ${signedNumber(left,0)} steps <span>|</span> R: ${signedNumber(right,0)} steps <span>|</span> avg: ${signedNumber(average,0)} <span>|</span> diff: ${signedNumber(differential,0)}</div><div class="wheel-derived"><strong>Average travel:</strong> ${signedNumber(average*METERS_PER_STEP,3)} m <span>·</span> <strong>Differential:</strong> ${signedNumber(differential*METERS_PER_STEP*1000,1)} mm</div>`;
+}
+function updateMetrics(sample) {
+  const health=renderRollingHealth(store.plotSamples.length-1);
+  const fusedPitch=numberAt(sample,"attitude.fused_pitch_deg");
+  const finalTarget=numberAt(sample,"controller.final_pitch_target_deg") ?? numberAt(sample,"attitude.pitch_setpoint_deg");
+  const estimate=numberAt(sample,"motion.velocity_feedback_estimate_mps");
+  const reference=numberAt(sample,"motion.reference_velocity_mps");
+  const command=numberAt(sample,"controller.command_sps");
+  const faults=renderFlagStatus(sample);
+  const metrics = [
+    ["Pitch",displayWithUnit(fusedPitch,2,"°")],
+    ["Target",displayWithUnit(finalTarget,2,"°")],
+    ["Velocity est / ref",estimate==null||reference==null?"—":`${displayNumber(estimate,3)} / ${displayNumber(reference,3)} m/s`],
+    ["Command",displayWithUnit(command,0,"SPS")],
+    ["Slew",displayWithUnit(health?.slewFraction==null?null:health.slewFraction*100,0,"%")],
+    ["Faults",String(faults)],
+  ];
+  $("#metrics").innerHTML=metrics.map(([name,value])=>`<div class="metric"><small>${name}</small><strong>${value}</strong></div>`).join("");
+  renderTransportStatus();
+  renderWheelSummary(sample);
 }
 function render() {
   const renderStarted=performance.now();
@@ -403,7 +497,7 @@ function cursor(group, sample, index, card) {
     const value = series.derived
       ? store.derived.get(series.derived)?.[index]
       : numberAt(sample,series.path);
-    return `<span class="cursor-value"><b>${series.label}</b><output>${(value??0).toFixed(series.decimals)}</output></span>`;
+    return `<span class="cursor-value"><b>${series.label}</b><output>${value==null?"—":value.toFixed(series.decimals)}</output></span>`;
   }).join("");
   (card.querySelector(".cursor")).innerHTML=`<span class="cursor-time">${formatCursorTime(sample.received_at)}</span><span class="cursor-values">${values}</span>`;
 }
@@ -413,7 +507,7 @@ function create(group) {
   card.innerHTML=`<div class="plot-title"><div class="plot-heading"><h2>${group.title}</h2><span>${group.unit}</span>${group.help?`<small>${group.help}</small>`:""}</div><div class="legend">${group.series.map((series,index)=>`<span><i style="background:${colors[index]}"></i>${series.label}</span>`).join("")}</div></div><div class="chart" aria-label="${group.title} chart"></div><div class="cursor"><span class="cursor-time">—</span><span>Move across chart to compare values.</span></div>`;
   $("#plots").append(card);
   const root=card.querySelector(".chart");
-  const chartHeight=group.id==="performance"?250:278;
+  const chartHeight=278;
   const chart=new uPlot({
     width:Math.max(root.clientWidth,1),height:chartHeight,scales:{x:{time:false}},
     axes:[
@@ -688,7 +782,44 @@ function navigatorFinish() {
   if(store.decimated) { const [start,end]=viewRange(); void loadDetail(start,end); }
 }
 function layout() {
-  $("#app").innerHTML = `<div class="dashboard-shell"><aside class="left-rail"><div class="brand"><div class="brand-mark"><img src="/balancer-mark.svg" alt="Balancer Bot"></div><div><span class="brand-kicker">LOCAL CONSOLE</span><h1>Balancer</h1><p id="source" class="subtle">Live source · rpi4</p></div></div><div class="source-actions"><span class="rail-label">Data source</span><label class="file-button source-file">${icon("upload")}<span>Open CSV capture</span><input id="csv-file" type="file" accept=".csv,text/csv"></label></div><div class="rail-signature"><span></span>LOCAL TELEMETRY</div></aside><main class="dashboard-main"><section id="metrics" class="metrics"></section><section class="workspace"><div class="workspace-head"><div class="workspace-title">${icon("activity")}<h2>Telemetry</h2></div><div class="plot-controls"><div class="tabs">${groups.map(group=>`<button data-group="${group.id}" class="${state.visible.has(group.id)?"active":""}">${group.title}</button>`).join("")}</div><div class="toolbar-divider"></div><div class="ranges"><span id="timeline-state">Following latest</span><button id="follow" class="primary" disabled>Follow latest</button></div></div></div><div class="navigator"><div class="navigator-labels"><span id="navigator-start">0.0 s</span><strong>History window · <em id="window-duration">15 s</em></strong><span id="navigator-end">15.0 s</span></div><div id="navigator-track" class="navigator-track"><div id="navigator-fill" class="navigator-fill"></div><div id="navigator-window" class="navigator-window"><i class="handle left-handle"></i><span>DRAG</span><i class="handle right-handle"></i></div></div></div><div id="plots" class="plot-grid"></div></section></main><aside class="right-rail"><section class="run-controls" aria-label="Run controls"><div class="run-label"><span>${icon("radio")}Run control</span><strong id="connection" class="connection offline">Idle · waiting</strong></div><div class="run-buttons"><button id="deploy" class="secondary">${icon("rocket")}Deploy</button><button id="start" class="primary">${icon("play")}Start</button><button id="abort" class="danger">${icon("abort")}Abort</button></div><output id="operation-result" class="operation-result" aria-live="polite">Ready.</output></section><section class="run-notes"><span class="rail-label">Session</span><p>Start begins a new raw capture file and clears the display clock. Abort freezes presentation while capture stays passive.</p></section><section class="events"><strong>Latched flags</strong><span id="events-text">No telemetry received.</span></section></aside></div>`;
+  $("#app").innerHTML = `
+    <div class="dashboard-shell">
+      <aside class="left-rail">
+        <div class="brand"><div class="brand-mark"><img src="/balancer-mark.svg" alt="Balancer Bot"></div><div><span class="brand-kicker">LOCAL CONSOLE</span><h1>Balancer</h1><p id="source" class="subtle">Live source · rpi4</p></div></div>
+        <div class="source-actions"><span class="rail-label">Data source</span><label class="file-button source-file">${icon("upload")}<span>Open CSV capture</span><input id="csv-file" type="file" accept=".csv,text/csv"></label></div>
+        <div class="rail-signature"><span></span>LOCAL TELEMETRY</div>
+      </aside>
+      <main class="dashboard-main">
+        <section id="metrics" class="metrics"></section>
+        <section class="live-status" aria-label="Live status">
+          <div id="transport-summary" class="transport-summary">—</div>
+          <div id="events-text" class="flag-status">No telemetry received.</div>
+        </section>
+        <section id="rolling-health" class="rolling-health" aria-label="Rolling health"></section>
+        <section class="workspace">
+          <div class="workspace-head">
+            <div class="workspace-title">${icon("activity")}<h2>Telemetry</h2></div>
+            <div class="plot-controls">
+              <div class="tabs primary-tabs">${groups.filter(group=>group.primary).map(group=>`<button data-group="${group.id}" class="${state.visible.has(group.id)?"active":""}">${group.title}</button>`).join("")}</div>
+              <div class="toolbar-divider"></div>
+              <div class="ranges"><span id="timeline-state">Following latest</span><button id="follow" class="primary" disabled>Follow latest</button></div>
+            </div>
+          </div>
+          <div class="navigator"><div class="navigator-labels"><span id="navigator-start">0.0 s</span><strong>History window · <em id="window-duration">15 s</em></strong><span id="navigator-end">15.0 s</span></div><div id="navigator-track" class="navigator-track"><div id="navigator-fill" class="navigator-fill"></div><div id="navigator-window" class="navigator-window"><i class="handle left-handle"></i><span>DRAG</span><i class="handle right-handle"></i></div></div></div>
+          <div id="plots" class="plot-grid"></div>
+          <details id="diagnostics-panel" class="diagnostics-panel">
+            <summary>Diagnostics</summary>
+            <p class="diagnostics-help">Open only the views needed for tuning, asymmetry, wheel travel, or telemetry timing.</p>
+            <div class="diagnostic-controls">${groups.filter(group=>group.diagnostic).map(group=>`<button data-group="${group.id}" class="diagnostic-toggle ${state.visible.has(group.id)?"active":""}">${group.title}</button>`).join("")}</div>
+            <div id="wheel-summary" class="wheel-summary"><span>Wheel counters unavailable.</span></div>
+          </details>
+        </section>
+      </main>
+      <aside class="right-rail">
+        <section class="run-controls" aria-label="Run controls"><div class="run-label"><span>${icon("radio")}Run control</span><strong id="connection" class="connection offline">Idle · waiting</strong></div><div class="run-buttons"><button id="deploy" class="secondary">${icon("rocket")}Deploy</button><button id="start" class="primary">${icon("play")}Start</button><button id="abort" class="danger">${icon("abort")}Abort</button></div><output id="operation-result" class="operation-result" aria-live="polite">Ready.</output></section>
+        <section class="run-notes"><span class="rail-label">Session</span><p>Start begins a new raw capture file and clears the display clock. Abort freezes presentation while capture stays passive.</p></section>
+      </aside>
+    </div>`;
   updateMetrics(null);
   document.querySelectorAll("[data-group]").forEach(button=>button.onclick=()=>{const id=button.dataset.group;state.visible.has(id)?state.visible.delete(id):state.visible.add(id);button.classList.toggle("active");rebuild();});
   $("#follow").addEventListener("click",()=>{state.follow=true;state.end=null;scheduleRender();if(store.decimated){const [start,end]=viewRange();void loadDetail(start,end);}});
@@ -698,7 +829,9 @@ function layout() {
   document.addEventListener("visibilitychange",()=>{if(document.hidden){stopJoystick();state.events?.close();state.events=null;}else if(!state.paused){void loadCompleteCache();stream();}});
 }
 function installControlPanels() {
-  const fields=PID_FIELDS.map(([name,label])=>`<label class="pid-field"><span>${label}</span><input data-pid-field="${name}" type="number" step="${PID_MIN_STEP}" inputmode="decimal"></label>`).join("");
+  const renderFields=fields=>fields.map(([name,label])=>`<label class="pid-field"><span>${label}</span><input data-pid-field="${name}" type="number" step="${PID_MIN_STEP}" inputmode="decimal"></label>`).join("");
+  const normalFields=renderFields(PID_NORMAL_FIELDS);
+  const advancedFields=renderFields(PID_ADVANCED_FIELDS);
   $(".right-rail").insertAdjacentHTML("beforeend",`
     <section class="joystick-controls" aria-label="Joystick commands">
       <div class="panel-heading"><span class="rail-label">Joystick</span><strong>Drag for direction and speed; release to stop</strong></div>
@@ -713,7 +846,9 @@ function installControlPanels() {
       <summary>Session PID tuning</summary>
       <p class="panel-help">Changes apply to the current balancer process only and are never written to pid.conf.</p>
       <div class="pid-actions"><button id="pid-apply" class="primary">Apply</button><button id="pid-load" class="secondary">Load</button></div>
-      <div class="pid-fields">${fields}</div>
+      <div class="pid-section-label">Normal tuning</div>
+      <div class="pid-fields">${normalFields}</div>
+      <details class="pid-advanced"><summary>Advanced</summary><div class="pid-fields">${advancedFields}</div></details>
       <output id="pid-status" class="pid-status" aria-live="polite">Loading PID values…</output>
     </details>`);
   const pad=$("#drive-pad");

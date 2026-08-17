@@ -75,7 +75,7 @@ class MotorTargetsPayload:
 
 @dataclass
 class SystemTelemetryPayload:
-    WIRE_SIZE = 288
+    WIRE_SIZE = 416
     run_id: int
     controller_fault_flags: int
     controller_saturation_flags: int
@@ -148,10 +148,48 @@ class SystemTelemetryPayload:
     packet_seq: int
     loop_seq: int
     sender_monotonic_ns: int
+    user_velocity_mps: float
+    reference_velocity_mps: float
+    reference_acceleration_mps2: float
+    velocity_feedback_estimate_mps: float
+    velocity_error_mps: float
+    velocity_feedback_acceleration_mps2: float
+    acceleration_raw_mps2: float
+    acceleration_cmd_mps2: float
+    drive_pitch_target_deg: float
+    fixed_com_trim_deg: float
+    velocity_feedback_valid: bool
+    velocity_feedback_active: bool
+    outer_acceleration_limited: bool
+    outer_pitch_target_limited: bool
+    active_drive_max_velocity_mps: float
+    active_drive_max_acceleration_mps2: float
+    active_drive_max_deceleration_mps2: float
+    active_velocity_gain_per_s: float
+    active_velocity_feedback_cutoff_hz: float
+    active_outer_pitch_limit_deg: float
+    active_fixed_com_trim_deg: float
+    adaptive_com_trim_enabled: bool
+    legacy_outer_fields_valid: bool
+    reference_jerk_mps3: float
+    velocity_p_acceleration_mps2: float
+    velocity_i_acceleration_mps2: float
+    velocity_integral_state_mps_s: float
+    final_pitch_target_deg: float
+    active_planner_max_acceleration_mps2: float
+    active_planner_max_deceleration_mps2: float
+    active_planner_max_jerk_mps3: float
+    active_velocity_i_gain_per_s2: float
+    active_velocity_i_leak_time_s: float
+    active_velocity_i_acceleration_limit_mps2: float
+    planner_acceleration_limited: bool
+    planner_jerk_limited: bool
+    velocity_integral_limited: bool
+    velocity_anti_windup_active: bool
 
     def pack_wire(self) -> bytes:
         data = bytearray()
-        data.extend(struct.pack("<III4xQfffffffffffffffffffffffiiI??BBH2xffffffffffffffffQfffff???Bf?3xfffIffQQQ", self.run_id, self.controller_fault_flags, self.controller_saturation_flags, self.imu_timestamp_us, self.t_sec, self.age_ms, self.pitch_deg, self.pitch_rate_dps, self.raw_acc_pitch_deg, self.fused_pitch_deg, self.gyro_pitch_rate_dps, self.filtered_pitch_rate_dps, self.u_sps, self.turn_sps, self.nominal_acceleration_mps2, self.raw_completed_velocity_sps, self.corrected_axle_velocity_sps, self.velocity_damping_acceleration_mps2, self.com_trim_deg, self.pitch_error_deg, self.pitch_sp_deg, self.left_target_sps, self.right_target_sps, self.left_slewed_sps, self.right_slewed_sps, self.motor_update_dt_ms, self.motor_feedback_age_ms, self.left_actual_steps, self.right_actual_steps, self.actuator_saturation_flags, self.command_saturated, self.actuator_fault, self.trim_learning_enabled, self.trim_learning_block_reason, self.trim_learning_reserved, self.pitch_feedback_sps, self.pitch_rate_feedback_sps, self.pitch_accel_feedback_sps, self.velocity_pitch_target_deg, self.balance_unclamped_sps, self.active_pitch_gain_sps_per_rad, self.active_pitch_rate_gain_sps_per_rad_s, self.active_pitch_accel_gain_sps_per_rad_s2, self.active_velocity_pitch_gain_rad_per_sps, self.active_velocity_control_cutoff_hz, self.active_velocity_observer_cutoff_hz, self.active_com_trim_gain_deg_per_sps_s, self.active_com_trim_limit_deg, self.active_accel_lpf_hz, self.active_gyro_lpf_hz, self.active_gyro_derivative_lpf_hz, self.active_config_generation, self.velocity_pitch_request_unclamped_deg, self.velocity_pitch_request_limited_deg, self.pitch_target_unclamped_deg, self.active_velocity_pitch_limit_deg, self.trim_quiet_rate_rms_dps, self.velocity_authority_limited, self.trim_trusted, self.trim_learning_allowed, self.pitch_target_limit_reason, self.velocity_control_sps, self.pitch_authority_diagnostic_active, self.pitch_authority_diagnostic_target_deg, self.pitch_authority_diagnostic_com_trim_deg, self.pitch_authority_diagnostic_remaining_s, self.pitch_authority_diagnostic_request_id, self.pitch_authority_diagnostic_command_age_ms, self.completed_step_acceleration_sps2, self.packet_seq, self.loop_seq, self.sender_monotonic_ns))
+        data.extend(struct.pack("<III4xQfffffffffffffffffffffffiiI??BBH2xffffffffffffffffQfffff???Bf?3xfffIffQQQffffffffff????fffffff??2xfffffffffff????4x", self.run_id, self.controller_fault_flags, self.controller_saturation_flags, self.imu_timestamp_us, self.t_sec, self.age_ms, self.pitch_deg, self.pitch_rate_dps, self.raw_acc_pitch_deg, self.fused_pitch_deg, self.gyro_pitch_rate_dps, self.filtered_pitch_rate_dps, self.u_sps, self.turn_sps, self.nominal_acceleration_mps2, self.raw_completed_velocity_sps, self.corrected_axle_velocity_sps, self.velocity_damping_acceleration_mps2, self.com_trim_deg, self.pitch_error_deg, self.pitch_sp_deg, self.left_target_sps, self.right_target_sps, self.left_slewed_sps, self.right_slewed_sps, self.motor_update_dt_ms, self.motor_feedback_age_ms, self.left_actual_steps, self.right_actual_steps, self.actuator_saturation_flags, self.command_saturated, self.actuator_fault, self.trim_learning_enabled, self.trim_learning_block_reason, self.trim_learning_reserved, self.pitch_feedback_sps, self.pitch_rate_feedback_sps, self.pitch_accel_feedback_sps, self.velocity_pitch_target_deg, self.balance_unclamped_sps, self.active_pitch_gain_sps_per_rad, self.active_pitch_rate_gain_sps_per_rad_s, self.active_pitch_accel_gain_sps_per_rad_s2, self.active_velocity_pitch_gain_rad_per_sps, self.active_velocity_control_cutoff_hz, self.active_velocity_observer_cutoff_hz, self.active_com_trim_gain_deg_per_sps_s, self.active_com_trim_limit_deg, self.active_accel_lpf_hz, self.active_gyro_lpf_hz, self.active_gyro_derivative_lpf_hz, self.active_config_generation, self.velocity_pitch_request_unclamped_deg, self.velocity_pitch_request_limited_deg, self.pitch_target_unclamped_deg, self.active_velocity_pitch_limit_deg, self.trim_quiet_rate_rms_dps, self.velocity_authority_limited, self.trim_trusted, self.trim_learning_allowed, self.pitch_target_limit_reason, self.velocity_control_sps, self.pitch_authority_diagnostic_active, self.pitch_authority_diagnostic_target_deg, self.pitch_authority_diagnostic_com_trim_deg, self.pitch_authority_diagnostic_remaining_s, self.pitch_authority_diagnostic_request_id, self.pitch_authority_diagnostic_command_age_ms, self.completed_step_acceleration_sps2, self.packet_seq, self.loop_seq, self.sender_monotonic_ns, self.user_velocity_mps, self.reference_velocity_mps, self.reference_acceleration_mps2, self.velocity_feedback_estimate_mps, self.velocity_error_mps, self.velocity_feedback_acceleration_mps2, self.acceleration_raw_mps2, self.acceleration_cmd_mps2, self.drive_pitch_target_deg, self.fixed_com_trim_deg, self.velocity_feedback_valid, self.velocity_feedback_active, self.outer_acceleration_limited, self.outer_pitch_target_limited, self.active_drive_max_velocity_mps, self.active_drive_max_acceleration_mps2, self.active_drive_max_deceleration_mps2, self.active_velocity_gain_per_s, self.active_velocity_feedback_cutoff_hz, self.active_outer_pitch_limit_deg, self.active_fixed_com_trim_deg, self.adaptive_com_trim_enabled, self.legacy_outer_fields_valid, self.reference_jerk_mps3, self.velocity_p_acceleration_mps2, self.velocity_i_acceleration_mps2, self.velocity_integral_state_mps_s, self.final_pitch_target_deg, self.active_planner_max_acceleration_mps2, self.active_planner_max_deceleration_mps2, self.active_planner_max_jerk_mps3, self.active_velocity_i_gain_per_s2, self.active_velocity_i_leak_time_s, self.active_velocity_i_acceleration_limit_mps2, self.planner_acceleration_limited, self.planner_jerk_limited, self.velocity_integral_limited, self.velocity_anti_windup_active))
         return bytes(data)
 
     def pack(self) -> bytes:
@@ -160,9 +198,9 @@ class SystemTelemetryPayload:
     @classmethod
     def unpack_wire(cls, data: bytes) -> "SystemTelemetryPayload":
         offset = 0
-        run_id, controller_fault_flags, controller_saturation_flags, imu_timestamp_us, t_sec, age_ms, pitch_deg, pitch_rate_dps, raw_acc_pitch_deg, fused_pitch_deg, gyro_pitch_rate_dps, filtered_pitch_rate_dps, u_sps, turn_sps, nominal_acceleration_mps2, raw_completed_velocity_sps, corrected_axle_velocity_sps, velocity_damping_acceleration_mps2, com_trim_deg, pitch_error_deg, pitch_sp_deg, left_target_sps, right_target_sps, left_slewed_sps, right_slewed_sps, motor_update_dt_ms, motor_feedback_age_ms, left_actual_steps, right_actual_steps, actuator_saturation_flags, command_saturated, actuator_fault, trim_learning_enabled, trim_learning_block_reason, trim_learning_reserved, pitch_feedback_sps, pitch_rate_feedback_sps, pitch_accel_feedback_sps, velocity_pitch_target_deg, balance_unclamped_sps, active_pitch_gain_sps_per_rad, active_pitch_rate_gain_sps_per_rad_s, active_pitch_accel_gain_sps_per_rad_s2, active_velocity_pitch_gain_rad_per_sps, active_velocity_control_cutoff_hz, active_velocity_observer_cutoff_hz, active_com_trim_gain_deg_per_sps_s, active_com_trim_limit_deg, active_accel_lpf_hz, active_gyro_lpf_hz, active_gyro_derivative_lpf_hz, active_config_generation, velocity_pitch_request_unclamped_deg, velocity_pitch_request_limited_deg, pitch_target_unclamped_deg, active_velocity_pitch_limit_deg, trim_quiet_rate_rms_dps, velocity_authority_limited, trim_trusted, trim_learning_allowed, pitch_target_limit_reason, velocity_control_sps, pitch_authority_diagnostic_active, pitch_authority_diagnostic_target_deg, pitch_authority_diagnostic_com_trim_deg, pitch_authority_diagnostic_remaining_s, pitch_authority_diagnostic_request_id, pitch_authority_diagnostic_command_age_ms, completed_step_acceleration_sps2, packet_seq, loop_seq, sender_monotonic_ns = struct.unpack_from("<III4xQfffffffffffffffffffffffiiI??BBH2xffffffffffffffffQfffff???Bf?3xfffIffQQQ", data, offset)
-        offset += struct.calcsize("<III4xQfffffffffffffffffffffffiiI??BBH2xffffffffffffffffQfffff???Bf?3xfffIffQQQ")
-        return cls(run_id=run_id, controller_fault_flags=controller_fault_flags, controller_saturation_flags=controller_saturation_flags, imu_timestamp_us=imu_timestamp_us, t_sec=t_sec, age_ms=age_ms, pitch_deg=pitch_deg, pitch_rate_dps=pitch_rate_dps, raw_acc_pitch_deg=raw_acc_pitch_deg, fused_pitch_deg=fused_pitch_deg, gyro_pitch_rate_dps=gyro_pitch_rate_dps, filtered_pitch_rate_dps=filtered_pitch_rate_dps, u_sps=u_sps, turn_sps=turn_sps, nominal_acceleration_mps2=nominal_acceleration_mps2, raw_completed_velocity_sps=raw_completed_velocity_sps, corrected_axle_velocity_sps=corrected_axle_velocity_sps, velocity_damping_acceleration_mps2=velocity_damping_acceleration_mps2, com_trim_deg=com_trim_deg, pitch_error_deg=pitch_error_deg, pitch_sp_deg=pitch_sp_deg, left_target_sps=left_target_sps, right_target_sps=right_target_sps, left_slewed_sps=left_slewed_sps, right_slewed_sps=right_slewed_sps, motor_update_dt_ms=motor_update_dt_ms, motor_feedback_age_ms=motor_feedback_age_ms, left_actual_steps=left_actual_steps, right_actual_steps=right_actual_steps, actuator_saturation_flags=actuator_saturation_flags, command_saturated=command_saturated, actuator_fault=actuator_fault, trim_learning_enabled=trim_learning_enabled, trim_learning_block_reason=trim_learning_block_reason, trim_learning_reserved=trim_learning_reserved, pitch_feedback_sps=pitch_feedback_sps, pitch_rate_feedback_sps=pitch_rate_feedback_sps, pitch_accel_feedback_sps=pitch_accel_feedback_sps, velocity_pitch_target_deg=velocity_pitch_target_deg, balance_unclamped_sps=balance_unclamped_sps, active_pitch_gain_sps_per_rad=active_pitch_gain_sps_per_rad, active_pitch_rate_gain_sps_per_rad_s=active_pitch_rate_gain_sps_per_rad_s, active_pitch_accel_gain_sps_per_rad_s2=active_pitch_accel_gain_sps_per_rad_s2, active_velocity_pitch_gain_rad_per_sps=active_velocity_pitch_gain_rad_per_sps, active_velocity_control_cutoff_hz=active_velocity_control_cutoff_hz, active_velocity_observer_cutoff_hz=active_velocity_observer_cutoff_hz, active_com_trim_gain_deg_per_sps_s=active_com_trim_gain_deg_per_sps_s, active_com_trim_limit_deg=active_com_trim_limit_deg, active_accel_lpf_hz=active_accel_lpf_hz, active_gyro_lpf_hz=active_gyro_lpf_hz, active_gyro_derivative_lpf_hz=active_gyro_derivative_lpf_hz, active_config_generation=active_config_generation, velocity_pitch_request_unclamped_deg=velocity_pitch_request_unclamped_deg, velocity_pitch_request_limited_deg=velocity_pitch_request_limited_deg, pitch_target_unclamped_deg=pitch_target_unclamped_deg, active_velocity_pitch_limit_deg=active_velocity_pitch_limit_deg, trim_quiet_rate_rms_dps=trim_quiet_rate_rms_dps, velocity_authority_limited=velocity_authority_limited, trim_trusted=trim_trusted, trim_learning_allowed=trim_learning_allowed, pitch_target_limit_reason=pitch_target_limit_reason, velocity_control_sps=velocity_control_sps, pitch_authority_diagnostic_active=pitch_authority_diagnostic_active, pitch_authority_diagnostic_target_deg=pitch_authority_diagnostic_target_deg, pitch_authority_diagnostic_com_trim_deg=pitch_authority_diagnostic_com_trim_deg, pitch_authority_diagnostic_remaining_s=pitch_authority_diagnostic_remaining_s, pitch_authority_diagnostic_request_id=pitch_authority_diagnostic_request_id, pitch_authority_diagnostic_command_age_ms=pitch_authority_diagnostic_command_age_ms, completed_step_acceleration_sps2=completed_step_acceleration_sps2, packet_seq=packet_seq, loop_seq=loop_seq, sender_monotonic_ns=sender_monotonic_ns)
+        run_id, controller_fault_flags, controller_saturation_flags, imu_timestamp_us, t_sec, age_ms, pitch_deg, pitch_rate_dps, raw_acc_pitch_deg, fused_pitch_deg, gyro_pitch_rate_dps, filtered_pitch_rate_dps, u_sps, turn_sps, nominal_acceleration_mps2, raw_completed_velocity_sps, corrected_axle_velocity_sps, velocity_damping_acceleration_mps2, com_trim_deg, pitch_error_deg, pitch_sp_deg, left_target_sps, right_target_sps, left_slewed_sps, right_slewed_sps, motor_update_dt_ms, motor_feedback_age_ms, left_actual_steps, right_actual_steps, actuator_saturation_flags, command_saturated, actuator_fault, trim_learning_enabled, trim_learning_block_reason, trim_learning_reserved, pitch_feedback_sps, pitch_rate_feedback_sps, pitch_accel_feedback_sps, velocity_pitch_target_deg, balance_unclamped_sps, active_pitch_gain_sps_per_rad, active_pitch_rate_gain_sps_per_rad_s, active_pitch_accel_gain_sps_per_rad_s2, active_velocity_pitch_gain_rad_per_sps, active_velocity_control_cutoff_hz, active_velocity_observer_cutoff_hz, active_com_trim_gain_deg_per_sps_s, active_com_trim_limit_deg, active_accel_lpf_hz, active_gyro_lpf_hz, active_gyro_derivative_lpf_hz, active_config_generation, velocity_pitch_request_unclamped_deg, velocity_pitch_request_limited_deg, pitch_target_unclamped_deg, active_velocity_pitch_limit_deg, trim_quiet_rate_rms_dps, velocity_authority_limited, trim_trusted, trim_learning_allowed, pitch_target_limit_reason, velocity_control_sps, pitch_authority_diagnostic_active, pitch_authority_diagnostic_target_deg, pitch_authority_diagnostic_com_trim_deg, pitch_authority_diagnostic_remaining_s, pitch_authority_diagnostic_request_id, pitch_authority_diagnostic_command_age_ms, completed_step_acceleration_sps2, packet_seq, loop_seq, sender_monotonic_ns, user_velocity_mps, reference_velocity_mps, reference_acceleration_mps2, velocity_feedback_estimate_mps, velocity_error_mps, velocity_feedback_acceleration_mps2, acceleration_raw_mps2, acceleration_cmd_mps2, drive_pitch_target_deg, fixed_com_trim_deg, velocity_feedback_valid, velocity_feedback_active, outer_acceleration_limited, outer_pitch_target_limited, active_drive_max_velocity_mps, active_drive_max_acceleration_mps2, active_drive_max_deceleration_mps2, active_velocity_gain_per_s, active_velocity_feedback_cutoff_hz, active_outer_pitch_limit_deg, active_fixed_com_trim_deg, adaptive_com_trim_enabled, legacy_outer_fields_valid, reference_jerk_mps3, velocity_p_acceleration_mps2, velocity_i_acceleration_mps2, velocity_integral_state_mps_s, final_pitch_target_deg, active_planner_max_acceleration_mps2, active_planner_max_deceleration_mps2, active_planner_max_jerk_mps3, active_velocity_i_gain_per_s2, active_velocity_i_leak_time_s, active_velocity_i_acceleration_limit_mps2, planner_acceleration_limited, planner_jerk_limited, velocity_integral_limited, velocity_anti_windup_active = struct.unpack_from("<III4xQfffffffffffffffffffffffiiI??BBH2xffffffffffffffffQfffff???Bf?3xfffIffQQQffffffffff????fffffff??2xfffffffffff????4x", data, offset)
+        offset += struct.calcsize("<III4xQfffffffffffffffffffffffiiI??BBH2xffffffffffffffffQfffff???Bf?3xfffIffQQQffffffffff????fffffff??2xfffffffffff????4x")
+        return cls(run_id=run_id, controller_fault_flags=controller_fault_flags, controller_saturation_flags=controller_saturation_flags, imu_timestamp_us=imu_timestamp_us, t_sec=t_sec, age_ms=age_ms, pitch_deg=pitch_deg, pitch_rate_dps=pitch_rate_dps, raw_acc_pitch_deg=raw_acc_pitch_deg, fused_pitch_deg=fused_pitch_deg, gyro_pitch_rate_dps=gyro_pitch_rate_dps, filtered_pitch_rate_dps=filtered_pitch_rate_dps, u_sps=u_sps, turn_sps=turn_sps, nominal_acceleration_mps2=nominal_acceleration_mps2, raw_completed_velocity_sps=raw_completed_velocity_sps, corrected_axle_velocity_sps=corrected_axle_velocity_sps, velocity_damping_acceleration_mps2=velocity_damping_acceleration_mps2, com_trim_deg=com_trim_deg, pitch_error_deg=pitch_error_deg, pitch_sp_deg=pitch_sp_deg, left_target_sps=left_target_sps, right_target_sps=right_target_sps, left_slewed_sps=left_slewed_sps, right_slewed_sps=right_slewed_sps, motor_update_dt_ms=motor_update_dt_ms, motor_feedback_age_ms=motor_feedback_age_ms, left_actual_steps=left_actual_steps, right_actual_steps=right_actual_steps, actuator_saturation_flags=actuator_saturation_flags, command_saturated=command_saturated, actuator_fault=actuator_fault, trim_learning_enabled=trim_learning_enabled, trim_learning_block_reason=trim_learning_block_reason, trim_learning_reserved=trim_learning_reserved, pitch_feedback_sps=pitch_feedback_sps, pitch_rate_feedback_sps=pitch_rate_feedback_sps, pitch_accel_feedback_sps=pitch_accel_feedback_sps, velocity_pitch_target_deg=velocity_pitch_target_deg, balance_unclamped_sps=balance_unclamped_sps, active_pitch_gain_sps_per_rad=active_pitch_gain_sps_per_rad, active_pitch_rate_gain_sps_per_rad_s=active_pitch_rate_gain_sps_per_rad_s, active_pitch_accel_gain_sps_per_rad_s2=active_pitch_accel_gain_sps_per_rad_s2, active_velocity_pitch_gain_rad_per_sps=active_velocity_pitch_gain_rad_per_sps, active_velocity_control_cutoff_hz=active_velocity_control_cutoff_hz, active_velocity_observer_cutoff_hz=active_velocity_observer_cutoff_hz, active_com_trim_gain_deg_per_sps_s=active_com_trim_gain_deg_per_sps_s, active_com_trim_limit_deg=active_com_trim_limit_deg, active_accel_lpf_hz=active_accel_lpf_hz, active_gyro_lpf_hz=active_gyro_lpf_hz, active_gyro_derivative_lpf_hz=active_gyro_derivative_lpf_hz, active_config_generation=active_config_generation, velocity_pitch_request_unclamped_deg=velocity_pitch_request_unclamped_deg, velocity_pitch_request_limited_deg=velocity_pitch_request_limited_deg, pitch_target_unclamped_deg=pitch_target_unclamped_deg, active_velocity_pitch_limit_deg=active_velocity_pitch_limit_deg, trim_quiet_rate_rms_dps=trim_quiet_rate_rms_dps, velocity_authority_limited=velocity_authority_limited, trim_trusted=trim_trusted, trim_learning_allowed=trim_learning_allowed, pitch_target_limit_reason=pitch_target_limit_reason, velocity_control_sps=velocity_control_sps, pitch_authority_diagnostic_active=pitch_authority_diagnostic_active, pitch_authority_diagnostic_target_deg=pitch_authority_diagnostic_target_deg, pitch_authority_diagnostic_com_trim_deg=pitch_authority_diagnostic_com_trim_deg, pitch_authority_diagnostic_remaining_s=pitch_authority_diagnostic_remaining_s, pitch_authority_diagnostic_request_id=pitch_authority_diagnostic_request_id, pitch_authority_diagnostic_command_age_ms=pitch_authority_diagnostic_command_age_ms, completed_step_acceleration_sps2=completed_step_acceleration_sps2, packet_seq=packet_seq, loop_seq=loop_seq, sender_monotonic_ns=sender_monotonic_ns, user_velocity_mps=user_velocity_mps, reference_velocity_mps=reference_velocity_mps, reference_acceleration_mps2=reference_acceleration_mps2, velocity_feedback_estimate_mps=velocity_feedback_estimate_mps, velocity_error_mps=velocity_error_mps, velocity_feedback_acceleration_mps2=velocity_feedback_acceleration_mps2, acceleration_raw_mps2=acceleration_raw_mps2, acceleration_cmd_mps2=acceleration_cmd_mps2, drive_pitch_target_deg=drive_pitch_target_deg, fixed_com_trim_deg=fixed_com_trim_deg, velocity_feedback_valid=velocity_feedback_valid, velocity_feedback_active=velocity_feedback_active, outer_acceleration_limited=outer_acceleration_limited, outer_pitch_target_limited=outer_pitch_target_limited, active_drive_max_velocity_mps=active_drive_max_velocity_mps, active_drive_max_acceleration_mps2=active_drive_max_acceleration_mps2, active_drive_max_deceleration_mps2=active_drive_max_deceleration_mps2, active_velocity_gain_per_s=active_velocity_gain_per_s, active_velocity_feedback_cutoff_hz=active_velocity_feedback_cutoff_hz, active_outer_pitch_limit_deg=active_outer_pitch_limit_deg, active_fixed_com_trim_deg=active_fixed_com_trim_deg, adaptive_com_trim_enabled=adaptive_com_trim_enabled, legacy_outer_fields_valid=legacy_outer_fields_valid, reference_jerk_mps3=reference_jerk_mps3, velocity_p_acceleration_mps2=velocity_p_acceleration_mps2, velocity_i_acceleration_mps2=velocity_i_acceleration_mps2, velocity_integral_state_mps_s=velocity_integral_state_mps_s, final_pitch_target_deg=final_pitch_target_deg, active_planner_max_acceleration_mps2=active_planner_max_acceleration_mps2, active_planner_max_deceleration_mps2=active_planner_max_deceleration_mps2, active_planner_max_jerk_mps3=active_planner_max_jerk_mps3, active_velocity_i_gain_per_s2=active_velocity_i_gain_per_s2, active_velocity_i_leak_time_s=active_velocity_i_leak_time_s, active_velocity_i_acceleration_limit_mps2=active_velocity_i_acceleration_limit_mps2, planner_acceleration_limited=planner_acceleration_limited, planner_jerk_limited=planner_jerk_limited, velocity_integral_limited=velocity_integral_limited, velocity_anti_windup_active=velocity_anti_windup_active)
 
     @classmethod
     def unpack(cls, data: bytes) -> "SystemTelemetryPayload":
@@ -431,7 +469,7 @@ class SimStopRunPayload:
 
 @dataclass
 class SimRunDonePayload:
-    WIRE_SIZE = 104
+    WIRE_SIZE = 96
     run_id: int
     reason_code: int
     reserved0: int
@@ -448,11 +486,10 @@ class SimRunDonePayload:
     max_continuous_saturation_s: float
     actuator_fault_count: int
     controller_fault_flags: int
-    timeline_hash: int
 
     def pack_wire(self) -> bytes:
         data = bytearray()
-        data.extend(struct.pack("<IBBHI4xdddddddddIIQ", self.run_id, self.reason_code, self.reserved0, self.reserved1, self.sample_count, self.elapsed_s, self.final_pitch_deg, self.max_abs_pitch_deg, self.tail_rms_pitch_deg, self.tail_rail_fraction, self.tail_mean_abs_pitch_deg, self.max_abs_position_m, self.tail_mean_abs_velocity_mps, self.max_continuous_saturation_s, self.actuator_fault_count, self.controller_fault_flags, self.timeline_hash))
+        data.extend(struct.pack("<IBBHI4xdddddddddII", self.run_id, self.reason_code, self.reserved0, self.reserved1, self.sample_count, self.elapsed_s, self.final_pitch_deg, self.max_abs_pitch_deg, self.tail_rms_pitch_deg, self.tail_rail_fraction, self.tail_mean_abs_pitch_deg, self.max_abs_position_m, self.tail_mean_abs_velocity_mps, self.max_continuous_saturation_s, self.actuator_fault_count, self.controller_fault_flags))
         return bytes(data)
 
     def pack(self) -> bytes:
@@ -461,9 +498,9 @@ class SimRunDonePayload:
     @classmethod
     def unpack_wire(cls, data: bytes) -> "SimRunDonePayload":
         offset = 0
-        run_id, reason_code, reserved0, reserved1, sample_count, elapsed_s, final_pitch_deg, max_abs_pitch_deg, tail_rms_pitch_deg, tail_rail_fraction, tail_mean_abs_pitch_deg, max_abs_position_m, tail_mean_abs_velocity_mps, max_continuous_saturation_s, actuator_fault_count, controller_fault_flags, timeline_hash = struct.unpack_from("<IBBHI4xdddddddddIIQ", data, offset)
-        offset += struct.calcsize("<IBBHI4xdddddddddIIQ")
-        return cls(run_id=run_id, reason_code=reason_code, reserved0=reserved0, reserved1=reserved1, sample_count=sample_count, elapsed_s=elapsed_s, final_pitch_deg=final_pitch_deg, max_abs_pitch_deg=max_abs_pitch_deg, tail_rms_pitch_deg=tail_rms_pitch_deg, tail_rail_fraction=tail_rail_fraction, tail_mean_abs_pitch_deg=tail_mean_abs_pitch_deg, max_abs_position_m=max_abs_position_m, tail_mean_abs_velocity_mps=tail_mean_abs_velocity_mps, max_continuous_saturation_s=max_continuous_saturation_s, actuator_fault_count=actuator_fault_count, controller_fault_flags=controller_fault_flags, timeline_hash=timeline_hash)
+        run_id, reason_code, reserved0, reserved1, sample_count, elapsed_s, final_pitch_deg, max_abs_pitch_deg, tail_rms_pitch_deg, tail_rail_fraction, tail_mean_abs_pitch_deg, max_abs_position_m, tail_mean_abs_velocity_mps, max_continuous_saturation_s, actuator_fault_count, controller_fault_flags = struct.unpack_from("<IBBHI4xdddddddddII", data, offset)
+        offset += struct.calcsize("<IBBHI4xdddddddddII")
+        return cls(run_id=run_id, reason_code=reason_code, reserved0=reserved0, reserved1=reserved1, sample_count=sample_count, elapsed_s=elapsed_s, final_pitch_deg=final_pitch_deg, max_abs_pitch_deg=max_abs_pitch_deg, tail_rms_pitch_deg=tail_rms_pitch_deg, tail_rail_fraction=tail_rail_fraction, tail_mean_abs_pitch_deg=tail_mean_abs_pitch_deg, max_abs_position_m=max_abs_position_m, tail_mean_abs_velocity_mps=tail_mean_abs_velocity_mps, max_continuous_saturation_s=max_continuous_saturation_s, actuator_fault_count=actuator_fault_count, controller_fault_flags=controller_fault_flags)
 
     @classmethod
     def unpack(cls, data: bytes) -> "SimRunDonePayload":
@@ -503,7 +540,7 @@ class ImuRawPayload:
 
 @dataclass
 class SimulatorTelemetryPayload:
-    WIRE_SIZE = 416
+    WIRE_SIZE = 560
     system: SystemTelemetryPayload
     seed: int
     plant_pitch_deg: float
@@ -537,6 +574,9 @@ class SimulatorTelemetryPayload:
     tire_damping_n_s_per_m: float
     wheel_equivalent_mass_kg: float
     force_saturated: bool
+    emitted_step_velocity_sps: float
+    synthetic_estimator_velocity_sps: float
+    controller_feedback_velocity_sps: float
 
     def pack_wire(self) -> bytes:
         data = bytearray()
@@ -549,7 +589,7 @@ class SimulatorTelemetryPayload:
             else:
                 item = SystemTelemetryPayload(item)
         data.extend(item.pack_wire())
-        data.extend(struct.pack("<Iffffffffffffffffffffffffffffff?3x", self.seed, self.plant_pitch_deg, self.plant_pitch_rate_dps, self.plant_position_m, self.plant_velocity_mps, self.target_wheel_velocity, self.actual_wheel_velocity, self.plant_velocity_error, self.f_cmd, self.f_app, self.external_force_n, self.external_com_bias_rad, self.x_ddot, self.theta_ddot, self.phase_error_steps, self.missed_steps, self.traction_limit_n, self.motor_force_limit_n, self.total_mass_scale, self.pitch_inertia_scale, self.motor_max_force_n, self.motor_no_load_speed_mps, self.motor_velocity_damping, self.motor_tau_s, self.traction_coefficient, self.pitch_damping, self.cart_damping, self.phase_error_limit_steps, self.tire_stiffness_n_per_m, self.tire_damping_n_s_per_m, self.wheel_equivalent_mass_kg, self.force_saturated))
+        data.extend(struct.pack("<Iffffffffffffffffffffffffffffff?3xfff4x", self.seed, self.plant_pitch_deg, self.plant_pitch_rate_dps, self.plant_position_m, self.plant_velocity_mps, self.target_wheel_velocity, self.actual_wheel_velocity, self.plant_velocity_error, self.f_cmd, self.f_app, self.external_force_n, self.external_com_bias_rad, self.x_ddot, self.theta_ddot, self.phase_error_steps, self.missed_steps, self.traction_limit_n, self.motor_force_limit_n, self.total_mass_scale, self.pitch_inertia_scale, self.motor_max_force_n, self.motor_no_load_speed_mps, self.motor_velocity_damping, self.motor_tau_s, self.traction_coefficient, self.pitch_damping, self.cart_damping, self.phase_error_limit_steps, self.tire_stiffness_n_per_m, self.tire_damping_n_s_per_m, self.wheel_equivalent_mass_kg, self.force_saturated, self.emitted_step_velocity_sps, self.synthetic_estimator_velocity_sps, self.controller_feedback_velocity_sps))
         return bytes(data)
 
     def pack(self) -> bytes:
@@ -561,9 +601,9 @@ class SimulatorTelemetryPayload:
         sub_size = SystemTelemetryPayload.WIRE_SIZE
         system = SystemTelemetryPayload.unpack_wire(data[offset:offset+sub_size])
         offset += sub_size
-        seed, plant_pitch_deg, plant_pitch_rate_dps, plant_position_m, plant_velocity_mps, target_wheel_velocity, actual_wheel_velocity, plant_velocity_error, f_cmd, f_app, external_force_n, external_com_bias_rad, x_ddot, theta_ddot, phase_error_steps, missed_steps, traction_limit_n, motor_force_limit_n, total_mass_scale, pitch_inertia_scale, motor_max_force_n, motor_no_load_speed_mps, motor_velocity_damping, motor_tau_s, traction_coefficient, pitch_damping, cart_damping, phase_error_limit_steps, tire_stiffness_n_per_m, tire_damping_n_s_per_m, wheel_equivalent_mass_kg, force_saturated = struct.unpack_from("<Iffffffffffffffffffffffffffffff?3x", data, offset)
-        offset += struct.calcsize("<Iffffffffffffffffffffffffffffff?3x")
-        return cls(system=system, seed=seed, plant_pitch_deg=plant_pitch_deg, plant_pitch_rate_dps=plant_pitch_rate_dps, plant_position_m=plant_position_m, plant_velocity_mps=plant_velocity_mps, target_wheel_velocity=target_wheel_velocity, actual_wheel_velocity=actual_wheel_velocity, plant_velocity_error=plant_velocity_error, f_cmd=f_cmd, f_app=f_app, external_force_n=external_force_n, external_com_bias_rad=external_com_bias_rad, x_ddot=x_ddot, theta_ddot=theta_ddot, phase_error_steps=phase_error_steps, missed_steps=missed_steps, traction_limit_n=traction_limit_n, motor_force_limit_n=motor_force_limit_n, total_mass_scale=total_mass_scale, pitch_inertia_scale=pitch_inertia_scale, motor_max_force_n=motor_max_force_n, motor_no_load_speed_mps=motor_no_load_speed_mps, motor_velocity_damping=motor_velocity_damping, motor_tau_s=motor_tau_s, traction_coefficient=traction_coefficient, pitch_damping=pitch_damping, cart_damping=cart_damping, phase_error_limit_steps=phase_error_limit_steps, tire_stiffness_n_per_m=tire_stiffness_n_per_m, tire_damping_n_s_per_m=tire_damping_n_s_per_m, wheel_equivalent_mass_kg=wheel_equivalent_mass_kg, force_saturated=force_saturated)
+        seed, plant_pitch_deg, plant_pitch_rate_dps, plant_position_m, plant_velocity_mps, target_wheel_velocity, actual_wheel_velocity, plant_velocity_error, f_cmd, f_app, external_force_n, external_com_bias_rad, x_ddot, theta_ddot, phase_error_steps, missed_steps, traction_limit_n, motor_force_limit_n, total_mass_scale, pitch_inertia_scale, motor_max_force_n, motor_no_load_speed_mps, motor_velocity_damping, motor_tau_s, traction_coefficient, pitch_damping, cart_damping, phase_error_limit_steps, tire_stiffness_n_per_m, tire_damping_n_s_per_m, wheel_equivalent_mass_kg, force_saturated, emitted_step_velocity_sps, synthetic_estimator_velocity_sps, controller_feedback_velocity_sps = struct.unpack_from("<Iffffffffffffffffffffffffffffff?3xfff4x", data, offset)
+        offset += struct.calcsize("<Iffffffffffffffffffffffffffffff?3xfff4x")
+        return cls(system=system, seed=seed, plant_pitch_deg=plant_pitch_deg, plant_pitch_rate_dps=plant_pitch_rate_dps, plant_position_m=plant_position_m, plant_velocity_mps=plant_velocity_mps, target_wheel_velocity=target_wheel_velocity, actual_wheel_velocity=actual_wheel_velocity, plant_velocity_error=plant_velocity_error, f_cmd=f_cmd, f_app=f_app, external_force_n=external_force_n, external_com_bias_rad=external_com_bias_rad, x_ddot=x_ddot, theta_ddot=theta_ddot, phase_error_steps=phase_error_steps, missed_steps=missed_steps, traction_limit_n=traction_limit_n, motor_force_limit_n=motor_force_limit_n, total_mass_scale=total_mass_scale, pitch_inertia_scale=pitch_inertia_scale, motor_max_force_n=motor_max_force_n, motor_no_load_speed_mps=motor_no_load_speed_mps, motor_velocity_damping=motor_velocity_damping, motor_tau_s=motor_tau_s, traction_coefficient=traction_coefficient, pitch_damping=pitch_damping, cart_damping=cart_damping, phase_error_limit_steps=phase_error_limit_steps, tire_stiffness_n_per_m=tire_stiffness_n_per_m, tire_damping_n_s_per_m=tire_damping_n_s_per_m, wheel_equivalent_mass_kg=wheel_equivalent_mass_kg, force_saturated=force_saturated, emitted_step_velocity_sps=emitted_step_velocity_sps, synthetic_estimator_velocity_sps=synthetic_estimator_velocity_sps, controller_feedback_velocity_sps=controller_feedback_velocity_sps)
 
     @classmethod
     def unpack(cls, data: bytes) -> "SimulatorTelemetryPayload":
@@ -596,23 +636,30 @@ class JoystickCommandPayload:
 
 @dataclass
 class ConfigPidValuesPayload:
-    WIRE_SIZE = 96
-    drive_max_acceleration_mps2: float
-    velocity_damping_per_s: float
-    velocity_pitch_limit_deg: float
-    velocity_I: float
-    velocity_I_limit_deg: float
-    drive_max_sps: float
+    WIRE_SIZE = 152
+    drive_max_velocity_mps: float
+    velocity_gain_per_s: float
+    velocity_feedback_cutoff_hz: float
+    outer_pitch_limit_deg: float
+    fixed_com_trim_deg: float
+    adaptive_com_trim_enabled: float
+    adaptive_com_trim_gain_deg_per_mps_s: float
+    adaptive_com_trim_limit_deg: float
     turn_max_sps: float
     balance_max_sps: float
     pitch_gain: float
     pitch_rate_gain: float
     pitch_accel_gain: float
-    velocity_control_cutoff_hz: float
+    planner_max_acceleration_mps2: float
+    planner_max_deceleration_mps2: float
+    planner_max_jerk_mps3: float
+    velocity_i_gain_per_s2: float
+    velocity_i_leak_time_s: float
+    velocity_i_acceleration_limit_mps2: float
 
     def pack_wire(self) -> bytes:
         data = bytearray()
-        data.extend(struct.pack("<dddddddddddd", self.drive_max_acceleration_mps2, self.velocity_damping_per_s, self.velocity_pitch_limit_deg, self.velocity_I, self.velocity_I_limit_deg, self.drive_max_sps, self.turn_max_sps, self.balance_max_sps, self.pitch_gain, self.pitch_rate_gain, self.pitch_accel_gain, self.velocity_control_cutoff_hz))
+        data.extend(struct.pack("<ddddddddddddddddddd", self.drive_max_velocity_mps, self.velocity_gain_per_s, self.velocity_feedback_cutoff_hz, self.outer_pitch_limit_deg, self.fixed_com_trim_deg, self.adaptive_com_trim_enabled, self.adaptive_com_trim_gain_deg_per_mps_s, self.adaptive_com_trim_limit_deg, self.turn_max_sps, self.balance_max_sps, self.pitch_gain, self.pitch_rate_gain, self.pitch_accel_gain, self.planner_max_acceleration_mps2, self.planner_max_deceleration_mps2, self.planner_max_jerk_mps3, self.velocity_i_gain_per_s2, self.velocity_i_leak_time_s, self.velocity_i_acceleration_limit_mps2))
         return bytes(data)
 
     def pack(self) -> bytes:
@@ -621,9 +668,9 @@ class ConfigPidValuesPayload:
     @classmethod
     def unpack_wire(cls, data: bytes) -> "ConfigPidValuesPayload":
         offset = 0
-        drive_max_acceleration_mps2, velocity_damping_per_s, velocity_pitch_limit_deg, velocity_I, velocity_I_limit_deg, drive_max_sps, turn_max_sps, balance_max_sps, pitch_gain, pitch_rate_gain, pitch_accel_gain, velocity_control_cutoff_hz = struct.unpack_from("<dddddddddddd", data, offset)
-        offset += struct.calcsize("<dddddddddddd")
-        return cls(drive_max_acceleration_mps2=drive_max_acceleration_mps2, velocity_damping_per_s=velocity_damping_per_s, velocity_pitch_limit_deg=velocity_pitch_limit_deg, velocity_I=velocity_I, velocity_I_limit_deg=velocity_I_limit_deg, drive_max_sps=drive_max_sps, turn_max_sps=turn_max_sps, balance_max_sps=balance_max_sps, pitch_gain=pitch_gain, pitch_rate_gain=pitch_rate_gain, pitch_accel_gain=pitch_accel_gain, velocity_control_cutoff_hz=velocity_control_cutoff_hz)
+        drive_max_velocity_mps, velocity_gain_per_s, velocity_feedback_cutoff_hz, outer_pitch_limit_deg, fixed_com_trim_deg, adaptive_com_trim_enabled, adaptive_com_trim_gain_deg_per_mps_s, adaptive_com_trim_limit_deg, turn_max_sps, balance_max_sps, pitch_gain, pitch_rate_gain, pitch_accel_gain, planner_max_acceleration_mps2, planner_max_deceleration_mps2, planner_max_jerk_mps3, velocity_i_gain_per_s2, velocity_i_leak_time_s, velocity_i_acceleration_limit_mps2 = struct.unpack_from("<ddddddddddddddddddd", data, offset)
+        offset += struct.calcsize("<ddddddddddddddddddd")
+        return cls(drive_max_velocity_mps=drive_max_velocity_mps, velocity_gain_per_s=velocity_gain_per_s, velocity_feedback_cutoff_hz=velocity_feedback_cutoff_hz, outer_pitch_limit_deg=outer_pitch_limit_deg, fixed_com_trim_deg=fixed_com_trim_deg, adaptive_com_trim_enabled=adaptive_com_trim_enabled, adaptive_com_trim_gain_deg_per_mps_s=adaptive_com_trim_gain_deg_per_mps_s, adaptive_com_trim_limit_deg=adaptive_com_trim_limit_deg, turn_max_sps=turn_max_sps, balance_max_sps=balance_max_sps, pitch_gain=pitch_gain, pitch_rate_gain=pitch_rate_gain, pitch_accel_gain=pitch_accel_gain, planner_max_acceleration_mps2=planner_max_acceleration_mps2, planner_max_deceleration_mps2=planner_max_deceleration_mps2, planner_max_jerk_mps3=planner_max_jerk_mps3, velocity_i_gain_per_s2=velocity_i_gain_per_s2, velocity_i_leak_time_s=velocity_i_leak_time_s, velocity_i_acceleration_limit_mps2=velocity_i_acceleration_limit_mps2)
 
     @classmethod
     def unpack(cls, data: bytes) -> "ConfigPidValuesPayload":
@@ -631,7 +678,7 @@ class ConfigPidValuesPayload:
 
 @dataclass
 class PidConfigOverridePayload:
-    WIRE_SIZE = 104
+    WIRE_SIZE = 160
     request_id: int
     reserved: int
     values: ConfigPidValuesPayload
@@ -669,7 +716,7 @@ class PidConfigOverridePayload:
 
 @dataclass
 class PidConfigStatusPayload:
-    WIRE_SIZE = 104
+    WIRE_SIZE = 160
     request_id: int
     accepted: int
     result_code: int
@@ -756,17 +803,17 @@ MESSAGE_BY_ID = {
 PAYLOAD_SIZE_BY_ID = {
     MsgId.PhysicsTick: 16,
     MsgId.MotorTargets: 16,
-    MsgId.SystemTelemetry: 288,
+    MsgId.SystemTelemetry: 416,
     MsgId.SimStartRun: 1568,
     MsgId.SimStartAck: 8,
     MsgId.SimStopRun: 4,
-    MsgId.SimRunDone: 104,
+    MsgId.SimRunDone: 96,
     MsgId.ImuRawData: 56,
-    MsgId.SimulatorTelemetry: 416,
+    MsgId.SimulatorTelemetry: 560,
     MsgId.ExternalJoystickCommand: 16,
-    MsgId.PidConfigOverride: 104,
-    MsgId.PidConfigStatus: 104,
+    MsgId.PidConfigOverride: 160,
+    MsgId.PidConfigStatus: 160,
     MsgId.PitchAuthorityDiagnosticCommand: 32,
 }
 
-PROTOCOL_HASH = "b59fa71359c69171"
+PROTOCOL_HASH = "8dd7450eb705367e"

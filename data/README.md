@@ -1,55 +1,53 @@
-# Hardware Data Archive
+# Retained hardware data
 
-Raw dashboard logs are written to the ignored `data/server/` directory. Sessions worth retaining
-are promoted into `data/hardware_sessions/` with a checksum-bound manifest, compact extracts, and
-notes describing what the data can and cannot support.
+This directory contains selected hardware evidence, not a calibration database.
+Raw dashboard captures normally live in the ignored `data/server/` directory.
+Only reviewed extracts with a manifest are retained here.
 
-A fresh checkout contains these retained extracts and manifests, but not necessarily the original
-raw CSVs. Reproduction commands that name `data/server/` require that source capture separately.
+The authoritative interpretation boundary is:
+
+- a session README says exactly what its extract supports;
+- `manifest.json` binds source names, checksums, windows, and transformations;
+- a historical PID digest does not describe the current [`pid.conf`](../pid.conf);
+- no session is a plant/controller fit unless its manifest explicitly permits
+  that use and contains the required external measurements.
+
+Before calculating derivatives, correlations, lags, or spectra, select one
+continuous controller-time session. Do not interpolate across resets, receive
+gaps, or manual-support intervals. Use the shared
+[telemetry-analysis workflow](../doc/testing/telemetry_analysis_cli.md), not a
+new one-off CSV parser.
 
 ## Retained sessions
 
-| Session | Description | Recommended use |
+| Session | Evidence | Permitted use |
 | --- | --- | --- |
-| [`20260719_wood_floor_neutral`](hardware_sessions/20260719_wood_floor_neutral/) | 62.43 s undisturbed balance on a wooden floor; bounded 2.3065 Hz rocking mode | Neutral-balance timing, noise, and frequency-domain reference |
-| [`20260718_noisy_runaway`](hardware_sessions/20260718_noisy_runaway/) | Selected quiet, runaway, intervention, and locked-runaway windows | Failure-mode and saturation reference only |
-| [`20260722_pitch_inertia`](hardware_sessions/20260722_pitch_inertia/) | Two provisional free-swing excerpts recorded with `controller_enabled = 0` | Physical-pendulum evidence; do not use as a final inertia or damping calibration |
-| [`20260722_wood_floor_direct_drive`](hardware_sessions/20260722_wood_floor_direct_drive/) | Fault-free forward-command and release excerpt after removing direct velocity feed-forward | Qualitative drive and completed-step feedback reference only |
+| [`20260719_wood_floor_neutral`](hardware_sessions/20260719_wood_floor_neutral/) | Undisturbed wooden-floor balance with a bounded `2.3065 Hz` rocking mode | Neutral balance, noise, and frequency reference |
+| [`20260718_noisy_runaway`](hardware_sessions/20260718_noisy_runaway/) | Quiet, runaway, intervention, and locked-runaway windows | Failure-mode and saturation evidence only |
+| [`20260722_pitch_inertia`](hardware_sessions/20260722_pitch_inertia/) | Two supported passive-pendulum excerpts with `controller_enabled = 0` | Provisional pitch-inertia evidence only |
+| [`20260722_wood_floor_direct_drive`](hardware_sessions/20260722_wood_floor_direct_drive/) | Historical forward-command/release excerpt from the pre-v12 outer path | Qualitative motion and completed-step feedback evidence only |
+| [`motor_tracking`](hardware_sessions/motor_tracking/) | Optical free-wheel STEP response and event timing | `93–95 Hz` actuator-mode correlation only |
 
-Do not fit controller or plant parameters directly from these sessions. The logs do not contain an
-independently measured external force, hardware position, or complete motor-target telemetry.
+The v12 outer loop and common controller-facing equations are defined in
+[`doc/arch/control_plant.md`](../doc/arch/control_plant.md). The detailed
+electrical simulator realization is defined in
+[`doc/testing/stepper_phase_electrical.md`](../doc/testing/stepper_phase_electrical.md).
+The retained
+hardware mode near `93–95 Hz` is separate from the approximately `2.3065 Hz`
+closed-loop rocking mode in the neutral-floor capture; do not infer that the
+controller notch should move from its existing approximately 29 Hz center to
+the actuator mode.
 
-The two 2026-07-22 sessions have the same evidence boundary: they are useful runtime observations,
-not calibrated plant-identification data. The [Pi guide](../doc/Running_on_Pi.md) links the
-pitch-inertia measurement procedure to its retained excerpts.
+## Evidence workflow
 
-## Claim and reproducibility levels
+1. Run `balancer_pi` while the dashboard records production telemetry.
+2. Preserve the raw CSV, PID/config snapshot, repository revision, and command
+   semantics.
+3. Select a continuous session and named window with the shared analysis tool.
+4. Promote only the reviewed extract, manifest, and claim-limited README.
+5. Compare a historical session with current behavior only after checking its
+   PID digest and runtime context.
 
-Checksum coverage answers which bytes are being discussed; it does not by itself prove how an
-extract was selected or transformed. Use the retained evidence at the following levels:
-
-| Evidence state | What can be reproduced or claimed |
-| --- | --- |
-| Raw source is available, with source/selection and artifact metadata | Re-run the documented selection and compare the derived artifact or metric |
-| Raw source is unavailable, but the retained artifact has a checksum and documented transformation | Recompute a metric from the retained artifact; do not claim that the original extraction can be recreated |
-| Artifact or extraction metadata is incomplete | Treat the file as bounded qualitative evidence only and state the missing provenance |
-| Any historical capture, regardless of checksum coverage | Treat it as historical runtime evidence until its manifest, PID digest, repository revision, and hardware context are compared with the current run |
-
-The dashboard CSVs are received `SystemTelemetry` packet logs, not complete raw sensor or plant
-captures. They may contain controller-time resets, receive gaps, missing fields, or simulator-only
-columns that are consistently zero. Split or select a continuous session before deriving metrics.
-
-## Evidence path
-
-For a recorded hardware claim, follow this path:
-
-1. [`balancer_pi`](../doc/Running_on_Pi.md) runs while the dashboard receives production telemetry.
-2. The dashboard writes a raw CSV under the ignored `data/server/` directory.
-3. Analysis selects a continuous session and time window using the [shared telemetry workflow](../doc/testing/telemetry_analysis_cli.md).
-4. A reviewed result is promoted here as a checksum-bound extract with a `manifest.json`.
-5. The extract supports only the claim stated in its session README; it does not become a plant or
-   controller calibration automatically.
-
-Some source captures are no longer available. In those cases the manifest preserves the source
-filename and checksum, while the retained extract and its documented transformation are the audit
-record.
+The session folders intentionally use a lower, evidence-focused documentation
+standard than the architecture handbook: provenance, claim scope, limitations,
+and files are more important than restating the controller design.

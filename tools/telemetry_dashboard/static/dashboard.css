@@ -117,6 +117,27 @@ h1 { margin: 3px 0 0; font-size: 1.45rem; letter-spacing: -.035em; }
 .metric:nth-child(6)::before { background: linear-gradient(#60a5fa, transparent 85%); }
 .metric small { display: block; color: #8fa5ba; font-size: .72rem; text-transform: uppercase; letter-spacing: .045em; }
 .metric strong { display: block; margin-top: 7px; color: #fff; font-size: 1rem; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.live-status { display: grid; gap: 7px; margin: 0 0 9px; padding: 9px 11px; border: 1px solid #304960; border-radius: 9px; background: rgba(15, 29, 44, .82); }
+.transport-summary { color: #9fb2c5; font-size: .7rem; font-variant-numeric: tabular-nums; letter-spacing: .02em; }
+.transport-summary.warn { color: #f2c56b; }
+.transport-summary.fault { color: #ff9a9a; }
+.flag-status { display: grid; gap: 6px; min-width: 0; }
+.flag-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.flag-row-latched { padding-top: 1px; border-top: 1px solid rgba(73, 100, 125, .42); }
+.flag-caption { color: #71889e; font-size: .64rem; letter-spacing: .08em; text-transform: uppercase; }
+.status-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 7px; border: 1px solid #3a536a; border-radius: 999px; color: #9fb2c5; background: rgba(18, 34, 50, .8); font-size: .65rem; line-height: 1; white-space: nowrap; }
+.status-chip b { color: #71889e; font-size: .72rem; }
+.status-chip.ok { color: #b5efd6; border-color: #39775f; background: rgba(24, 83, 61, .3); }
+.status-chip.ok b, .status-chip.active b { color: #54d6a0; }
+.status-chip.warn { color: #f7d88c; border-color: #806737; background: rgba(103, 75, 20, .28); }
+.status-chip.warn b { color: #f2c56b; }
+.status-chip.fault { color: #ffc0c5; border-color: #814552; background: rgba(112, 37, 51, .3); }
+.status-chip.fault b { color: #ff7f8a; }
+.status-chip.unknown { color: #7f94a8; }
+.rolling-health { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 7px; margin: 0 0 10px; }
+.health-card { min-width: 0; padding: 8px 9px; border: 1px solid #304960; border-radius: 8px; background: linear-gradient(155deg, rgba(24, 39, 55, .94), rgba(15, 29, 44, .94)); }
+.health-card small { display: block; color: #8fa5ba; font-size: .64rem; line-height: 1.15; }
+.health-card strong { display: block; margin-top: 5px; color: #f6f9fc; font-size: .86rem; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .workspace { overflow: hidden; border-radius: 11px; }
 .workspace-head {
@@ -131,8 +152,9 @@ h1 { margin: 3px 0 0; font-size: 1.45rem; letter-spacing: -.035em; }
 .workspace-title { flex: 0 0 auto; display: flex; align-items: center; gap: 7px; color: #f8fbff; }
 .workspace-title svg { color: #38bdf8; }
 .workspace-title h2 { margin: 0; font-size: 1.02rem; letter-spacing: -.01em; }
-.plot-controls { min-width: 0; flex: 1; display: flex; align-items: center; justify-content: flex-end; gap: 8px; overflow-x: auto; scrollbar-width: thin; padding-bottom: 1px; }
+.plot-controls { min-width: 0; flex: 1; display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding-bottom: 1px; }
 .tabs, .ranges { flex: 0 0 auto; display: flex; align-items: center; gap: 5px; flex-wrap: nowrap; }
+.tabs { min-width: 0; flex: 1 1 0; max-width: 760px; justify-content: flex-end; flex-wrap: wrap; row-gap: 5px; }
 .tabs button, .ranges button { padding: .36rem .53rem; font-size: .76rem; white-space: nowrap; }
 .tabs button.active { color: #fff; background: linear-gradient(180deg, #17678e, #165170); border-color: #5fc3ee; }
 .toolbar-divider { flex: 0 0 auto; width: 1px; height: 24px; background: #3a5269; }
@@ -165,8 +187,6 @@ h1 { margin: 3px 0 0; font-size: 1.45rem; letter-spacing: -.035em; }
 
 .plot-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 11px; }
 .plot-card { position: relative; min-width: 0; padding: 11px; overflow: hidden; border: 1px solid #344e65; border-radius: 9px; background: linear-gradient(155deg, #101d2c, #0b1724); box-shadow: 0 8px 20px rgba(0, 0, 0, .18); }
-.plot-card[data-plot-group="performance"] { grid-column: 1 / -1; }
-.plot-card[data-plot-group="performance"] .chart { height: 250px; }
 .plot-card::before { content: ""; position: absolute; top: 0; right: 0; left: 0; height: 1px; background: linear-gradient(90deg, transparent, #4fb9e7, transparent); opacity: .6; }
 .plot-title { min-height: 50px; display: flex; align-items: flex-start; justify-content: space-between; gap: 9px; margin-bottom: 7px; }
 .plot-heading { min-width: 0; display: grid; gap: 2px; }
@@ -179,6 +199,16 @@ h1 { margin: 3px 0 0; font-size: 1.45rem; letter-spacing: -.035em; }
 .chart { height: 278px; overflow: hidden; border: 1px solid #243b50; border-radius: 6px; background: #0c1723; cursor: crosshair; }
 .uplot { background: #0c1723; }
 .u-legend { display: none; }
+.diagnostics-panel { margin: 0 11px 11px; padding: 10px 11px; border: 1px solid #304960; border-radius: 9px; background: rgba(12, 25, 39, .86); }
+.diagnostics-panel summary { cursor: pointer; color: #dbe8f3; font-size: .78rem; font-weight: 750; letter-spacing: .03em; }
+.diagnostics-help { margin: 8px 0 10px; color: #8096aa; font-size: .7rem; line-height: 1.4; }
+.diagnostic-controls { display: flex; gap: 6px; flex-wrap: wrap; }
+.diagnostic-toggle { padding: .34rem .5rem; color: #a9bbcc; border-color: #3b566e; font-size: .7rem; }
+.diagnostic-toggle.active { color: #fff; background: linear-gradient(180deg, #17678e, #165170); border-color: #5fc3ee; }
+.wheel-summary { display: grid; gap: 4px; margin-top: 10px; padding-top: 9px; border-top: 1px solid rgba(73, 100, 125, .42); color: #9fb2c5; font-size: .7rem; font-variant-numeric: tabular-nums; line-height: 1.35; }
+.wheel-summary span { color: #71889e; }
+.wheel-raw span, .wheel-derived span { color: #506b82; padding: 0 3px; }
+.wheel-derived strong { color: #d9e5ef; font-weight: 650; }
 .cursor { min-height: 1.4rem; display: grid; grid-template-columns: 4.5rem minmax(0, 1fr); align-items: start; gap: 6px 10px; margin: .55rem 0 0; color: #d8e3ed; font-size: .75rem; font-variant-numeric: tabular-nums; }
 .cursor b { color: #91a8bd; font-weight: 650; }
 .cursor-time { color: #fff; font-weight: 750; white-space: nowrap; }
@@ -253,6 +283,9 @@ h1 { margin: 3px 0 0; font-size: 1.45rem; letter-spacing: -.035em; }
 .pid-controls summary { cursor: pointer; color: #e5edf7; font-size: .82rem; font-weight: 750; }
 .panel-help { margin: 8px 0; }
 .pid-fields { display: grid; gap: 6px; margin-top: 8px; }
+.pid-section-label { margin-top: 10px; color: #7dd3fc; font-size: .62rem; font-weight: 800; letter-spacing: .11em; text-transform: uppercase; }
+.pid-advanced { margin-top: 11px; padding-top: 9px; border-top: 1px solid rgba(73, 100, 125, .42); }
+.pid-advanced summary { color: #aabacc; font-size: .74rem; }
 .pid-field { display: grid; grid-template-columns: minmax(0, 1fr) 5.8rem; align-items: center; gap: 6px; color: #aabacc; font-size: .66rem; }
 .pid-field input { padding: .28rem .35rem; text-align: right; font-size: .7rem; }
 .pid-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 9px; }
@@ -287,6 +320,7 @@ h1 { margin: 3px 0 0; font-size: 1.45rem; letter-spacing: -.035em; }
   .run-notes { display: none; }
   .events { margin: 0; justify-content: center; }
   .joystick-controls, .pid-controls { grid-column: 1 / -1; }
+  .rolling-health { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
 
 @media (max-width: 900px) {
@@ -296,8 +330,10 @@ h1 { margin: 3px 0 0; font-size: 1.45rem; letter-spacing: -.035em; }
   .right-rail { grid-area: right; }
   .dashboard-main { grid-area: main; }
   .metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .rolling-health { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .workspace-head { align-items: flex-start; flex-direction: column; }
   .plot-controls { width: 100%; justify-content: flex-start; }
+  .tabs { max-width: none; justify-content: flex-start; }
   .plot-grid { grid-template-columns: 1fr; }
   .right-rail { grid-template-columns: 1fr; }
   .run-controls { grid-template-columns: 1fr; }
@@ -309,6 +345,7 @@ h1 { margin: 3px 0 0; font-size: 1.45rem; letter-spacing: -.035em; }
   .left-rail { grid-template-columns: 1fr; gap: 10px; }
   .source-file { width: 100%; }
   .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .rolling-health { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .ranges #timeline-state, .toolbar-divider { display: none; }
   .chart { height: 250px; }
 }

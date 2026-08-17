@@ -173,6 +173,48 @@ struct DOC_DESC(
   uint64_t packet_seq;
   uint64_t loop_seq;
   uint64_t sender_monotonic_ns;
+  // Canonical SI velocity-reference outer-loop telemetry. These fields are
+  // appended so existing payload offsets remain stable for older readers.
+  float user_velocity_mps;
+  float reference_velocity_mps;
+  float reference_acceleration_mps2;
+  float velocity_feedback_estimate_mps;
+  float velocity_error_mps;
+  float velocity_feedback_acceleration_mps2;
+  float acceleration_raw_mps2;
+  float acceleration_cmd_mps2;
+  float drive_pitch_target_deg;
+  float fixed_com_trim_deg;
+  bool velocity_feedback_valid;
+  bool velocity_feedback_active;
+  bool outer_acceleration_limited;
+  bool outer_pitch_target_limited;
+  float active_drive_max_velocity_mps;
+  float active_drive_max_acceleration_mps2;
+  float active_drive_max_deceleration_mps2;
+  float active_velocity_gain_per_s;
+  float active_velocity_feedback_cutoff_hz;
+  float active_outer_pitch_limit_deg;
+  float active_fixed_com_trim_deg;
+  bool adaptive_com_trim_enabled;
+  bool legacy_outer_fields_valid;
+  // Revised jerk-limited planner and bounded leaky-integral diagnostics are
+  // appended to preserve all established wire offsets.
+  float reference_jerk_mps3;
+  float velocity_p_acceleration_mps2;
+  float velocity_i_acceleration_mps2;
+  float velocity_integral_state_mps_s;
+  float final_pitch_target_deg;
+  float active_planner_max_acceleration_mps2;
+  float active_planner_max_deceleration_mps2;
+  float active_planner_max_jerk_mps3;
+  float active_velocity_i_gain_per_s2;
+  float active_velocity_i_leak_time_s;
+  float active_velocity_i_acceleration_limit_mps2;
+  bool planner_acceleration_limited;
+  bool planner_jerk_limited;
+  bool velocity_integral_limited;
+  bool velocity_anti_windup_active;
 };
 
 struct SimulatorTelemetryPayload {
@@ -209,6 +251,14 @@ struct SimulatorTelemetryPayload {
   float tire_damping_n_s_per_m;
   float wheel_equivalent_mass_kg;
   bool force_saturated;
+  // Simulator-only velocity provenance appended after the established plant
+  // diagnostics. The emitted rate is the physical MotorFeedback counter rate;
+  // the synthetic term is nonzero only for explicit estimator perturbation
+  // fixtures; the controller-facing rate is the resulting counter rate after
+  // that optional term is applied.
+  float emitted_step_velocity_sps;
+  float synthetic_estimator_velocity_sps;
+  float controller_feedback_velocity_sps;
 };
 
 struct DOC_DESC(
@@ -355,7 +405,6 @@ struct DOC_DESC("Terminal simulator status emitted once per accepted run.") SimR
   double max_continuous_saturation_s;
   uint32_t actuator_fault_count;
   uint32_t controller_fault_flags;
-  uint64_t timeline_hash;
 };
 
 }  // namespace ipc

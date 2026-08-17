@@ -90,16 +90,9 @@ describe current generated support; unsupported shapes fail during generator com
 
 ## Language Reference
 
-The detailed C++26 papers are archived under:
-
-- `doc/archive/reflection/P2996.html`
-- `doc/archive/reflection/P3096.html`
-- `doc/archive/reflection/P3293.html`
-- `doc/archive/reflection/P3394.html`
-- `doc/archive/reflection/P3491.html`
-- `doc/archive/reflection/P3560.html`
-
-Use those when you need language-level detail. Use the rest of this handbook when you need project-level detail.
+The project does not vendor the C++26 reflection papers. Use the compiler's
+current reflection documentation for language-level questions; use this page,
+[`system.md`](system.md), and the generator sources for project-level behavior.
 
 ---
 

@@ -1,10 +1,13 @@
 #include <arpa/inet.h>
+#include <cerrno>
 #include <fcntl.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <csignal>
@@ -20,6 +23,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 #include "ipc/message_bus.h"
@@ -33,6 +37,7 @@
 #include "services/time/time_service.h"
 #include "simulator/balancer_simulator.h"
 #include "simulator/simulator_runner.h"
+#include "simulator/simulator_tx_queue.h"
 
 namespace {
 
@@ -169,6 +174,10 @@ class UdpEndpoint {
 
     const int flags = ::fcntl(fd_, F_GETFL, 0);
     ::fcntl(fd_, F_SETFL, flags | O_NONBLOCK);
+
+    tx_queue_.start([this](const simulator::SimulatorTxPacket& packet) {
+      transmit(packet);
+    });
   }
 
   uint16_t port() const {
@@ -176,6 +185,7 @@ class UdpEndpoint {
   }
 
   ~UdpEndpoint() {
+    tx_queue_.stop();
     if (fd_ >= 0) {
       ::close(fd_);
     }
@@ -205,30 +215,71 @@ class UdpEndpoint {
   }
 
   template <typename Payload>
-  void send(const PeerAddress& peer, MsgId id, const Payload& payload) {
+  bool send(const PeerAddress& peer, MsgId id, const Payload& payload,
+            simulator::SimulatorTxKind kind = simulator::SimulatorTxKind::Control) {
     if (!peer.valid) {
-      return;
+      return false;
     }
 
     static_assert(std::is_trivially_copyable_v<Payload>);
-    iovec iov[2];
+    static_assert(sizeof(Payload) + sizeof(uint16_t) <= simulator::kSimulatorTxPacketBytes);
+    simulator::SimulatorTxPacket packet{};
+    packet.peer = peer.addr;
     uint16_t raw_id = static_cast<uint16_t>(id);
-    iov[0].iov_base = &raw_id;
-    iov[0].iov_len = sizeof(raw_id);
-    iov[1].iov_base = const_cast<Payload*>(&payload);
-    iov[1].iov_len = sizeof(Payload);
+    std::memcpy(packet.bytes.data(), &raw_id, sizeof(raw_id));
+    std::memcpy(packet.bytes.data() + sizeof(raw_id), &payload, sizeof(Payload));
+    packet.size = static_cast<uint16_t>(sizeof(raw_id) + sizeof(Payload));
+    return tx_queue_.enqueue(std::move(packet), kind);
+  }
 
-    msghdr msg{};
-    msg.msg_name = const_cast<sockaddr*>(reinterpret_cast<const sockaddr*>(&peer.addr));
-    msg.msg_namelen = sizeof(peer.addr);
-    msg.msg_iov = iov;
-    msg.msg_iovlen = 2;
-    ::sendmsg(fd_, &msg, 0);
+  bool send_failed() const {
+    return tx_send_failure_.load();
+  }
+
+  void clear_send_failure() {
+    tx_send_failure_.store(false);
   }
 
  private:
+  void transmit(const simulator::SimulatorTxPacket& packet) {
+    iovec iov{};
+    iov.iov_base = const_cast<uint8_t*>(packet.bytes.data());
+    iov.iov_len = packet.size;
+
+    msghdr msg{};
+    msg.msg_name = const_cast<sockaddr*>(reinterpret_cast<const sockaddr*>(&packet.peer));
+    msg.msg_namelen = sizeof(packet.peer);
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+
+    for (;;) {
+      const ssize_t sent = ::sendmsg(fd_, &msg, MSG_DONTWAIT);
+      if (sent == static_cast<ssize_t>(packet.size)) {
+        return;
+      }
+      const bool would_block = errno == EAGAIN
+#if EWOULDBLOCK != EAGAIN
+                               || errno == EWOULDBLOCK
+#endif
+          ;
+      if (sent < 0 && would_block) {
+        pollfd descriptor{fd_, POLLOUT, 0};
+        if (::poll(&descriptor, 1, 50) >= 0) {
+          continue;
+        }
+        if (errno == EINTR) {
+          continue;
+        }
+      }
+      tx_send_failure_.store(true);
+      return;
+    }
+  }
+
   int fd_{-1};
   uint16_t port_{0};
+  simulator::SimulatorTxQueue<> tx_queue_;
+  std::atomic<bool> tx_send_failure_{false};
 };
 
 struct PigpioCtx {
@@ -326,12 +377,6 @@ class SimulatorService {
       pump_messages();
       if (run_.has_value()) {
         step_active_run();
-        // Full-rate artifact capture needs light pacing so the UDP consumer can
-        // drain every row. Downsampled and summary-only validation runs remain
-        // fully deterministic and run without wall-clock sleeps.
-        if (run_.has_value() && run_->telemetry_stride == 1) {
-          std::this_thread::sleep_for(std::chrono::microseconds(100));
-        }
       } else {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
       }
@@ -356,7 +401,7 @@ class SimulatorService {
     double max_continuous_saturation_s = 0.0;
     uint32_t actuator_fault_count = 0;
     uint32_t controller_fault_flags = 0;
-    uint64_t timeline_hash = 1469598103934665603ULL;
+    bool telemetry_transport_failure = false;
     std::deque<TailSample> tail_samples;
     std::vector<SimulatorTimelineRow> transfer_rows;
     explicit ActiveRun(uint32_t id, std::string pid_path, SimulatorScenario scenario_in,
@@ -512,6 +557,7 @@ class SimulatorService {
           request.pitch_authority_refresh_dropout_duration_s;
     }
 
+    endpoint_.clear_send_failure();
     run_.emplace(request.run_id, pid_path, std::move(scenario), transfer_validation);
     run_->telemetry_stride = request.telemetry_stride;
     run_->steps_total =
@@ -546,7 +592,6 @@ class SimulatorService {
   void step_active_run() {
     ActiveRun& run = *run_;
     const SimulatorTimelineRow row = run.engine.step();
-    run.timeline_hash = update_simulator_timeline_hash(run.timeline_hash, row);
     if (run.transfer_validation) run.transfer_rows.push_back(row);
     run.sim_time_us = run.engine.current_time_us();
     ++run.steps_done;
@@ -621,6 +666,61 @@ class SimulatorService {
     system.velocity_damping_acceleration_mps2 =
         static_cast<float>(row.velocity_damping_acceleration_mps2);
     system.com_trim_deg = static_cast<float>(row.com_trim_deg);
+    system.user_velocity_mps = static_cast<float>(row.user_velocity_mps);
+    system.reference_velocity_mps = static_cast<float>(row.reference_velocity_mps);
+    system.reference_acceleration_mps2 =
+        static_cast<float>(row.reference_acceleration_mps2);
+    system.reference_jerk_mps3 = static_cast<float>(row.reference_jerk_mps3);
+    system.velocity_feedback_estimate_mps =
+        static_cast<float>(row.velocity_feedback_estimate_mps);
+    system.velocity_error_mps = static_cast<float>(row.velocity_error_mps);
+    system.velocity_feedback_acceleration_mps2 =
+        static_cast<float>(row.velocity_feedback_acceleration_mps2);
+    system.velocity_p_acceleration_mps2 =
+        static_cast<float>(row.velocity_p_acceleration_mps2);
+    system.velocity_i_acceleration_mps2 =
+        static_cast<float>(row.velocity_i_acceleration_mps2);
+    system.velocity_integral_state_mps_s =
+        static_cast<float>(row.velocity_integral_state_mps_s);
+    system.acceleration_raw_mps2 = static_cast<float>(row.acceleration_raw_mps2);
+    system.acceleration_cmd_mps2 = static_cast<float>(row.acceleration_cmd_mps2);
+    system.drive_pitch_target_deg = static_cast<float>(row.drive_pitch_target_deg);
+    system.fixed_com_trim_deg = static_cast<float>(row.fixed_com_trim_deg);
+    system.velocity_feedback_valid = row.velocity_feedback_valid > 0.5;
+    system.velocity_feedback_active = row.velocity_feedback_active > 0.5;
+    system.outer_acceleration_limited = row.outer_acceleration_limited > 0.5;
+    system.outer_pitch_target_limited = row.outer_pitch_target_limited > 0.5;
+    system.active_drive_max_velocity_mps =
+        static_cast<float>(row.active_drive_max_velocity_mps);
+    system.active_drive_max_acceleration_mps2 =
+        static_cast<float>(row.active_drive_max_acceleration_mps2);
+    system.active_drive_max_deceleration_mps2 =
+        static_cast<float>(row.active_drive_max_deceleration_mps2);
+    system.active_velocity_gain_per_s = static_cast<float>(row.active_velocity_gain_per_s);
+    system.active_velocity_feedback_cutoff_hz =
+        static_cast<float>(row.active_velocity_feedback_cutoff_hz);
+    system.active_outer_pitch_limit_deg =
+        static_cast<float>(row.active_outer_pitch_limit_deg);
+    system.active_fixed_com_trim_deg = static_cast<float>(row.active_fixed_com_trim_deg);
+    system.adaptive_com_trim_enabled = row.adaptive_com_trim_enabled > 0.5;
+    system.legacy_outer_fields_valid = row.legacy_outer_fields_valid > 0.5;
+    system.final_pitch_target_deg = static_cast<float>(row.final_pitch_target_deg);
+    system.active_planner_max_acceleration_mps2 =
+        static_cast<float>(row.active_planner_max_acceleration_mps2);
+    system.active_planner_max_deceleration_mps2 =
+        static_cast<float>(row.active_planner_max_deceleration_mps2);
+    system.active_planner_max_jerk_mps3 =
+        static_cast<float>(row.active_planner_max_jerk_mps3);
+    system.active_velocity_i_gain_per_s2 =
+        static_cast<float>(row.active_velocity_i_gain_per_s2);
+    system.active_velocity_i_leak_time_s =
+        static_cast<float>(row.active_velocity_i_leak_time_s);
+    system.active_velocity_i_acceleration_limit_mps2 =
+        static_cast<float>(row.active_velocity_i_acceleration_limit_mps2);
+    system.planner_acceleration_limited = row.planner_acceleration_limited > 0.5;
+    system.planner_jerk_limited = row.planner_jerk_limited > 0.5;
+    system.velocity_integral_limited = row.velocity_integral_limited > 0.5;
+    system.velocity_anti_windup_active = row.velocity_anti_windup_active > 0.5;
     system.pitch_error_deg = static_cast<float>(row.pitch_error_deg);
     system.pitch_sp_deg = static_cast<float>(row.pitch_sp_deg);
     system.pitch_feedback_sps = static_cast<float>(row.pitch_feedback_sps);
@@ -717,7 +817,15 @@ class SimulatorService {
     payload.tire_stiffness_n_per_m = static_cast<float>(physics.tire_stiffness_n_per_m);
     payload.tire_damping_n_s_per_m = static_cast<float>(physics.tire_damping_n_s_per_m);
     payload.wheel_equivalent_mass_kg = static_cast<float>(physics.wheel_equivalent_mass_kg);
-    endpoint_.send(active_peer_, MsgId::SimulatorTelemetry, payload);
+    payload.emitted_step_velocity_sps = static_cast<float>(row.emitted_step_velocity_sps);
+    payload.synthetic_estimator_velocity_sps =
+        static_cast<float>(row.synthetic_estimator_velocity_sps);
+    payload.controller_feedback_velocity_sps =
+        static_cast<float>(row.controller_feedback_velocity_sps);
+    if (!endpoint_.send(active_peer_, MsgId::SimulatorTelemetry, payload,
+                        simulator::SimulatorTxKind::Telemetry)) {
+      run.telemetry_transport_failure = true;
+    }
   }
 
   RunSummary summarize(const ActiveRun& run) const {
@@ -756,6 +864,9 @@ class SimulatorService {
     }
 
     const RunSummary summary = summarize(*run_);
+    if (run_->telemetry_transport_failure || endpoint_.send_failed()) {
+      reason_code = kDoneInternalError;
+    }
     if (reason_code == kDoneCompleted && run_->transfer_validation) {
       SimulatorRunResult result;
       result.scenario = run_->scenario;
@@ -767,7 +878,6 @@ class SimulatorService {
       result.max_continuous_saturation_s = run_->max_continuous_saturation_s;
       result.actuator_fault_count = run_->actuator_fault_count;
       result.controller_fault_flags = run_->controller_fault_flags;
-      result.timeline_hash = run_->timeline_hash;
       result.fell = summary.max_abs_pitch_deg > kFallPitchDeg;
       if (!evaluate_transfer_scenario(result).accepted) {
         reason_code = kDoneAcceptanceFailed;
@@ -788,7 +898,6 @@ class SimulatorService {
     done.max_continuous_saturation_s = run_->max_continuous_saturation_s;
     done.actuator_fault_count = run_->actuator_fault_count;
     done.controller_fault_flags = run_->controller_fault_flags;
-    done.timeline_hash = run_->timeline_hash;
     endpoint_.send(active_peer_, MsgId::SimRunDone, done);
     run_.reset();
   }
@@ -935,8 +1044,7 @@ int main(int argc, char** argv) {
         if (failure_index != 0) std::cout << ',';
         std::cout << '\"' << acceptance.failures[failure_index] << '\"';
       }
-      std::cout << ']'
-                << ",\"timeline_hash\":" << result.timeline_hash << "}\n";
+      std::cout << "]}\n";
       return 0;
     }
     SimulatorService service(port, pid_config_path);

@@ -4,7 +4,7 @@
 
 [Analysis workflow](../../../doc/testing/telemetry_analysis_cli.md) · [Manifest](manifest.json)
 
-These retained 50 Hz fixtures were extracted from the 400 Hz dashboard capture
+These retained **pre-v12** 50 Hz fixtures were extracted from the 400 Hz dashboard capture
 `telemetry_20260718-182506_00.csv`. The raw file is no longer retained; its provenance is bound by
 the SHA-256 digest in `manifest.json`.
 

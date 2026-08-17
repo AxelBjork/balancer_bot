@@ -1,0 +1,936 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Stepper Motor Field Follower</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #090b0e;
+      --panel: #10141a;
+      --panel2: #151a21;
+      --line: #28303a;
+      --text: #f4f7fb;
+      --muted: #8e99a8;
+      --accent: #62d8ff;
+      --a: #ff9c5a;
+      --b: #b996ff;
+      --torque: #77e1a4;
+      --load: #9aa6b4;
+      --danger: #ff7a7a;
+    }
+
+    * {
+      box-sizing: border-box
+    }
+
+    body {
+      margin: 0;
+      background: transparent;
+      color: var(--text);
+      font: 14px/1.35 Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif
+    }
+
+    button,
+    input {
+      font: inherit
+    }
+
+    .widget {
+      width: min(100%, 980px);
+      margin: auto;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 250px;
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      overflow: hidden;
+      background: linear-gradient(180deg, #11161d, #0d1116)
+    }
+
+    .stage {
+      position: relative;
+      min-width: 0;
+      padding: 18px 18px 14px;
+      background: radial-gradient(circle at 44% 42%, rgba(98, 216, 255, .055), transparent 36%), linear-gradient(180deg, #0d1116, #0b0e12)
+    }
+
+    .stage:before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      opacity: .22;
+      background-image: linear-gradient(rgba(255, 255, 255, .025) 1px, transparent 1px), linear-gradient(90deg, rgba(255, 255, 255, .025) 1px, transparent 1px);
+      background-size: 24px 24px
+    }
+
+    .topline {
+      position: relative;
+      z-index: 2;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 4px
+    }
+
+    .eyebrow {
+      font-size: 11px;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+      color: var(--muted)
+    }
+
+    .state {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 6px 9px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      background: rgba(255, 255, 255, .025);
+      font-size: 12px
+    }
+
+    .state-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--torque);
+      box-shadow: 0 0 0 4px rgba(119, 225, 164, .08)
+    }
+
+    svg {
+      position: relative;
+      z-index: 1;
+      width: 100%;
+      height: auto;
+      display: block
+    }
+
+    .stator-shell {
+      fill: #121820;
+      stroke: #303844;
+      stroke-width: 2
+    }
+
+    .stator-inner {
+      fill: #0b0f14;
+      stroke: #252c35;
+      stroke-width: 1.5
+    }
+
+    .stator-cut {
+      fill: #0b0f14
+    }
+
+    .tooth {
+      fill: #232b35
+    }
+
+    .coil-body {
+      fill: #171d24;
+      stroke: #323b47;
+      stroke-width: 1.3
+    }
+
+    .coil-winding-a,
+    .coil-winding-b {
+      fill: none;
+      stroke-linecap: round;
+      stroke-width: 3
+    }
+
+    .coil-winding-a {
+      stroke: var(--a)
+    }
+
+    .coil-winding-b {
+      stroke: var(--b)
+    }
+
+    .coil-label {
+      font-size: 12px;
+      font-weight: 700;
+      text-anchor: middle
+    }
+
+    .label-a {
+      fill: var(--a)
+    }
+
+    .label-b {
+      fill: var(--b)
+    }
+
+    .axis-guide {
+      stroke: #35404c;
+      stroke-width: 1;
+      stroke-dasharray: 3 7
+    }
+
+    .rotor-ring {
+      fill: #11161c;
+      stroke: #404a56;
+      stroke-width: 2
+    }
+
+    .rotor-magnet-n {
+      fill: #213952;
+      stroke: #62d8ff;
+      stroke-width: 1
+    }
+
+    .rotor-magnet-s {
+      fill: #4a2d24;
+      stroke: #ff9c5a;
+      stroke-width: 1
+    }
+
+    .rotor-text {
+      fill: #fff;
+      font-size: 15px;
+      font-weight: 700;
+      text-anchor: middle;
+      dominant-baseline: middle
+    }
+
+    .hub {
+      fill: #dbe3eb;
+      stroke: #11161b;
+      stroke-width: 2
+    }
+
+    .vector {
+      fill: none;
+      stroke-linecap: round;
+      stroke-linejoin: round
+    }
+
+    .vector-a {
+      stroke: var(--a);
+      stroke-width: 2.2
+    }
+
+    .vector-b {
+      stroke: var(--b);
+      stroke-width: 2.2
+    }
+
+    .vector-command {
+      stroke: #dfe7ef;
+      stroke-width: 1.8;
+      stroke-dasharray: 5 6;
+      opacity: .66
+    }
+
+    .vector-field {
+      stroke: var(--accent);
+      stroke-width: 3.4
+    }
+
+    .rotor-axis {
+      stroke: #e8eef4;
+      stroke-width: 2.3
+    }
+
+    .phase-arc {
+      fill: none;
+      stroke: #dce5ed;
+      stroke-width: 1.5;
+      stroke-dasharray: 3 4
+    }
+
+    .torque-arc {
+      fill: none;
+      stroke: var(--torque);
+      stroke-width: 5;
+      stroke-linecap: round
+    }
+
+    .load-arc {
+      fill: none;
+      stroke: var(--load);
+      stroke-width: 3.8;
+      stroke-linecap: round
+    }
+
+    .motion-arc {
+      fill: none;
+      stroke: var(--accent);
+      stroke-width: 2;
+      stroke-dasharray: 2 7;
+      stroke-linecap: round;
+      opacity: .5
+    }
+
+    .pulse {
+      fill: none;
+      stroke: var(--accent);
+      stroke-width: 1.5;
+      opacity: 0
+    }
+
+    .vlabel {
+      font-size: 12px;
+      font-weight: 700
+    }
+
+    .readout {
+      font-size: 12px;
+      fill: var(--muted)
+    }
+
+    .readout-strong {
+      font-size: 13px;
+      fill: var(--text);
+      font-weight: 600
+    }
+
+    .phase-wedge {
+      fill: rgba(98, 216, 255, .06);
+      stroke: none
+    }
+
+    .vlabel,
+    #phaseErrorLabel,
+    #commandLabel {
+      display: none
+    }
+
+    .metrics {
+      position: absolute;
+      z-index: 3;
+      left: 28px;
+      right: 28px;
+      bottom: 18px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
+      gap: 7px;
+      pointer-events: none
+    }
+
+    .metric {
+      padding: 7px 9px;
+      border: 1px solid rgba(92, 108, 124, .42);
+      border-radius: 10px;
+      background: rgba(10, 14, 19, .76);
+      backdrop-filter: blur(8px);
+      min-width: 0
+    }
+
+    .metric span {
+      display: block;
+      font-size: 9px;
+      letter-spacing: .075em;
+      text-transform: uppercase;
+      color: var(--muted);
+      white-space: nowrap
+    }
+
+    .metric strong {
+      display: block;
+      margin-top: 2px;
+      font-size: 12px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap
+    }
+
+    .metric.torque strong {
+      color: var(--torque)
+    }
+
+    .metric[hidden] {
+      display: none
+    }
+
+    .controls {
+      padding: 14px 15px;
+      border-left: 1px solid var(--line);
+      background: #12171d;
+      display: flex;
+      flex-direction: column;
+      gap: 12px
+    }
+
+    .control-head {
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 10px
+    }
+
+    .control-head h2 {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 600
+    }
+
+    .control-head p {
+      margin: 2px 0 0;
+      color: var(--muted);
+      font-size: 11px
+    }
+
+    .play {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 34px;
+      height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      color: var(--text);
+      background: #171d24;
+      cursor: pointer
+    }
+
+    .play:hover {
+      background: #1b222a
+    }
+
+    .play svg {
+      width: 16px;
+      height: 16px
+    }
+
+    .control {
+      display: grid;
+      gap: 4px
+    }
+
+    .control-line {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 10px
+    }
+
+    .control label {
+      font-size: 12px;
+      color: var(--muted)
+    }
+
+    .control output {
+      font-size: 12px;
+      color: var(--text);
+      font-variant-numeric: tabular-nums
+    }
+
+    .slider {
+      width: 100%;
+      height: 22px;
+      margin: 0;
+      accent-color: var(--accent)
+    }
+
+    .scale {
+      display: flex;
+      justify-content: space-between;
+      color: #5f6975;
+      font-size: 10px
+    }
+
+    .divider {
+      height: 1px;
+      background: var(--line)
+    }
+
+    .layers {
+      display: grid;
+      gap: 6px
+    }
+
+    .layers-title {
+      font-size: 11px;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      color: var(--muted)
+    }
+
+    .switch-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      font-size: 12px;
+      color: var(--muted)
+    }
+
+    .switch-row input {
+      accent-color: var(--accent)
+    }
+
+    .mini-legend {
+      margin-top: auto;
+      display: grid;
+      gap: 6px;
+      padding-top: 0
+    }
+
+    .legend-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 11px
+    }
+
+    .swatch {
+      width: 18px;
+      height: 3px;
+      border-radius: 999px;
+      background: var(--accent)
+    }
+
+    .swatch.command {
+      height: 0;
+      border-top: 2px dashed #dfe7ef;
+      background: none;
+      opacity: .7
+    }
+
+    .swatch.rotor {
+      background: #e8eef4
+    }
+
+    .swatch.torque {
+      background: var(--torque)
+    }
+
+    .swatch.load {
+      background: var(--load)
+    }
+
+    .foot {
+      font-size: 10px;
+      color: #697482;
+      line-height: 1.45
+    }
+
+    @media(max-width:650px) {
+      .widget {
+        grid-template-columns: 1fr
+      }
+
+      .controls {
+        grid-row: 1;
+        border-left: 0;
+        border-bottom: 1px solid var(--line);
+        display: grid;
+        grid-template-columns: 38px repeat(3, minmax(0, 1fr));
+        gap: 6px 9px;
+        padding: 9px 11px
+      }
+
+      .stage {
+        grid-row: 2;
+        padding: 10px 10px 8px
+      }
+
+      .control-head {
+        grid-column: 1;
+        grid-row: 1;
+        display: block
+      }
+
+      .control-head>div {
+        display: none
+      }
+
+      .play {
+        width: 34px;
+        height: 34px
+      }
+
+      .control {
+        gap: 2px;
+        min-width: 0
+      }
+
+      .control-line {
+        display: block;
+        line-height: 1.15
+      }
+
+      .control label {
+        display: block;
+        font-size: 9px;
+        letter-spacing: .06em;
+        text-transform: uppercase
+      }
+
+      .control output {
+        display: block;
+        margin-top: 1px;
+        font-size: 10px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis
+      }
+
+      .slider {
+        height: 19px
+      }
+
+      .scale {
+        display: none
+      }
+
+      .controls>.control:nth-of-type(2) {
+        grid-column: 2;
+        grid-row: 1
+      }
+
+      .controls>.control:nth-of-type(3) {
+        grid-column: 3;
+        grid-row: 1
+      }
+
+      .controls>.control:nth-of-type(4) {
+        grid-column: 4;
+        grid-row: 1
+      }
+
+      .divider {
+        display: none
+      }
+
+      .layers {
+        grid-column: 1/-1;
+        display: flex;
+        align-items: center;
+        gap: 6px 11px;
+        flex-wrap: wrap;
+        padding-top: 2px
+      }
+
+      .layers-title {
+        display: none
+      }
+
+      .switch-row {
+        gap: 5px;
+        font-size: 9px;
+        white-space: nowrap
+      }
+
+      .switch-row input {
+        width: 12px;
+        height: 12px;
+        margin: 0
+      }
+
+      .mini-legend,
+      .foot {
+        display: none
+      }
+
+      .metrics {
+        left: 17px;
+        right: 17px;
+        bottom: 13px;
+        gap: 5px;
+        grid-template-columns: repeat(auto-fit, minmax(76px, 1fr))
+      }
+
+      .metric {
+        padding: 5px 7px;
+        border-radius: 8px
+      }
+
+      .metric span {
+        font-size: 8px
+      }
+
+      .metric strong {
+        font-size: 10.5px
+      }
+
+      .topline {
+        margin-bottom: 0
+      }
+
+      .eyebrow {
+        font-size: 9px;
+        letter-spacing: .09em
+      }
+
+      .state {
+        padding: 4px 7px;
+        font-size: 9px
+      }
+
+      .state-dot {
+        width: 6px;
+        height: 6px
+      }
+    }
+
+    @media(max-width:410px) {
+      .controls {
+        grid-template-columns: 34px repeat(3, minmax(0, 1fr));
+        gap: 5px 7px;
+        padding: 8px 9px
+      }
+
+      .stage {
+        padding: 9px 7px 7px
+      }
+
+      .metrics {
+        left: 13px;
+        right: 13px;
+        bottom: 10px
+      }
+
+      .metric {
+        padding: 4px 5px
+      }
+
+      .metric span {
+        font-size: 7.5px
+      }
+
+      .metric strong {
+        font-size: 9.8px
+      }
+
+      .layers {
+        gap: 4px 8px
+      }
+    }
+
+    @media(max-width:350px) {
+      .switch-row span {
+        display: none
+      }
+
+      .layers {
+        justify-content: flex-end
+      }
+
+      .metrics {
+        grid-template-columns: repeat(auto-fit, minmax(68px, 1fr))
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <section class="widget" id="stepperWidget" aria-label="Interactive two-phase stepper motor field follower">
+    <div class="stage">
+      <div class="topline">
+        <div class="eyebrow">two-phase field follower</div>
+        <div class="state" id="stateBadge"><span class="state-dot"></span><span id="stateText">tracking</span></div>
+      </div>
+
+      <svg id="motorSvg" viewBox="0 0 620 500" role="img" aria-labelledby="motorTitle motorDesc">
+        <title id="motorTitle">Interactive stepper motor</title>
+        <desc id="motorDesc">A two phase stepper motor showing live phase currents, commanded and actual magnetic field,
+          rotor position, electromagnetic torque and shaft load.</desc>
+        <defs>
+          <marker id="arrowAccent" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+            <path d="M0 0L10 5L0 10z" fill="var(--accent)" />
+          </marker>
+          <marker id="arrowA" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M0 0L10 5L0 10z" fill="var(--a)" />
+          </marker>
+          <marker id="arrowB" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M0 0L10 5L0 10z" fill="var(--b)" />
+          </marker>
+          <marker id="arrowWhite" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M0 0L10 5L0 10z" fill="#e7edf3" />
+          </marker>
+          <marker id="arrowTorque" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M0 0L10 5L0 10z" fill="var(--torque)" />
+          </marker>
+          <marker id="arrowLoad" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M0 0L10 5L0 10z" fill="var(--load)" />
+          </marker>
+        </defs>
+
+        <g transform="translate(300 245)">
+          <circle class="pulse" id="stepPulse" r="170" />
+          <circle class="stator-shell" r="180" />
+          <circle class="stator-inner" r="145" />
+          <line class="axis-guide" x1="-160" y1="0" x2="160" y2="0" />
+          <line class="axis-guide" x1="0" y1="-160" x2="0" y2="160" />
+
+          <g id="teeth"></g>
+
+          <g transform="translate(0,-154)">
+            <rect class="coil-body" x="-43" y="-23" width="86" height="46" rx="12" />
+            <g id="coilTop"></g><text class="coil-label label-b" y="-34">B+</text>
+          </g>
+          <g transform="translate(154,0) rotate(90)">
+            <rect class="coil-body" x="-43" y="-23" width="86" height="46" rx="12" />
+            <g id="coilRight"></g><text class="coil-label label-a" y="-34" transform="rotate(-90 0 -34)">A+</text>
+          </g>
+          <g transform="translate(0,154)">
+            <rect class="coil-body" x="-43" y="-23" width="86" height="46" rx="12" />
+            <g id="coilBottom"></g><text class="coil-label label-b" y="37">B−</text>
+          </g>
+          <g transform="translate(-154,0) rotate(90)">
+            <rect class="coil-body" x="-43" y="-23" width="86" height="46" rx="12" />
+            <g id="coilLeft"></g><text class="coil-label label-a" y="37" transform="rotate(-90 0 37)">A−</text>
+          </g>
+
+          <circle class="rotor-ring" r="91" />
+          <g id="rotorMagnet">
+            <path class="rotor-magnet-s" d="M-74,-27 H0 A27,27 0 0 1 0,27 H-74 A27,27 0 0 1 -74,-27Z" />
+            <path class="rotor-magnet-n" d="M0,-27 H74 A27,27 0 0 1 74,27 H0Z" />
+            <text class="rotor-text" x="-38" y="1">S</text><text class="rotor-text" x="38" y="1">N</text>
+          </g>
+          <circle class="hub" r="8" />
+
+          <path id="phaseWedge" class="phase-wedge" d="" />
+          <line id="rotorAxis" class="rotor-axis" x1="0" y1="0" x2="100" y2="0" />
+          <line id="phaseA" class="vector vector-a" x1="0" y1="0" x2="120" y2="0" marker-end="url(#arrowA)" />
+          <line id="phaseB" class="vector vector-b" x1="0" y1="0" x2="0" y2="-120" marker-end="url(#arrowB)" />
+          <line id="commandField" class="vector vector-command" x1="0" y1="0" x2="150" y2="0"
+            marker-end="url(#arrowWhite)" />
+          <line id="actualField" class="vector vector-field" x1="0" y1="0" x2="150" y2="0"
+            marker-end="url(#arrowAccent)" />
+          <path id="phaseArc" class="phase-arc" d="" />
+          <path id="motionArc" class="motion-arc" d="" />
+          <path id="torqueArc" class="torque-arc" d="" marker-end="url(#arrowTorque)" />
+          <path id="loadArc" class="load-arc" d="" marker-end="url(#arrowLoad)" />
+          <text id="phaseErrorLabel" class="readout-strong" x="114" y="-18">Δφ 0.0°</text>
+          <text class="vlabel" x="128" y="18" fill="var(--a)">iA</text>
+          <text class="vlabel" x="12" y="-126" fill="var(--b)">iB</text>
+          <text id="fieldLabel" class="vlabel" x="142" y="-10" fill="var(--accent)">B</text>
+          <text id="commandLabel" class="readout" x="154" y="16">target</text>
+        </g>
+
+        <g transform="translate(502 86)">
+          <text class="readout" x="0" y="0">command</text><text id="cmdAngle" class="readout-strong" x="0"
+            y="18">0.0°</text>
+          <text class="readout" x="0" y="52">field</text><text id="fieldAngle" class="readout-strong" x="0"
+            y="70">0.0°</text>
+          <text class="readout" x="0" y="104">rotor</text><text id="rotorAngle" class="readout-strong" x="0"
+            y="122">0.0°</text>
+        </g>
+      </svg>
+
+      <div class="metrics" aria-live="polite">
+        <div class="metric torque"><span>torque</span><strong id="torqueValue">+0.000 N·m</strong></div>
+        <div class="metric"><span>phase error</span><strong id="errorValue">+0.0°</strong></div>
+        <div class="metric"><span>rotor speed</span><strong id="speedValue">0.00 rad/s</strong></div>
+        <div class="metric current" id="currentMetric" hidden><span>current</span><strong id="currentValue">1.065
+            A</strong></div>
+      </div>
+    </div>
+
+    <aside class="controls">
+      <div class="control-head">
+        <div>
+          <h2>Drive the field</h2>
+          <p>Scrub or play 80 ms.</p>
+        </div>
+        <button id="playButton" class="play" type="button" aria-label="Play simulation" title="Play simulation">
+          <svg viewBox="0 0 20 20" aria-hidden="true">
+            <path id="playIcon" d="M6 4.5v11l9-5.5z" fill="currentColor" />
+          </svg>
+        </button>
+      </div>
+
+      <div class="control">
+        <div class="control-line"><label for="rate">step rate</label><output id="rateOut">100 /s</output></div>
+        <input id="rate" class="slider" type="range" min="0" max="400" step="0.01" value="133.33">
+        <div class="scale"><span>10</span><span>100</span><span>1k</span><span>10k</span></div>
+      </div>
+
+      <div class="control">
+        <div class="control-line"><label for="load">shaft load</label><output id="loadOut">free</output></div>
+        <input id="load" class="slider" type="range" min="0" max="100" step="1" value="0">
+        <div class="scale"><span>free</span><span>near stall</span></div>
+      </div>
+
+      <div class="control">
+        <div class="control-line"><label for="timeline">time</label><output id="timeOut">0.00 ms</output></div>
+        <input id="timeline" class="slider" type="range" min="0" max="80" step="0.01" value="0">
+        <div class="scale"><span>0</span><span>40 ms</span><span>80 ms</span></div>
+      </div>
+
+      <div class="divider"></div>
+      <div class="layers">
+        <div class="layers-title">visual layers</div>
+        <label class="switch-row" for="showPhases"><span>phase vectors</span><input id="showPhases" type="checkbox"
+            checked></label>
+        <label class="switch-row" for="showTarget"><span>target field</span><input id="showTarget" type="checkbox"
+            checked></label>
+        <label class="switch-row" for="showMotion"><span>motion trace</span><input id="showMotion" type="checkbox"
+            checked></label>
+        <label class="switch-row" for="showCurrent"><span>current</span><input id="showCurrent" type="checkbox"></label>
+      </div>
+
+      <div class="mini-legend">
+        <div class="legend-row"><span class="swatch"></span>actual magnetic field</div>
+        <div class="legend-row"><span class="swatch command"></span>commanded field step</div>
+        <div class="legend-row"><span class="swatch rotor"></span>rotor electrical angle</div>
+        <div class="legend-row"><span class="swatch torque"></span>electromagnetic torque</div>
+        <div class="legend-row"><span class="swatch load"></span>opposing shaft load</div>
+      </div>
+      <div class="foot">Visual angle is expanded so microstep motion is readable. Dynamics use the original 2-phase RL +
+        back-EMF + inertia model.</div>
+    </aside>
+  </section>
+
+  <script>
+    (() => {
+      const root = document.getElementById('stepperWidget');
+      const $ = s => root.querySelector(s);
+      const N = { cycles: 50, dTheta: 2 * Math.PI / 128, Imax: 1.065, R: 2.3, L: 0.0044, V: 11.1, Kt: 0.21213203435596426, Ke: 0.21213203435596426, J: 3.24e-5, c: 0.0027, duration: .08, dt: 1e-5 };
+      const VIS = 6, FIRST = .001, SPS_MIN = 10, SPS_MAX = 10000, SPS_SLIDER_MAX = 400, LOAD_MAX = .55, PEAK = N.Kt * N.Imax, SPEED_FLOOR = 40;
+      const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+      const wrap = a => { let w = (a + Math.PI) % (2 * Math.PI); if (w < 0) w += 2 * Math.PI; return w - Math.PI };
+      const signed = (v, d = 2) => (v >= 0 ? '+' : '−') + Math.abs(v).toFixed(d);
+      const deg = r => r * 180 / Math.PI;
+      function spsFromSlider(v) { return SPS_MIN * Math.pow(SPS_MAX / SPS_MIN, Number(v) / SPS_SLIDER_MAX) }
+      function fmtRate(v) { if (v >= 1000) { const k = v / 1000; return (k >= 10 ? Math.round(k) : k.toFixed(1).replace(/\.0$/, '')) + 'k' } return v >= 100 ? Math.round(v).toString() : v.toFixed(1).replace(/\.0$/, '') }
+      function loadTorque(v) { return PEAK * LOAD_MAX * Number(v) / 100 }
+      function fmtLoad(v) { const f = Number(v) / 100; return f < .01 ? 'free' : f < .35 ? 'light' : f < .75 ? 'loaded' : 'near stall' }
+      function updateCurrent(current, ref, emf, dt) { const decay = Math.exp(-N.R * dt / N.L); const upd = voltage => { const steady = (voltage - emf) / N.R; return steady + (current - steady) * decay }; const p = upd(N.V), m = upd(-N.V), lo = Math.min(m, p), hi = Math.max(m, p); return clamp(ref, lo, hi) }
+      function tq(theta, iA, iB) { return N.Kt * (-iA * Math.sin(theta) + iB * Math.cos(theta)) }
+      function simulate(sps, load) { const count = Math.round(N.duration / N.dt), samples = []; let mech = 0, speed = 0, iA = N.Imax, iB = 0, prevStep = 0; for (let idx = 0; idx <= count; idx++) { const t = idx * N.dt, st = t - FIRST, step = st < 0 ? 0 : Math.floor(st * sps + 1e-9) + 1, cmd = step * N.dTheta; let theta = mech * N.cycles, emfA = -N.Ke * speed * Math.sin(theta), emfB = N.Ke * speed * Math.cos(theta); const applied = st < 0 ? 0 : load; if (idx > 0) { iA = updateCurrent(iA, N.Imax * Math.cos(cmd), emfA, N.dt); iB = updateCurrent(iB, N.Imax * Math.sin(cmd), emfB, N.dt); const torque = tq(theta, iA, iB); speed += (torque - applied - N.c * speed) / N.J * N.dt; mech += speed * N.dt } theta = mech * N.cycles; const field = Math.atan2(iB, iA), err = wrap(field - theta), torque = tq(theta, iA, iB); samples.push({ t, step, stepEvent: step !== prevStep, cmd, field, theta, err, iA, iB, I: Math.hypot(iA, iB), torque, load, speed }); prevStep = step } return samples }
+      function point(angle, r) { const a = angle * VIS; return { x: r * Math.cos(a), y: -r * Math.sin(a) } }
+      function arc(r, a0, a1) { const p0 = point(a0, r), p1 = point(a1, r), d = (a1 - a0) * VIS, large = Math.abs(d) > Math.PI ? 1 : 0, sweep = d < 0 ? 1 : 0; return `M${p0.x.toFixed(2)} ${p0.y.toFixed(2)} A${r} ${r} 0 ${large} ${sweep} ${p1.x.toFixed(2)} ${p1.y.toFixed(2)}` }
+      function wedge(r, a0, a1) { const p0 = point(a0, r), p1 = point(a1, r), d = (a1 - a0) * VIS, large = Math.abs(d) > Math.PI ? 1 : 0, sweep = d < 0 ? 1 : 0; return `M0 0 L${p0.x.toFixed(2)} ${p0.y.toFixed(2)} A${r} ${r} 0 ${large} ${sweep} ${p1.x.toFixed(2)} ${p1.y.toFixed(2)} Z` }
+      function line(el, p) { el.setAttribute('x2', p.x.toFixed(2)); el.setAttribute('y2', p.y.toFixed(2)) }
+      function makeWindings(g, klass) { for (let i = -28; i <= 28; i += 8) { const l = document.createElementNS('http://www.w3.org/2000/svg', 'line'); l.setAttribute('x1', i); l.setAttribute('x2', i); l.setAttribute('y1', '-14'); l.setAttribute('y2', '14'); l.setAttribute('class', klass); g.appendChild(l) } }
+      makeWindings($('#coilTop'), 'coil-winding-b'); makeWindings($('#coilBottom'), 'coil-winding-b'); makeWindings($('#coilLeft'), 'coil-winding-a'); makeWindings($('#coilRight'), 'coil-winding-a');
+      for (let i = 0; i < 48; i++) { const r = 132, a = i * 360 / 48 * Math.PI / 180; const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect'); rect.setAttribute('x', '-3'); rect.setAttribute('y', String(-r - 8)); rect.setAttribute('width', '6'); rect.setAttribute('height', '14'); rect.setAttribute('rx', '2'); rect.setAttribute('class', 'tooth'); rect.setAttribute('transform', `rotate(${i * 360 / 48})`); $('#teeth').appendChild(rect) }
+      const rate = $('#rate'), load = $('#load'), timeline = $('#timeline'); let sps = spsFromSlider(rate.value), loadNm = loadTorque(load.value), samples = simulate(sps, loadNm), phaseScale = .06, speedScale = SPEED_FLOOR, playing = false, animStart = 0, startMs = 0, lastStep = -1;
+      function recompute() { sps = spsFromSlider(rate.value); loadNm = loadTorque(load.value); samples = simulate(sps, loadNm); phaseScale = Math.max(.06, ...samples.map(x => Math.abs(x.err))); speedScale = Math.max(SPEED_FLOOR, ...samples.map(x => Math.abs(x.speed))); renderAtTime() }
+      function coilStyle(group, value) { const ratio = Math.abs(value / N.Imax); group.style.opacity = (.2 + .8 * ratio).toFixed(2); group.style.filter = ratio > .75 ? 'drop-shadow(0 0 5px currentColor)' : 'none' }
+      function setPlayIcon() { const icon = $('#playIcon'); icon.setAttribute('d', playing ? 'M5 4h3.5v12H5zm6.5 0H15v12h-3.5z' : 'M6 4.5v11l9-5.5z'); $('#playButton').setAttribute('aria-label', playing ? 'Pause simulation' : 'Play simulation') }
+      function render(s) {
+        const tms = s.t * 1000, errDeg = deg(s.err); $('#rateOut').textContent = fmtRate(sps) + ' /s'; $('#loadOut').textContent = fmtLoad(load.value); $('#timeOut').textContent = tms.toFixed(2) + ' ms'; $('#torqueValue').textContent = signed(s.torque, 3) + ' N·m'; $('#errorValue').textContent = signed(errDeg, 1) + '°'; $('#speedValue').textContent = s.speed.toFixed(2) + ' rad/s'; $('#currentValue').textContent = s.I.toFixed(3) + ' A'; $('#cmdAngle').textContent = deg(wrap(s.cmd)).toFixed(1) + '°'; $('#fieldAngle').textContent = deg(wrap(s.field)).toFixed(1) + '°'; $('#rotorAngle').textContent = deg(wrap(s.theta)).toFixed(1) + '°';
+        const aRatio = clamp(s.iA / N.Imax, -1, 1), bRatio = clamp(s.iB / N.Imax, -1, 1); line($('#phaseA'), { x: 116 * aRatio, y: 0 }); line($('#phaseB'), { x: 0, y: -116 * bRatio }); $('#phaseA').style.opacity = (.18 + .7 * Math.abs(aRatio)).toFixed(2); $('#phaseB').style.opacity = (.18 + .7 * Math.abs(bRatio)).toFixed(2);
+        const fieldLen = 150 * clamp(s.I / N.Imax, .35, 1), fp = point(s.field, fieldLen), cp = point(s.cmd, 150), rp = point(s.theta, 101); line($('#actualField'), fp); line($('#commandField'), cp); line($('#rotorAxis'), rp); $('#rotorMagnet').setAttribute('transform', `rotate(${(-s.theta * VIS * 180 / Math.PI).toFixed(2)})`);
+        $('#phaseArc').setAttribute('d', arc(112, s.theta, s.theta + s.err)); $('#phaseArc').style.opacity = clamp(Math.abs(s.err) / phaseScale, .12, 1).toFixed(2); $('#phaseWedge').setAttribute('d', wedge(104, s.theta, s.theta + s.err));
+        const labelP = point(s.theta + s.err * .5, 128); $('#phaseErrorLabel').setAttribute('x', labelP.x.toFixed(1)); $('#phaseErrorLabel').setAttribute('y', (labelP.y + 4).toFixed(1)); $('#phaseErrorLabel').textContent = 'Δφ ' + signed(errDeg, 1) + '°';
+        const spd = clamp(Math.abs(s.speed) / speedScale, 0, 1), dir = Math.sign(s.speed) || 1; $('#motionArc').setAttribute('d', arc(119, s.theta, s.theta + dir * (.16 + .8 * spd))); $('#motionArc').style.opacity = $('#showMotion').checked && spd > .02 ? String(.22 + .65 * spd) : '0';
+        const tqRatio = clamp(Math.abs(s.torque) / PEAK, 0, 1), tqSign = Math.sign(s.torque) || 1; $('#torqueArc').setAttribute('d', arc(171, s.theta + tqSign * .14, s.theta + tqSign * (.43 + .44 * tqRatio))); $('#torqueArc').style.opacity = String(.18 + .82 * tqRatio);
+        const lRatio = clamp(s.load / PEAK, 0, 1); $('#loadArc').setAttribute('d', arc(177, s.theta - .14, s.theta - (.38 + .44 * lRatio))); $('#loadArc').style.opacity = lRatio < .01 ? '0' : String(.2 + .7 * lRatio);
+        $('#phaseA').style.display = $('#showPhases').checked ? '' : 'none'; $('#phaseB').style.display = $('#showPhases').checked ? '' : 'none'; $('#commandField').style.display = $('#showTarget').checked ? '' : 'none'; $('#commandLabel').style.display = $('#showTarget').checked ? '' : 'none'; $('#currentMetric').hidden = !$('#showCurrent').checked;
+        coilStyle($('#coilRight'), s.iA); coilStyle($('#coilLeft'), s.iA); coilStyle($('#coilTop'), s.iB); coilStyle($('#coilBottom'), s.iB);
+        const absErr = Math.abs(errDeg), state = absErr < 4 ? 'tracking' : absErr < 16 ? 'field lag' : 'high phase error'; $('#stateText').textContent = state; $('.state-dot').style.background = absErr < 4 ? 'var(--torque)' : absErr < 16 ? 'var(--accent)' : 'var(--danger)';
+        if (s.stepEvent && s.step !== lastStep) { const p = $('#stepPulse'); p.animate([{ opacity: .55, transform: 'scale(.96)' }, { opacity: 0, transform: 'scale(1.08)' }], { duration: 360, easing: 'ease-out' }); lastStep = s.step }
+      }
+      function renderAtTime() { const idx = clamp(Math.round(Number(timeline.value) / (N.dt * 1000)), 0, samples.length - 1); render(samples[idx]) }
+      function animate(now) { if (!playing) return; const elapsed = now - animStart; const span = 3600; let progress = (startMs / 80) + elapsed / span; if (progress >= 1) { progress = 0; animStart = now; startMs = 0 } timeline.value = (progress * 80).toFixed(2); renderAtTime(); requestAnimationFrame(animate) }
+      $('#playButton').addEventListener('click', () => { playing = !playing; if (playing) { animStart = performance.now(); startMs = Number(timeline.value); requestAnimationFrame(animate) } setPlayIcon() });
+      rate.addEventListener('input', recompute); load.addEventListener('input', recompute); timeline.addEventListener('input', () => { if (playing) { playing = false; setPlayIcon() } renderAtTime() });['showPhases', 'showTarget', 'showMotion', 'showCurrent'].forEach(id => $('#' + id).addEventListener('change', renderAtTime));
+      recompute(); setPlayIcon();
+    })();
+  </script>
+</body>
+</html>
