@@ -608,7 +608,7 @@ def test_history_exposes_clamped_timeline_bounds_and_display_runs():
     assert state.snapshot(0.0)[1]["display_run"] == 1
 
 
-def test_live_display_history_is_exactly_one_two_minute_50_hz_run():
+def test_live_display_history_is_bounded_by_configured_points():
     state = TelemetryState("pi.local")
     hub = SseHub(state)
     for sequence in range(1, DISPLAY_HISTORY_POINTS + 101):
@@ -652,7 +652,7 @@ def test_udp_telemetry_rate_is_measured_from_accepted_packets():
     _, status = state.snapshot(DISPLAY_HZ)
     assert status["raw_packet_rate_hz"] == 400
     assert status["display_rate_hz"] == 50.0
-    assert state.source_info()["run_limit_s"] == 120.0
+    assert state.source_info()["run_limit_s"] == 240.0
 
 
 def test_receive_and_controller_gaps_are_counted_and_written_as_jsonl(tmp_path):
@@ -1017,6 +1017,7 @@ def test_dashboard_serves_assets_and_sse_to_multiple_clients():
         script = script.read()
         assert b"EventSource" in script
         assert b"setData" in script
+        assert b"const RUN_LIMIT_S = 90;" in script
         assert b"updateMetrics(null)" in script
         assert b"updateMetrics(store.samples.at(-1)??null)" in script
         assert b'numberAt(sample,"motion.velocity_feedback_estimate_mps")' in script
@@ -1107,7 +1108,7 @@ def test_dashboard_serves_assets_and_sse_to_multiple_clients():
         history = json.load(urllib.request.urlopen(base + "/api/history?seconds=30", timeout=1))
         assert history["history_seconds"] == 30.0
         assert history["samples"] == []
-        assert history["run_limit_s"] == 120.0
+        assert history["run_limit_s"] == 240.0
         assert history["display_sample_hz"] == 50.0
         assert history["decimated"] is False
         source = json.load(urllib.request.urlopen(base + "/api/source", timeout=1))

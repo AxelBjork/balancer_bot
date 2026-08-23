@@ -2536,17 +2536,10 @@ def test_outer_velocity_estimator_bias_scale_and_latency_remain_bounded(
     _finish_composite(diagnostics)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "StepperPhaseElectrical 100 ms controller-velocity latency drives the "
-        "outer loop into a sustained high-pitch electrical recovery boundary"
-    ),
-)
 def test_outer_velocity_estimator_latency_is_known_electrical_boundary(
     simulator_udp, sim_artifact_settings
 ):
-    """Retain the latency boundary without weakening nominal feedback tests."""
+    """Verify the electrical controller remains bounded under 100 ms velocity latency."""
     model = STEPPER_PHASE_ELECTRICAL_MODEL
     output_dir = _model_artifact_dir(
         sim_artifact_settings, model, "outer_live_estimator_latency_boundary"

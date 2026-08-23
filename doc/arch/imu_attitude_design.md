@@ -45,16 +45,18 @@ changes, the fixed mapping must be changed and verified rather than learned onli
 
 ## Signal Path
 
-At the current 833 Hz IMU output data rate, the proposed path is:
+At the current 833 Hz IMU output data rate, the production path is:
 
 ```text
 ISM330DHCX IIO accelerometer ─┐
                              ├─ scale, synchronize, fixed axis map
 ISM330DHCX IIO gyroscope ────┘
 
+gyro: ISM330 LPF1 (140 Hz @ 833 Hz) ── software notch ──┐
+                                                         ├─ integrate one dt ── bounded correction ── pitch
 mapped acceleration ── 2-pole LPF ── optional lever-arm correction ── atan2 ── gravity pitch
-                                                                            │
-mapped pitch rate ── optional notch ── 2-pole LPF ── integrate one dt ──────┼─ bounded correction ── pitch
+
+controller-facing pitch rate: mapped gyro ── software notch (33.4 Hz / 8 Hz bandwidth)
 
                                       ├──────────────────────────────── pitch rate
                                       └─ derivative ── LPF ─────────── pitch acceleration
@@ -65,17 +67,38 @@ The production filter configuration is:
 | Signal | Filter | Initial cutoff |
 | --- | --- | ---: |
 | Accelerometer | PX4 two-pole low-pass | 15 Hz |
-| Pitch gyro rate | PX4 two-pole low-pass | 30 Hz |
+| ISM330 gyro LPF1 | Chip-side digital low-pass, enabled at 833 Hz | 140 Hz |
+| Pitch gyro rate | Locked software notch | 33.4 Hz center, 8 Hz bandwidth |
 | Pitch gyro derivative | Derivative followed by low-pass | 10 Hz |
 | Gravity attitude correction | Circular complementary correction | 0.5 Hz, ±2.5° innovation |
-| Motor-vibration notch | Disabled until measured | N/A |
 
-The fixed notch is bypassed, and the 70 mm lever-arm correction is compiled off by
-default. The accelerometer cutoff rejects the broad 75–177 Hz stepper-vibration band seen in
-hardware captures. Gyro prediction carries dynamic pitch, while the bounded gravity path
-limits abrupt apparent-angle changes caused by translation. These are signal-conditioning
-settings, not PID tuning parameters.
-Changes must be supported by measured noise and phase-delay results.
+The ISM330 LPF1 setting is written and read back through the sensor's I2C parent because the
+Pi `st_lsm6dsx` IIO driver does not expose the LPF1 register as a sysfs control. At this ODR the
+device's mandatory LPF2 is approximately 267 Hz; the configured LPF1 is the 140 Hz chip-side
+high-frequency conditioning stage. The reader also verifies normal high-performance gyro mode
+(`CTRL7_G.G_HM_MODE=0`). The 70 mm
+lever-arm correction is compiled off by default. The accelerometer cutoff rejects the broad
+75–177 Hz stepper-vibration band seen in hardware captures. Gyro prediction carries dynamic
+pitch, while the bounded gravity path limits abrupt apparent-angle changes caused by
+translation. These are signal-conditioning settings, not PID tuning parameters.
+Changes must be supported by measured noise and phase and group-delay results.
+
+### Exact rate-filter response reference
+
+The current software reference chain is a 32 Hz / 10 Hz notch followed by the 30 Hz
+two-pole low-pass. The candidate production chain is the 33.4 Hz / 8 Hz notch alone.
+Both are evaluated at the implemented 833 Hz sample rate from their biquad coefficients.
+Group delay is calculated analytically as `-Im((dH/dw)/H) / Fs`, not inferred from a
+phase-delay approximation.
+
+| Frequency | Current gain / phase / group delay | Candidate gain / phase / group delay |
+| ---: | --- | --- |
+| 2 Hz | −0.0018 dB / −6.516° / 9.084 ms | −0.0009 dB / −0.829° / 1.160 ms |
+| 5 Hz | −0.0143 dB / −16.450° / 9.350 ms | −0.0059 dB / −2.112° / 1.226 ms |
+| 10 Hz | −0.1036 dB / −34.032° / 10.286 ms | −0.0271 dB / −4.527° / 1.498 ms |
+
+The historical 29 Hz configuration is analysis-only context and is not a production or simulator
+reference setting.
 
 The repository already vendors suitable PX4 primitives:
 
@@ -143,7 +166,7 @@ is different from learning a calibration offset:
 - old startup input decays according to the configured cutoff rather than permanently
   changing the estimate.
 
-On the first valid sample, the accelerometer and gyro filters are reset to that sample,
+On the first valid sample, the accelerometer and chip-conditioned gyro notch are reset to that sample,
 while the fused pitch state starts at zero. Duplicate or backward timestamps and
 non-finite input invalidate and reset the path. A gap longer than four nominal sample
 periods reseeds from the current sample with zero derivative and a zero pitch state.
@@ -190,7 +213,10 @@ Motor feedback must not be routed into the IMU service to conceal this ambiguity
 
 A notch filter should not be enabled merely because motor vibration is suspected.
 Stepper excitation can move with step rate and can contain several harmonics, so a
-fixed notch may help at one speed and do little at another.
+fixed notch may help at one speed and do little at another. The current production
+notch is an evidence-backed exception: repeated hardware captures place the chassis
+rate mode at approximately 31–34 Hz, so the controller-facing path uses a 33.4 Hz
+center with 8 Hz bandwidth after the ISM330's chip-side 140 Hz LPF1.
 
 Before adding a notch:
 
@@ -200,8 +226,8 @@ Before adding a notch:
 3. identify a narrow, repeatable peak that remains inside a useful notch range; and
 4. measure the resulting attenuation and phase effect on the pitch-control band.
 
-The first implementation should support one disabled-by-default fixed notch. Dynamic
-notch tracking, FFT-based adaptation, and motor-command coupling are out of scope.
+The production implementation supports one fixed notch. Dynamic notch tracking,
+FFT-based adaptation, and motor-command coupling are out of scope.
 Mechanical vibration reduction remains preferable when practical.
 
 ## Service and Controller Boundary
@@ -215,7 +241,7 @@ does not subscribe to motor feedback.
 The controller consumes:
 
 - bounded complementary pitch;
-- filtered pitch gyro rate;
+- notch-conditioned pitch gyro rate;
 - filtered pitch gyro derivative; and
 - sample validity and timestamp.
 

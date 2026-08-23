@@ -2,21 +2,29 @@
 #include "ism330_iio_reader.h"
 
 #include <array>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cerrno>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <linux/i2c-dev.h>
+#include <linux/i2c.h>
+#include <optional>
 #include <poll.h>
 #include <fcntl.h>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <unistd.h>
+#include <sys/ioctl.h>
 
 #include "services/main/config.h" // for Config::sampling_hz, accel_cfg, gyro_cfg
 #include "services/imu/imu_sample_synchronizer.h"
@@ -27,6 +35,16 @@ namespace {
 constexpr double kExpectedAccelScale = 0.000598205;
 constexpr double kExpectedGyroScale  = 0.000152716;
 constexpr const char* kTriggerName = "imu833";
+
+// ISM330DHCX register map.  LPF1 is not exposed by the mainline
+// st_lsm6dsx IIO driver used on the Pi, so configure it through the sensor's
+// discovered I2C parent before enabling the IIO buffers.
+constexpr uint8_t kCtrl4C = 0x13;
+constexpr uint8_t kCtrl6C = 0x15;
+constexpr uint8_t kCtrl7G = 0x16;
+constexpr uint8_t kGyroLpf1SelectMask = 0x02;
+constexpr uint8_t kGyroLpf1TypeMask = 0x07;
+constexpr uint8_t kGyroHighPerformanceDisableMask = 0x80;
 
 const char* get_iio_root() {
   const char* env = std::getenv("IIO_ROOT");
@@ -152,6 +170,103 @@ fs::path findTriggerDirByName(const std::string& name) {
   throw std::runtime_error("Failed to create IIO trigger '" + name + "'");
 }
 
+std::optional<std::pair<int, int>> findI2cLocation(const fs::path& sysfs) {
+  std::error_code ec;
+  const fs::path resolved = fs::weakly_canonical(sysfs, ec);
+  if (ec) return std::nullopt;
+
+  for (const auto& component : resolved) {
+    const std::string name = component.string();
+    const std::size_t dash = name.find('-');
+    if (dash == std::string::npos || dash == 0 || dash + 1 >= name.size()) continue;
+    const std::string bus_text = name.substr(0, dash);
+    const std::string address_text = name.substr(dash + 1);
+    if (address_text.size() != 4 ||
+        !std::all_of(bus_text.begin(), bus_text.end(),
+                     [](unsigned char c) { return std::isdigit(c) != 0; }) ||
+        !std::all_of(address_text.begin(), address_text.end(),
+                     [](unsigned char c) { return std::isxdigit(c) != 0; })) {
+      continue;
+    }
+
+    try {
+      const int bus = std::stoi(bus_text);
+      const int address = std::stoi(address_text, nullptr, 16);
+      if (bus >= 0 && address >= 0 && address <= 0x7f) {
+        return std::pair{bus, address};
+      }
+    } catch (const std::exception&) {
+      // Continue looking if an unrelated sysfs component resembles an I2C
+      // device name but is not a valid numeric path.
+    }
+  }
+  return std::nullopt;
+}
+
+class I2cRegisterAccess {
+ public:
+  I2cRegisterAccess(int bus, int address) : address_(address) {
+    const std::string device = "/dev/i2c-" + std::to_string(bus);
+    fd_ = ::open(device.c_str(), O_RDWR | O_CLOEXEC);
+    if (fd_ < 0) {
+      throw std::system_error(errno, std::generic_category(),
+                              "open failed: " + device);
+    }
+    if (::ioctl(fd_, I2C_SLAVE_FORCE, address_) < 0) {
+      const std::system_error error(errno, std::generic_category(),
+                                    "select I2C address 0x" +
+                                        fixedHex(address_));
+      ::close(fd_);
+      fd_ = -1;
+      throw error;
+    }
+  }
+
+  ~I2cRegisterAccess() {
+    if (fd_ >= 0) ::close(fd_);
+  }
+
+  I2cRegisterAccess(const I2cRegisterAccess&) = delete;
+  I2cRegisterAccess& operator=(const I2cRegisterAccess&) = delete;
+
+  uint8_t read(uint8_t reg) const {
+    uint8_t command = reg;
+    uint8_t value = 0;
+    i2c_msg messages[2] = {
+        {.addr = static_cast<__u16>(address_), .flags = 0, .len = 1, .buf = &command},
+        {.addr = static_cast<__u16>(address_), .flags = I2C_M_RD, .len = 1, .buf = &value},
+    };
+    transfer(messages, 2, "read register " + fixedHex(reg));
+    return value;
+  }
+
+  void write(uint8_t reg, uint8_t value) const {
+    uint8_t bytes[2] = {reg, value};
+    i2c_msg message = {
+        .addr = static_cast<__u16>(address_), .flags = 0, .len = 2, .buf = bytes};
+    transfer(&message, 1, "write register " + fixedHex(reg));
+  }
+
+ private:
+  static std::string fixedHex(int value) {
+    std::ostringstream text;
+    text << "0x" << std::hex << std::uppercase << value;
+    return text.str();
+  }
+
+  void transfer(i2c_msg* messages, unsigned int count, const std::string& operation) const {
+    i2c_rdwr_ioctl_data request = {
+        .msgs = messages, .nmsgs = count};
+    if (::ioctl(fd_, I2C_RDWR, &request) < 0 || request.nmsgs != count) {
+      throw std::system_error(errno ? errno : EIO, std::generic_category(),
+                              "I2C " + operation);
+    }
+  }
+
+  int fd_{-1};
+  int address_{0};
+};
+
 } // namespace
 
 struct Ism330IioReader::Impl {
@@ -208,6 +323,53 @@ struct Ism330IioReader::Impl {
                                       kExpectedGyroScale * 0.01);
     std::printf("IMU scale: accel=%.9f m/s^2/LSB gyro=%.9f rad/s/LSB\n",
                 accel_scale, gyro_scale);
+  }
+
+  void configureGyroFilter() {
+    const auto location = findI2cLocation(gyro_sysfs);
+    if (!location) {
+      throw std::runtime_error(
+          "cannot locate the ISM330 I2C parent for direct LPF1 configuration: " +
+          gyro_sysfs.string());
+    }
+
+    const auto [bus, address] = *location;
+    I2cRegisterAccess registers(bus, address);
+    const uint8_t ctrl4_before = registers.read(kCtrl4C);
+    registers.write(kCtrl4C, static_cast<uint8_t>(ctrl4_before | kGyroLpf1SelectMask));
+
+    const uint8_t ctrl6_before = registers.read(kCtrl6C);
+    const uint8_t ctrl6_configured = static_cast<uint8_t>(
+        (ctrl6_before & ~kGyroLpf1TypeMask) |
+        static_cast<uint8_t>(Config::imu_gyro_lpf1_ftype));
+    registers.write(kCtrl6C, ctrl6_configured);
+
+    // G_HM_MODE=0 is the ISM330's normal high-performance gyro mode. Preserve
+    // every unrelated CTRL7_G setting while making the production mode
+    // explicit rather than relying on the device power-on state.
+    const uint8_t ctrl7_before = registers.read(kCtrl7G);
+    registers.write(kCtrl7G,
+                    static_cast<uint8_t>(ctrl7_before &
+                                         ~kGyroHighPerformanceDisableMask));
+
+    const uint8_t ctrl4_after = registers.read(kCtrl4C);
+    const uint8_t ctrl6_after = registers.read(kCtrl6C);
+    const uint8_t ctrl7_after = registers.read(kCtrl7G);
+    if ((ctrl4_after & kGyroLpf1SelectMask) == 0 ||
+        (ctrl6_after & kGyroLpf1TypeMask) != Config::imu_gyro_lpf1_ftype ||
+        (ctrl7_after & kGyroHighPerformanceDisableMask) != 0) {
+      throw std::runtime_error(
+          "ISM330 gyro LPF1 readback mismatch: CTRL4_C=" + std::to_string(ctrl4_after) +
+          " CTRL6_C=" + std::to_string(ctrl6_after) +
+          " CTRL7_G=" + std::to_string(ctrl7_after));
+    }
+
+    std::printf(
+        "IMU gyro filter: bus=%d addr=0x%02X ODR=833 Hz HP=on LPF1=on bandwidth=%.0f Hz "
+        "LPF2=~267 Hz FTYPE=%d CTRL4_C=0x%02X CTRL6_C=0x%02X "
+        "CTRL7_G=0x%02X\n",
+        bus, address, Config::imu_gyro_lpf1_bandwidth_hz,
+        Config::imu_gyro_lpf1_ftype, ctrl4_after, ctrl6_after, ctrl7_after);
   }
 
   void setTimestampClock(const fs::path& dev) {
@@ -337,6 +499,7 @@ Ism330IioReader::Ism330IioReader(IMUConfig cfg) : p_(std::make_unique<Impl>()) {
   p_->setTimestampClock(p_->gyro_sysfs);
   p_->setSamplingHz();
   p_->configureScales();
+  p_->configureGyroFilter();
   try {
     p_->setupBuffer(p_->accel_sysfs, true);
     p_->setupBuffer(p_->gyro_sysfs, false);

@@ -231,9 +231,14 @@ src/platform/linux/setup_permissions.sh
 
 The runtime creates the `imu833` hrtimer trigger directory as needed, but non-root access still depends on the right configfs and IIO permissions.
 
-At startup the reader now writes and reads back the 833 Hz accelerometer, gyroscope, and trigger
-rates, along with the expected ±2 g and ±250 dps IIO scales. It stops instead of running with an
-unverified conversion.
+At startup the reader writes and reads back the 833 Hz accelerometer, gyroscope, and trigger
+rates, along with the expected ±2 g and ±250 dps IIO scales. It also programs and verifies the
+ISM330DHCX gyro registers for normal high-performance mode, LPF1 enabled at 140 Hz
+(`CTRL4_C.LPF1_SEL_G=1`, `CTRL6_C.FTYPE=010`), and the ODR-derived approximately 267 Hz LPF2.
+The reader stops instead of running with an unverified conversion or unverified chip-side filter
+state. The process therefore needs read/write access to the discovered I2C adapter (normally
+`/dev/i2c-1`) as well as the IIO devices; the source-controlled udev rule assigns both to the
+`iio` group.
 
 ### Optional Bluetooth / Xbox Controller Setup
 

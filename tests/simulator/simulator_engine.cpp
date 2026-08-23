@@ -5,6 +5,8 @@
 #include <random>
 #include <utility>
 
+#include <lib/mathlib/math/filter/LowPassFilter2p.hpp>
+
 #include "messages/balancer_msgs.h"
 #include "publisher.h"
 #include "services/control/control_service.h"
@@ -168,11 +170,14 @@ struct EngineServices {
   sil::TimeService time;
   EngineObserver observer;
 
-  explicit EngineServices(ipc::MessageBus& bus)
+  explicit EngineServices(ipc::MessageBus& bus, bool legacy_reference_sensor_path)
       : left(1, Stepper::Pins{12, 19, 13}, false, false),
         right(1, Stepper::Pins{4, 18, 24}, false, false),
         motors(left, right, Config::control_hz, Config::motor_slew_sps_per_s, &wave_backend),
-        imu(bus, false),
+        imu(bus, false,
+            legacy_reference_sensor_path
+                ? sil::ImuService::EstimatorPath::LegacySimulationReference
+                : sil::ImuService::EstimatorPath::Production),
         control(bus),
         motor(bus, &motors),
         time(bus, kControlDtS) {
@@ -181,6 +186,11 @@ struct EngineServices {
 
 struct EnginePipeline {
   ipc::MessageBus bus;
+  // The hardware ISM330 applies gyro LPF1 before the samples reach the
+  // estimator.  Keep that sensor-side stage in the SIL input path as well;
+  // the estimator itself intentionally contains no generic gyro LPF.
+  math::LowPassFilter2p<float> chip_gyro_lpf1;
+  bool use_chip_gyro_lpf1{false};
   EngineServices services;
 
   // This residual exists only for explicit simulator estimator-perturbation
@@ -194,8 +204,12 @@ struct EnginePipeline {
   double previous_controller_common_steps = 0.0;
   bool have_velocity_sample = false;
 
-  explicit EnginePipeline(double initial_fused_pitch_deg)
-      : bus(this, &EnginePipeline::dispatch), services(bus) {
+  explicit EnginePipeline(double initial_fused_pitch_deg, PhysicsProfile physics_profile)
+      : bus(this, &EnginePipeline::dispatch),
+        chip_gyro_lpf1(static_cast<float>(Config::sampling_hz),
+                       static_cast<float>(Config::imu_gyro_lpf1_bandwidth_hz)),
+        use_chip_gyro_lpf1(physics_profile == PhysicsProfile::StepperPhaseElectrical),
+        services(bus, !use_chip_gyro_lpf1) {
     if (std::abs(initial_fused_pitch_deg) > 1e-12) {
       services.imu.setInitialPitchForSimulation(initial_fused_pitch_deg * M_PI / 180.0);
     }
@@ -204,6 +218,13 @@ struct EnginePipeline {
     // rolling displacement rather than being silently invisible to control.
     ipc::MotorFeedbackPayload initial_feedback{};
     services.control.on_message<MsgId::MotorFeedback>(initial_feedback);
+  }
+
+  void applyChipGyroFilter(ipc::ImuRawPayload& raw) {
+    if (!use_chip_gyro_lpf1) return;
+    for (double& value : raw.gyr) {
+      value = chip_gyro_lpf1.apply(static_cast<float>(value));
+    }
   }
 
   void setSyntheticResidualVelocity(double velocity_mps) {
@@ -224,7 +245,17 @@ struct EnginePipeline {
 
   static void dispatch(void* context, MsgId id, const void* payload) {
     auto* self = static_cast<EnginePipeline*>(context);
-    ipc::dispatch_to_service(self->services.imu, id, payload);
+    if (id == MsgId::ImuRawData) {
+      // The bus owns the published payload, so condition a copy before
+      // delivering it to the same estimator used by the hardware service.
+      // Timeline raw gyro fields intentionally remain the pre-chip-filter
+      // simulator sensor values for diagnostics.
+      auto raw = unpack_payload<MsgId::ImuRawData>(payload);
+      self->applyChipGyroFilter(raw);
+      ipc::dispatch_to_service(self->services.imu, id, &raw);
+    } else {
+      ipc::dispatch_to_service(self->services.imu, id, payload);
+    }
     ipc::dispatch_to_service(self->services.motor, id, payload);
 
     if (id == MsgId::MotorFeedback) {
@@ -298,7 +329,7 @@ struct SimulatorEngine::Impl {
   explicit Impl(const SimulatorScenario& input)
       : scenario(input),
         simulator(makeSimulatorConfig(input)),
-        pipeline(input.initial_fused_pitch_deg),
+        pipeline(input.initial_fused_pitch_deg, input.physics_profile),
         rng(input.imu_noise_seed),
         accel_noise(0.0, input.accel_noise_std_mps2 > 0.0 ? input.accel_noise_std_mps2 : 1.0),
         gyro_noise(0.0, input.gyro_noise_std_rad_s > 0.0 ? input.gyro_noise_std_rad_s : 1.0) {

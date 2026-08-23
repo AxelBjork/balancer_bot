@@ -27,7 +27,7 @@ constexpr double kVelocityLoopPeriodS = 1.0 / 100.0;
 // are deliberately conservative enough to distinguish a stopped robot from
 // the hundreds-of-SPS motion seen in the hardware captures.
 // The quiet detector uses a low-frequency RMS metric rather than an
-// instantaneous gyro threshold. This lets the harmless residual 29--30 Hz
+// instantaneous gyro threshold. This lets the harmless residual ~33 Hz
 // mode pass through a static-bias decision without changing attitude feedback.
 constexpr double kComTrimQuietRateMetricLpfHz = 2.0;
 constexpr double kComTrimQuietRateRmsDps = 10.0;
@@ -455,7 +455,10 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
     t.active_com_trim_limit_deg = 0.0;
     t.active_velocity_pitch_limit_deg = 0.0;
     t.active_accel_lpf_hz = Config::imu_accel_lpf_hz;
-    t.active_gyro_lpf_hz = Config::imu_gyro_lpf_hz;
+    // Append-only compatibility field. The controller-facing gyro path no
+    // longer has a software LPF; high-frequency conditioning is configured in
+    // the ISM330 LPF1 and verified by the hardware reader.
+    t.active_gyro_lpf_hz = 0.0;
     t.active_gyro_derivative_lpf_hz = Config::imu_gyro_derivative_lpf_hz;
     t.active_config_generation = ConfigPid::generation();
     t.velocity_pitch_request_unclamped_deg = 0.0;
@@ -765,7 +768,7 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
 
     // Estimate low-frequency rate energy for the state machine only.  The
     // squared-rate envelope avoids repeated instantaneous threshold crossings
-    // from the locked 29 Hz attitude residual while retaining sensitivity to
+    // from the locked ~33 Hz attitude residual while retaining sensitivity to
     // the 0.15--0.25 Hz motion seen in the hardware failure.
       const double quiet_rate_alpha =
           std::exp(-2.0 * M_PI * kComTrimQuietRateMetricLpfHz * outer_dt);

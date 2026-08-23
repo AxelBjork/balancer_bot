@@ -5,8 +5,13 @@
 
 namespace sil {
 
-ImuService::ImuService(ipc::MessageBus& bus, bool enable_hardware_reader)
-    : bus_(bus), estimator_(std::make_unique<ImuPitchEstimator>()) {
+ImuService::ImuService(ipc::MessageBus& bus, bool enable_hardware_reader,
+                       EstimatorPath estimator_path)
+    : bus_(bus),
+      estimator_(std::make_unique<ImuPitchEstimator>(
+          estimator_path == EstimatorPath::LegacySimulationReference
+              ? ImuPitchEstimator::Settings::legacy_simulation_reference()
+              : ImuPitchEstimator::Settings::production())) {
   if (!enable_hardware_reader) {
     return;
   }

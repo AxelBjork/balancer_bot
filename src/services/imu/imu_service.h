@@ -14,24 +14,34 @@ inline constexpr char kImuServiceDoc[] =
     "Consumes raw accelerometer/gyroscope samples and publishes `ImuData` samples that represent "
     "the controller's current view of body pitch, angular motion, and sample time.\n\n"
     "The hardware reader converts synchronized sensor samples into SI-valued robot axes and "
-    "publishes `ImuRawData`. This service applies a locked 29 Hz gyro notch with 10 Hz "
-    "bandwidth, followed by 15 Hz accelerometer and 30 Hz gyro two-pole low-pass filters, "
-    "plus a 10 Hz filtered gyro derivative. Full-circle gravity pitch corrects "
+    "publishes `ImuRawData`. The reader configures the ISM330 gyroscope at 833 Hz with "
+    "chip-side LPF1 enabled at 140 Hz and verifies the register readback. This service then "
+    "applies a locked 33.4 Hz gyro notch with 8 Hz bandwidth, with no additional generic "
+    "software gyro low-pass in the controller-facing rate path. The accelerometer retains its "
+    "15 Hz two-pole low-pass and the gyro derivative retains its 10 Hz filter. Full-circle gravity pitch corrects "
     "short-term gyro prediction at 0.5 Hz, with each innovation limited symmetrically to 2.5 "
     "degrees so translation and motor vibration cannot abruptly steer attitude. The fixed notch "
     "is part of the IMU path; 70 mm lever-arm correction remains disabled. It never learns gyro "
     "bias, mounting, gravity recovery modes, or COM correction, and marks invalid input invalid.\n\n"
     "SIL can disable the hardware reader and inject `ImuRawData` through `UdpBridge` while using "
-    "the same estimator. `ImuData` remains an internal controller-facing contract.";
+    "the same estimator implementation; explicit simulator reference profiles may retain the "
+    "current 32 Hz / 10 Hz notch plus 30 Hz software LPF. `ImuData` remains an internal "
+    "controller-facing contract.";
 
 class DOC_DESC(kImuServiceDoc) ImuService {
  public:
   static constexpr const char* kDocDescription = kImuServiceDoc;
 
+  enum class EstimatorPath {
+    Production,
+    LegacySimulationReference,
+  };
+
   using Publishes = ipc::MsgList<MsgId::ImuRawData, MsgId::ImuData>;
   using Subscribes = ipc::MsgList<MsgId::ImuRawData>;
 
-  explicit ImuService(ipc::MessageBus& bus, bool enable_hardware_reader = true);
+  explicit ImuService(ipc::MessageBus& bus, bool enable_hardware_reader = true,
+                      EstimatorPath estimator_path = EstimatorPath::Production);
   ~ImuService();
 
   void start() {

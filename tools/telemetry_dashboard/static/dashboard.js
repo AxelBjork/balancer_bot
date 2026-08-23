@@ -1,4 +1,5 @@
-const RUN_LIMIT_S = 120;
+// The browser navigator is intentionally shorter than the server and hardware run duration.
+const RUN_LIMIT_S = 90;
 const DEFAULT_WINDOW_S = 15;
 const MIN_WINDOW_S = 5;
 const MAX_POINTS = 6000;

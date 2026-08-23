@@ -65,6 +65,9 @@ fi
 # RUN script to chmod the device attributes when it appears
 sudo bash -c "cat > $RULE_FILE" <<'EOF'
 ACTION=="add", SUBSYSTEM=="iio", KERNEL=="iio:device*", MODE="0666", RUN+="/bin/sh -c 'chmod -R 0777 /sys/bus/iio/devices/%k'"
+# The runtime also programs and verifies the ISM330 LPF1 register through the
+# I2C parent before the IIO buffers are enabled.
+SUBSYSTEM=="i2c-dev", KERNEL=="i2c-[0-9]*", MODE="0666"
 EOF
 # sudo chmod -R 0777 /sys/bus/iio/devices/iio\:device0
 # sudo chmod -R 0777 /sys/bus/iio/devices/iio\:device1

@@ -14,8 +14,8 @@ using TimePoint = ImuPitchEstimator::TimePoint;
 // Locked inner-loop vibration rejection.  This is deliberately an IMU
 // implementation detail rather than a live PID/configuration parameter: the
 // controller should always receive the same conditioned pitch-rate signal.
-constexpr double kProductionGyroNotchHz = 29.0;
-constexpr double kProductionGyroNotchBandwidthHz = 10.0;
+constexpr double kProductionGyroNotchHz = 33.4;
+constexpr double kProductionGyroNotchBandwidthHz = 8.0;
 
 double seconds_between(TimePoint newer, TimePoint older) {
   return std::chrono::duration<double>(newer - older).count();
@@ -28,7 +28,6 @@ bool valid_cutoff(double cutoff_hz, double sample_hz) {
 void validate_settings(const Settings& settings) {
   if (!std::isfinite(settings.sample_hz) || settings.sample_hz <= 0.0 ||
       !valid_cutoff(settings.accel_lpf_hz, settings.sample_hz) ||
-      !valid_cutoff(settings.gyro_lpf_hz, settings.sample_hz) ||
       !valid_cutoff(settings.gyro_derivative_lpf_hz, settings.sample_hz) ||
       !valid_cutoff(settings.attitude_correction_hz, settings.sample_hz) ||
       !std::isfinite(settings.gravity_innovation_limit_rad) ||
@@ -42,6 +41,11 @@ void validate_settings(const Settings& settings) {
       !std::isfinite(settings.specific_force_max_mps2) ||
       settings.specific_force_max_mps2 <= settings.specific_force_min_mps2) {
     throw std::invalid_argument("invalid IMU pitch estimator settings");
+  }
+
+  if (settings.gyro_software_lpf_hz != 0.0 &&
+      !valid_cutoff(settings.gyro_software_lpf_hz, settings.sample_hz)) {
+    throw std::invalid_argument("invalid legacy IMU gyro low-pass settings");
   }
 
   const bool notch_disabled =
@@ -97,7 +101,7 @@ ImuPitchEstimator::Settings ImuPitchEstimator::Settings::production() {
   return Settings{
       .sample_hz = Config::sampling_hz,
       .accel_lpf_hz = Config::imu_accel_lpf_hz,
-      .gyro_lpf_hz = Config::imu_gyro_lpf_hz,
+      .gyro_software_lpf_hz = 0.0,
       .gyro_derivative_lpf_hz = Config::imu_gyro_derivative_lpf_hz,
       .attitude_correction_hz = Config::imu_attitude_correction_hz,
       .gravity_innovation_limit_rad = Config::imu_gravity_innovation_limit_rad,
@@ -111,6 +115,17 @@ ImuPitchEstimator::Settings ImuPitchEstimator::Settings::production() {
   };
 }
 
+ImuPitchEstimator::Settings ImuPitchEstimator::Settings::legacy_simulation_reference() {
+  auto settings = Settings::production();
+  // Keep the simulator's historical software-conditioning reference explicit,
+  // but use the current production baseline for comparison: 32 Hz / 10 Hz
+  // notch followed by the 30 Hz two-pole software gyro LPF.
+  settings.gyro_notch_hz = 32.0;
+  settings.gyro_notch_bandwidth_hz = 10.0;
+  settings.gyro_software_lpf_hz = 30.0;
+  return settings;
+}
+
 ImuPitchEstimator::ImuPitchEstimator() : ImuPitchEstimator(Settings::production()) {
 }
 
@@ -119,9 +134,7 @@ ImuPitchEstimator::ImuPitchEstimator(Settings settings)
       accel_x_lpf_(static_cast<float>(settings.sample_hz),
                    static_cast<float>(settings.accel_lpf_hz)),
       accel_z_lpf_(static_cast<float>(settings.sample_hz),
-                   static_cast<float>(settings.accel_lpf_hz)),
-      gyro_y_lpf_(static_cast<float>(settings.sample_hz),
-                  static_cast<float>(settings.gyro_lpf_hz)) {
+                   static_cast<float>(settings.accel_lpf_hz)) {
   validate_settings(settings_);
   if (settings_.gyro_notch_hz > 0.0) {
     const bool configured = gyro_y_notch_.setParameters(
@@ -133,6 +146,11 @@ ImuPitchEstimator::ImuPitchEstimator(Settings settings)
     }
   } else {
     gyro_y_notch_.disable();
+  }
+  if (settings_.gyro_software_lpf_hz > 0.0) {
+    gyro_y_legacy_lpf_ = std::make_unique<math::LowPassFilter2p<float>>(
+        static_cast<float>(settings_.sample_hz),
+        static_cast<float>(settings_.gyro_software_lpf_hz));
   }
   gyro_y_derivative_.setParameters(
       static_cast<float>(1.0 / settings_.sample_hz),
@@ -175,7 +193,13 @@ ImuPitchEstimate ImuPitchEstimator::push_sample(const Acc3& acc, const Gyr3& gyr
   const double filtered_acc_x = accel_x_lpf_.apply(acc_x);
   const double filtered_acc_z = accel_z_lpf_.apply(acc_z);
   const float notched_gyro_y = gyro_y_notch_.apply(gyro_y);
-  const double filtered_gyro_y = gyro_y_lpf_.apply(notched_gyro_y);
+  // The ISM330's chip-side LPF1 (140 Hz at the production 833 Hz ODR) is the
+  // high-frequency conditioning stage. Keep the software path to the
+  // controller as notch-only so the balance loop does not pay the delay of a
+  // second generic 30 Hz low-pass filter.
+  const double filtered_gyro_y = gyro_y_legacy_lpf_
+                                     ? gyro_y_legacy_lpf_->apply(notched_gyro_y)
+                                     : notched_gyro_y;
   gyro_y_derivative_.setParameters(
       static_cast<float>(dt_s),
       static_cast<float>(1.0 / (2.0 * M_PI * settings_.gyro_derivative_lpf_hz)));
@@ -207,6 +231,7 @@ void ImuPitchEstimator::reset() {
   last_timestamp_ = {};
   pitch_rad_ = 0.0;
   gyro_y_notch_.reset();
+  if (gyro_y_legacy_lpf_) gyro_y_legacy_lpf_->reset(0.0f);
   gyro_y_derivative_.reset(0.0f);
 }
 
@@ -239,7 +264,9 @@ ImuPitchEstimate ImuPitchEstimator::seed(const Acc3& acc, const Gyr3& gyr,
   const double filtered_acc_x = accel_x_lpf_.reset(acc_x);
   const double filtered_acc_z = accel_z_lpf_.reset(acc_z);
   gyro_y_notch_.reset(gyro_y);
-  const double filtered_gyro_y = gyro_y_lpf_.reset(gyro_y);
+  const double filtered_gyro_y = gyro_y_legacy_lpf_
+                                     ? gyro_y_legacy_lpf_->reset(gyro_y)
+                                     : gyro_y;
   gyro_y_derivative_.setParameters(
       static_cast<float>(1.0 / settings_.sample_hz),
       static_cast<float>(1.0 / (2.0 * M_PI * settings_.gyro_derivative_lpf_hz)));

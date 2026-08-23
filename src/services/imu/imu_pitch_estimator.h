@@ -2,6 +2,7 @@
 
 #include <array>
 #include <chrono>
+#include <memory>
 #include <optional>
 
 #include <lib/mathlib/math/filter/FilteredDerivative.hpp>
@@ -34,7 +35,10 @@ class ImuPitchEstimator {
   struct Settings {
     double sample_hz{0.0};
     double accel_lpf_hz{0.0};
-    double gyro_lpf_hz{0.0};
+    // Simulation-only compatibility stage for the historical force-based
+    // reference profiles. Production settings leave this at zero: hardware
+    // conditioning is provided by the ISM330 LPF1.
+    double gyro_software_lpf_hz{0.0};
     double gyro_derivative_lpf_hz{0.0};
     double attitude_correction_hz{0.0};
     double gravity_innovation_limit_rad{0.0};
@@ -47,6 +51,7 @@ class ImuPitchEstimator {
     bool lever_arm_correction_enabled{false};
 
     static Settings production();
+    static Settings legacy_simulation_reference();
   };
 
   ImuPitchEstimator();
@@ -70,7 +75,7 @@ class ImuPitchEstimator {
   math::LowPassFilter2p<float> accel_x_lpf_;
   math::LowPassFilter2p<float> accel_z_lpf_;
   math::NotchFilter<float> gyro_y_notch_;
-  math::LowPassFilter2p<float> gyro_y_lpf_;
+  std::unique_ptr<math::LowPassFilter2p<float>> gyro_y_legacy_lpf_;
   FilteredDerivative<float> gyro_y_derivative_;
   TimePoint last_timestamp_{};
   double pitch_rad_{0.0};

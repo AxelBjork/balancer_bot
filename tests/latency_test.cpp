@@ -52,6 +52,115 @@ double first_order_lpf_magnitude(double sample_hz, double cutoff_hz,
   return std::abs((1.0 - pole) / (1.0 - pole * z1));
 }
 
+struct BiquadCoefficients {
+  double b0{1.0};
+  double b1{0.0};
+  double b2{0.0};
+  double a1{0.0};
+  double a2{0.0};
+};
+
+struct BiquadResponse {
+  std::complex<double> transfer{};
+  double group_delay_ms{0.0};
+};
+
+// These coefficient builders intentionally follow the formulas in the
+// production PX4 filter implementations, including their float coefficient
+// arithmetic. The response calculation below then operates on those exact
+// coefficients rather than on a continuous-time approximation.
+BiquadCoefficients notch_coefficients(double sample_hz, double notch_hz,
+                                      double bandwidth_hz) {
+  const float sample_freq = static_cast<float>(sample_hz);
+  const float notch_freq = static_cast<float>(notch_hz);
+  const float bandwidth = static_cast<float>(bandwidth_hz);
+  const float alpha =
+      std::tan(static_cast<float>(M_PI) * bandwidth / sample_freq);
+  const float beta = -std::cos(2.0f * static_cast<float>(M_PI) * notch_freq /
+                               sample_freq);
+  const float a0_inv = 1.0f / (alpha + 1.0f);
+  const float b0 = a0_inv;
+  const float b1 = 2.0f * beta * a0_inv;
+  const float a2 = (1.0f - alpha) * a0_inv;
+  return {
+      .b0 = b0,
+      .b1 = b1,
+      .b2 = b0,
+      .a1 = b1,
+      .a2 = a2,
+  };
+}
+
+BiquadCoefficients low_pass_2p_coefficients(double sample_hz,
+                                            double cutoff_hz) {
+  const float sample_freq = static_cast<float>(sample_hz);
+  const float cutoff = static_cast<float>(cutoff_hz);
+  const float ohm = std::tan(static_cast<float>(M_PI) * cutoff / sample_freq);
+  const float c = 1.0f + 2.0f * std::cos(static_cast<float>(M_PI) / 4.0f) * ohm +
+                  ohm * ohm;
+  const float b0 = ohm * ohm / c;
+  return {
+      .b0 = b0,
+      .b1 = 2.0f * b0,
+      .b2 = b0,
+      .a1 = 2.0f * (ohm * ohm - 1.0f) / c,
+      .a2 = (1.0f - 2.0f * std::cos(static_cast<float>(M_PI) / 4.0f) * ohm +
+             ohm * ohm) /
+            c,
+  };
+}
+
+BiquadResponse evaluate_biquad(const BiquadCoefficients& coefficients,
+                               double sample_hz, double frequency_hz) {
+  const double omega = kTwoPi * frequency_hz / sample_hz;
+  const std::complex<double> z = std::polar(1.0, -omega);
+  const std::complex<double> dz_domega =
+      std::complex<double>(0.0, -1.0) * z;
+  const std::complex<double> numerator =
+      coefficients.b0 + coefficients.b1 * z + coefficients.b2 * z * z;
+  const std::complex<double> denominator =
+      1.0 + coefficients.a1 * z + coefficients.a2 * z * z;
+  const std::complex<double> numerator_z =
+      coefficients.b1 + 2.0 * coefficients.b2 * z;
+  const std::complex<double> denominator_z =
+      coefficients.a1 + 2.0 * coefficients.a2 * z;
+  const std::complex<double> transfer = numerator / denominator;
+  const std::complex<double> d_transfer_domega =
+      (numerator_z * dz_domega * denominator -
+       numerator * denominator_z * dz_domega) /
+      (denominator * denominator);
+  const double group_delay_ms =
+      -std::imag(d_transfer_domega / transfer) * 1000.0 / sample_hz;
+  return {.transfer = transfer, .group_delay_ms = group_delay_ms};
+}
+
+BiquadResponse evaluate_current_rate_chain(double frequency_hz) {
+  const auto notch = evaluate_biquad(
+      notch_coefficients(Config::sampling_hz, 32.0, 10.0),
+      Config::sampling_hz, frequency_hz);
+  const auto lpf = evaluate_biquad(
+      low_pass_2p_coefficients(Config::sampling_hz, 30.0),
+      Config::sampling_hz, frequency_hz);
+  return {
+      .transfer = notch.transfer * lpf.transfer,
+      .group_delay_ms = notch.group_delay_ms + lpf.group_delay_ms,
+  };
+}
+
+BiquadResponse evaluate_candidate_rate_chain(double frequency_hz) {
+  return evaluate_biquad(
+      notch_coefficients(Config::sampling_hz, 33.4, 8.0),
+      Config::sampling_hz, frequency_hz);
+}
+
+double gain_db(const BiquadResponse& response) {
+  return 20.0 * std::log10(std::abs(response.transfer));
+}
+
+double phase_deg(const BiquadResponse& response) {
+  return std::arg(response.transfer) * 180.0 / M_PI;
+}
+
 std::array<double, 3> imu_accel(double pitch, double gyro_rate = 0.0,
                                 double gyro_accel = 0.0,
                                 double body_x_accel = 0.0) {
@@ -392,13 +501,15 @@ TEST(ImuPitchEstimatorTest, RejectsBroadMagnitudeLimitsAndRecovers) {
 TEST(ImuPitchEstimatorTest, ProductionDefaultLeavesLeverArmCorrectionDisabled) {
   const auto settings = ImuPitchEstimator::Settings::production();
   EXPECT_DOUBLE_EQ(settings.accel_lpf_hz, 15.0);
-  EXPECT_DOUBLE_EQ(settings.gyro_lpf_hz, 30.0);
+  EXPECT_DOUBLE_EQ(settings.gyro_software_lpf_hz, 0.0);
   EXPECT_DOUBLE_EQ(settings.gyro_derivative_lpf_hz, 10.0);
   EXPECT_DOUBLE_EQ(settings.attitude_correction_hz, 0.5);
   EXPECT_NEAR(rad2deg(settings.gravity_innovation_limit_rad), 2.5, 1e-12);
   ASSERT_FALSE(settings.lever_arm_correction_enabled);
-  EXPECT_DOUBLE_EQ(settings.gyro_notch_hz, 29.0);
-  EXPECT_DOUBLE_EQ(settings.gyro_notch_bandwidth_hz, 10.0);
+  EXPECT_DOUBLE_EQ(settings.gyro_notch_hz, 33.4);
+  EXPECT_DOUBLE_EQ(settings.gyro_notch_bandwidth_hz, 8.0);
+  EXPECT_DOUBLE_EQ(Config::imu_gyro_lpf1_bandwidth_hz, 140.0);
+  EXPECT_EQ(Config::imu_gyro_lpf1_ftype, 0b010);
   ImuPitchEstimator estimator;
   constexpr double angular_accel = 20.0;
   const auto specific_force = imu_accel(0.0, 0.0, angular_accel);
@@ -416,6 +527,14 @@ TEST(ImuPitchEstimatorTest, ProductionDefaultLeavesLeverArmCorrectionDisabled) {
   EXPECT_GT(std::abs(result.sample.angle_rad), deg2rad(5.0));
 }
 
+TEST(ImuPitchEstimatorTest, CurrentSoftwareReferenceUses32HzNotchAnd30HzLowPass) {
+  const auto settings =
+      ImuPitchEstimator::Settings::legacy_simulation_reference();
+  EXPECT_DOUBLE_EQ(settings.gyro_notch_hz, 32.0);
+  EXPECT_DOUBLE_EQ(settings.gyro_notch_bandwidth_hz, 10.0);
+  EXPECT_DOUBLE_EQ(settings.gyro_software_lpf_hz, 30.0);
+}
+
 TEST(ImuPitchEstimatorTest, ProductionNotchSuppressesLockedHardwareBand) {
   const auto settings = ImuPitchEstimator::Settings::production();
   ImuPitchEstimator notched(settings);
@@ -426,10 +545,10 @@ TEST(ImuPitchEstimatorTest, ProductionNotchSuppressesLockedHardwareBand) {
   ImuPitchEstimator unnotched(unnotched_settings);
 
   const auto with_notch = measure_sine(
-      notched, 29.0, 1.0, gyro_input(),
+      notched, settings.gyro_notch_hz, 1.0, gyro_input(),
       [](const ImuSample& sample) { return sample.gyro_rad_s; });
   const auto without_notch = measure_sine(
-      unnotched, 29.0, 1.0, gyro_input(),
+      unnotched, settings.gyro_notch_hz, 1.0, gyro_input(),
       [](const ImuSample& sample) { return sample.gyro_rad_s; });
 
   EXPECT_TRUE(with_notch.finite);
@@ -471,20 +590,84 @@ TEST(ImuPitchEstimatorTest, GravityPathMatchesCompositeResponseAndDelay) {
   }
 }
 
-TEST(ImuPitchEstimatorTest, GyroFilterMatchesPx4ResponseAndDelay) {
-  for (const double frequency_hz : {5.0, 60.0, 120.0}) {
-    ImuPitchEstimator estimator;
+TEST(ImuPitchEstimatorTest, GyroRatePathHasNoGenericSoftwareLowPass) {
+  auto unnotched_settings = ImuPitchEstimator::Settings::production();
+  unnotched_settings.gyro_notch_hz = 0.0;
+  unnotched_settings.gyro_notch_bandwidth_hz = 0.0;
+
+  for (const double frequency_hz : {5.0, 100.0}) {
+    ImuPitchEstimator notched;
+    ImuPitchEstimator unnotched(unnotched_settings);
     const auto measured = measure_sine(
-        estimator, frequency_hz, 1.0, gyro_input(),
+        notched, frequency_hz, 1.0, gyro_input(),
         [](const ImuSample& sample) { return sample.gyro_rad_s; });
-    const double expected = px4_lpf2p_magnitude(
-        Config::sampling_hz, Config::imu_gyro_lpf_hz, frequency_hz);
+    const auto bypass = measure_sine(
+        unnotched, frequency_hz, 1.0, gyro_input(),
+        [](const ImuSample& sample) { return sample.gyro_rad_s; });
     EXPECT_TRUE(measured.finite);
-    EXPECT_NEAR(measured.gain, expected, 0.05 * expected) << frequency_hz;
+    EXPECT_TRUE(bypass.finite);
+    EXPECT_GT(measured.gain / bypass.gain, frequency_hz == 5.0 ? 0.97 : 0.80)
+        << frequency_hz;
     if (frequency_hz == 5.0) {
-      EXPECT_GT(measured.delay_s, 0.0);
-      EXPECT_LT(measured.delay_s, 0.010);
+      EXPECT_LT(std::abs(measured.delay_s), 0.002);
     }
+  }
+}
+
+TEST(ImuPitchEstimatorTest, RateFilterAnalyticalResponseUsesImplemented833HzCoefficients) {
+  struct ExpectedResponse {
+    double frequency_hz;
+    double current_gain_db;
+    double current_phase_deg;
+    double current_group_delay_ms;
+    double candidate_gain_db;
+    double candidate_phase_deg;
+    double candidate_group_delay_ms;
+  };
+  constexpr std::array<ExpectedResponse, 3> expected{{
+      {2.0, -0.001818, -6.516073, 9.084050, -0.000910, -0.829280, 1.159862},
+      {5.0, -0.014320, -16.450239, 9.350268, -0.005903, -2.112103, 1.225799},
+      {10.0, -0.103594, -34.032329, 10.285622, -0.027142, -4.527168, 1.497761},
+  }};
+
+  for (const auto& item : expected) {
+    const auto current = evaluate_current_rate_chain(item.frequency_hz);
+    const auto candidate = evaluate_candidate_rate_chain(item.frequency_hz);
+    EXPECT_NEAR(gain_db(current), item.current_gain_db, 2e-5)
+        << item.frequency_hz;
+    EXPECT_NEAR(phase_deg(current), item.current_phase_deg, 2e-5)
+        << item.frequency_hz;
+    EXPECT_NEAR(current.group_delay_ms, item.current_group_delay_ms, 2e-5)
+        << item.frequency_hz;
+    EXPECT_NEAR(gain_db(candidate), item.candidate_gain_db, 2e-5)
+        << item.frequency_hz;
+    EXPECT_NEAR(phase_deg(candidate), item.candidate_phase_deg, 2e-5)
+        << item.frequency_hz;
+    EXPECT_NEAR(candidate.group_delay_ms, item.candidate_group_delay_ms, 2e-5)
+        << item.frequency_hz;
+
+    auto current_settings = ImuPitchEstimator::Settings::production();
+    current_settings.gyro_notch_hz = 32.0;
+    current_settings.gyro_notch_bandwidth_hz = 10.0;
+    current_settings.gyro_software_lpf_hz = 30.0;
+    ImuPitchEstimator current_estimator(current_settings);
+    ImuPitchEstimator candidate_estimator;
+    const auto measured_current = measure_sine(
+        current_estimator, item.frequency_hz, 1.0, gyro_input(),
+        [](const ImuSample& sample) { return sample.gyro_rad_s; });
+    const auto measured_candidate = measure_sine(
+        candidate_estimator, item.frequency_hz, 1.0, gyro_input(),
+        [](const ImuSample& sample) { return sample.gyro_rad_s; });
+    EXPECT_TRUE(measured_current.finite);
+    EXPECT_TRUE(measured_candidate.finite);
+    EXPECT_NEAR(measured_current.gain, std::abs(current.transfer), 2e-3)
+        << item.frequency_hz;
+    EXPECT_NEAR(measured_current.phase_rad, std::arg(current.transfer), 2e-3)
+        << item.frequency_hz;
+    EXPECT_NEAR(measured_candidate.gain, std::abs(candidate.transfer), 2e-3)
+        << item.frequency_hz;
+    EXPECT_NEAR(measured_candidate.phase_rad, std::arg(candidate.transfer), 2e-3)
+        << item.frequency_hz;
   }
 }
 
@@ -538,7 +721,7 @@ TEST(ImuPitchEstimatorTest, AccelAndGyroVibrationAreAttenuatedWithoutMeanShift) 
   const auto gyro = measure_sine(
       gyro_estimator, 100.0, 1.0, gyro_input(),
       [](const ImuSample& sample) { return sample.gyro_rad_s; });
-  EXPECT_LT(gyro.gain, 0.12);
+  EXPECT_GT(gyro.gain, 0.80);
 }
 
 TEST(ImuPitchEstimatorTest, LowPassReducesStaticAccelNoiseWithoutBias) {

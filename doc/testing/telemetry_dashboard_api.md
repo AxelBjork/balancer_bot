@@ -67,7 +67,7 @@ Returns the selected source and dashboard display metadata:
   "configured_pi": "rpi4",
   "connection_state": "configured",
   "connection_message": "Waiting to resolve and register with the Pi.",
-  "run_limit_s": 120.0,
+  "run_limit_s": 240.0,
   "display_sample_hz": 50.0,
   "display_run": 3
 }
@@ -120,7 +120,7 @@ Returns the bounded display-rate telemetry history. Query parameters are optiona
 
 | Parameter | Default | Effective range | Meaning |
 | --- | ---: | ---: | --- |
-| `seconds` | `120` | `1` to `120` for live sessions | Receive-time window |
+| `seconds` | `240` | `1` to `240` for live sessions | Receive-time window |
 | `max_points` | `6000` | `10` to `6000` | Maximum returned samples |
 | `end` | latest sample | — | Receive-time endpoint for the window |
 
@@ -345,8 +345,10 @@ these dashboard capabilities to any client that can reach the port.
 
 The dashboard process owns the UDP registration, live CSV capture, heartbeat, and SSE history. A
 successful live Start begins a new raw CSV capture and display run; the display history is bounded
-to 120 seconds or 6000 points, while raw CSV retention is separate. Stopping the host dashboard
+to 240 seconds or 6000 points, while raw CSV retention is separate. Stopping the host dashboard
 closes those workers and the HTTP listener; it does not replace the Pi process lifecycle.
+The live browser navigator intentionally limits the selectable dashboard window to 90 seconds;
+that UI limit is independent of the server history and hardware run duration.
 
 When the experiment is finished, restore the original PID snapshot, confirm its asynchronous status,
 close any SSE/curl client, and stop the host dashboard with `Ctrl-C` or the host process supervisor.
