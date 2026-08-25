@@ -33,6 +33,11 @@ class ImuPitchEstimator {
   using TimePoint = std::chrono::steady_clock::time_point;
 
   struct Settings {
+    struct GyroNotch {
+      double center_hz{0.0};
+      double bandwidth_hz{0.0};
+    };
+
     double sample_hz{0.0};
     double accel_lpf_hz{0.0};
     // Simulation-only compatibility stage for the historical force-based
@@ -42,8 +47,7 @@ class ImuPitchEstimator {
     double gyro_derivative_lpf_hz{0.0};
     double attitude_correction_hz{0.0};
     double gravity_innovation_limit_rad{0.0};
-    double gyro_notch_hz{0.0};
-    double gyro_notch_bandwidth_hz{0.0};
+    std::array<GyroNotch, 2> gyro_notches{};
     double max_sample_gap_periods{0.0};
     double imu_height_m{0.0};
     double specific_force_min_mps2{0.0};
@@ -74,8 +78,9 @@ class ImuPitchEstimator {
   Settings settings_;
   math::LowPassFilter2p<float> accel_x_lpf_;
   math::LowPassFilter2p<float> accel_z_lpf_;
-  math::NotchFilter<float> gyro_y_notch_;
+  std::array<math::NotchFilter<float>, 2> gyro_y_notches_;
   std::unique_ptr<math::LowPassFilter2p<float>> gyro_y_legacy_lpf_;
+  const float gyro_derivative_time_constant_s_;
   FilteredDerivative<float> gyro_y_derivative_;
   TimePoint last_timestamp_{};
   double pitch_rad_{0.0};

@@ -15,6 +15,10 @@
 namespace {
 
 constexpr double kTwoPi = 2.0 * M_PI;
+constexpr double kCandidateNotch1CenterHz = 26.9;
+constexpr double kCandidateNotch1BandwidthHz = 8.0;
+constexpr double kCandidateNotch2CenterHz = 33.4;
+constexpr double kCandidateNotch2BandwidthHz = 7.0;
 
 double deg2rad(double degrees) {
   return degrees * M_PI / 180.0;
@@ -148,9 +152,20 @@ BiquadResponse evaluate_current_rate_chain(double frequency_hz) {
 }
 
 BiquadResponse evaluate_candidate_rate_chain(double frequency_hz) {
-  return evaluate_biquad(
-      notch_coefficients(Config::sampling_hz, 33.4, 8.0),
+  const auto lower = evaluate_biquad(
+      notch_coefficients(Config::sampling_hz,
+                         kCandidateNotch1CenterHz,
+                         kCandidateNotch1BandwidthHz),
       Config::sampling_hz, frequency_hz);
+  const auto upper = evaluate_biquad(
+      notch_coefficients(Config::sampling_hz,
+                         kCandidateNotch2CenterHz,
+                         kCandidateNotch2BandwidthHz),
+      Config::sampling_hz, frequency_hz);
+  return {
+      .transfer = lower.transfer * upper.transfer,
+      .group_delay_ms = lower.group_delay_ms + upper.group_delay_ms,
+  };
 }
 
 double gain_db(const BiquadResponse& response) {
@@ -506,8 +521,12 @@ TEST(ImuPitchEstimatorTest, ProductionDefaultLeavesLeverArmCorrectionDisabled) {
   EXPECT_DOUBLE_EQ(settings.attitude_correction_hz, 0.5);
   EXPECT_NEAR(rad2deg(settings.gravity_innovation_limit_rad), 2.5, 1e-12);
   ASSERT_FALSE(settings.lever_arm_correction_enabled);
-  EXPECT_DOUBLE_EQ(settings.gyro_notch_hz, 33.4);
-  EXPECT_DOUBLE_EQ(settings.gyro_notch_bandwidth_hz, 8.0);
+  EXPECT_DOUBLE_EQ(settings.gyro_notches[0].center_hz, kCandidateNotch1CenterHz);
+  EXPECT_DOUBLE_EQ(settings.gyro_notches[0].bandwidth_hz,
+                   kCandidateNotch1BandwidthHz);
+  EXPECT_DOUBLE_EQ(settings.gyro_notches[1].center_hz, kCandidateNotch2CenterHz);
+  EXPECT_DOUBLE_EQ(settings.gyro_notches[1].bandwidth_hz,
+                   kCandidateNotch2BandwidthHz);
   EXPECT_DOUBLE_EQ(Config::imu_gyro_lpf1_bandwidth_hz, 140.0);
   EXPECT_EQ(Config::imu_gyro_lpf1_ftype, 0b010);
   ImuPitchEstimator estimator;
@@ -530,8 +549,10 @@ TEST(ImuPitchEstimatorTest, ProductionDefaultLeavesLeverArmCorrectionDisabled) {
 TEST(ImuPitchEstimatorTest, CurrentSoftwareReferenceUses32HzNotchAnd30HzLowPass) {
   const auto settings =
       ImuPitchEstimator::Settings::legacy_simulation_reference();
-  EXPECT_DOUBLE_EQ(settings.gyro_notch_hz, 32.0);
-  EXPECT_DOUBLE_EQ(settings.gyro_notch_bandwidth_hz, 10.0);
+  EXPECT_DOUBLE_EQ(settings.gyro_notches[0].center_hz, 32.0);
+  EXPECT_DOUBLE_EQ(settings.gyro_notches[0].bandwidth_hz, 10.0);
+  EXPECT_DOUBLE_EQ(settings.gyro_notches[1].center_hz, 0.0);
+  EXPECT_DOUBLE_EQ(settings.gyro_notches[1].bandwidth_hz, 0.0);
   EXPECT_DOUBLE_EQ(settings.gyro_software_lpf_hz, 30.0);
 }
 
@@ -540,20 +561,21 @@ TEST(ImuPitchEstimatorTest, ProductionNotchSuppressesLockedHardwareBand) {
   ImuPitchEstimator notched(settings);
 
   auto unnotched_settings = settings;
-  unnotched_settings.gyro_notch_hz = 0.0;
-  unnotched_settings.gyro_notch_bandwidth_hz = 0.0;
+  unnotched_settings.gyro_notches = {{{0.0, 0.0}, {0.0, 0.0}}};
   ImuPitchEstimator unnotched(unnotched_settings);
 
-  const auto with_notch = measure_sine(
-      notched, settings.gyro_notch_hz, 1.0, gyro_input(),
-      [](const ImuSample& sample) { return sample.gyro_rad_s; });
-  const auto without_notch = measure_sine(
-      unnotched, settings.gyro_notch_hz, 1.0, gyro_input(),
-      [](const ImuSample& sample) { return sample.gyro_rad_s; });
+  for (const auto& notch : settings.gyro_notches) {
+    const auto with_notch = measure_sine(
+        notched, notch.center_hz, 1.0, gyro_input(),
+        [](const ImuSample& sample) { return sample.gyro_rad_s; });
+    const auto without_notch = measure_sine(
+        unnotched, notch.center_hz, 1.0, gyro_input(),
+        [](const ImuSample& sample) { return sample.gyro_rad_s; });
 
-  EXPECT_TRUE(with_notch.finite);
-  EXPECT_TRUE(without_notch.finite);
-  EXPECT_LT(with_notch.gain, 0.1 * without_notch.gain);
+    EXPECT_TRUE(with_notch.finite);
+    EXPECT_TRUE(without_notch.finite);
+    EXPECT_LT(with_notch.gain, 0.1 * without_notch.gain);
+  }
 }
 
 TEST(ImuPitchEstimatorTest, EnabledLeverArmCorrectionRemovesSteadyRateTerm) {
@@ -592,8 +614,7 @@ TEST(ImuPitchEstimatorTest, GravityPathMatchesCompositeResponseAndDelay) {
 
 TEST(ImuPitchEstimatorTest, GyroRatePathHasNoGenericSoftwareLowPass) {
   auto unnotched_settings = ImuPitchEstimator::Settings::production();
-  unnotched_settings.gyro_notch_hz = 0.0;
-  unnotched_settings.gyro_notch_bandwidth_hz = 0.0;
+  unnotched_settings.gyro_notches = {{{0.0, 0.0}, {0.0, 0.0}}};
 
   for (const double frequency_hz : {5.0, 100.0}) {
     ImuPitchEstimator notched;
@@ -609,7 +630,7 @@ TEST(ImuPitchEstimatorTest, GyroRatePathHasNoGenericSoftwareLowPass) {
     EXPECT_GT(measured.gain / bypass.gain, frequency_hz == 5.0 ? 0.97 : 0.80)
         << frequency_hz;
     if (frequency_hz == 5.0) {
-      EXPECT_LT(std::abs(measured.delay_s), 0.002);
+      EXPECT_LT(std::abs(measured.delay_s), 0.004);
     }
   }
 }
@@ -625,9 +646,9 @@ TEST(ImuPitchEstimatorTest, RateFilterAnalyticalResponseUsesImplemented833HzCoef
     double candidate_group_delay_ms;
   };
   constexpr std::array<ExpectedResponse, 3> expected{{
-      {2.0, -0.001818, -6.516073, 9.084050, -0.000910, -0.829280, 1.159862},
-      {5.0, -0.014320, -16.450239, 9.350268, -0.005903, -2.112103, 1.225799},
-      {10.0, -0.103594, -34.032329, 10.285622, -0.027142, -4.527168, 1.497761},
+      {2.0, -0.001818, -6.516073, 9.084050, -0.002859, -2.004041, 2.809574},
+      {5.0, -0.014320, -16.450239, 9.350268, -0.018837, -5.136984, 3.026007},
+      {10.0, -0.103594, -34.032329, 10.285622, -0.092144, -11.296828, 3.971716},
   }};
 
   for (const auto& item : expected) {
@@ -647,8 +668,7 @@ TEST(ImuPitchEstimatorTest, RateFilterAnalyticalResponseUsesImplemented833HzCoef
         << item.frequency_hz;
 
     auto current_settings = ImuPitchEstimator::Settings::production();
-    current_settings.gyro_notch_hz = 32.0;
-    current_settings.gyro_notch_bandwidth_hz = 10.0;
+    current_settings.gyro_notches = {{{32.0, 10.0}, {0.0, 0.0}}};
     current_settings.gyro_software_lpf_hz = 30.0;
     ImuPitchEstimator current_estimator(current_settings);
     ImuPitchEstimator candidate_estimator;
@@ -668,6 +688,17 @@ TEST(ImuPitchEstimatorTest, RateFilterAnalyticalResponseUsesImplemented833HzCoef
         << item.frequency_hz;
     EXPECT_NEAR(measured_candidate.phase_rad, std::arg(candidate.transfer), 2e-3)
         << item.frequency_hz;
+  }
+}
+
+TEST(ImuPitchEstimatorTest, DualNotchPathMeetsModeShoulderAndDelayBudget) {
+  for (const double frequency_hz : {2.0, 5.0, 10.0}) {
+    EXPECT_LT(evaluate_candidate_rate_chain(frequency_hz).group_delay_ms, 4.0)
+        << frequency_hz;
+  }
+  for (const double frequency_hz : {25.9, 27.9, 32.4, 34.4}) {
+    EXPECT_LT(gain_db(evaluate_candidate_rate_chain(frequency_hz)), -12.5)
+        << frequency_hz;
   }
 }
 
@@ -691,8 +722,7 @@ TEST(ImuPitchEstimatorTest, DerivativePathIsFiniteAndRejectsHighFrequency) {
 
 TEST(ImuPitchEstimatorTest, ConfiguredNotchSuppressesItsCenterFrequency) {
   auto settings = ImuPitchEstimator::Settings::production();
-  settings.gyro_notch_hz = 80.0;
-  settings.gyro_notch_bandwidth_hz = 20.0;
+  settings.gyro_notches = {{{80.0, 20.0}, {0.0, 0.0}}};
   ImuPitchEstimator notched(settings);
   ImuPitchEstimator unnotched;
 

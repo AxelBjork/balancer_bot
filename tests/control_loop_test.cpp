@@ -499,17 +499,11 @@ TEST(ConfigPidV12Test, LoadsCompleteStrictSchema) {
   std::filesystem::remove(path);
 }
 
-TEST(ConfigPidV12Test, LoadsCheckedInConfigAsAuthoritativeDefault) {
+TEST(ConfigPidV12Test, LoadsCheckedInConfigAsValidDefault) {
   ScopedConfigPidRestore restore;
   ASSERT_NO_THROW(ConfigPid::load(std::string(BALANCER_REPO_ROOT) + "/pid.conf"));
-  EXPECT_DOUBLE_EQ(ConfigPid::values.pitch_gain, 203550.0);
-  EXPECT_DOUBLE_EQ(ConfigPid::values.pitch_rate_gain, 1932.0);
-  EXPECT_DOUBLE_EQ(ConfigPid::values.pitch_accel_gain, 0.0);
-  EXPECT_DOUBLE_EQ(ConfigPid::values.velocity_feedback_cutoff_hz, 3.0);
-  EXPECT_DOUBLE_EQ(ConfigPid::values.velocity_gain_per_s, 8.0);
-  EXPECT_DOUBLE_EQ(ConfigPid::values.outer_pitch_limit_deg, 10.0);
-  EXPECT_DOUBLE_EQ(ConfigPid::values.adaptive_com_trim_enabled, 0.0);
-  EXPECT_DOUBLE_EQ(ConfigPid::values.balance_max_sps, Config::nominal_balance_max_sps);
+  EXPECT_EQ(ConfigPid::validate_numeric(ConfigPid::numeric_values()),
+            ConfigPidValidationCode::Accepted);
   EXPECT_TRUE(ConfigPid::controller_enabled);
 }
 

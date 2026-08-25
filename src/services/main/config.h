@@ -39,12 +39,18 @@ struct Config {
 
   static constexpr double g0 = 9.81;
   // The IMU's gyro LPF1 is configured in the ISM330 itself. The software rate
-  // path retains only the measured structural notch; there is deliberately no
+  // path retains only the measured structural notches; there is deliberately no
   // generic 30 Hz software gyro LPF in front of the balance controller.
   // No mounting, gyro-bias, gravity-recovery, or COM correction is learned.
   static constexpr double imu_accel_lpf_hz = 15.0;
   static constexpr double imu_gyro_lpf1_bandwidth_hz = 140.0;
   static constexpr int imu_gyro_lpf1_ftype = 0b010;
+  // Fixed hardware-mode rejection. These are compiled production constants,
+  // not PID-file or runtime estimator parameters.
+  static constexpr double imu_gyro_notch_1_center_hz = 26.9;
+  static constexpr double imu_gyro_notch_1_bandwidth_hz = 8.0;
+  static constexpr double imu_gyro_notch_2_center_hz = 33.4;
+  static constexpr double imu_gyro_notch_2_bandwidth_hz = 7.0;
   static constexpr double imu_gyro_derivative_lpf_hz = 10.0;
   // Gravity anchors DC pitch while the gyro carries short-term motion.
   static constexpr double imu_attitude_correction_hz = 0.5;
@@ -99,6 +105,12 @@ static_assert(Config::imu_accel_lpf_hz > 0.0 &&
 static_assert(Config::imu_gyro_lpf1_bandwidth_hz > 0.0 &&
               Config::imu_gyro_lpf1_bandwidth_hz < Config::sampling_hz / 2.0);
 static_assert(Config::imu_gyro_lpf1_ftype == 0b010);
+static_assert(Config::imu_gyro_notch_1_center_hz > 0.0 &&
+              Config::imu_gyro_notch_1_center_hz < Config::sampling_hz / 2.0 &&
+              Config::imu_gyro_notch_1_bandwidth_hz > 0.0);
+static_assert(Config::imu_gyro_notch_2_center_hz > 0.0 &&
+              Config::imu_gyro_notch_2_center_hz < Config::sampling_hz / 2.0 &&
+              Config::imu_gyro_notch_2_bandwidth_hz > 0.0);
 static_assert(Config::imu_gyro_derivative_lpf_hz > 0.0 &&
               Config::imu_gyro_derivative_lpf_hz < Config::sampling_hz / 2.0);
 static_assert(Config::imu_attitude_correction_hz > 0.0 &&
