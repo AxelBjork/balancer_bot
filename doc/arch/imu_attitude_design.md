@@ -56,7 +56,7 @@ gyro: ISM330 LPF1 (140 Hz @ 833 Hz) ── 26.9 Hz notch ── 33.4 Hz notch �
                                                          ├─ integrate one dt ── bounded correction ── pitch
 mapped acceleration ── 2-pole LPF ── optional lever-arm correction ── atan2 ── gravity pitch
 
-controller-facing pitch rate: mapped gyro ── 26.9 Hz / 8 Hz notch ── 33.4 Hz / 7 Hz notch
+controller-facing pitch rate: mapped gyro ── 26.9 Hz / 14 Hz notch ── 33.4 Hz / 32 Hz notch
 
                                       ├──────────────────────────────── pitch rate
                                       └─ derivative ── LPF ─────────── pitch acceleration
@@ -68,7 +68,7 @@ The production filter configuration is:
 | --- | --- | ---: |
 | Accelerometer | PX4 two-pole low-pass | 15 Hz |
 | ISM330 gyro LPF1 | Chip-side digital low-pass, enabled at 833 Hz | 140 Hz |
-| Pitch gyro rate | Two locked software notches | 26.9 Hz / 8 Hz and 33.4 Hz / 7 Hz |
+| Pitch gyro rate | Two locked software notches | 26.9 Hz / 14 Hz (Q≈1.92) and 33.4 Hz / 32 Hz (Q≈1.04) |
 | Pitch gyro derivative | Derivative followed by low-pass | 10 Hz |
 | Gravity attitude correction | Circular complementary correction | 0.5 Hz, ±2.5° innovation |
 
@@ -90,21 +90,18 @@ Changes must be supported by measured noise and phase and group-delay results.
 
 ### Exact rate-filter response reference
 
-The current software reference chain is a 32 Hz / 10 Hz notch followed by the 30 Hz
-two-pole low-pass. The production candidate is a 26.9 Hz / 8 Hz notch followed by a
-33.4 Hz / 7 Hz notch, with no generic software gyro low-pass.
-Both are evaluated at the implemented 833 Hz sample rate from their biquad coefficients.
+The controller-facing rate signal is the cascade of a 26.9 Hz / 14 Hz notch and a
+33.4 Hz / 32 Hz notch. No additional rate-conditioning stage is applied in software.
+The response is evaluated at the implemented 833 Hz sample rate from the generated
+biquad coefficients.
 Group delay is calculated analytically as `-Im((dH/dw)/H) / Fs`, not inferred from a
 phase-delay approximation.
 
-| Frequency | Current gain / phase / group delay | Candidate gain / phase / group delay |
-| ---: | --- | --- |
-| 2 Hz | −0.0018 dB / −6.516° / 9.084 ms | −0.0029 dB / −2.004° / 2.810 ms |
-| 5 Hz | −0.0143 dB / −16.450° / 9.350 ms | −0.0188 dB / −5.137° / 3.026 ms |
-| 10 Hz | −0.1036 dB / −34.032° / 10.286 ms | −0.0921 dB / −11.297° / 3.972 ms |
-
-The historical 29 Hz configuration is analysis-only context and is not a production or simulator
-reference setting.
+| Frequency | Gain / phase / group delay |
+| ---: | --- |
+| 2 Hz | −0.0213 dB / −5.567° / 7.785 ms |
+| 5 Hz | −0.1381 dB / −14.176° / 8.223 ms |
+| 10 Hz | −0.6340 dB / −30.350° / 10.005 ms |
 
 The repository already vendors suitable PX4 primitives:
 
@@ -221,8 +218,8 @@ A notch filter should not be enabled merely because motor vibration is suspected
 Stepper excitation can move with step rate and can contain several harmonics, so a
 fixed notch may help at one speed and do little at another. The current production
 notches are an evidence-backed exception: recent hardware captures show repeatable
-rate bands near 26.9 Hz and 33.4 Hz, so the controller-facing path uses 26.9 Hz / 8 Hz
-and 33.4 Hz / 7 Hz notches after the ISM330's chip-side 140 Hz LPF1.
+rate bands near 26.9 Hz and 33.4 Hz, so the controller-facing path uses 26.9 Hz / 14 Hz
+and 33.4 Hz / 32 Hz notches after the ISM330's chip-side 140 Hz LPF1.
 
 Before adding a notch:
 
@@ -268,6 +265,12 @@ as hardware.
 
 `imu_pitch_lag_s` represents only an explicitly requested additional transport delay.
 Nominal simulator profiles add no delay on top of the production filters.
+
+The `DirectActuator` profile is an ideal force reference for controller behavior, not a
+sensor-fidelity hardware model. It uses the production estimator and locked structural
+notches but intentionally omits the chip-side ISM330 LPF1 stage; its high-speed reference
+envelope is therefore bounded separately. `StepperPhaseElectrical` includes the 140 Hz
+LPF1 model when evaluating the hardware-like actuator path.
 
 The simulated accelerometer must include:
 

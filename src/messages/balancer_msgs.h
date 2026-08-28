@@ -141,7 +141,6 @@ struct DOC_DESC(
   float active_com_trim_gain_deg_per_sps_s;
   float active_com_trim_limit_deg;
   float active_accel_lpf_hz;
-  float active_gyro_lpf_hz;
   float active_gyro_derivative_lpf_hz;
   uint64_t active_config_generation;
   // Outer-loop authority and COM acquisition diagnostics appended after the

@@ -206,6 +206,14 @@ SimulatorPhysics BalancerSimulator::physics_for_profile(PhysicsProfile profile) 
           .traction_coefficient = 1.0,
           .motor_velocity_damping = 0.0,
           .cart_damping = 1.0,
+          // Hardware steady-drive captures imply approximately 0.4 N of
+          // velocity-independent wheel-ground resistance after the existing
+          // 1 N*s/m chassis term is accounted for at 0.3 m/s.
+          .rolling_resistance_force_n = 0.4,
+          // The same force is the conservative first breakaway bracket: it
+          // lets the electrical plant hold a small lean at zero speed, as the
+          // hardware does, without changing the moving-force estimate.
+          .static_breakaway_force_n = 0.4,
           .pitch_damping = 0.02,
           .motor_tau_s = 0.0,
           .phase_error_limit_steps = 0.0,
@@ -497,8 +505,9 @@ void BalancerSimulator::step_once(double dt_s) {
     const double d12 = mass_matrix.d12;
     const double d21 = d12;
     const double d22 = mass_matrix.d22;
-    const double rhs1 = applied_force_n + external_force_n_ + H * Q_dot * Q_dot * sQ -
-                        physics_.cart_damping * state_.velocity;
+    const double rhs1_without_contact =
+        applied_force_n + external_force_n_ + H * Q_dot * Q_dot * sQ -
+        physics_.cart_damping * state_.velocity;
     const double com_height_m = H / T;
     const double external_force_pitch_moment = external_force_n_ * com_height_m * cQ;
     // The motor torque enters the constrained equations once: +T/r in the
@@ -507,12 +516,51 @@ void BalancerSimulator::step_once(double dt_s) {
                         physics_.pitch_damping * state_.pitch_rate -
                         total_torque_nm + external_force_pitch_moment;
     const double det = mass_matrix.determinant;
+    const double rolling_resistance_force_n =
+        std::max(0.0, physics_.rolling_resistance_force_n);
+    const double static_breakaway_force_n =
+        std::max(0.0, physics_.static_breakaway_force_n);
+    constexpr double kStaticContactVelocityMps = 1.0e-4;
+    bool static_contact = false;
+    double contact_resistance_force_n = 0.0;
+    if (static_breakaway_force_n > 0.0 &&
+        std::abs(state_.velocity) <= kStaticContactVelocityMps) {
+      // Solve the constrained x_ddot=0 equation for the contact force.  This
+      // allows the same body/chassis mass matrix to determine how much of the
+      // applied pitch torque the ground can hold, instead of treating static
+      // friction as an unrelated acceleration clamp.
+      const double required_static_contact =
+          d12 * rhs2 / d22 - rhs1_without_contact;
+      if (std::abs(required_static_contact) <= static_breakaway_force_n) {
+        contact_resistance_force_n = required_static_contact;
+        static_contact = true;
+      }
+    }
+    if (!static_contact) {
+      if (std::abs(state_.velocity) > kStaticContactVelocityMps) {
+        contact_resistance_force_n =
+            -std::copysign(rolling_resistance_force_n, state_.velocity);
+      } else if (rolling_resistance_force_n > 0.0) {
+        const double free_x_ddot =
+            (d22 * rhs1_without_contact - d12 * rhs2) / det;
+        if (std::abs(free_x_ddot) > 1.0e-12) {
+          contact_resistance_force_n =
+              -std::copysign(rolling_resistance_force_n, free_x_ddot);
+        }
+      }
+    }
+    const double rhs1 = rhs1_without_contact + contact_resistance_force_n;
     const double x_ddot = (d22 * rhs1 - d12 * rhs2) / det;
     const double theta_ddot = (d11 * rhs2 - d21 * rhs1) / det;
     const double velocity_before = state_.velocity;
+    const double position_before = state_.position;
     const double pitch_rate_before = state_.pitch_rate;
     state_.velocity += x_ddot * dt_s;
     state_.position += 0.5 * (velocity_before + state_.velocity) * dt_s;
+    if (static_contact) {
+      state_.velocity = 0.0;
+      state_.position = position_before;
+    }
     state_.pitch_rate += theta_ddot * dt_s;
     state_.pitch += 0.5 * (pitch_rate_before + state_.pitch_rate) * dt_s;
     if (std::abs(state_.pitch) > kPi / 2.0) {

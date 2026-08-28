@@ -158,7 +158,6 @@ struct SimulatorTimelineRow {
   double active_com_trim_limit_deg = 0.0;
   double active_velocity_pitch_limit_deg = 0.0;
   double active_accel_lpf_hz = 0.0;
-  double active_gyro_lpf_hz = 0.0;
   double active_gyro_derivative_lpf_hz = 0.0;
   uint64_t active_config_generation = 0;
   double velocity_pitch_request_unclamped_deg = 0.0;

@@ -16,8 +16,7 @@ inline constexpr char kImuServiceDoc[] =
     "The hardware reader converts synchronized sensor samples into SI-valued robot axes and "
     "publishes `ImuRawData`. The reader configures the ISM330 gyroscope at 833 Hz with "
     "chip-side LPF1 enabled at 140 Hz and verifies the register readback. This service then "
-    "applies locked 26.9 Hz / 8 Hz and 33.4 Hz / 7 Hz gyro notches, with no additional generic "
-    "software gyro low-pass in the controller-facing rate path. The accelerometer retains its "
+    "applies locked 26.9 Hz / 14 Hz and 33.4 Hz / 32 Hz gyro notches. The accelerometer retains its "
     "15 Hz two-pole low-pass and the gyro derivative retains its 10 Hz filter. Full-circle gravity pitch corrects "
     "short-term gyro prediction at 0.5 Hz, with each innovation limited symmetrically to 2.5 "
     "degrees so translation and motor vibration cannot abruptly steer attitude. The fixed notches "
@@ -25,24 +24,17 @@ inline constexpr char kImuServiceDoc[] =
     "lever-arm correction remains disabled. It never learns gyro "
     "bias, mounting, gravity recovery modes, or COM correction, and marks invalid input invalid.\n\n"
     "SIL can disable the hardware reader and inject `ImuRawData` through `UdpBridge` while using "
-    "the same estimator implementation; explicit simulator reference profiles may retain the "
-    "current 32 Hz / 10 Hz notch plus 30 Hz software LPF. `ImuData` remains an internal "
+    "the same estimator implementation. `ImuData` remains an internal "
     "controller-facing contract.";
 
 class DOC_DESC(kImuServiceDoc) ImuService {
  public:
   static constexpr const char* kDocDescription = kImuServiceDoc;
 
-  enum class EstimatorPath {
-    Production,
-    LegacySimulationReference,
-  };
-
   using Publishes = ipc::MsgList<MsgId::ImuRawData, MsgId::ImuData>;
   using Subscribes = ipc::MsgList<MsgId::ImuRawData>;
 
-  explicit ImuService(ipc::MessageBus& bus, bool enable_hardware_reader = true,
-                      EstimatorPath estimator_path = EstimatorPath::Production);
+  explicit ImuService(ipc::MessageBus& bus, bool enable_hardware_reader = true);
   ~ImuService();
 
   void start() {

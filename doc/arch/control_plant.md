@@ -174,6 +174,32 @@ required negative feedback. The acceleration term is optional and remains an
 independent weight; its value is a profile/configuration decision, not a plant
 constant.
 
+### MotorRunner zero-speed and reversal behavior
+
+`MotorRunner` keeps each wheel's logical direction latched separately from
+its nonnegative pulse-rate magnitude. A signed target in the opposite
+direction first slews the magnitude to exactly zero; the slew state never
+crosses through zero in one update. The stepper remains enabled during this
+stationary hold.
+
+After reaching zero, a direction change requires two fresh opposite control
+observations and approximately one accumulated requested physical step. The
+qualification credit uses nominal control periods rather than elapsed wall
+time, so a delayed callback cannot turn scheduler latency into reversal
+authority. A qualified change accounts pulses already emitted from both
+queued wheels, rebuilds the paired wave queue, changes only the required DIR
+pins, and then accelerates from zero.
+
+The fractional pulse accumulator is scheduler state, not motor electrical
+phase. When queued frames are canceled, it is restored to the prefix that
+actually executed so future fractional-rate pulses are neither duplicated nor
+discarded.
+
+The simulator primes its initial DIR from the first nonzero command while no
+step has yet been emitted. This avoids making a zero-time, no-motion fixture
+depend on an arbitrary GPIO startup level; all subsequent direction changes
+use the same reversal qualification and queue-accounting rules as hardware.
+
 ### Completed-step velocity observer
 
 At the outer-loop cadence, common completed motor steps are corrected for

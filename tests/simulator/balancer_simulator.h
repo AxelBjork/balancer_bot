@@ -54,6 +54,17 @@ struct SimulatorPhysics {
   // relative motor damping; the coupled mass matrix propagates this force
   // into pitch acceleration as appropriate.
   double cart_damping = 1.0;
+  // Low-speed wheel-ground rolling/Coulomb resistance at the chassis contact,
+  // applied opposite to chassis translation. This is distinct from viscous
+  // cart_damping and is used by the electrical StepperPhase profile to model
+  // the finite force needed to sustain ordinary hardware-like translation.
+  // A zero value preserves the frictionless diagnostic model.
+  double rolling_resistance_force_n = 0.0;
+  // Static contact force available before the chassis breaks away.  This is
+  // deliberately separate from rolling_resistance_force_n: the latter only
+  // acts while moving, while this term permits a small sustained lean to be
+  // held without an artificial low-speed velocity limit cycle.
+  double static_breakaway_force_n = 0.0;
   double pitch_damping = 0.02;
   // Gravity is configurable for conservative/passivity fixtures.  Production
   // profiles leave this at standard terrestrial gravity.

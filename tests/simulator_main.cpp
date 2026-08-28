@@ -745,7 +745,6 @@ class SimulatorService {
     system.active_velocity_pitch_limit_deg =
         static_cast<float>(row.active_velocity_pitch_limit_deg);
     system.active_accel_lpf_hz = static_cast<float>(row.active_accel_lpf_hz);
-    system.active_gyro_lpf_hz = static_cast<float>(row.active_gyro_lpf_hz);
     system.active_gyro_derivative_lpf_hz = static_cast<float>(row.active_gyro_derivative_lpf_hz);
     system.active_config_generation = row.active_config_generation;
     system.velocity_pitch_request_unclamped_deg =
@@ -956,6 +955,10 @@ void print_transfer_catalog_json() {
               << ",\"traction_coefficient\":" << physics.traction_coefficient
               << ",\"pitch_damping\":" << physics.pitch_damping
               << ",\"cart_damping\":" << physics.cart_damping
+              << ",\"rolling_resistance_force_n\":"
+              << physics.rolling_resistance_force_n
+              << ",\"static_breakaway_force_n\":"
+              << physics.static_breakaway_force_n
               << ",\"phase_error_limit_steps\":" << physics.phase_error_limit_steps
               << ",\"tire_stiffness_n_per_m\":" << physics.tire_stiffness_n_per_m
               << ",\"tire_damping_n_s_per_m\":" << physics.tire_damping_n_s_per_m

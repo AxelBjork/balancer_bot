@@ -107,6 +107,8 @@ void print_profile_audit(PhysicsProfile profile) {
   std::cout << "  traction_coefficient= " << physics.traction_coefficient << "\n";
   std::cout << "  motor_vel_damping   = " << physics.motor_velocity_damping << "\n";
   std::cout << "  cart_damping        = " << physics.cart_damping << "\n";
+  std::cout << "  rolling_resistance  = " << physics.rolling_resistance_force_n << " N\n";
+  std::cout << "  static_breakaway   = " << physics.static_breakaway_force_n << " N\n";
   std::cout << "  pitch_damping       = " << physics.pitch_damping << "\n";
   std::cout << "  motor_tau_s         = " << physics.motor_tau_s << "\n";
   std::cout << "  direct_force_per_sps= " << physics.direct_force_per_sps << "\n";

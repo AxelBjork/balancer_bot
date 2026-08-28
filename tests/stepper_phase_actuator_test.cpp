@@ -2131,6 +2131,12 @@ struct SimulatorRingdownSample {
 SimulatorRingdownSample run_converged_simulator_ringdown(double max_physical_step_s) {
   auto physics =
       BalancerSimulator::physics_for_profile(PhysicsProfile::StepperPhaseElectrical);
+  // Isolate the electrical body-coupled phase mode.  The production profile
+  // includes a low-speed wheel-ground resistance term for translation; that
+  // non-linear contact term is intentionally not part of this small-signal
+  // ringdown characterization.
+  physics.rolling_resistance_force_n = 0.0;
+  physics.static_breakaway_force_n = 0.0;
   physics.max_physical_integration_step_s = max_physical_step_s;
 
   BalancerSimulator::Config config;
@@ -2438,8 +2444,12 @@ TEST(StepperPhaseElectricalTuningTest, CorrectedPlantGainRegionAndRecoveryFronti
   for (const auto& [pitch_gain, pitch_rate_gain] : historical_gains) {
     const auto positive = run(pitch_gain, pitch_rate_gain, 1.0, 2.0);
     const auto negative = run(pitch_gain, pitch_rate_gain, -1.0, 2.0);
-    EXPECT_TRUE(positive.result.fell);
-    EXPECT_TRUE(negative.result.fell);
+    // These gains were historically expected to fall when the simulator used
+    // one shared chip-LPF state for all gyro axes.  With independent IMU axis
+    // histories, they are a weak but stable low-authority reference rather
+    // than a failure boundary.
+    EXPECT_FALSE(positive.result.fell);
+    EXPECT_FALSE(negative.result.fell);
     std::cout << "stepper_historical_gain kp=" << pitch_gain << " kr=" << pitch_rate_gain
               << " positive_peak_deg=" << positive.result.max_abs_pitch_deg
               << " negative_peak_deg=" << negative.result.max_abs_pitch_deg

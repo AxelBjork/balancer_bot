@@ -95,7 +95,6 @@ ControlService::ControlService(ipc::MessageBus& bus) : bus_(bus), run_id_(make_r
     p.active_velocity_pitch_limit_deg =
         static_cast<float>(t.active_velocity_pitch_limit_deg);
     p.active_accel_lpf_hz = static_cast<float>(t.active_accel_lpf_hz);
-    p.active_gyro_lpf_hz = static_cast<float>(t.active_gyro_lpf_hz);
     p.active_gyro_derivative_lpf_hz = static_cast<float>(t.active_gyro_derivative_lpf_hz);
     p.active_config_generation = t.active_config_generation;
     p.velocity_pitch_request_unclamped_deg =

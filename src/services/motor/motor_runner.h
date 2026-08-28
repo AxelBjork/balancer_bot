@@ -53,6 +53,18 @@ class WaveFrameBackend {
   virtual int queueFrame(unsigned left_pulses, unsigned right_pulses, bool synchronous) = 0;
   virtual void deleteFrame(int frame_id) = 0;
   virtual void stop() = 0;
+  // Hardware applies a short DIR-settle interval after stopping a wave.  A
+  // simulated backend can return that interval in virtual time; production
+  // backends leave it to their real GPIO timing path.
+  virtual uint64_t directionChangeDelayUs() const {
+    return 0;
+  }
+  // Keep the real GPIO settle delay at the backend boundary.  Simulation
+  // overrides this with a no-op and represents the same delay through its
+  // virtual event clock instead of sleeping the host thread.
+  virtual void waitForDirectionChange() const {
+    time_sleep(0.00005);
+  }
 };
 
 class DualWave final : public WaveFrameBackend {
@@ -218,6 +230,8 @@ class MotorRunner {
         backend_(backend != nullptr ? *backend : static_cast<WaveFrameBackend&>(pigpio_backend_)),
         nominal_control_dt_s_(1.0 / (control_hz > 0.0 ? control_hz : 1.0)),
         max_slew_sps_per_s_(std::max(0.0, max_slew_sps_per_s)) {
+    left_state_.direction_forward = left_.dirForward();
+    right_state_.direction_forward = right_.dirForward();
   }
 
   void setTargets(double left_sps, double right_sps, uint64_t timestamp_us) {
@@ -229,6 +243,34 @@ class MotorRunner {
                                       static_cast<double>(DualWave::kMaxScheduledHz)),
                             std::memory_order_relaxed);
     applyOnce(timestamp_us);
+  }
+
+  // The simulator starts with no emitted pulse and therefore no meaningful
+  // electrical direction. Prime that direction from the first nonzero target
+  // before the initial zero-rate frame is queued. This is intentionally
+  // simulator plumbing; production callers retain the hardware's latched DIR.
+  void primeInitialDirectionsForSimulation(double left_sps, double right_sps) {
+    std::lock_guard<std::mutex> lock(mu_);
+    const int left_direction = targetDirection(left_sps);
+    const int right_direction = targetDirection(right_sps);
+    bool left_has_queued_motion = false;
+    bool right_has_queued_motion = false;
+    for (size_t index = 0; index < frame_count_; ++index) {
+      left_has_queued_motion |= frames_[index].left_magnitude_sps > kCommandZeroEpsilonSps;
+      right_has_queued_motion |= frames_[index].right_magnitude_sps > kCommandZeroEpsilonSps;
+    }
+    if (left_direction != 0 && !left_has_queued_motion &&
+        actual_steps_left_.load(std::memory_order_relaxed) == 0) {
+      left_state_.direction_forward = left_direction > 0;
+      left_.setDirNoWait(left_state_.direction_forward);
+      clearReversalQualification(left_state_);
+    }
+    if (right_direction != 0 && !right_has_queued_motion &&
+        actual_steps_right_.load(std::memory_order_relaxed) == 0) {
+      right_state_.direction_forward = right_direction > 0;
+      right_.setDirNoWait(right_state_.direction_forward);
+      clearReversalQualification(right_state_);
+    }
   }
 
   void setLeft(double sps) {
@@ -248,6 +290,10 @@ class MotorRunner {
     next_frame_start_us_ = 0;
     last_command_left_sps_ = 0.0;
     last_command_right_sps_ = 0.0;
+    left_state_.magnitude_sps = 0.0;
+    right_state_.magnitude_sps = 0.0;
+    clearReversalQualification(left_state_);
+    clearReversalQualification(right_state_);
     phase_left_ = 0.0;
     phase_right_ = 0.0;
     measured_avg_sps_ = 0.0;
@@ -267,6 +313,10 @@ class MotorRunner {
     next_frame_start_us_ = 0;
     last_command_left_sps_ = 0.0;
     last_command_right_sps_ = 0.0;
+    left_state_.magnitude_sps = 0.0;
+    right_state_.magnitude_sps = 0.0;
+    clearReversalQualification(left_state_);
+    clearReversalQualification(right_state_);
     phase_left_ = 0.0;
     phase_right_ = 0.0;
     measured_avg_sps_ = 0.0;
@@ -390,14 +440,35 @@ class MotorRunner {
   }
 
  private:
+  static constexpr double kCommandZeroEpsilonSps = 1e-9;
+  static constexpr unsigned kMinimumReversalSamples = 2;
+  static constexpr double kReversalCreditSteps = 1.0;
+
+  struct ChannelState {
+    bool direction_forward{true};
+    double magnitude_sps{0.0};
+    unsigned opposite_samples{0};
+    double opposite_credit_steps{0.0};
+  };
+
+  struct ChannelUpdate {
+    bool direction_changed{false};
+  };
+
   struct ScheduledFrame {
     int backend_id{-1};
     uint64_t start_us{0};
     uint64_t end_us{0};
     unsigned left_pulses{0};
     unsigned right_pulses{0};
-    double left_direction{1.0};
-    double right_direction{1.0};
+    int left_direction{1};
+    int right_direction{1};
+    double left_magnitude_sps{0.0};
+    double right_magnitude_sps{0.0};
+    double left_phase_before{0.0};
+    double right_phase_before{0.0};
+    double left_phase_after{0.0};
+    double right_phase_after{0.0};
   };
 
   static void appendFrameEvents(const ScheduledFrame& frame, uint64_t start_us,
@@ -432,16 +503,12 @@ class MotorRunner {
     }
   }
 
-  static double clampDelta(double from, double to, double max_delta) {
-    return std::clamp(to, from - max_delta, from + max_delta);
-  }
-
-  static unsigned pulsesForFrame(double sps, double& phase) {
-    const double requested = std::abs(sps) * static_cast<double>(DualWave::kFrameUs) / 1e6;
+  static unsigned pulsesForFrame(double sps, double phase, double& phase_after) {
+    const double requested = sps * static_cast<double>(DualWave::kFrameUs) / 1e6;
     const double total = requested + phase;
     const unsigned pulses = std::min(
         static_cast<unsigned>(std::floor(total + 1e-12)), DualWave::kMaxN);
-    phase = std::clamp(total - static_cast<double>(pulses), 0.0, 1.0 - 1e-12);
+    phase_after = std::clamp(total - static_cast<double>(pulses), 0.0, 1.0 - 1e-12);
     return pulses;
   }
 
@@ -453,10 +520,84 @@ class MotorRunner {
     return std::min(static_cast<double>(pulses), std::floor(slots + 0.5));
   }
 
-  static double logicalDirection(double sps, double fallback) {
-    if (sps > 0.0) return 1.0;
-    if (sps < 0.0) return -1.0;
-    return fallback;
+  static void clearReversalQualification(ChannelState& state) {
+    state.opposite_samples = 0;
+    state.opposite_credit_steps = 0.0;
+  }
+
+  static int targetDirection(double target_sps) {
+    if (target_sps > kCommandZeroEpsilonSps) return 1;
+    if (target_sps < -kCommandZeroEpsilonSps) return -1;
+    return 0;
+  }
+
+  static double signedMagnitude(const ChannelState& state) {
+    if (state.magnitude_sps <= kCommandZeroEpsilonSps) return 0.0;
+    return state.direction_forward ? state.magnitude_sps : -state.magnitude_sps;
+  }
+
+  ChannelUpdate updateChannelLocked(ChannelState& state, double target_sps,
+                                    double max_delta_sps) const {
+    ChannelUpdate update{};
+    const int requested_direction = targetDirection(target_sps);
+    const int physical_direction = state.direction_forward ? 1 : -1;
+    const bool has_opposite_request = requested_direction != 0 &&
+                                      requested_direction != physical_direction;
+
+    if (state.magnitude_sps > kCommandZeroEpsilonSps && has_opposite_request) {
+      state.magnitude_sps = std::max(0.0, state.magnitude_sps - max_delta_sps);
+      if (state.magnitude_sps <= kCommandZeroEpsilonSps) {
+        state.magnitude_sps = 0.0;
+        // Qualification starts only after the braking sample has reached zero.
+        clearReversalQualification(state);
+      } else {
+        clearReversalQualification(state);
+      }
+      return update;
+    }
+
+    if (state.magnitude_sps <= kCommandZeroEpsilonSps) {
+      state.magnitude_sps = 0.0;
+      if (has_opposite_request) {
+        ++state.opposite_samples;
+        state.opposite_credit_steps = std::min(
+            kReversalCreditSteps,
+            state.opposite_credit_steps + std::abs(target_sps) * nominal_control_dt_s_);
+        if (state.opposite_samples >= kMinimumReversalSamples &&
+            state.opposite_credit_steps >= kReversalCreditSteps) {
+          state.direction_forward = requested_direction > 0;
+          state.magnitude_sps = std::min(std::abs(target_sps), max_delta_sps);
+          clearReversalQualification(state);
+          update.direction_changed = true;
+        }
+      } else {
+        clearReversalQualification(state);
+        state.magnitude_sps = std::min(std::abs(target_sps), max_delta_sps);
+      }
+      return update;
+    }
+
+    clearReversalQualification(state);
+    state.magnitude_sps = std::clamp(std::abs(target_sps),
+                                     std::max(0.0, state.magnitude_sps - max_delta_sps),
+                                     state.magnitude_sps + max_delta_sps);
+    return update;
+  }
+
+  static double phaseAtPrefix(const ScheduledFrame& frame, bool left_channel,
+                              uint64_t now_us) {
+    const double before = left_channel ? frame.left_phase_before : frame.right_phase_before;
+    const double after = left_channel ? frame.left_phase_after : frame.right_phase_after;
+    if (now_us <= frame.start_us) return before;
+    const uint64_t elapsed_us = std::min(now_us, frame.end_us) - frame.start_us;
+    if (elapsed_us >= DualWave::kFrameUs) return after;
+
+    const double magnitude =
+        left_channel ? frame.left_magnitude_sps : frame.right_magnitude_sps;
+    const unsigned pulses = left_channel ? frame.left_pulses : frame.right_pulses;
+    const double requested = magnitude * static_cast<double>(elapsed_us) / 1e6;
+    const double emitted = emittedPulses(pulses, elapsed_us);
+    return std::clamp(before + requested - emitted, 0.0, 1.0 - 1e-12);
   }
 
   void clearQueuedFramesLocked() {
@@ -472,13 +613,24 @@ class MotorRunner {
   void accountEmittedAndClearLocked(uint64_t now_us) {
     double left_delta = 0.0;
     double right_delta = 0.0;
+    double left_phase = phase_left_;
+    double right_phase = phase_right_;
     for (size_t index = 0; index < frame_count_; ++index) {
       const ScheduledFrame& frame = frames_[index];
-      if (now_us <= frame.start_us) continue;
+      if (now_us <= frame.start_us) {
+        left_phase = frame.left_phase_before;
+        right_phase = frame.right_phase_before;
+        break;
+      }
       const uint64_t elapsed_us = std::min(now_us, frame.end_us) - frame.start_us;
       left_delta += frame.left_direction * emittedPulses(frame.left_pulses, elapsed_us);
       right_delta += frame.right_direction * emittedPulses(frame.right_pulses, elapsed_us);
+      left_phase = phaseAtPrefix(frame, true, now_us);
+      right_phase = phaseAtPrefix(frame, false, now_us);
+      if (now_us < frame.end_us) break;
     }
+    phase_left_ = left_phase;
+    phase_right_ = right_phase;
     clearQueuedFramesLocked();
     actual_steps_left_.fetch_add(static_cast<int64_t>(left_delta), std::memory_order_relaxed);
     actual_steps_right_.fetch_add(static_cast<int64_t>(right_delta), std::memory_order_relaxed);
@@ -496,10 +648,12 @@ class MotorRunner {
       const ScheduledFrame completed = frames_[0];
       backend_.deleteFrame(completed.backend_id);
       actual_steps_left_.fetch_add(
-          static_cast<int64_t>(completed.left_direction * completed.left_pulses),
+          static_cast<int64_t>(completed.left_direction) *
+              static_cast<int64_t>(completed.left_pulses),
           std::memory_order_relaxed);
       actual_steps_right_.fetch_add(
-          static_cast<int64_t>(completed.right_direction * completed.right_pulses),
+          static_cast<int64_t>(completed.right_direction) *
+              static_cast<int64_t>(completed.right_pulses),
           std::memory_order_relaxed);
       last_completed_frame_us_ = completed.end_us;
       const double average_steps =
@@ -513,14 +667,8 @@ class MotorRunner {
     }
   }
 
-  void handleDirectionChangeLocked(uint64_t now_us) {
-    const bool desired_left = std::abs(last_command_left_sps_) > 1e-9
-                                  ? left_.forwardFromSps(last_command_left_sps_)
-                                  : left_.dirForward();
-    const bool desired_right = std::abs(last_command_right_sps_) > 1e-9
-                                   ? right_.forwardFromSps(last_command_right_sps_)
-                                   : right_.dirForward();
-    if (desired_left == left_.dirForward() && desired_right == right_.dirForward()) {
+  void handleDirectionChangeLocked(uint64_t now_us, bool left_changed, bool right_changed) {
+    if (!left_changed && !right_changed) {
       return;
     }
 
@@ -528,16 +676,18 @@ class MotorRunner {
     accountEmittedAndClearLocked(now_us);
     left_.setStepLow();
     right_.setStepLow();
-    if (desired_left != left_.dirForward()) {
-      left_.setDirNoWait(desired_left);
-      phase_left_ = 0.0;
+    if (left_changed) {
+      left_.setDirNoWait(left_state_.direction_forward);
     }
-    if (desired_right != right_.dirForward()) {
-      right_.setDirNoWait(desired_right);
-      phase_right_ = 0.0;
+    if (right_changed) {
+      right_.setDirNoWait(right_state_.direction_forward);
     }
-    time_sleep(0.00005);
-    next_frame_start_us_ = now_us;
+    backend_.waitForDirectionChange();
+    // The production path enforces this with the GPIO direction-settle sleep
+    // above.  Simulation must represent it in its event clock rather than
+    // paying a wall-clock delay or allowing the first reversed pulse at the
+    // same timestamp as DIR.
+    next_frame_start_us_ = now_us + backend_.directionChangeDelayUs();
   }
 
   void fillFrameQueueLocked(uint64_t now_us) {
@@ -545,10 +695,18 @@ class MotorRunner {
       ScheduledFrame frame{};
       frame.start_us = std::max(now_us, next_frame_start_us_);
       frame.end_us = frame.start_us + DualWave::kFrameUs;
-      frame.left_direction = logicalDirection(last_command_left_sps_, last_left_direction_);
-      frame.right_direction = logicalDirection(last_command_right_sps_, last_right_direction_);
-      frame.left_pulses = pulsesForFrame(last_command_left_sps_, phase_left_);
-      frame.right_pulses = pulsesForFrame(last_command_right_sps_, phase_right_);
+      frame.left_direction = left_state_.direction_forward ? 1 : -1;
+      frame.right_direction = right_state_.direction_forward ? 1 : -1;
+      frame.left_magnitude_sps = left_state_.magnitude_sps;
+      frame.right_magnitude_sps = right_state_.magnitude_sps;
+      frame.left_phase_before = phase_left_;
+      frame.right_phase_before = phase_right_;
+      frame.left_pulses =
+          pulsesForFrame(frame.left_magnitude_sps, frame.left_phase_before,
+                         frame.left_phase_after);
+      frame.right_pulses =
+          pulsesForFrame(frame.right_magnitude_sps, frame.right_phase_before,
+                         frame.right_phase_after);
       frame.backend_id = backend_.queueFrame(frame.left_pulses, frame.right_pulses,
                                              frame_count_ > 0);
       if (frame.backend_id < 0) {
@@ -558,9 +716,9 @@ class MotorRunner {
         return;
       }
       frames_[frame_count_++] = frame;
+      phase_left_ = frame.left_phase_after;
+      phase_right_ = frame.right_phase_after;
       next_frame_start_us_ = frame.end_us;
-      last_left_direction_ = frame.left_direction;
-      last_right_direction_ = frame.right_direction;
     }
   }
 
@@ -572,29 +730,33 @@ class MotorRunner {
       return;
     }
 
-    double dt_s = nominal_control_dt_s_;
+    double elapsed_dt_s = nominal_control_dt_s_;
     if (have_last_call_time_ && now_us > last_call_time_us_) {
-      dt_s = static_cast<double>(now_us - last_call_time_us_) / 1e6;
+      elapsed_dt_s = static_cast<double>(now_us - last_call_time_us_) / 1e6;
     }
-    last_update_dt_s_ = dt_s;
+    last_update_dt_s_ = elapsed_dt_s;
     last_call_time_us_ = now_us;
     have_last_call_time_ = true;
 
-    const double max_delta = max_slew_sps_per_s_ * dt_s;
+    const double slew_dt_s = std::min(elapsed_dt_s, nominal_control_dt_s_);
+    const double max_delta = max_slew_sps_per_s_ * slew_dt_s;
     const double target_left_sps = target_left_sps_.load(std::memory_order_relaxed);
     const double target_right_sps = target_right_sps_.load(std::memory_order_relaxed);
-    const double next_left_sps = clampDelta(last_command_left_sps_, target_left_sps, max_delta);
-    const double next_right_sps = clampDelta(last_command_right_sps_, target_right_sps, max_delta);
-    if (next_left_sps != target_left_sps) {
+    const ChannelUpdate left_update =
+        updateChannelLocked(left_state_, target_left_sps, max_delta);
+    const ChannelUpdate right_update =
+        updateChannelLocked(right_state_, target_right_sps, max_delta);
+    last_command_left_sps_ = signedMagnitude(left_state_);
+    last_command_right_sps_ = signedMagnitude(right_state_);
+    if (last_command_left_sps_ != target_left_sps) {
       actuator_saturation_flags_ |= ActuatorSaturationLeftSlew;
     }
-    if (next_right_sps != target_right_sps) {
+    if (last_command_right_sps_ != target_right_sps) {
       actuator_saturation_flags_ |= ActuatorSaturationRightSlew;
     }
-    last_command_left_sps_ = next_left_sps;
-    last_command_right_sps_ = next_right_sps;
 
-    handleDirectionChangeLocked(now_us);
+    handleDirectionChangeLocked(now_us, left_update.direction_changed,
+                                right_update.direction_changed);
     if (velocity_history_count_ == 0) {
       recordVelocityHistoryLocked(now_us, 0.5 * static_cast<double>(
           actual_steps_left_.load(std::memory_order_relaxed) +
@@ -655,8 +817,8 @@ class MotorRunner {
   double last_command_right_sps_{0.0};
   double phase_left_{0.0};
   double phase_right_{0.0};
-  double last_left_direction_{1.0};
-  double last_right_direction_{1.0};
+  ChannelState left_state_{};
+  ChannelState right_state_{};
 
   std::array<ScheduledFrame, 2> frames_{};
   size_t frame_count_{0};

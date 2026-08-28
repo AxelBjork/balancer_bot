@@ -127,8 +127,23 @@ TEST(SimulatorSchedulerTest, WaveEventsPreserveDirectionAcrossQueuedFrames) {
   EXPECT_EQ(forward[1].left_step_delta, 1);
 
   runner.setTargets(-1000.0, -1000.0, 2500);
-  const auto reverse = runner.getScheduledStepEvents(2500, 5000);
+  const auto braking = runner.getScheduledStepEvents(2500, 5000);
+  ASSERT_EQ(braking.size(), 3U);
+  for (const auto& event : braking) {
+    EXPECT_EQ(event.left_step_delta, 1);
+    EXPECT_EQ(event.right_step_delta, 1);
+  }
+
+  runner.setTargets(-1000.0, -1000.0, 5000);
+  EXPECT_TRUE(left.dirForward());
+  const auto hold = runner.getScheduledStepEvents(5000, 7500);
+  EXPECT_TRUE(hold.empty());
+
+  runner.setTargets(-1000.0, -1000.0, 7500);
+  const auto reverse = runner.getScheduledStepEvents(7500, 10000);
   ASSERT_EQ(reverse.size(), 2U);
+  EXPECT_FALSE(left.dirForward());
+  EXPECT_FALSE(right.dirForward());
   EXPECT_EQ(reverse[0].left_step_delta, -1);
   EXPECT_EQ(reverse[0].right_step_delta, -1);
   EXPECT_EQ(reverse[1].left_step_delta, -1);

@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <deque>
@@ -120,6 +121,17 @@ class SimulationWaveBackend final : public WaveFrameBackend {
   void stop() override {
   }
 
+  uint64_t directionChangeDelayUs() const override {
+    // Match MotorRunner's production GPIO DIR-settle interval in virtual
+    // time.  Do not use a wall-clock sleep in the simulator.
+    return 50;
+  }
+
+  void waitForDirectionChange() const override {
+    // The 50 us direction setup interval is represented by the simulator's
+    // virtual timestamp above. Never block wall-clock execution of a run.
+  }
+
  private:
   int next_id_{1};
 };
@@ -170,14 +182,11 @@ struct EngineServices {
   sil::TimeService time;
   EngineObserver observer;
 
-  explicit EngineServices(ipc::MessageBus& bus, bool legacy_reference_sensor_path)
+  explicit EngineServices(ipc::MessageBus& bus)
       : left(1, Stepper::Pins{12, 19, 13}, false, false),
         right(1, Stepper::Pins{4, 18, 24}, false, false),
         motors(left, right, Config::control_hz, Config::motor_slew_sps_per_s, &wave_backend),
-        imu(bus, false,
-            legacy_reference_sensor_path
-                ? sil::ImuService::EstimatorPath::LegacySimulationReference
-                : sil::ImuService::EstimatorPath::Production),
+        imu(bus, false),
         control(bus),
         motor(bus, &motors),
         time(bus, kControlDtS) {
@@ -188,8 +197,11 @@ struct EnginePipeline {
   ipc::MessageBus bus;
   // The hardware ISM330 applies gyro LPF1 before the samples reach the
   // estimator.  Keep that sensor-side stage in the SIL input path as well;
-  // the estimator itself intentionally contains no generic gyro LPF.
-  math::LowPassFilter2p<float> chip_gyro_lpf1;
+  // the estimator applies the same locked structural notches.
+  // The ISM330 has one LPF state per gyro axis. Sharing one software filter
+  // across x/y/z would make each zero/non-pitch axis overwrite the pitch
+  // history three times per sample and corrupt the controller-facing rate.
+  std::array<math::LowPassFilter2p<float>, 3> chip_gyro_lpf1;
   bool use_chip_gyro_lpf1{false};
   EngineServices services;
 
@@ -206,10 +218,12 @@ struct EnginePipeline {
 
   explicit EnginePipeline(double initial_fused_pitch_deg, PhysicsProfile physics_profile)
       : bus(this, &EnginePipeline::dispatch),
-        chip_gyro_lpf1(static_cast<float>(Config::sampling_hz),
-                       static_cast<float>(Config::imu_gyro_lpf1_bandwidth_hz)),
         use_chip_gyro_lpf1(physics_profile == PhysicsProfile::StepperPhaseElectrical),
-        services(bus, !use_chip_gyro_lpf1) {
+        services(bus) {
+    for (auto& filter : chip_gyro_lpf1) {
+      filter.set_cutoff_frequency(static_cast<float>(Config::sampling_hz),
+                                  static_cast<float>(Config::imu_gyro_lpf1_bandwidth_hz));
+    }
     if (std::abs(initial_fused_pitch_deg) > 1e-12) {
       services.imu.setInitialPitchForSimulation(initial_fused_pitch_deg * M_PI / 180.0);
     }
@@ -222,8 +236,8 @@ struct EnginePipeline {
 
   void applyChipGyroFilter(ipc::ImuRawPayload& raw) {
     if (!use_chip_gyro_lpf1) return;
-    for (double& value : raw.gyr) {
-      value = chip_gyro_lpf1.apply(static_cast<float>(value));
+    for (std::size_t axis = 0; axis < raw.gyr.size(); ++axis) {
+      raw.gyr[axis] = chip_gyro_lpf1[axis].apply(static_cast<float>(raw.gyr[axis]));
     }
   }
 
@@ -255,6 +269,11 @@ struct EnginePipeline {
       ipc::dispatch_to_service(self->services.imu, id, &raw);
     } else {
       ipc::dispatch_to_service(self->services.imu, id, payload);
+    }
+    if (id == MsgId::MotorTargets) {
+      const auto targets = unpack_payload<MsgId::MotorTargets>(payload);
+      self->services.motors.primeInitialDirectionsForSimulation(targets.left_sps,
+                                                                targets.right_sps);
     }
     ipc::dispatch_to_service(self->services.motor, id, payload);
 
@@ -815,7 +834,6 @@ struct SimulatorEngine::Impl {
       row.active_com_trim_limit_deg = telemetry.active_com_trim_limit_deg;
       row.active_velocity_pitch_limit_deg = telemetry.active_velocity_pitch_limit_deg;
       row.active_accel_lpf_hz = telemetry.active_accel_lpf_hz;
-      row.active_gyro_lpf_hz = telemetry.active_gyro_lpf_hz;
       row.active_gyro_derivative_lpf_hz = telemetry.active_gyro_derivative_lpf_hz;
       row.active_config_generation = telemetry.active_config_generation;
       row.velocity_pitch_request_unclamped_deg =

@@ -455,10 +455,6 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
     t.active_com_trim_limit_deg = 0.0;
     t.active_velocity_pitch_limit_deg = 0.0;
     t.active_accel_lpf_hz = Config::imu_accel_lpf_hz;
-    // Append-only compatibility field. The controller-facing gyro path no
-    // longer has a software LPF; high-frequency conditioning is configured in
-    // the ISM330 LPF1 and verified by the hardware reader.
-    t.active_gyro_lpf_hz = 0.0;
     t.active_gyro_derivative_lpf_hz = Config::imu_gyro_derivative_lpf_hz;
     t.active_config_generation = ConfigPid::generation();
     t.velocity_pitch_request_unclamped_deg = 0.0;

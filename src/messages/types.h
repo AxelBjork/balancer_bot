@@ -164,7 +164,6 @@ struct Telemetry {
   double active_com_trim_limit_deg{};
   double active_velocity_pitch_limit_deg{};
   double active_accel_lpf_hz{};
-  double active_gyro_lpf_hz{};
   double active_gyro_derivative_lpf_hz{};
   uint64_t active_config_generation{};
   // Outer-loop diagnostics. These fields make velocity authority and COM-trim

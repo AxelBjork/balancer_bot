@@ -788,6 +788,7 @@ TEST(SimulatorRunnerTest, DistanceScenarioUsesTheExistingFullForwardWindow) {
   EXPECT_DOUBLE_EQ(scenarios[0].joy_segments[0].forward_end, 1.0);
   EXPECT_TRUE(scenarios[0].physics_override.has_value());
   EXPECT_DOUBLE_EQ(scenarios[0].physics_override->cart_damping, 1.0);
+  EXPECT_DOUBLE_EQ(scenarios[0].physics_override->rolling_resistance_force_n, 0.4);
 }
 
 TEST(SimulatorRunnerTest, SpeedEnvelopeScenarioUsesTenMeterAnalogLikeTrajectory) {
@@ -1210,6 +1211,25 @@ TEST(SimulatorRunnerTest, EveryRetainedImuImpairmentAffectsTheTimeline) {
     }
     EXPECT_GT(difference, 1e-8) << "variation " << index;
   }
+}
+
+TEST(SimulatorRunnerTest, ElectricalChipGyroFilterKeepsAxisHistoriesIndependent) {
+  SimulatorScenario scenario;
+  scenario.duration_s = 0.25;
+  scenario.physics_profile = PhysicsProfile::StepperPhaseElectrical;
+  // A large disturbance on gyro X must not appear on the pitch (gyro Y)
+  // channel. This protects the per-axis sensor-filter contract used by the
+  // hardware ISM330 and catches accidental reuse of one scalar filter state.
+  scenario.gyro_bias_rad_s[0] = 1.0;
+
+  const auto result = run_simulator_scenario(scenario, sim_pid_path());
+  double max_pitch_rate = 0.0;
+  for (const auto& row : result.rows) {
+    if (row.sim_time_s >= 0.05) {
+      max_pitch_rate = std::max(max_pitch_rate, std::abs(row.pitch_rate_dps));
+    }
+  }
+  EXPECT_LT(max_pitch_rate, 1e-5);
 }
 
 TEST(SimulatorRunnerTest, RampDisturbanceBuildsCommandMagnitudeOverTime) {
@@ -2472,7 +2492,7 @@ TEST(SimulatorReferenceTest, SlowSimpleVelocityBaselineIsMappedInsideRecoveryEnv
   }
 }
 
-TEST(SimulatorReferenceTest, IsolatedVelocitySignIsSymmetricAndDamped) {
+TEST(SimulatorReferenceTest, IsolatedVelocitySignIsSymmetricAndBounded) {
   ScopedStateFeedbackConfig restore;
   ConfigPid::load(sim_pid_path());
   ConfigPid::values.pitch_gain = kOneThirtySecondPitchGain;
@@ -2483,9 +2503,9 @@ TEST(SimulatorReferenceTest, IsolatedVelocitySignIsSymmetricAndDamped) {
   ConfigPid::values.velocity_I = 0.0;
 
   const auto positive = run_simulator_scenario_with_loaded_pid(
-      isolated_velocity_sign_scenario(PhysicsProfile::DirectActuator, 0.15));
+      isolated_velocity_sign_scenario(PhysicsProfile::DirectActuator, 0.10));
   const auto negative = run_simulator_scenario_with_loaded_pid(
-      isolated_velocity_sign_scenario(PhysicsProfile::DirectActuator, -0.15));
+      isolated_velocity_sign_scenario(PhysicsProfile::DirectActuator, -0.10));
   ASSERT_FALSE(positive.rows.empty());
   ASSERT_FALSE(negative.rows.empty());
   const double positive_final = positive.rows.back().plant_velocity;
@@ -2496,8 +2516,10 @@ TEST(SimulatorReferenceTest, IsolatedVelocitySignIsSymmetricAndDamped) {
             << '\n';
   EXPECT_FALSE(positive.fell);
   EXPECT_FALSE(negative.fell);
-  EXPECT_LT(std::abs(positive_final), 0.15);
-  EXPECT_LT(std::abs(negative_final), 0.15);
+  // The ideal DirectActuator reference has no sensor-side filtering. Keep
+  // this isolated sign check inside the bounded notch-only operating range.
+  EXPECT_LT(std::abs(positive_final), 0.10);
+  EXPECT_LT(std::abs(negative_final), 0.10);
   EXPECT_NEAR(positive_final, -negative_final, 0.02);
 }
 

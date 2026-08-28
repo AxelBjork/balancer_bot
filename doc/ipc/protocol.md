@@ -33,9 +33,9 @@ The architecture is divided into three logical areas:
 
 > Consumes raw accelerometer/gyroscope samples and publishes `ImuData` samples that represent the controller's current view of body pitch, angular motion, and sample time.
 >
-> The hardware reader converts synchronized sensor samples into SI-valued robot axes and publishes `ImuRawData`. The reader configures the ISM330 gyroscope at 833 Hz with chip-side LPF1 enabled at 140 Hz and verifies the register readback. This service then applies locked 26.9 Hz / 8 Hz and 33.4 Hz / 7 Hz gyro notches, with no additional generic software gyro low-pass in the controller-facing rate path. The accelerometer retains its 15 Hz two-pole low-pass and the gyro derivative retains its 10 Hz filter. Full-circle gravity pitch corrects short-term gyro prediction at 0.5 Hz, with each innovation limited symmetrically to 2.5 degrees so translation and motor vibration cannot abruptly steer attitude. The fixed notches are compiled into the production IMU path rather than exposed as runtime parameters; 70 mm lever-arm correction remains disabled. It never learns gyro bias, mounting, gravity recovery modes, or COM correction, and marks invalid input invalid.
+> The hardware reader converts synchronized sensor samples into SI-valued robot axes and publishes `ImuRawData`. The reader configures the ISM330 gyroscope at 833 Hz with chip-side LPF1 enabled at 140 Hz and verifies the register readback. This service then applies locked 26.9 Hz / 14 Hz and 33.4 Hz / 32 Hz gyro notches. The accelerometer retains its 15 Hz two-pole low-pass and the gyro derivative retains its 10 Hz filter. Full-circle gravity pitch corrects short-term gyro prediction at 0.5 Hz, with each innovation limited symmetrically to 2.5 degrees so translation and motor vibration cannot abruptly steer attitude. The fixed notches are compiled into the production IMU path rather than exposed as runtime parameters; 70 mm lever-arm correction remains disabled. It never learns gyro bias, mounting, gravity recovery modes, or COM correction, and marks invalid input invalid.
 >
-> SIL can disable the hardware reader and inject `ImuRawData` through `UdpBridge` while using the same estimator implementation; explicit simulator reference profiles may retain the current 32 Hz / 10 Hz notch plus 30 Hz software LPF. `ImuData` remains an internal controller-facing contract.
+> SIL can disable the hardware reader and inject `ImuRawData` through `UdpBridge` while using the same estimator implementation. `ImuData` remains an internal controller-facing contract.
 
 - Publishes: `ImuRawData`, `ImuData`
 - Subscribes: `ImuRawData`
@@ -239,8 +239,7 @@ documented messages reuse their message section.
 | `active_com_trim_gain_deg_per_sps_s` | `float` | `float` | 4 | 180 |  |
 | `active_com_trim_limit_deg` | `float` | `float` | 4 | 184 |  |
 | `active_accel_lpf_hz` | `float` | `float` | 4 | 188 |  |
-| `active_gyro_lpf_hz` | `float` | `float` | 4 | 192 |  |
-| `active_gyro_derivative_lpf_hz` | `float` | `float` | 4 | 196 |  |
+| `active_gyro_derivative_lpf_hz` | `float` | `float` | 4 | 192 |  |
 | `active_config_generation` | `uint64_t` | `int` | 8 | 200 |  |
 | `velocity_pitch_request_unclamped_deg` | `float` | `float` | 4 | 208 |  |
 | `velocity_pitch_request_limited_deg` | `float` | `float` | 4 | 212 |  |

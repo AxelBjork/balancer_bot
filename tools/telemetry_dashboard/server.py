@@ -413,7 +413,6 @@ def telemetry_view(sample: SystemTelemetryPayload, sequence: int, received_at: f
             "adaptive_com_trim_enabled": bool(sample.adaptive_com_trim_enabled),
             "legacy_outer_fields_valid": bool(sample.legacy_outer_fields_valid),
             "active_accel_lpf_hz": sample.active_accel_lpf_hz,
-            "active_gyro_lpf_hz": sample.active_gyro_lpf_hz,
             "active_gyro_derivative_lpf_hz": sample.active_gyro_derivative_lpf_hz,
             "active_config_generation": sample.active_config_generation,
         },
