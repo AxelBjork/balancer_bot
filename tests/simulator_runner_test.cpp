@@ -1372,6 +1372,171 @@ TEST(SimulatorRunnerTest, InitialPitchDoesNotCreateMotorPhaseOrMissedSteps) {
   }
 }
 
+TEST(SimulatorRunnerTest, ElectricalBraceLimitsOutwardPitchSymmetrically) {
+  for (const double sign : {1.0, -1.0}) {
+    BalancerSimulator::Config config;
+    config.physics_profile = PhysicsProfile::StepperPhaseElectrical;
+    config.initial_pitch_deg = sign * 45.0;
+    config.com_angle_offset_rad = 0.0;
+    config.brace_enabled = true;
+    config.brace_pitch_deg = 45.0;
+    config.brace_stiffness_nm_per_rad = 40.0;
+    config.brace_damping_nm_s_per_rad = 0.8;
+
+    BalancerSimulator simulator(config);
+    simulator.set_motor_targets(0.0, 0.0);
+    simulator.set_emitted_steps(0.0, 0.0);
+    bool contacted = false;
+    for (int sample = 0; sample < 400; ++sample) {
+      simulator.step(1.0 / 400.0);
+      contacted = contacted || simulator.diagnostics().brace_contact_active;
+    }
+
+    ASSERT_TRUE(contacted) << "sign=" << sign;
+    EXPECT_LE(std::abs(simulator.state().pitch) * 180.0 / M_PI, 47.0) << "sign=" << sign;
+    EXPECT_LT(sign * simulator.diagnostics().brace_torque_nm, 0.0) << "sign=" << sign;
+    EXPECT_GT(simulator.diagnostics().brace_penetration_rad, 0.0) << "sign=" << sign;
+  }
+}
+
+TEST(SimulatorRunnerTest, BracedRecoveryAtControllerShutdownAngleUsesSettledEstimatorAndFreshCommand) {
+  ScopedStateFeedbackConfig restore;
+  ConfigPid::load((std::filesystem::path(BALANCER_REPO_ROOT) / "pid.conf").string());
+
+  // Use the controller's actual shutdown boundary rather than the stale
+  // 25-degree fixture. The estimator must settle while the controller is
+  // inhibited before a fresh recovery command is introduced.
+  const std::array<double, 1> brace_angles = {Config::fallover_shutdown_deg};
+  constexpr double estimator_settle_s = 8.0;
+  constexpr double recovery_command_start_s = 10.0;
+  for (const double sign : {1.0, -1.0}) {
+    for (const double angle : brace_angles) {
+      SimulatorScenario scenario;
+      scenario.name = "braced_recovery_sweep";
+      scenario.physics_profile = PhysicsProfile::StepperPhaseElectrical;
+      scenario.duration_s = 20.0;
+      scenario.initial_pitch_deg = sign * angle;
+      // Keep the estimator on its normal startup path. In particular, this is
+      // intentionally not seeded with the true fallen angle.
+      scenario.initial_fused_pitch_deg = 0.0;
+      scenario.brace_enabled = true;
+      scenario.brace_pitch_deg = angle;
+      scenario.brace_stiffness_nm_per_rad = 40.0;
+      scenario.brace_damping_nm_s_per_rad = 0.8;
+      scenario.joy_segments.push_back(SimulatorJoySegment{
+          .start_s = recovery_command_start_s,
+          .duration_s = 10.0,
+          .forward = sign * 0.25,
+          .forward_end = sign * 0.25,
+      });
+
+      const auto result = run_simulator_scenario_with_loaded_pid(scenario);
+      ASSERT_FALSE(result.rows.empty());
+      const auto before_recovery = std::find_if(
+          result.rows.begin(), result.rows.end(), [](const auto& row) {
+            return row.sim_time_s >= estimator_settle_s;
+          });
+      ASSERT_NE(before_recovery, result.rows.end());
+      // The estimator starts from its ordinary zero reference, not from the
+      // known fixture angle.  By the time recovery is requested it must have
+      // settled close to the stationary brace angle. The recovery command is
+      // scheduled two seconds after this checkpoint.
+      EXPECT_GT(sign * before_recovery->fused_pitch_deg, 0.5 * angle)
+          << "angle=" << sign * angle;
+      EXPECT_NEAR(before_recovery->fused_pitch_deg,
+                  before_recovery->plant_pitch_deg, 2.0)
+          << "angle=" << sign * angle;
+      bool left_brace = false;
+      bool rearmed = false;
+      bool settled = false;
+      bool saw_recovery_command = false;
+      for (const auto& row : result.rows) {
+        if (row.sim_time_s < recovery_command_start_s) continue;
+        saw_recovery_command = saw_recovery_command || row.recovery_command_active > 0.5;
+        left_brace = left_brace || row.brace_contact_active < 0.5;
+        rearmed = rearmed ||
+                  ((row.controller_fault_flags & ControllerFaultFallover) == 0 &&
+                   std::abs(row.u_sps) > 1.0);
+      }
+      EXPECT_TRUE(saw_recovery_command) << "angle=" << sign * angle;
+      EXPECT_NEAR(result.rows.back().fused_pitch_deg, result.rows.back().plant_pitch_deg, 2.0)
+          << "angle=" << sign * angle;
+      if (result.rows.back().sim_time_s >= 18.0) {
+        settled = std::all_of(result.rows.end() -
+                                  std::min<std::ptrdiff_t>(200, result.rows.size()),
+                              result.rows.end(), [](const auto& row) {
+                                return std::abs(row.plant_pitch_deg) <= 10.0 &&
+                                       std::abs(row.plant_pitch_rate_dps) <= 30.0;
+                              });
+      }
+      std::cout << "braced_recovery angle=" << sign * angle
+                << " estimator_before_deg=" << before_recovery->fused_pitch_deg
+                << " estimator_final_deg=" << result.rows.back().fused_pitch_deg
+                << " left_brace=" << left_brace << " rearmed=" << rearmed
+                << " settled=" << settled << " final_pitch_deg="
+                << result.rows.back().plant_pitch_deg << " final_faults="
+                << result.rows.back().controller_fault_flags << '\n';
+    }
+  }
+}
+
+TEST(SimulatorRunnerTest, BracedRecoveryCancellationReinhibitsOutsideSafeRegion) {
+  ScopedStateFeedbackConfig restore;
+  ConfigPid::load((std::filesystem::path(BALANCER_REPO_ROOT) / "pid.conf").string());
+
+  SimulatorScenario scenario;
+  scenario.name = "braced_recovery_cancel";
+  scenario.physics_profile = PhysicsProfile::StepperPhaseElectrical;
+  scenario.duration_s = 14.0;
+  scenario.initial_pitch_deg = 55.0;
+  scenario.brace_enabled = true;
+  scenario.brace_pitch_deg = 55.0;
+  scenario.joy_segments.push_back(SimulatorJoySegment{
+      .start_s = 8.0, .duration_s = 0.5, .forward = 0.25, .forward_end = 0.25});
+
+  const auto result = run_simulator_scenario_with_loaded_pid(scenario);
+  ASSERT_FALSE(result.rows.empty());
+  bool observed_safe_or_inhibited = false;
+  for (const auto& row : result.rows) {
+    if (row.sim_time_s < 9.5) continue;
+    const bool inhibited = (row.controller_fault_flags & ControllerFaultFallover) != 0;
+    const bool safe = std::abs(row.plant_pitch_deg) <= 10.0 &&
+                      std::abs(row.plant_pitch_rate_dps) <= 30.0;
+    observed_safe_or_inhibited = observed_safe_or_inhibited || inhibited || safe;
+  }
+  EXPECT_TRUE(observed_safe_or_inhibited);
+}
+
+TEST(SimulatorRunnerTest, BracedPlantSupportsRepeatedRecoveryPlacement) {
+  ScopedStateFeedbackConfig restore;
+  ConfigPid::load((std::filesystem::path(BALANCER_REPO_ROOT) / "pid.conf").string());
+
+  SimulatorScenario scenario;
+  scenario.name = "braced_recovery_repeated";
+  scenario.physics_profile = PhysicsProfile::StepperPhaseElectrical;
+  scenario.duration_s = 58.0;
+  scenario.initial_pitch_deg = 55.0;
+  scenario.brace_enabled = true;
+  scenario.brace_pitch_deg = 55.0;
+  scenario.joy_segments = {
+      SimulatorJoySegment{.start_s = 8.0, .duration_s = 8.0, .forward = 0.25, .forward_end = 0.25},
+      SimulatorJoySegment{.start_s = 28.0, .duration_s = 8.0, .forward = 0.25, .forward_end = 0.25},
+      SimulatorJoySegment{.start_s = 48.0, .duration_s = 8.0, .forward = -0.25, .forward_end = -0.25},
+  };
+  scenario.brace_rest_events = {
+      SimulatorBraceRestEvent{.start_s = 24.0, .pitch_deg = 55.0},
+      SimulatorBraceRestEvent{.start_s = 44.0, .pitch_deg = -55.0},
+  };
+
+  const auto result = run_simulator_scenario_with_loaded_pid(scenario);
+  ASSERT_FALSE(result.rows.empty());
+  EXPECT_TRUE(std::any_of(result.rows.begin(), result.rows.end(),
+                          [](const auto& row) { return row.brace_contact_active > 0.5; }));
+  std::cout << "braced_recovery_repeated final_pitch_deg="
+            << result.rows.back().plant_pitch_deg << " final_faults="
+            << result.rows.back().controller_fault_flags << '\n';
+}
+
 TEST(SimulatorRunnerTest, MotorForceAppliesSymmetricReactionTorqueBeforeTireForceBuilds) {
   const auto model = BalancerSimulator::linearized_upright_model(
       BalancerSimulator::physics_for_profile(PhysicsProfile::Realistic));

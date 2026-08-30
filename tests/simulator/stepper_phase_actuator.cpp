@@ -238,6 +238,10 @@ MotorOutput Actuator::evaluate_motor(double commanded_steps, double previous_com
       output.actual_relative_mechanical_angle_rad * electrical_cycles_per_mechanical_revolution();
   const double raw_phase_error = output.commanded_field_electrical_angle_rad -
                                  output.actual_rotor_electrical_angle_rad;
+  output.unwrapped_electrical_phase_error_rad = raw_phase_error;
+  output.field_rotor_relative_velocity_rad_s =
+      (output.commanded_field_velocity_mps - output.actual_relative_mechanical_velocity_mps) /
+      parameters_.wheel_radius_m * electrical_cycles_per_mechanical_revolution();
   output.electrical_phase_error_rad = fast_wrap_pi(raw_phase_error);
   output.phase = have_commanded_index
                      ? phase_for_command(parameters_.full_steps_per_revolution,
@@ -435,7 +439,8 @@ void ElectricalActuator::set_actual_relative_angles_for_test(double left_angle_r
 
 ElectricalMotorOutput ElectricalActuator::evaluate_motor(
     double commanded_steps, double previous_commanded_steps, MotorState& state, double dt_s,
-    double chassis_velocity_mps, double body_pitch_rate_rad_s, bool have_commanded_index,
+    double relative_velocity_mps, double field_velocity_mps, bool use_field_velocity_override,
+    bool have_commanded_index,
     std::int64_t commanded_index,
     const CurrentUpdateCoefficients& coefficients) const {
   ElectricalMotorOutput output{};
@@ -456,14 +461,21 @@ ElectricalMotorOutput ElectricalActuator::evaluate_motor(
   output.commanded_field_electrical_angle_rad =
       output.commanded_mechanical_angle_rad * electrical_cycles_per_mechanical_revolution();
   output.commanded_field_velocity_mps =
-      dt_s > 0.0 ? (commanded_steps - previous_commanded_steps) * meters_per_step() / dt_s : 0.0;
+      use_field_velocity_override
+          ? field_velocity_mps
+          : (dt_s > 0.0 ? (commanded_steps - previous_commanded_steps) * meters_per_step() /
+                              dt_s
+                        : 0.0);
   output.actual_relative_mechanical_angle_rad = state.actual_relative_angle_rad;
-  output.actual_relative_mechanical_velocity_mps =
-      chassis_velocity_mps - parameters_.wheel_radius_m * body_pitch_rate_rad_s;
+  output.actual_relative_mechanical_velocity_mps = relative_velocity_mps;
   output.actual_rotor_electrical_angle_rad =
       output.actual_relative_mechanical_angle_rad * electrical_cycles_per_mechanical_revolution();
   const double raw_phase_error = output.commanded_field_electrical_angle_rad -
                                  output.actual_rotor_electrical_angle_rad;
+  output.unwrapped_electrical_phase_error_rad = raw_phase_error;
+  output.field_rotor_relative_velocity_rad_s =
+      (output.commanded_field_velocity_mps - output.actual_relative_mechanical_velocity_mps) /
+      parameters_.wheel_radius_m * electrical_cycles_per_mechanical_revolution();
   output.electrical_phase_error_rad = fast_wrap_pi(raw_phase_error);
   output.phase = have_commanded_index
                      ? phase_for_command(parameters_.full_steps_per_revolution,
@@ -509,13 +521,38 @@ ElectricalMotorOutput ElectricalActuator::evaluate_motor(
 
 ElectricalOutput ElectricalActuator::evaluate(double dt_s, double chassis_velocity_mps,
                                               double body_pitch_rate_rad_s) {
+  const double relative_velocity =
+      chassis_velocity_mps - parameters_.wheel_radius_m * body_pitch_rate_rad_s;
+  return evaluate_relative(dt_s, relative_velocity, relative_velocity);
+}
+
+ElectricalOutput ElectricalActuator::evaluate_relative(double dt_s,
+                                                       double left_relative_velocity_mps,
+                                                       double right_relative_velocity_mps) {
+  return evaluate_relative_impl(dt_s, left_relative_velocity_mps, right_relative_velocity_mps,
+                                0.0, 0.0, false);
+}
+
+ElectricalOutput ElectricalActuator::evaluate_relative_with_field_velocity(
+    double dt_s, double left_relative_velocity_mps, double right_relative_velocity_mps,
+    double left_field_velocity_mps, double right_field_velocity_mps) {
+  return evaluate_relative_impl(dt_s, left_relative_velocity_mps, right_relative_velocity_mps,
+                                left_field_velocity_mps, right_field_velocity_mps, true);
+}
+
+ElectricalOutput ElectricalActuator::evaluate_relative_impl(
+    double dt_s, double left_relative_velocity_mps, double right_relative_velocity_mps,
+    double left_field_velocity_mps, double right_field_velocity_mps,
+    bool use_field_velocity_override) {
   const CurrentUpdateCoefficients coefficients = make_current_update_coefficients(dt_s);
   output_.left = evaluate_motor(commanded_left_steps_, previous_left_steps_, left_state_, dt_s,
-                                chassis_velocity_mps, body_pitch_rate_rad_s,
+                                left_relative_velocity_mps, left_field_velocity_mps,
+                                use_field_velocity_override,
                                 have_commanded_indices_, commanded_left_step_index_,
                                 coefficients);
   output_.right = evaluate_motor(commanded_right_steps_, previous_right_steps_, right_state_, dt_s,
-                                 chassis_velocity_mps, body_pitch_rate_rad_s,
+                                 right_relative_velocity_mps, right_field_velocity_mps,
+                                 use_field_velocity_override,
                                  have_commanded_indices_, commanded_right_step_index_,
                                  coefficients);
   output_.summed_torque_nm = output_.left.torque_nm + output_.right.torque_nm;
@@ -529,14 +566,23 @@ void ElectricalActuator::advance_mechanical_state(double dt_s,
                                                   double body_pitch_rate_before_rad_s,
                                                   double chassis_velocity_after_mps,
                                                   double body_pitch_rate_after_rad_s) {
-  if (dt_s <= 0.0) return;
   const double before = chassis_velocity_before_mps -
                         parameters_.wheel_radius_m * body_pitch_rate_before_rad_s;
   const double after = chassis_velocity_after_mps -
                        parameters_.wheel_radius_m * body_pitch_rate_after_rad_s;
-  const double delta_angle = 0.5 * (before + after) / parameters_.wheel_radius_m * dt_s;
-  left_state_.actual_relative_angle_rad += delta_angle;
-  right_state_.actual_relative_angle_rad += delta_angle;
+  advance_relative_mechanical_state(dt_s, before, before, after, after);
+}
+
+void ElectricalActuator::advance_relative_mechanical_state(
+    double dt_s, double left_velocity_before_mps, double right_velocity_before_mps,
+    double left_velocity_after_mps, double right_velocity_after_mps) {
+  if (dt_s <= 0.0) return;
+  left_state_.actual_relative_angle_rad +=
+      0.5 * (left_velocity_before_mps + left_velocity_after_mps) /
+      parameters_.wheel_radius_m * dt_s;
+  right_state_.actual_relative_angle_rad +=
+      0.5 * (right_velocity_before_mps + right_velocity_after_mps) /
+      parameters_.wheel_radius_m * dt_s;
 }
 
 }  // namespace stepper_phase

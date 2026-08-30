@@ -24,15 +24,18 @@
 
 namespace {
 
-constexpr double kTuningBalanceMaxSps = 16000.0;
+constexpr double kTuningBalanceMaxSps = 32000.0;
 constexpr double kTuningTurnMaxSps = 1600.0;
 
 // This tuner deliberately stays in the simulator support target. It changes
-// only the new translational ConfigPid values and uses the production
-// controller/plant implementation for every evaluation. Inner attitude gains,
-// adaptive COM trim, and the fixed balance/turn ceilings are not search
-// variables; motion pitch authority is deliberately searched.
+// only the selected ConfigPid values and uses the production controller/plant
+// implementation for every evaluation. The root-controller stages search the
+// attitude gains as well as the translational gains; adaptive COM trim and the
+// fixed balance/turn ceilings remain outside the search space.
 struct Gains {
+  double pitch_gain{};
+  double pitch_rate_gain{};
+  double pitch_accel_gain{};
   double drive_max_velocity_mps{};
   double planner_max_acceleration_mps2{};
   double planner_max_deceleration_mps2{};
@@ -46,6 +49,9 @@ struct Gains {
 };
 
 enum class SearchStage {
+  RootInner,
+  RootOuter,
+  RootJoint,
   Feedforward,
   Feedback,
   Integral,
@@ -90,6 +96,9 @@ struct Candidate {
 
 Gains loaded_gains() {
   return {
+      .pitch_gain = ConfigPid::values.pitch_gain,
+      .pitch_rate_gain = ConfigPid::values.pitch_rate_gain,
+      .pitch_accel_gain = ConfigPid::values.pitch_accel_gain,
       .drive_max_velocity_mps = ConfigPid::values.drive_max_velocity_mps,
       .planner_max_acceleration_mps2 = ConfigPid::values.planner_max_acceleration_mps2,
       .planner_max_deceleration_mps2 = ConfigPid::values.planner_max_deceleration_mps2,
@@ -106,6 +115,9 @@ Gains loaded_gains() {
 
 void apply_gains(const Gains& gains) {
   ConfigPidValues values = ConfigPid::values;
+  values.pitch_gain = gains.pitch_gain;
+  values.pitch_rate_gain = gains.pitch_rate_gain;
+  values.pitch_accel_gain = gains.pitch_accel_gain;
   values.drive_max_velocity_mps = gains.drive_max_velocity_mps;
   values.planner_max_acceleration_mps2 = gains.planner_max_acceleration_mps2;
   values.planner_max_deceleration_mps2 = gains.planner_max_deceleration_mps2;
@@ -127,6 +139,9 @@ void apply_gains(const Gains& gains) {
 }
 
 Gains clamp_gains(Gains gains) {
+  gains.pitch_gain = std::clamp(gains.pitch_gain, 20000.0, 220000.0);
+  gains.pitch_rate_gain = std::clamp(gains.pitch_rate_gain, 150.0, 2000.0);
+  gains.pitch_accel_gain = std::clamp(gains.pitch_accel_gain, 0.0, 300.0);
   // The initial speed range is deliberately wide but stays inside the
   // explicit 25%-of-available-SPS headroom validator.
   const double headroom_speed_mps =
@@ -154,7 +169,9 @@ Gains clamp_gains(Gains gains) {
 
 std::string gains_key(const Gains& gains) {
   std::ostringstream output;
-  output << std::setprecision(12) << gains.drive_max_velocity_mps << ':'
+  output << std::setprecision(12) << gains.pitch_gain << ':' << gains.pitch_rate_gain << ':'
+         << gains.pitch_accel_gain << ':'
+         << gains.drive_max_velocity_mps << ':'
          << gains.planner_max_acceleration_mps2 << ':' << gains.planner_max_deceleration_mps2
          << ':' << gains.planner_max_jerk_mps3 << ':'
          << gains.outer_pitch_limit_deg << ':' << gains.velocity_feedback_cutoff_hz << ':'
@@ -185,6 +202,15 @@ double log_sample(uint64_t& state, double low, double high) {
 }
 
 SearchStage parse_stage(std::string_view value) {
+  if (value == "inner-loop" || value == "root-inner" || value == "inner-tune") {
+    return SearchStage::RootInner;
+  }
+  if (value == "outer-loop" || value == "root-outer" || value == "outer-tune") {
+    return SearchStage::RootOuter;
+  }
+  if (value == "joint-refine" || value == "root-joint" || value == "joint-root") {
+    return SearchStage::RootJoint;
+  }
   if (value == "feedforward" || value == "inner") return SearchStage::Feedforward;
   if (value == "integral" || value == "pi") return SearchStage::Integral;
   if (value == "observer") return SearchStage::Observer;
@@ -212,6 +238,9 @@ SearchStage parse_stage(std::string_view value) {
 
 const char* stage_name(SearchStage stage) {
   switch (stage) {
+    case SearchStage::RootInner: return "root-inner";
+    case SearchStage::RootOuter: return "root-outer";
+    case SearchStage::RootJoint: return "root-joint";
     case SearchStage::Feedforward: return "feedforward";
     case SearchStage::Observer: return "observer";
     case SearchStage::Feedback: return "feedback";
@@ -231,6 +260,10 @@ std::vector<SimulatorScenario> stage_scenarios(
     SearchStage stage, std::optional<double> cart_damping_override) {
   constexpr auto profile = PhysicsProfile::StepperPhaseElectrical;
   switch (stage) {
+    case SearchStage::RootInner:
+    case SearchStage::RootOuter:
+    case SearchStage::RootJoint:
+      return tuning_root_controller_scenario_set(profile);
     case SearchStage::Feedforward:
       return tuning_motion_scenario_set(profile);
     case SearchStage::Observer:
@@ -265,6 +298,143 @@ std::vector<Gains> candidates_for_stage(const Gains& base, SearchStage stage, si
                                  stage == SearchStage::Distance ||
                                  stage == SearchStage::Envelope ||
                                  stage == SearchStage::LowDampingMotion;
+  const bool root_controller_stage = stage == SearchStage::RootInner ||
+                                     stage == SearchStage::RootOuter ||
+                                     stage == SearchStage::RootJoint;
+  if (root_controller_stage) {
+    // Root tuning deliberately keeps every non-selected root value fixed.
+    // In particular, no candidate may quietly alter speed, planner dynamics,
+    // outer authority, I, contact parameters, or balance/turn limits.
+    stage_base.velocity_i_gain_per_s2 = 0.0;
+
+    if (stage == SearchStage::RootInner) {
+      // Stage A uses a deliberately modest outer loop so inner-loop
+      // candidates are compared against the same moving operating point.
+      // Include P=0 as an explicit diagnostic, but keep P=1/cutoff=1.7 as
+      // the main inner-loop surface.
+      const std::vector<double> outer_p = {0.0, 1.0};
+      const std::vector<double> outer_cutoff = {1.7, 2.0};
+      const std::vector<double> pitch = {20000.0, 30000.0, 45000.0, 65000.0, 90000.0,
+                                         120000.0, 150000.0, 180000.0, 203550.0, 220000.0};
+      const std::vector<double> rate = {150.0, 200.0, 300.0, 400.0, 500.0, 700.0,
+                                        900.0, 1190.0, 1500.0, 1800.0, 2000.0};
+      const std::vector<double> accel = {0.0, 0.1, 0.3, 1.0, 3.0, 10.0, 30.0, 100.0, 300.0};
+      for (double velocity_gain : outer_p) {
+        for (double feedback_cutoff : outer_cutoff) {
+          auto candidate = stage_base;
+          candidate.velocity_gain_per_s = velocity_gain;
+          candidate.velocity_feedback_cutoff_hz = feedback_cutoff;
+          add_unique(candidates, seen, candidate);
+        }
+      }
+      // Fully cover the zero-acceleration inner surface. This makes the
+      // effect of the acceleration-feedback signal separable from the basic
+      // pitch/rate damping choice.
+      for (double pitch_gain : pitch) {
+        for (double pitch_rate_gain : rate) {
+          auto candidate = stage_base;
+          candidate.pitch_gain = pitch_gain;
+          candidate.pitch_rate_gain = pitch_rate_gain;
+          candidate.pitch_accel_gain = 0.0;
+          candidate.velocity_gain_per_s = 1.0;
+          candidate.velocity_feedback_cutoff_hz = 1.7;
+          add_unique(candidates, seen, candidate);
+        }
+      }
+      // Add deterministic cross-sections for every acceleration scale before
+      // random exploration. The index mixing spreads pitch/rate values across
+      // the whole table rather than exhausting one corner of a Cartesian grid.
+      for (size_t index = 0; index < 180; ++index) {
+        auto candidate = stage_base;
+        candidate.pitch_gain = pitch[(index * 7 + 3) % pitch.size()];
+        candidate.pitch_rate_gain = rate[(index * 5 + 2) % rate.size()];
+        candidate.pitch_accel_gain = accel[(index % (accel.size() - 1)) + 1];
+        candidate.velocity_gain_per_s = 1.0;
+        candidate.velocity_feedback_cutoff_hz = 1.7;
+        add_unique(candidates, seen, candidate);
+      }
+      uint64_t state = 0x726f6f745f696e6eULL;
+      while (candidates.size() < budget) {
+        auto candidate = stage_base;
+        candidate.pitch_gain = log_sample(state, 20000.0, 220000.0);
+        candidate.pitch_rate_gain = log_sample(state, 150.0, 2000.0);
+        candidate.pitch_accel_gain = unit_random(state) < 0.15
+                                         ? 0.0
+                                         : log_sample(state, 0.1, 300.0);
+        candidate.velocity_gain_per_s = 1.0;
+        candidate.velocity_feedback_cutoff_hz = 1.7;
+        add_unique(candidates, seen, candidate);
+      }
+    } else if (stage == SearchStage::RootOuter) {
+      const std::vector<double> proportional = {0.0, 0.2, 0.25, 0.5, 0.75, 1.0, 1.5,
+                                                2.0, 3.0, 4.0, 5.0, 6.0};
+      const std::vector<double> cutoff = {0.5, 0.7, 1.0, 1.5, 1.7, 2.0, 2.5, 3.0, 3.5, 4.0};
+      for (double velocity_gain : proportional) {
+        for (double feedback_cutoff : cutoff) {
+          auto candidate = stage_base;
+          candidate.velocity_gain_per_s = velocity_gain;
+          candidate.velocity_feedback_cutoff_hz = feedback_cutoff;
+          add_unique(candidates, seen, candidate);
+        }
+      }
+      uint64_t state = 0x726f6f745f6f7574ULL;
+      while (candidates.size() < budget) {
+        auto candidate = stage_base;
+        candidate.velocity_gain_per_s = unit_random(state) < 0.08
+                                           ? 0.0
+                                           : log_sample(state, 0.2, 6.0);
+        candidate.velocity_feedback_cutoff_hz = log_sample(state, 0.5, 4.0);
+        add_unique(candidates, seen, candidate);
+      }
+    } else {
+      const std::array<double, 3> scale = {0.85, 1.0, 1.15};
+      for (double pitch_scale : scale) {
+        for (double rate_scale : scale) {
+          for (double velocity_scale : scale) {
+            for (double cutoff_scale : scale) {
+              auto candidate = stage_base;
+              candidate.pitch_gain = base.pitch_gain * pitch_scale;
+              candidate.pitch_rate_gain = base.pitch_rate_gain * rate_scale;
+              candidate.pitch_accel_gain = base.pitch_accel_gain * rate_scale;
+              candidate.velocity_gain_per_s = base.velocity_gain_per_s * velocity_scale;
+              candidate.velocity_feedback_cutoff_hz =
+                  base.velocity_feedback_cutoff_hz * cutoff_scale;
+              add_unique(candidates, seen, candidate);
+            }
+          }
+        }
+      }
+      // A zero acceleration-feedback parent has no useful multiplicative
+      // neighbourhood. Add explicit small positive probes before random
+      // local refinement so a short joint budget still tests them.
+      if (base.pitch_accel_gain == 0.0) {
+        for (double accel_gain : {0.1, 0.3, 1.0, 3.0, 10.0}) {
+          auto candidate = stage_base;
+          candidate.pitch_accel_gain = accel_gain;
+          add_unique(candidates, seen, candidate);
+        }
+      }
+      uint64_t state = 0x726f6f745f6a6f69ULL;
+      while (candidates.size() < budget) {
+        auto candidate = stage_base;
+        candidate.pitch_gain = base.pitch_gain * (0.85 + 0.30 * unit_random(state));
+        candidate.pitch_rate_gain = base.pitch_rate_gain * (0.85 + 0.30 * unit_random(state));
+        candidate.pitch_accel_gain = base.pitch_accel_gain == 0.0
+                                         ? (unit_random(state) < 0.2
+                                                ? 0.0
+                                                : log_sample(state, 0.1, 30.0))
+                                         : base.pitch_accel_gain *
+                                               (0.85 + 0.30 * unit_random(state));
+        candidate.velocity_gain_per_s = base.velocity_gain_per_s *
+                                        (0.85 + 0.30 * unit_random(state));
+        candidate.velocity_feedback_cutoff_hz = base.velocity_feedback_cutoff_hz *
+                                                (0.85 + 0.30 * unit_random(state));
+        add_unique(candidates, seen, candidate);
+      }
+    }
+    if (candidates.size() > budget) candidates.resize(budget);
+    return candidates;
+  }
   if (stage == SearchStage::Feedforward) {
     stage_base.velocity_gain_per_s = 0.0;
     stage_base.velocity_i_gain_per_s2 = 0.0;
@@ -809,19 +979,26 @@ std::string join_failures(const std::vector<std::string>& failures) {
 }
 
 bool is_real_motion_stage(SearchStage stage) {
-  return stage == SearchStage::Motion || stage == SearchStage::Boundary ||
+  return stage == SearchStage::RootInner || stage == SearchStage::RootOuter ||
+         stage == SearchStage::RootJoint || stage == SearchStage::Motion ||
+         stage == SearchStage::Boundary ||
          stage == SearchStage::MotionIntegral || stage == SearchStage::Distance ||
          stage == SearchStage::Envelope || stage == SearchStage::LowDampingMotion;
 }
 
 bool is_motion_guard(const std::string& scenario_name) {
-  return scenario_name.rfind("guard_", 0) == 0;
+  return scenario_name.rfind("guard_", 0) == 0 ||
+         scenario_name.rfind("root_neutral_", 0) == 0 ||
+         scenario_name.rfind("root_pitch_", 0) == 0 ||
+         scenario_name.rfind("root_push_", 0) == 0 ||
+         scenario_name.rfind("root_initial_velocity_", 0) == 0;
 }
 
 bool is_motion_tracking_case(const std::string& scenario_name) {
   return scenario_name.rfind("motion_target_", 0) == 0 ||
          scenario_name.rfind("motion_pi_", 0) == 0 ||
-         scenario_name == "motion_fixed_drive_stop";
+         scenario_name == "motion_fixed_drive_stop" ||
+         scenario_name.rfind("root_motion_", 0) == 0;
 }
 
 bool case_is_good(SearchStage stage, const SimulatorRunResult& result,
@@ -959,6 +1136,13 @@ double case_cost(SearchStage stage, const SimulatorRunResult& result,
     cost += 18000.0 * metrics.rebound_velocity_mps;
     cost += 500.0 * metrics.velocity_feedback_mae_mps;
     cost += 25.0 * metrics.outer_pitch_target_limited_time_s;
+    // The 200 kSPS/s MotorRunner envelope is fixed. Penalize ordinary
+    // command demand above its 500-SPS/frame allowance, but keep this below
+    // the motion/stability terms so useful translation is not optimized away.
+    cost += 0.015 * metrics.slew_active_fraction;
+    cost += 0.002 * metrics.requested_command_delta_p95_sps;
+    cost += 0.001 * metrics.requested_applied_error_p95_sps;
+    cost += 0.0001 * metrics.integrated_slew_excess_sps;
     if (is_motion_guard(result.scenario.name)) {
       cost += 300.0 * result.tail_rms_pitch_deg;
       cost += 2.0 * metrics.peak_pitch_deg;
@@ -1057,7 +1241,18 @@ void write_bounds(const std::filesystem::path& output_dir, SearchStage stage, si
     output << "profile_default";
   }
   output << " N*s/m\n";
-  if (stage == SearchStage::Distance) {
+  if (stage == SearchStage::RootInner || stage == SearchStage::RootOuter ||
+      stage == SearchStage::RootJoint) {
+    output << "scenario_set=root_controller_scenario_set (root pid.conf speed and plant)\n";
+    output << "pitch_gain=20000..220000 (log/coarse root-inner search; root outer stages hold it)\n";
+    output << "pitch_rate_gain=150..2000 (log/coarse root-inner search; root outer stages hold it)\n";
+    output << "pitch_accel_gain=0 plus 0.1..300 (explicit/log root-inner search; root outer stages hold it)\n";
+    output << "velocity_gain_per_s=0, 0.2..6 (root-outer grid/log search; root inner stages hold it)\n";
+    output << "velocity_feedback_cutoff_hz=0.5..4 (root-outer grid/log search; root inner stages hold it)\n";
+    output << "root-joint=+/-15 percent local refinement over five active gains\n";
+    output << "drive_max_velocity_mps/planner/authority/I fixed from root pid.conf\n";
+    output << "optimizer_constraints=fall/fault/growing-oscillation/poor-motion only\n";
+  } else if (stage == SearchStage::Distance) {
     output << "scenario=distance_full_forward_then_stop (fixed full-forward command)\n";
     output << "active_command_interval=1..6 s (signed plant-position delta)\n";
     output << "drive_max_velocity_mps=0.12 (fixed)\n";
@@ -1145,7 +1340,10 @@ struct MotionFrontierMetrics {
 MotionFrontierMetrics motion_frontier_metrics(const Candidate& candidate) {
   MotionFrontierMetrics metrics;
   for (const auto& result : candidate.cases) {
-    if (result.name.rfind("motion_", 0) != 0) continue;
+    if (result.name.rfind("motion_", 0) != 0 &&
+        result.name.rfind("root_motion_", 0) != 0) {
+      continue;
+    }
     metrics.peak_pitch_deg = std::max(metrics.peak_pitch_deg, result.metrics.peak_pitch_deg);
     metrics.peak_rate_dps = std::max(metrics.peak_rate_dps, result.metrics.peak_rate_dps);
     metrics.saturation_time_s += result.metrics.saturation_time_s;
@@ -1196,7 +1394,8 @@ bool motion_frontier_dominates(const MotionFrontierMetrics& left,
 void write_artifacts(const std::filesystem::path& output_dir,
                      const std::vector<Candidate>& candidates, SearchStage stage) {
   std::ofstream summary(output_dir / "candidate_summary.csv");
-  summary << "rank,candidate_id,round,drive_max_velocity_mps,planner_max_acceleration_mps2,"
+  summary << "rank,candidate_id,round,pitch_gain,pitch_rate_gain,pitch_accel_gain,drive_max_velocity_mps,"
+             "planner_max_acceleration_mps2,"
              "planner_max_deceleration_mps2,planner_max_jerk_mps3,outer_pitch_limit_deg,"
              "velocity_feedback_cutoff_hz,velocity_gain_per_s,velocity_i_gain_per_s2,"
              "velocity_i_leak_time_s,velocity_i_acceleration_limit_mps2,passed_cases,"
@@ -1225,7 +1424,17 @@ void write_artifacts(const std::filesystem::path& output_dir,
                 "active_mean_a_ref_mps2,active_mean_a_p_mps2,active_mean_a_i_mps2,"
                 "active_peak_a_ref_mps2,active_peak_a_p_mps2,active_peak_a_i_mps2,"
                 "active_distance_valid,"
-                "drive_pitch_peak_deg,outer_limit_fraction,"
+                "drive_pitch_peak_deg,outer_limit_fraction,slew_active_fraction,"
+                "requested_applied_error_rms_sps,requested_applied_error_p95_sps,"
+                "requested_applied_error_peak_sps,requested_command_delta_p95_sps,"
+                "requested_command_delta_p99_sps,requested_command_delta_peak_sps,"
+                "pitch_error_command_delta_p95_sps,pitch_error_command_delta_p99_sps,"
+                "pitch_error_command_delta_peak_sps,pitch_rate_command_delta_p95_sps,"
+                "pitch_rate_command_delta_p99_sps,pitch_rate_command_delta_peak_sps,"
+                "pitch_accel_command_delta_p95_sps,pitch_accel_command_delta_p99_sps,"
+                "pitch_accel_command_delta_peak_sps,pitch_target_command_delta_p95_sps,"
+                "pitch_target_command_delta_p99_sps,pitch_target_command_delta_peak_sps,"
+                "integrated_slew_excess_sps,longest_slew_limited_interval_s,"
                 "trim_trusted,final_trim_deg,trim_error_deg\n";
   std::ofstream metrics(output_dir / "scenario_metrics.csv");
   metrics << "rank,candidate_id,scenario," << tuning_metrics_csv_header() << '\n';
@@ -1233,7 +1442,9 @@ void write_artifacts(const std::filesystem::path& output_dir,
     const auto& candidate = candidates[rank_index];
     const auto& gains = candidate.gains;
     summary << rank_index + 1 << ',' << candidate.id << ',' << candidate.round << ','
-            << std::setprecision(12) << gains.drive_max_velocity_mps << ','
+            << std::setprecision(12) << gains.pitch_gain << ',' << gains.pitch_rate_gain << ','
+            << gains.pitch_accel_gain << ','
+            << gains.drive_max_velocity_mps << ','
             << gains.planner_max_acceleration_mps2 << ','
             << gains.planner_max_deceleration_mps2 << ',' << gains.planner_max_jerk_mps3 << ','
             << gains.outer_pitch_limit_deg << ',' << gains.velocity_feedback_cutoff_hz << ','
@@ -1302,6 +1513,27 @@ void write_artifacts(const std::filesystem::path& output_dir,
                  << result.metrics.active_distance_valid << ','
                  << result.metrics.drive_pitch_peak_deg << ','
                  << result.metrics.outer_limit_fraction << ','
+                 << result.metrics.slew_active_fraction << ','
+                 << result.metrics.requested_applied_error_rms_sps << ','
+                 << result.metrics.requested_applied_error_p95_sps << ','
+                 << result.metrics.requested_applied_error_peak_sps << ','
+                 << result.metrics.requested_command_delta_p95_sps << ','
+                 << result.metrics.requested_command_delta_p99_sps << ','
+                 << result.metrics.requested_command_delta_peak_sps << ','
+                 << result.metrics.pitch_error_command_delta_p95_sps << ','
+                 << result.metrics.pitch_error_command_delta_p99_sps << ','
+                 << result.metrics.pitch_error_command_delta_peak_sps << ','
+                 << result.metrics.pitch_rate_command_delta_p95_sps << ','
+                 << result.metrics.pitch_rate_command_delta_p99_sps << ','
+                 << result.metrics.pitch_rate_command_delta_peak_sps << ','
+                 << result.metrics.pitch_accel_command_delta_p95_sps << ','
+                 << result.metrics.pitch_accel_command_delta_p99_sps << ','
+                 << result.metrics.pitch_accel_command_delta_peak_sps << ','
+                 << result.metrics.pitch_target_command_delta_p95_sps << ','
+                 << result.metrics.pitch_target_command_delta_p99_sps << ','
+                 << result.metrics.pitch_target_command_delta_peak_sps << ','
+                 << result.metrics.integrated_slew_excess_sps << ','
+                 << result.metrics.longest_slew_limited_interval_s << ','
                  << result.trim_trusted << ',' << result.final_trim_deg << ','
                  << result.trim_error_deg << '\n';
       metrics << rank_index + 1 << ',' << candidate.id << ',' << result.name << ','
@@ -1353,7 +1585,9 @@ void write_artifacts(const std::filesystem::path& output_dir,
     }
   } else if (is_real_motion_stage(stage)) {
     std::ofstream frontier(output_dir / "pareto_frontier.csv");
-    frontier << "rank,candidate_id,velocity_gain_per_s,velocity_feedback_cutoff_hz,"
+    frontier << "rank,candidate_id,pitch_gain,pitch_rate_gain,velocity_gain_per_s,"
+                 "pitch_accel_gain,"
+                 "velocity_feedback_cutoff_hz,"
                  "outer_pitch_limit_deg,planner_max_acceleration_mps2,"
                  "planner_max_deceleration_mps2,planner_max_jerk_mps3,passed_cases,"
                  "hard_failures,target_iae_m_s,late_error_mps,direction_fraction,"
@@ -1371,7 +1605,9 @@ void write_artifacts(const std::filesystem::path& output_dir,
       }
       if (dominated) continue;
       const auto& candidate = candidates[index];
-      frontier << index + 1 << ',' << candidate.id << ',' << candidate.gains.velocity_gain_per_s
+      frontier << index + 1 << ',' << candidate.id << ',' << candidate.gains.pitch_gain << ','
+               << candidate.gains.pitch_rate_gain << ',' << candidate.gains.velocity_gain_per_s
+               << ',' << candidate.gains.pitch_accel_gain
                << ',' << candidate.gains.velocity_feedback_cutoff_hz << ','
                << candidate.gains.outer_pitch_limit_deg << ','
                << candidate.gains.planner_max_acceleration_mps2 << ','
@@ -1429,8 +1665,10 @@ void write_timeline_csv(const std::filesystem::path& path, const SimulatorRunRes
             "velocity_error_mps,velocity_feedback_acceleration_mps2,"
             "velocity_p_acceleration_mps2,velocity_i_acceleration_mps2,"
             "velocity_integral_state_mps_s,acceleration_raw_mps2,acceleration_cmd_mps2,"
-            "drive_pitch_target_deg,final_pitch_target_deg,plant_pitch_deg,"
-            "plant_pitch_rate_dps,u_sps,balance_unclamped_sps,command_saturated,"
+            "drive_pitch_target_deg,drive_feedforward_sps,balance_correction_sps,"
+            "common_unclamped_sps,final_pitch_target_deg,plant_pitch_deg,"
+            "plant_pitch_rate_dps,pitch_feedback_sps,pitch_rate_feedback_sps,"
+            "pitch_accel_feedback_sps,u_sps,balance_unclamped_sps,command_saturated,"
             "outer_acceleration_limited,outer_pitch_target_limited,velocity_integral_limited,"
             "velocity_anti_windup_active,active_outer_pitch_limit_deg,"
             "active_velocity_gain_per_s,active_velocity_i_gain_per_s2,"
@@ -1444,7 +1682,25 @@ void write_timeline_csv(const std::filesystem::path& path, const SimulatorRunRes
             "stepper_back_emf_a_left,stepper_back_emf_b_left,stepper_back_emf_a_right,"
             "stepper_back_emf_b_right,stepper_voltage_saturated_left,"
             "stepper_voltage_saturated_right,emitted_step_velocity_sps,"
-            "synthetic_estimator_velocity_sps,controller_feedback_velocity_sps\n";
+            "synthetic_estimator_velocity_sps,controller_feedback_velocity_sps,"
+            "stepper_wheel_surface_velocity_mps,stepper_chassis_ground_velocity_mps,"
+            "stepper_wheel_angle_left_rad,stepper_wheel_angle_right_rad,"
+            "stepper_wheel_angular_velocity_left_rad_s,"
+            "stepper_wheel_angular_velocity_right_rad_s,"
+            "stepper_slip_velocity_mps,stepper_accumulated_slip_distance_m,"
+            "stepper_wheel_acceleration_mps2,stepper_requested_contact_force_n,"
+            "stepper_actual_contact_force_n,stepper_traction_limit_n,"
+            "stepper_traction_utilization,stepper_requested_contact_force_left_n,"
+            "stepper_requested_contact_force_right_n,stepper_actual_contact_force_left_n,"
+            "stepper_actual_contact_force_right_n,stepper_traction_limit_left_n,"
+            "stepper_traction_limit_right_n,stepper_traction_saturated,"
+            "stepper_contact_sticking,stepper_static_contact_active,"
+            "stepper_unwrapped_phase_error_left_rad,"
+            "stepper_unwrapped_phase_error_right_rad,stepper_field_rotor_relative_velocity_left_rad_s,"
+            "stepper_field_rotor_relative_velocity_right_rad_s,stepper_electrical_cycle_index_left,"
+            "stepper_electrical_cycle_index_right,stepper_accumulated_cycle_slips_left,"
+            "stepper_accumulated_cycle_slips_right,stepper_electrical_cycle_slipped_left,"
+            "stepper_electrical_cycle_slipped_right\n";
   output << std::setprecision(12);
   for (const auto& row : result.rows) {
     output << row.sim_time_s << ',' << row.user_velocity_mps << ',' << row.reference_velocity_mps
@@ -1455,8 +1711,12 @@ void write_timeline_csv(const std::filesystem::path& path, const SimulatorRunRes
            << row.velocity_p_acceleration_mps2 << ',' << row.velocity_i_acceleration_mps2 << ','
            << row.velocity_integral_state_mps_s << ',' << row.acceleration_raw_mps2 << ','
            << row.acceleration_cmd_mps2 << ',' << row.drive_pitch_target_deg << ','
-           << row.final_pitch_target_deg << ',' << row.plant_pitch_deg << ','
-           << row.plant_pitch_rate_dps << ',' << row.u_sps << ',' << row.balance_unclamped_sps
+           << row.drive_feedforward_sps << ',' << row.balance_correction_sps << ','
+           << row.common_unclamped_sps << ',' << row.final_pitch_target_deg << ','
+           << row.plant_pitch_deg << ','
+           << row.plant_pitch_rate_dps << ',' << row.pitch_feedback_sps << ','
+           << row.pitch_rate_feedback_sps << ',' << row.pitch_accel_feedback_sps << ','
+           << row.u_sps << ',' << row.balance_unclamped_sps
            << ',' << row.command_saturated << ',' << row.outer_acceleration_limited << ','
            << row.outer_pitch_target_limited << ',' << row.velocity_integral_limited << ','
            << row.velocity_anti_windup_active << ',' << row.active_outer_pitch_limit_deg << ','
@@ -1476,7 +1736,39 @@ void write_timeline_csv(const std::filesystem::path& path, const SimulatorRunRes
            << row.stepper_back_emf_a_right << ',' << row.stepper_back_emf_b_right << ','
            << row.stepper_voltage_saturated_left << ',' << row.stepper_voltage_saturated_right
            << ',' << row.emitted_step_velocity_sps << ',' << row.synthetic_estimator_velocity_sps
-           << ',' << row.controller_feedback_velocity_sps
+            << ',' << row.controller_feedback_velocity_sps
+           << ',' << row.stepper_wheel_surface_velocity_mps
+           << ',' << row.stepper_chassis_ground_velocity_mps
+           << ',' << row.stepper_wheel_angle_left_rad
+           << ',' << row.stepper_wheel_angle_right_rad
+           << ',' << row.stepper_wheel_angular_velocity_left_rad_s
+           << ',' << row.stepper_wheel_angular_velocity_right_rad_s
+           << ',' << row.stepper_slip_velocity_mps
+           << ',' << row.stepper_accumulated_slip_distance_m
+           << ',' << row.stepper_wheel_acceleration_mps2
+           << ',' << row.stepper_requested_contact_force_n
+           << ',' << row.stepper_actual_contact_force_n
+           << ',' << row.stepper_traction_limit_n
+           << ',' << row.stepper_traction_utilization
+           << ',' << row.stepper_requested_contact_force_left_n
+           << ',' << row.stepper_requested_contact_force_right_n
+           << ',' << row.stepper_actual_contact_force_left_n
+           << ',' << row.stepper_actual_contact_force_right_n
+           << ',' << row.stepper_traction_limit_left_n
+           << ',' << row.stepper_traction_limit_right_n
+           << ',' << row.stepper_traction_saturated
+           << ',' << row.stepper_contact_sticking
+           << ',' << row.stepper_static_contact_active
+           << ',' << row.stepper_unwrapped_electrical_phase_error_left_rad
+           << ',' << row.stepper_unwrapped_electrical_phase_error_right_rad
+           << ',' << row.stepper_field_rotor_relative_velocity_left_rad_s
+           << ',' << row.stepper_field_rotor_relative_velocity_right_rad_s
+           << ',' << row.stepper_electrical_cycle_index_left
+           << ',' << row.stepper_electrical_cycle_index_right
+           << ',' << row.stepper_accumulated_electrical_cycle_slips_left
+           << ',' << row.stepper_accumulated_electrical_cycle_slips_right
+           << ',' << row.stepper_electrical_cycle_slipped_left
+           << ',' << row.stepper_electrical_cycle_slipped_right
            << '\n';
   }
 }
@@ -1490,6 +1782,8 @@ void write_focused_timelines(const std::filesystem::path& output_dir,
   const bool distance_experiment =
       !scenarios.empty() && (scenarios.front().name.rfind("distance_", 0) == 0 ||
                              scenarios.front().name.rfind("speed_envelope_", 0) == 0);
+  const bool root_experiment =
+      !scenarios.empty() && scenarios.front().name.rfind("root_", 0) == 0;
   std::vector<size_t> selected_indices;
   const size_t selected_count = distance_experiment ? 10 : 3;
   for (size_t index = 0;
@@ -1499,11 +1793,13 @@ void write_focused_timelines(const std::filesystem::path& output_dir,
 
   std::vector<std::pair<std::string, Gains>> references;
   auto conservative = base_gains;
-  conservative.drive_max_velocity_mps = 0.12;
-  conservative.planner_max_acceleration_mps2 = 0.25;
-  conservative.planner_max_deceleration_mps2 = 0.25;
-  conservative.planner_max_jerk_mps3 = 1.0;
-  conservative.outer_pitch_limit_deg = 15.0;
+  if (!root_experiment) {
+    conservative.drive_max_velocity_mps = 0.12;
+    conservative.planner_max_acceleration_mps2 = 0.25;
+    conservative.planner_max_deceleration_mps2 = 0.25;
+    conservative.planner_max_jerk_mps3 = 1.0;
+    conservative.outer_pitch_limit_deg = 15.0;
+  }
   conservative.velocity_i_gain_per_s2 = 0.0;
   conservative.velocity_gain_per_s = 0.5;
   references.emplace_back("reference_conservative_p", conservative);
@@ -1546,7 +1842,7 @@ void write_focused_timelines(const std::filesystem::path& output_dir,
 }
 
 void usage() {
-  std::cout << "Usage: balancer_simulator_tuner --stage feedforward|feedback|integral|observer|joint|motion|boundary|motion-integral|distance|envelope|low-damping-motion "
+  std::cout << "Usage: balancer_simulator_tuner --stage root-inner|root-outer|root-joint|feedforward|feedback|integral|observer|joint|motion|boundary|motion-integral|distance|envelope|low-damping-motion "
                "[--base FILE] [--output DIR] [--budget N] [--offset N] [--count N] "
                "[--cart-damping N] [--balance-ceiling N] [--timelines]\n";
 }
@@ -1554,7 +1850,7 @@ void usage() {
 }  // namespace
 
 int main(int argc, char** argv) {
-  std::filesystem::path base = "tests/data/stepper_phase_electrical_pid.conf";
+  std::filesystem::path base = "pid.conf";
   std::filesystem::path output_dir = "build/sim/stepper_tuning";
   SearchStage stage = SearchStage::Feedforward;
   size_t budget = 600;
@@ -1653,7 +1949,9 @@ int main(int argc, char** argv) {
   write_artifacts(output_dir, candidates, stage);
   write_best_config(output_dir, candidates.front(), scenarios.size());
   write_best_n_configs(output_dir, candidates, 10);
-  if (stage == SearchStage::MotionIntegral || stage == SearchStage::LowDampingMotion ||
+  if (stage == SearchStage::RootInner || stage == SearchStage::RootOuter ||
+      stage == SearchStage::RootJoint || stage == SearchStage::MotionIntegral ||
+      stage == SearchStage::LowDampingMotion ||
       ((stage == SearchStage::Distance || stage == SearchStage::Envelope) && write_timelines)) {
     write_focused_timelines(output_dir, candidates, scenarios, base_gains);
   }

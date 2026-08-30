@@ -201,6 +201,14 @@ if (BUILD_TESTS)
   )
   target_link_libraries(balancer_plant_audit PRIVATE balancer_common balancer_sim_support)
 
+  add_executable(balancer_outer_loop_ab
+    ${TEST_DIR}/simulator_outer_loop_ab_main.cpp
+    ${TEST_DIR}/stubs/pigpiod_stub.cpp
+  )
+  target_link_libraries(balancer_outer_loop_ab PRIVATE
+    balancer_common balancer_sim_support
+  )
+
   add_executable(balancer_simulator_tuner
     ${TEST_DIR}/simulator_tuner_main.cpp
     ${TEST_DIR}/stubs/pigpiod_stub.cpp

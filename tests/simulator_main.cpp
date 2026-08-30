@@ -516,6 +516,10 @@ class SimulatorService {
           request.velocity_estimator_bias_drift_mps_per_s;
       scenario.velocity_estimator_scale = request.velocity_estimator_scale;
       scenario.velocity_estimator_latency_s = request.velocity_estimator_latency_s;
+      scenario.brace_enabled = request.brace_enabled != 0;
+      scenario.brace_pitch_deg = request.brace_pitch_deg;
+      scenario.brace_stiffness_nm_per_rad = request.brace_stiffness_nm_per_rad;
+      scenario.brace_damping_nm_s_per_rad = request.brace_damping_nm_s_per_rad;
       for (std::size_t i = 0; i < request.disturbances.size(); ++i) {
         const auto& wire = request.disturbances[i];
         SimulatorDisturbanceKind kind = SimulatorDisturbanceKind::Step;
@@ -542,19 +546,13 @@ class SimulatorService {
             .turn_end = wire.turn_end,
         });
       }
-      for (const auto& wire : request.pitch_authority_segments) {
-        if (wire.duration_s <= 0.0) continue;
-        scenario.pitch_authority_segments.push_back(SimulatorPitchAuthoritySegment{
+      for (const auto& wire : request.brace_rest_events) {
+        if (wire.start_s <= 0.0) continue;
+        scenario.brace_rest_events.push_back(SimulatorBraceRestEvent{
             .start_s = wire.start_s,
-            .duration_s = wire.duration_s,
-            .target_deg = wire.target_deg,
-            .com_trim_deg = wire.com_trim_deg,
+            .pitch_deg = wire.pitch_deg,
         });
       }
-      scenario.pitch_authority_refresh_dropout_start_s =
-          request.pitch_authority_refresh_dropout_start_s;
-      scenario.pitch_authority_refresh_dropout_duration_s =
-          request.pitch_authority_refresh_dropout_duration_s;
     }
 
     endpoint_.clear_send_failure();
@@ -757,18 +755,6 @@ class SimulatorService {
     system.trim_trusted = row.trim_trusted > 0.5;
     system.trim_learning_allowed = row.trim_learning_allowed > 0.5;
     system.pitch_target_limit_reason = static_cast<uint8_t>(row.pitch_target_limit_reason);
-    system.pitch_authority_diagnostic_active =
-        row.pitch_authority_diagnostic_active > 0.5;
-    system.pitch_authority_diagnostic_target_deg =
-        static_cast<float>(row.pitch_authority_diagnostic_target_deg);
-    system.pitch_authority_diagnostic_com_trim_deg =
-        static_cast<float>(row.pitch_authority_diagnostic_com_trim_deg);
-    system.pitch_authority_diagnostic_remaining_s =
-        static_cast<float>(row.pitch_authority_diagnostic_remaining_s);
-    system.pitch_authority_diagnostic_request_id =
-        static_cast<uint32_t>(row.pitch_authority_diagnostic_request_id);
-    system.pitch_authority_diagnostic_command_age_ms =
-        static_cast<float>(row.pitch_authority_diagnostic_command_age_ms);
     system.command_saturated = row.command_saturated != 0.0;
     system.actuator_fault = row.actuator_fault != 0.0;
     system.trim_learning_enabled = row.trim_learning_enabled != 0.0 ? 1u : 0u;
@@ -821,6 +807,15 @@ class SimulatorService {
         static_cast<float>(row.synthetic_estimator_velocity_sps);
     payload.controller_feedback_velocity_sps =
         static_cast<float>(row.controller_feedback_velocity_sps);
+    payload.brace_enabled = row.brace_enabled > 0.5;
+    payload.brace_contact_active = row.brace_contact_active > 0.5;
+    payload.brace_reserved = 0;
+    payload.brace_pitch_deg = static_cast<float>(row.brace_pitch_deg);
+    payload.brace_penetration_deg = static_cast<float>(row.brace_penetration_deg);
+    payload.brace_torque_nm = static_cast<float>(row.brace_torque_nm);
+    payload.recovery_command_active = row.recovery_command_active > 0.5;
+    payload.fallover_inhibited = row.fallover_inhibited > 0.5;
+    payload.recovery_reserved = 0;
     if (!endpoint_.send(active_peer_, MsgId::SimulatorTelemetry, payload,
                         simulator::SimulatorTxKind::Telemetry)) {
       run.telemetry_transport_failure = true;

@@ -10,7 +10,6 @@ from pathlib import Path
 from generated_balancer import (
     BalancerMsgId,
     SimRunDonePayload,
-    SimPitchAuthoritySegmentPayload,
     SimStartAckPayload,
     SimStartRunPayload,
     SimStopRunPayload,
@@ -225,20 +224,22 @@ def make_start_payload(
     velocity_estimator_latency_s: float = 0.0,
     disturbances: list[dict] | None = None,
     joy_segments: list[dict] | None = None,
-    pitch_authority_segments: list[dict] | None = None,
-    pitch_authority_refresh_dropout: dict | None = None,
+    brace_enabled: bool = False,
+    brace_pitch_deg: float = 67.0,
+    brace_stiffness_nm_per_rad: float = 40.0,
+    brace_damping_nm_s_per_rad: float = 0.8,
+    brace_rest_events: list[dict] | None = None,
     pid_config_path: str = "",
 ) -> SimStartRunPayload:
     disturbances = list(disturbances or [])
     joy_segments = list(joy_segments or [])
-    pitch_authority_segments = list(pitch_authority_segments or [])
-    pitch_authority_refresh_dropout = dict(pitch_authority_refresh_dropout or {})
+    brace_rest_events = list(brace_rest_events or [])
     if len(disturbances) > 10:
         raise ValueError("SimStartRunPayload supports at most 10 disturbance segments")
     if len(joy_segments) > 4:
         raise ValueError("SimStartRunPayload supports at most 4 joystick segments")
-    if len(pitch_authority_segments) > 12:
-        raise ValueError("SimStartRunPayload supports at most 12 pitch-authority segments")
+    if len(brace_rest_events) > 4:
+        raise ValueError("SimStartRunPayload supports at most 4 brace rest events")
     accel_bias_mps2 = list(accel_bias_mps2 or [0.0, 0.0, 0.0])
     gyro_bias_rad_s = list(gyro_bias_rad_s or [0.0, 0.0, 0.0])
     if len(accel_bias_mps2) != 3 or len(gyro_bias_rad_s) != 3:
@@ -287,16 +288,13 @@ def make_start_payload(
             "forward_end": float(segment.get("forward_end", segment.get("forward", 0.0))),
             "turn_end": float(segment.get("turn_end", segment.get("turn", 0.0))),
         }
-    wire_pitch_authority = [
-        {"start_s": 0.0, "duration_s": 0.0, "target_deg": 0.0, "com_trim_deg": 0.0}
-        for _ in range(12)
+    wire_brace_rest_events = [
+        {"start_s": 0.0, "pitch_deg": 0.0} for _ in range(4)
     ]
-    for idx, segment in enumerate(pitch_authority_segments):
-        wire_pitch_authority[idx] = {
-            "start_s": float(segment.get("start_s", 0.0)),
-            "duration_s": float(segment.get("duration_s", 0.0)),
-            "target_deg": float(segment.get("target_deg", 0.0)),
-            "com_trim_deg": float(segment.get("com_trim_deg", 0.0)),
+    for idx, event in enumerate(brace_rest_events):
+        wire_brace_rest_events[idx] = {
+            "start_s": float(event.get("start_s", 0.0)),
+            "pitch_deg": float(event.get("pitch_deg", brace_pitch_deg)),
         }
     override = dict(_PHYSICS_DEFAULTS[physics_profile])
     override.update(physics_override or {})
@@ -338,15 +336,15 @@ def make_start_payload(
         velocity_estimator_scale=velocity_estimator_scale,
         velocity_estimator_latency_s=velocity_estimator_latency_s,
         initial_pitch_rate_dps=initial_pitch_rate_dps,
+        brace_enabled=1 if brace_enabled else 0,
+        brace_reserved0=0,
+        brace_reserved1=0,
+        brace_pitch_deg=brace_pitch_deg,
+        brace_stiffness_nm_per_rad=brace_stiffness_nm_per_rad,
+        brace_damping_nm_s_per_rad=brace_damping_nm_s_per_rad,
+        brace_rest_events=wire_brace_rest_events,
         disturbances=wire_disturbances,
         joy_segments=wire_joy,
-        pitch_authority_segments=[SimPitchAuthoritySegmentPayload(**item) for item in wire_pitch_authority],
-        pitch_authority_refresh_dropout_start_s=float(
-            pitch_authority_refresh_dropout.get("start_s", 0.0)
-        ),
-        pitch_authority_refresh_dropout_duration_s=float(
-            pitch_authority_refresh_dropout.get("duration_s", 0.0)
-        ),
         pid_config_path=_fixed_bytes(pid_config_path, 128),
     )
 
@@ -442,8 +440,11 @@ def run_scenario_live(
     velocity_estimator_latency_s: float = 0.0,
     disturbances: list[dict] | None = None,
     joy_segments: list[dict] | None = None,
-    pitch_authority_segments: list[dict] | None = None,
-    pitch_authority_refresh_dropout: dict | None = None,
+    brace_enabled: bool = False,
+    brace_pitch_deg: float = 67.0,
+    brace_stiffness_nm_per_rad: float = 40.0,
+    brace_damping_nm_s_per_rad: float = 0.8,
+    brace_rest_events: list[dict] | None = None,
     pid_config_path: str = "",
     model_name: str = "",
     scenario_id: str = "",
@@ -490,6 +491,10 @@ def run_scenario_live(
         "velocity_estimator_bias_drift_mps_per_s": velocity_estimator_bias_drift_mps_per_s,
         "velocity_estimator_scale": velocity_estimator_scale,
         "velocity_estimator_latency_s": velocity_estimator_latency_s,
+        "brace_enabled": brace_enabled,
+        "brace_pitch_deg": brace_pitch_deg,
+        "brace_stiffness_nm_per_rad": brace_stiffness_nm_per_rad,
+        "brace_damping_nm_s_per_rad": brace_damping_nm_s_per_rad,
     }
     if model_name:
         metadata["model"] = model_name
@@ -505,10 +510,8 @@ def run_scenario_live(
         metadata["disturbances"] = disturbances
     if joy_segments:
         metadata["joy_segments"] = joy_segments
-    if pitch_authority_segments:
-        metadata["pitch_authority_segments"] = pitch_authority_segments
-    if pitch_authority_refresh_dropout:
-        metadata["pitch_authority_refresh_dropout"] = pitch_authority_refresh_dropout
+    if brace_rest_events:
+        metadata["brace_rest_events"] = brace_rest_events
     if physics_override is not None:
         metadata["physics_override"] = physics_override
     recorder.begin_run(metadata)
@@ -541,8 +544,11 @@ def run_scenario_live(
         velocity_estimator_latency_s=velocity_estimator_latency_s,
         disturbances=disturbances,
         joy_segments=joy_segments,
-        pitch_authority_segments=pitch_authority_segments,
-        pitch_authority_refresh_dropout=pitch_authority_refresh_dropout,
+        brace_enabled=brace_enabled,
+        brace_pitch_deg=brace_pitch_deg,
+        brace_stiffness_nm_per_rad=brace_stiffness_nm_per_rad,
+        brace_damping_nm_s_per_rad=brace_damping_nm_s_per_rad,
+        brace_rest_events=brace_rest_events,
         pid_config_path=pid_config_path,
     )
     udp.send(BalancerMsgId.SimStartRun, start.pack())

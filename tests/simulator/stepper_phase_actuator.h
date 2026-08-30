@@ -37,6 +37,10 @@ struct MotorOutput {
   double actual_relative_mechanical_angle_rad = 0.0;
   double actual_relative_mechanical_velocity_mps = 0.0;
   double actual_rotor_electrical_angle_rad = 0.0;
+  // Unwrapped field-minus-rotor displacement; this retains complete
+  // electrical cycles that the wrapped error intentionally discards.
+  double unwrapped_electrical_phase_error_rad = 0.0;
+  double field_rotor_relative_velocity_rad_s = 0.0;
   double electrical_phase_error_rad = 0.0;
   PhaseCommand phase{};
   double torque_nm = 0.0;
@@ -77,6 +81,10 @@ struct ElectricalMotorOutput {
   double actual_relative_mechanical_angle_rad = 0.0;
   double actual_relative_mechanical_velocity_mps = 0.0;
   double actual_rotor_electrical_angle_rad = 0.0;
+  // Unwrapped field-minus-rotor displacement; this retains complete
+  // electrical cycles that the wrapped error intentionally discards.
+  double unwrapped_electrical_phase_error_rad = 0.0;
+  double field_rotor_relative_velocity_rad_s = 0.0;
   double electrical_phase_error_rad = 0.0;
   PhaseCommand phase{};
   double current_ref_a = 0.0;
@@ -190,10 +198,23 @@ class ElectricalActuator {
                                        std::int64_t right_steps);
   ElectricalOutput evaluate(double dt_s, double chassis_velocity_mps,
                             double body_pitch_rate_rad_s);
+  ElectricalOutput evaluate_relative(double dt_s, double left_relative_velocity_mps,
+                                      double right_relative_velocity_mps);
+  // Use an explicitly known interval-average magnetic-field speed for
+  // diagnostics when a caller supplies cumulative STEP positions at a lower
+  // rate than the electrical integration. It does not alter torque/current
+  // physics; those depend on field angle and actual rotor speed.
+  ElectricalOutput evaluate_relative_with_field_velocity(
+      double dt_s, double left_relative_velocity_mps, double right_relative_velocity_mps,
+      double left_field_velocity_mps, double right_field_velocity_mps);
   void advance_mechanical_state(double dt_s, double chassis_velocity_before_mps,
                                 double body_pitch_rate_before_rad_s,
                                 double chassis_velocity_after_mps,
                                 double body_pitch_rate_after_rad_s);
+  void advance_relative_mechanical_state(double dt_s, double left_velocity_before_mps,
+                                         double right_velocity_before_mps,
+                                         double left_velocity_after_mps,
+                                         double right_velocity_after_mps);
 
   const ElectricalParameters& parameters() const {
     return parameters_;
@@ -236,11 +257,17 @@ class ElectricalActuator {
   ElectricalMotorOutput evaluate_motor(double commanded_steps,
                                         double previous_commanded_steps,
                                         MotorState& state, double dt_s,
-                                        double chassis_velocity_mps,
-                                        double body_pitch_rate_rad_s,
+                                        double relative_velocity_mps,
+                                        double field_velocity_mps,
+                                        bool use_field_velocity_override,
                                         bool have_commanded_index,
                                         std::int64_t commanded_index,
                                         const CurrentUpdateCoefficients& coefficients) const;
+  ElectricalOutput evaluate_relative_impl(double dt_s, double left_relative_velocity_mps,
+                                           double right_relative_velocity_mps,
+                                           double left_field_velocity_mps,
+                                           double right_field_velocity_mps,
+                                           bool use_field_velocity_override);
   CurrentUpdateCoefficients make_current_update_coefficients(double dt_s) const;
   double update_current(double current_a, double current_ref, double back_emf,
                         const CurrentUpdateCoefficients& coefficients, double* phase_voltage,

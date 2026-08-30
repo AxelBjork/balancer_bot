@@ -13,6 +13,7 @@ enum class SimulatorEventKind : uint8_t {
   Step,
   Scenario,
   ImuSample,
+  BraceRest,
 };
 
 struct SimulatorEvent {
@@ -20,6 +21,7 @@ struct SimulatorEvent {
   SimulatorEventKind kind{SimulatorEventKind::Scenario};
   int left_step_delta{0};
   int right_step_delta{0};
+  double scalar{0.0};
 };
 
 class SimulatorTimeScheduler {

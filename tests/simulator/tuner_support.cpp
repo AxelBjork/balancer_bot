@@ -27,6 +27,120 @@ double dt_at(const std::vector<SimulatorTimelineRow>& rows, size_t index) {
   return std::max(0.0, rows[index].sim_time_s - rows[index - 1].sim_time_s);
 }
 
+double rms(const std::vector<double>& values) {
+  if (values.empty()) return 0.0;
+  double squared = 0.0;
+  for (const double value : values) squared += value * value;
+  return std::sqrt(squared / static_cast<double>(values.size()));
+}
+
+double percentile(std::vector<double> values, double fraction) {
+  if (values.empty()) return 0.0;
+  fraction = std::clamp(fraction, 0.0, 1.0);
+  std::sort(values.begin(), values.end());
+  const double position = fraction * static_cast<double>(values.size() - 1);
+  const size_t lower = static_cast<size_t>(position);
+  const size_t upper = std::min(values.size() - 1, lower + 1);
+  const double weight = position - static_cast<double>(lower);
+  return values[lower] + weight * (values[upper] - values[lower]);
+}
+
+void calculate_slew_metrics(const SimulatorRunResult& result, ScenarioMetrics& metrics) {
+  const auto& rows = result.rows;
+  if (rows.size() < 2) return;
+
+  std::vector<double> requested_deltas;
+  std::vector<double> pitch_error_deltas;
+  std::vector<double> pitch_rate_deltas;
+  std::vector<double> pitch_accel_deltas;
+  std::vector<double> pitch_target_deltas;
+  std::vector<double> requested_applied_errors;
+  requested_deltas.reserve(rows.size() - 1);
+  pitch_error_deltas.reserve(rows.size() - 1);
+  pitch_rate_deltas.reserve(rows.size() - 1);
+  pitch_accel_deltas.reserve(rows.size() - 1);
+  pitch_target_deltas.reserve(rows.size() - 1);
+  requested_applied_errors.reserve(rows.size() - 1);
+
+  size_t slew_active_count = 0;
+  size_t longest_slew_frames = 0;
+  size_t current_slew_frames = 0;
+  double previous_pitch_rad = rows.front().pitch_deg * M_PI / 180.0;
+  double previous_target_rad = rows.front().final_pitch_target_deg * M_PI / 180.0;
+  double previous_rate_term = rows.front().pitch_rate_feedback_sps;
+  double previous_accel_term = rows.front().pitch_accel_feedback_sps;
+  for (size_t index = 1; index < rows.size(); ++index) {
+    const auto& previous = rows[index - 1];
+    const auto& row = rows[index];
+    const double pitch_rad = row.pitch_deg * M_PI / 180.0;
+    const double target_rad = row.final_pitch_target_deg * M_PI / 180.0;
+    const double pitch_error_delta =
+        row.active_pitch_gain_sps_per_rad * (pitch_rad - previous_pitch_rad);
+    const double pitch_rate_delta = row.pitch_rate_feedback_sps - previous_rate_term;
+    const double pitch_accel_delta = row.pitch_accel_feedback_sps - previous_accel_term;
+    const double pitch_target_delta =
+        -row.active_pitch_gain_sps_per_rad * (target_rad - previous_target_rad);
+    const double requested_delta = row.u_sps - previous.u_sps;
+    const double requested_applied_error = std::max(
+        std::abs(row.left_sps - row.left_slewed_sps),
+        std::abs(row.right_sps - row.right_slewed_sps));
+
+    requested_deltas.push_back(std::abs(requested_delta));
+    pitch_error_deltas.push_back(std::abs(pitch_error_delta));
+    pitch_rate_deltas.push_back(std::abs(pitch_rate_delta));
+    pitch_accel_deltas.push_back(std::abs(pitch_accel_delta));
+    pitch_target_deltas.push_back(std::abs(pitch_target_delta));
+    requested_applied_errors.push_back(requested_applied_error);
+    metrics.integrated_slew_excess_sps +=
+        std::max(0.0, std::abs(requested_delta) -
+                          Config::motor_slew_sps_per_s / Config::control_hz);
+
+    const bool slew_active = requested_applied_error > 1e-9 ||
+                             (row.actuator_saturation_flags &
+                              (ActuatorSaturationLeftSlew | ActuatorSaturationRightSlew));
+    if (slew_active) {
+      ++slew_active_count;
+      ++current_slew_frames;
+      longest_slew_frames = std::max(longest_slew_frames, current_slew_frames);
+    } else {
+      current_slew_frames = 0;
+    }
+    previous_pitch_rad = pitch_rad;
+    previous_target_rad = target_rad;
+    previous_rate_term = row.pitch_rate_feedback_sps;
+    previous_accel_term = row.pitch_accel_feedback_sps;
+  }
+
+  const double frame_count = static_cast<double>(rows.size() - 1);
+  metrics.slew_active_fraction = static_cast<double>(slew_active_count) / frame_count;
+  metrics.longest_slew_limited_interval_s =
+      static_cast<double>(longest_slew_frames) * dt_at(rows, 1);
+  metrics.requested_applied_error_rms_sps = rms(requested_applied_errors);
+  metrics.requested_applied_error_p95_sps = percentile(requested_applied_errors, 0.95);
+  metrics.requested_applied_error_peak_sps =
+      *std::max_element(requested_applied_errors.begin(), requested_applied_errors.end());
+  metrics.requested_command_delta_p95_sps = percentile(requested_deltas, 0.95);
+  metrics.requested_command_delta_p99_sps = percentile(requested_deltas, 0.99);
+  metrics.requested_command_delta_peak_sps =
+      *std::max_element(requested_deltas.begin(), requested_deltas.end());
+  metrics.pitch_error_command_delta_p95_sps = percentile(pitch_error_deltas, 0.95);
+  metrics.pitch_error_command_delta_p99_sps = percentile(pitch_error_deltas, 0.99);
+  metrics.pitch_error_command_delta_peak_sps =
+      *std::max_element(pitch_error_deltas.begin(), pitch_error_deltas.end());
+  metrics.pitch_rate_command_delta_p95_sps = percentile(pitch_rate_deltas, 0.95);
+  metrics.pitch_rate_command_delta_p99_sps = percentile(pitch_rate_deltas, 0.99);
+  metrics.pitch_rate_command_delta_peak_sps =
+      *std::max_element(pitch_rate_deltas.begin(), pitch_rate_deltas.end());
+  metrics.pitch_accel_command_delta_p95_sps = percentile(pitch_accel_deltas, 0.95);
+  metrics.pitch_accel_command_delta_p99_sps = percentile(pitch_accel_deltas, 0.99);
+  metrics.pitch_accel_command_delta_peak_sps =
+      *std::max_element(pitch_accel_deltas.begin(), pitch_accel_deltas.end());
+  metrics.pitch_target_command_delta_p95_sps = percentile(pitch_target_deltas, 0.95);
+  metrics.pitch_target_command_delta_p99_sps = percentile(pitch_target_deltas, 0.99);
+  metrics.pitch_target_command_delta_peak_sps =
+      *std::max_element(pitch_target_deltas.begin(), pitch_target_deltas.end());
+}
+
 struct ActiveCommandInterval {
   double start_s = 0.0;
   double end_s = 0.0;
@@ -537,6 +651,7 @@ ScenarioMetrics calculate_tuning_metrics(const SimulatorRunResult& result) {
   if (!metrics.settled) metrics.settling_time_s = std::numeric_limits<double>::infinity();
   calculate_release_metrics(result, metrics);
   calculate_active_distance_metrics(result, metrics);
+  calculate_slew_metrics(result, metrics);
   metrics.safe = !result.fell && result.actuator_fault_count == 0 &&
                  result.controller_fault_flags == 0 && std::isfinite(metrics.peak_pitch_deg) &&
                  std::isfinite(metrics.peak_rate_dps);
@@ -623,6 +738,17 @@ std::string tuning_metrics_csv_header() {
          "active_mean_a_i_mps2,active_peak_a_ref_mps2,active_peak_a_p_mps2,"
          "active_peak_a_i_mps2,active_distance_valid,"
          "drive_pitch_peak_deg,outer_limit_fraction,"
+         "slew_active_fraction,requested_applied_error_rms_sps,"
+         "requested_applied_error_p95_sps,requested_applied_error_peak_sps,"
+         "requested_command_delta_p95_sps,requested_command_delta_p99_sps,"
+         "requested_command_delta_peak_sps,pitch_error_command_delta_p95_sps,"
+         "pitch_error_command_delta_p99_sps,pitch_error_command_delta_peak_sps,"
+         "pitch_rate_command_delta_p95_sps,pitch_rate_command_delta_p99_sps,"
+         "pitch_rate_command_delta_peak_sps,pitch_accel_command_delta_p95_sps,"
+         "pitch_accel_command_delta_p99_sps,pitch_accel_command_delta_peak_sps,"
+         "pitch_target_command_delta_p95_sps,pitch_target_command_delta_p99_sps,"
+         "pitch_target_command_delta_peak_sps,integrated_slew_excess_sps,"
+         "longest_slew_limited_interval_s,"
          "growing_oscillation,settled,safe";
 }
 
@@ -659,6 +785,24 @@ std::string tuning_metrics_csv_row(const ScenarioMetrics& m) {
          << m.active_peak_a_ref_mps2 << ',' << m.active_peak_a_p_mps2 << ','
          << m.active_peak_a_i_mps2 << ',' << m.active_distance_valid << ','
          << m.drive_pitch_peak_deg << ',' << m.outer_limit_fraction << ','
+         << m.slew_active_fraction << ',' << m.requested_applied_error_rms_sps << ','
+         << m.requested_applied_error_p95_sps << ',' << m.requested_applied_error_peak_sps << ','
+         << m.requested_command_delta_p95_sps << ',' << m.requested_command_delta_p99_sps << ','
+         << m.requested_command_delta_peak_sps << ','
+         << m.pitch_error_command_delta_p95_sps << ','
+         << m.pitch_error_command_delta_p99_sps << ','
+         << m.pitch_error_command_delta_peak_sps << ','
+         << m.pitch_rate_command_delta_p95_sps << ','
+         << m.pitch_rate_command_delta_p99_sps << ','
+         << m.pitch_rate_command_delta_peak_sps << ','
+         << m.pitch_accel_command_delta_p95_sps << ','
+         << m.pitch_accel_command_delta_p99_sps << ','
+         << m.pitch_accel_command_delta_peak_sps << ','
+         << m.pitch_target_command_delta_p95_sps << ','
+         << m.pitch_target_command_delta_p99_sps << ','
+         << m.pitch_target_command_delta_peak_sps << ','
+         << m.integrated_slew_excess_sps << ','
+         << m.longest_slew_limited_interval_s << ','
          << m.growing_oscillation << ',' << m.settled << ','
          << m.safe;
   return output.str();

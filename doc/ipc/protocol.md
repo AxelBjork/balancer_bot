@@ -11,8 +11,8 @@ This document is generated from the balancer runtime message registry and the re
 It describes the reflected runtime message bus used by the balancer services, including the production
 UDP runtime API and the internal-only messages exchanged between services.
 
-- Documented balancer message count: `16`
-- Protocol hash: `8dd7450eb705367e`
+- Documented balancer message count: `15`
+- Protocol hash: `85a3e7ce1a73a4f4`
 - UDP ingress/egress gateway: `UdpBridge`
 
 ## System Architecture
@@ -53,7 +53,7 @@ The architecture is divided into three logical areas:
 
 ### `ControlService`
 
-> Owns the balancing control pipeline that converts `PhysicsTick`, `ImuData`, and `JoystickCommand`, `PitchAuthorityDiagnosticCommand`, and `MotorFeedback` inputs into wheel-speed targets and streaming controller telemetry.
+> Owns the balancing control pipeline that converts `PhysicsTick`, `ImuData`, `JoystickCommand`, and `MotorFeedback` inputs into wheel-speed targets and streaming controller telemetry.
 >
 > At 100 Hz, completed common-mode steps are corrected for chassis pitch to observe axle velocity and filtered at 10 Hz. A separate configurable velocity-control filter can add a slower velocity-feedback pole without changing that observer. A reversal-aware velocity reference planner produces v_ref and a_ref; velocity feedback then contributes to one shared acceleration authority before conversion to a motion pitch target:
 >
@@ -67,10 +67,10 @@ The architecture is divided into three logical areas:
 >
 > $$ u = K_{pitch}(\theta-\theta_{sp}) + K_{rate}\dot{\theta} + K_{accel}\ddot{\theta} $$
 >
-> The signs above account for the electrical/motor-boundary polarity; they are equivalent to the public negative-feedback form in the controller's internal rate convention. The explicit terms are independently tunable and reported in telemetry. The attitude controller supplies the wheel command before turn allocation. Motor output can initially reduce or reverse to acquire lean. Faults clear dynamic state but preserve bounded COM trim. Telemetry reports the pitch-reference terms, target/post-slew/applied commands, feedback, saturation, and faults. In `actuator_saturation_flags`, bit 0 is left slew limiting and bit 1 is right slew limiting.
+> The signs above account for the electrical/motor-boundary polarity; they are equivalent to the public negative-feedback form in the controller's internal rate convention. The explicit terms are independently tunable and reported in telemetry. The attitude controller supplies a balance correction around nominal drive before final common limiting and turn allocation. Balance can therefore cancel or reverse drive. Motor output can initially reduce or reverse to acquire lean. Faults clear dynamic state but preserve bounded COM trim. Telemetry reports the pitch-reference terms, target/post-slew/applied commands, feedback, saturation, and faults. In `actuator_saturation_flags`, bit 0 is left slew limiting and bit 1 is right slew limiting.
 
 - Publishes: `MotorTargets`, `SystemTelemetry`, `PidConfigStatus`
-- Subscribes: `PhysicsTick`, `ImuData`, `JoystickCommand`, `PitchAuthorityDiagnosticCommand`, `MotorFeedback`, `PidConfigOverride`
+- Subscribes: `PhysicsTick`, `ImuData`, `JoystickCommand`, `MotorFeedback`, `PidConfigOverride`
 
 ### `MotorService`
 
@@ -106,7 +106,7 @@ The architecture is divided into three logical areas:
 >
 > This makes the UDP contract symmetric with the generated Python bindings and keeps the external runtime API aligned with the reflected C++ message definitions. The dashboard receives and logs `SystemTelemetry`; deployment and process control remain separate SSH operations. The simulator scenario service uses a separate UDP endpoint on port `9001` and is not this bridge.
 
-- Publishes: `PhysicsTick`, `ExternalJoystickCommand`, `ImuRawData`, `SimStartRun`, `SimStopRun`, `PidConfigOverride`, `PitchAuthorityDiagnosticCommand`
+- Publishes: `PhysicsTick`, `ExternalJoystickCommand`, `ImuRawData`, `SimStartRun`, `SimStopRun`, `PidConfigOverride`
 - Subscribes: `MotorTargets`, `SystemTelemetry`, `SimulatorTelemetry`, `SimStartAck`, `SimRunDone`, `PidConfigStatus`
 
 ---
@@ -184,7 +184,7 @@ documented messages reuse their message section.
 - Numeric ID: `3003`
 - Payload type: `SystemTelemetryPayload`
 - Python type: `SystemTelemetryPayload`
-- Wire size: `416` bytes
+- Wire size: `392` bytes
 - Published by: `ControlService`
 - Consumed by: `UdpBridge`
 
@@ -251,54 +251,48 @@ documented messages reuse their message section.
 | `trim_learning_allowed` | `bool` | `bool` | 1 | 230 |  |
 | `pitch_target_limit_reason` | `uint8_t` | `int` | 1 | 231 |  |
 | `velocity_control_sps` | `float` | `float` | 4 | 232 |  |
-| `pitch_authority_diagnostic_active` | `bool` | `bool` | 1 | 236 |  |
-| `pitch_authority_diagnostic_target_deg` | `float` | `float` | 4 | 240 |  |
-| `pitch_authority_diagnostic_com_trim_deg` | `float` | `float` | 4 | 244 |  |
-| `pitch_authority_diagnostic_remaining_s` | `float` | `float` | 4 | 248 |  |
-| `pitch_authority_diagnostic_request_id` | `uint32_t` | `int` | 4 | 252 |  |
-| `pitch_authority_diagnostic_command_age_ms` | `float` | `float` | 4 | 256 |  |
-| `completed_step_acceleration_sps2` | `float` | `float` | 4 | 260 |  |
-| `packet_seq` | `uint64_t` | `int` | 8 | 264 |  |
-| `loop_seq` | `uint64_t` | `int` | 8 | 272 |  |
-| `sender_monotonic_ns` | `uint64_t` | `int` | 8 | 280 |  |
-| `user_velocity_mps` | `float` | `float` | 4 | 288 |  |
-| `reference_velocity_mps` | `float` | `float` | 4 | 292 |  |
-| `reference_acceleration_mps2` | `float` | `float` | 4 | 296 |  |
-| `velocity_feedback_estimate_mps` | `float` | `float` | 4 | 300 |  |
-| `velocity_error_mps` | `float` | `float` | 4 | 304 |  |
-| `velocity_feedback_acceleration_mps2` | `float` | `float` | 4 | 308 |  |
-| `acceleration_raw_mps2` | `float` | `float` | 4 | 312 |  |
-| `acceleration_cmd_mps2` | `float` | `float` | 4 | 316 |  |
-| `drive_pitch_target_deg` | `float` | `float` | 4 | 320 |  |
-| `fixed_com_trim_deg` | `float` | `float` | 4 | 324 |  |
-| `velocity_feedback_valid` | `bool` | `bool` | 1 | 328 |  |
-| `velocity_feedback_active` | `bool` | `bool` | 1 | 329 |  |
-| `outer_acceleration_limited` | `bool` | `bool` | 1 | 330 |  |
-| `outer_pitch_target_limited` | `bool` | `bool` | 1 | 331 |  |
-| `active_drive_max_velocity_mps` | `float` | `float` | 4 | 332 |  |
-| `active_drive_max_acceleration_mps2` | `float` | `float` | 4 | 336 |  |
-| `active_drive_max_deceleration_mps2` | `float` | `float` | 4 | 340 |  |
-| `active_velocity_gain_per_s` | `float` | `float` | 4 | 344 |  |
-| `active_velocity_feedback_cutoff_hz` | `float` | `float` | 4 | 348 |  |
-| `active_outer_pitch_limit_deg` | `float` | `float` | 4 | 352 |  |
-| `active_fixed_com_trim_deg` | `float` | `float` | 4 | 356 |  |
-| `adaptive_com_trim_enabled` | `bool` | `bool` | 1 | 360 |  |
-| `legacy_outer_fields_valid` | `bool` | `bool` | 1 | 361 |  |
-| `reference_jerk_mps3` | `float` | `float` | 4 | 364 |  |
-| `velocity_p_acceleration_mps2` | `float` | `float` | 4 | 368 |  |
-| `velocity_i_acceleration_mps2` | `float` | `float` | 4 | 372 |  |
-| `velocity_integral_state_mps_s` | `float` | `float` | 4 | 376 |  |
-| `final_pitch_target_deg` | `float` | `float` | 4 | 380 |  |
-| `active_planner_max_acceleration_mps2` | `float` | `float` | 4 | 384 |  |
-| `active_planner_max_deceleration_mps2` | `float` | `float` | 4 | 388 |  |
-| `active_planner_max_jerk_mps3` | `float` | `float` | 4 | 392 |  |
-| `active_velocity_i_gain_per_s2` | `float` | `float` | 4 | 396 |  |
-| `active_velocity_i_leak_time_s` | `float` | `float` | 4 | 400 |  |
-| `active_velocity_i_acceleration_limit_mps2` | `float` | `float` | 4 | 404 |  |
-| `planner_acceleration_limited` | `bool` | `bool` | 1 | 408 |  |
-| `planner_jerk_limited` | `bool` | `bool` | 1 | 409 |  |
-| `velocity_integral_limited` | `bool` | `bool` | 1 | 410 |  |
-| `velocity_anti_windup_active` | `bool` | `bool` | 1 | 411 |  |
+| `completed_step_acceleration_sps2` | `float` | `float` | 4 | 236 |  |
+| `packet_seq` | `uint64_t` | `int` | 8 | 240 |  |
+| `loop_seq` | `uint64_t` | `int` | 8 | 248 |  |
+| `sender_monotonic_ns` | `uint64_t` | `int` | 8 | 256 |  |
+| `user_velocity_mps` | `float` | `float` | 4 | 264 |  |
+| `reference_velocity_mps` | `float` | `float` | 4 | 268 |  |
+| `reference_acceleration_mps2` | `float` | `float` | 4 | 272 |  |
+| `velocity_feedback_estimate_mps` | `float` | `float` | 4 | 276 |  |
+| `velocity_error_mps` | `float` | `float` | 4 | 280 |  |
+| `velocity_feedback_acceleration_mps2` | `float` | `float` | 4 | 284 |  |
+| `acceleration_raw_mps2` | `float` | `float` | 4 | 288 |  |
+| `acceleration_cmd_mps2` | `float` | `float` | 4 | 292 |  |
+| `drive_pitch_target_deg` | `float` | `float` | 4 | 296 |  |
+| `fixed_com_trim_deg` | `float` | `float` | 4 | 300 |  |
+| `velocity_feedback_valid` | `bool` | `bool` | 1 | 304 |  |
+| `velocity_feedback_active` | `bool` | `bool` | 1 | 305 |  |
+| `outer_acceleration_limited` | `bool` | `bool` | 1 | 306 |  |
+| `outer_pitch_target_limited` | `bool` | `bool` | 1 | 307 |  |
+| `active_drive_max_velocity_mps` | `float` | `float` | 4 | 308 |  |
+| `active_drive_max_acceleration_mps2` | `float` | `float` | 4 | 312 |  |
+| `active_drive_max_deceleration_mps2` | `float` | `float` | 4 | 316 |  |
+| `active_velocity_gain_per_s` | `float` | `float` | 4 | 320 |  |
+| `active_velocity_feedback_cutoff_hz` | `float` | `float` | 4 | 324 |  |
+| `active_outer_pitch_limit_deg` | `float` | `float` | 4 | 328 |  |
+| `active_fixed_com_trim_deg` | `float` | `float` | 4 | 332 |  |
+| `adaptive_com_trim_enabled` | `bool` | `bool` | 1 | 336 |  |
+| `legacy_outer_fields_valid` | `bool` | `bool` | 1 | 337 |  |
+| `reference_jerk_mps3` | `float` | `float` | 4 | 340 |  |
+| `velocity_p_acceleration_mps2` | `float` | `float` | 4 | 344 |  |
+| `velocity_i_acceleration_mps2` | `float` | `float` | 4 | 348 |  |
+| `velocity_integral_state_mps_s` | `float` | `float` | 4 | 352 |  |
+| `final_pitch_target_deg` | `float` | `float` | 4 | 356 |  |
+| `active_planner_max_acceleration_mps2` | `float` | `float` | 4 | 360 |  |
+| `active_planner_max_deceleration_mps2` | `float` | `float` | 4 | 364 |  |
+| `active_planner_max_jerk_mps3` | `float` | `float` | 4 | 368 |  |
+| `active_velocity_i_gain_per_s2` | `float` | `float` | 4 | 372 |  |
+| `active_velocity_i_leak_time_s` | `float` | `float` | 4 | 376 |  |
+| `active_velocity_i_acceleration_limit_mps2` | `float` | `float` | 4 | 380 |  |
+| `planner_acceleration_limited` | `bool` | `bool` | 1 | 384 |  |
+| `planner_jerk_limited` | `bool` | `bool` | 1 | 385 |  |
+| `velocity_integral_limited` | `bool` | `bool` | 1 | 386 |  |
+| `velocity_anti_windup_active` | `bool` | `bool` | 1 | 387 |  |
 
 ### `MsgId::MotorFeedback`
 
@@ -326,7 +320,7 @@ documented messages reuse their message section.
 - Numeric ID: `3005`
 - Payload type: `SimStartRunPayload`
 - Python type: `SimStartRunPayload`
-- Wire size: `1568` bytes
+- Wire size: `1264` bytes
 - Published by: `UdpBridge`
 - Consumed by: _None_
 
@@ -371,9 +365,13 @@ documented messages reuse their message section.
 | `velocity_estimator_scale` | `double` | `float` | 8 | 1144 |  |
 | `velocity_estimator_latency_s` | `double` | `float` | 8 | 1152 |  |
 | `initial_pitch_rate_dps` | `double` | `float` | 8 | 1160 |  |
-| `pitch_authority_segments` | `std::array<SimPitchAuthoritySegmentPayload, 12>` | `list[SimPitchAuthoritySegmentPayload]` | 384 | 1168 |  |
-| `pitch_authority_refresh_dropout_start_s` | `double` | `float` | 8 | 1552 |  |
-| `pitch_authority_refresh_dropout_duration_s` | `double` | `float` | 8 | 1560 |  |
+| `brace_enabled` | `uint8_t` | `int` | 1 | 1168 |  |
+| `brace_reserved0` | `uint8_t` | `int` | 1 | 1169 |  |
+| `brace_reserved1` | `uint16_t` | `int` | 2 | 1170 |  |
+| `brace_pitch_deg` | `double` | `float` | 8 | 1176 |  |
+| `brace_stiffness_nm_per_rad` | `double` | `float` | 8 | 1184 |  |
+| `brace_damping_nm_s_per_rad` | `double` | `float` | 8 | 1192 |  |
+| `brace_rest_events` | `std::array<SimBraceRestEventPayload, 4>` | `list[SimBraceRestEventPayload]` | 64 | 1200 |  |
 
 #### Sub-struct: `SimDisturbancePayload`
 
@@ -412,20 +410,18 @@ documented messages reuse their message section.
 | `forward_end` | `double` | `float` | 8 | 32 |  |
 | `turn_end` | `double` | `float` | 8 | 40 |  |
 
-#### Sub-struct: `SimPitchAuthoritySegmentPayload`
+#### Sub-struct: `SimBraceRestEventPayload`
 
-> One scheduled direct pitch-authority diagnostic segment. The simulator refreshes the short-lived diagnostic command while this segment is active so the production safety and attitude-target path is exercised without enabling drive, velocity, or COM learning.
+> One simulator-only event that places the plant onto a configured physical brace.
 
-- C++ type: `SimPitchAuthoritySegmentPayload`
-- Python type: `SimPitchAuthoritySegmentPayload`
-- Wire size: `32` bytes
+- C++ type: `SimBraceRestEventPayload`
+- Python type: `SimBraceRestEventPayload`
+- Wire size: `16` bytes
 
 | Field | C++ Type | Python Type | Bytes | Offset | Description |
 |---|---|---|---:|---:|---|
 | `start_s` | `double` | `float` | 8 | 0 |  |
-| `duration_s` | `double` | `float` | 8 | 8 |  |
-| `target_deg` | `double` | `float` | 8 | 16 |  |
-| `com_trim_deg` | `double` | `float` | 8 | 24 |  |
+| `pitch_deg` | `double` | `float` | 8 | 8 |  |
 
 ### `MsgId::SimStartAck`
 
@@ -504,48 +500,57 @@ documented messages reuse their message section.
 - Numeric ID: `3010`
 - Payload type: `SimulatorTelemetryPayload`
 - Python type: `SimulatorTelemetryPayload`
-- Wire size: `560` bytes
+- Wire size: `552` bytes
 - Published by: _None_
 - Consumed by: `UdpBridge`
 
 | Field | C++ Type | Python Type | Bytes | Offset | Description |
 |---|---|---|---:|---:|---|
-| `system` | `SystemTelemetryPayload` | `SystemTelemetryPayload` | 416 | 0 |  |
-| `seed` | `uint32_t` | `int` | 4 | 416 |  |
-| `plant_pitch_deg` | `float` | `float` | 4 | 420 |  |
-| `plant_pitch_rate_dps` | `float` | `float` | 4 | 424 |  |
-| `plant_position_m` | `float` | `float` | 4 | 428 |  |
-| `plant_velocity_mps` | `float` | `float` | 4 | 432 |  |
-| `target_wheel_velocity` | `float` | `float` | 4 | 436 |  |
-| `actual_wheel_velocity` | `float` | `float` | 4 | 440 |  |
-| `plant_velocity_error` | `float` | `float` | 4 | 444 |  |
-| `f_cmd` | `float` | `float` | 4 | 448 |  |
-| `f_app` | `float` | `float` | 4 | 452 |  |
-| `external_force_n` | `float` | `float` | 4 | 456 |  |
-| `external_com_bias_rad` | `float` | `float` | 4 | 460 |  |
-| `x_ddot` | `float` | `float` | 4 | 464 |  |
-| `theta_ddot` | `float` | `float` | 4 | 468 |  |
-| `phase_error_steps` | `float` | `float` | 4 | 472 |  |
-| `missed_steps` | `float` | `float` | 4 | 476 |  |
-| `traction_limit_n` | `float` | `float` | 4 | 480 |  |
-| `motor_force_limit_n` | `float` | `float` | 4 | 484 |  |
-| `total_mass_scale` | `float` | `float` | 4 | 488 |  |
-| `pitch_inertia_scale` | `float` | `float` | 4 | 492 |  |
-| `motor_max_force_n` | `float` | `float` | 4 | 496 |  |
-| `motor_no_load_speed_mps` | `float` | `float` | 4 | 500 |  |
-| `motor_velocity_damping` | `float` | `float` | 4 | 504 |  |
-| `motor_tau_s` | `float` | `float` | 4 | 508 |  |
-| `traction_coefficient` | `float` | `float` | 4 | 512 |  |
-| `pitch_damping` | `float` | `float` | 4 | 516 |  |
-| `cart_damping` | `float` | `float` | 4 | 520 |  |
-| `phase_error_limit_steps` | `float` | `float` | 4 | 524 |  |
-| `tire_stiffness_n_per_m` | `float` | `float` | 4 | 528 |  |
-| `tire_damping_n_s_per_m` | `float` | `float` | 4 | 532 |  |
-| `wheel_equivalent_mass_kg` | `float` | `float` | 4 | 536 |  |
-| `force_saturated` | `bool` | `bool` | 1 | 540 |  |
-| `emitted_step_velocity_sps` | `float` | `float` | 4 | 544 |  |
-| `synthetic_estimator_velocity_sps` | `float` | `float` | 4 | 548 |  |
-| `controller_feedback_velocity_sps` | `float` | `float` | 4 | 552 |  |
+| `system` | `SystemTelemetryPayload` | `SystemTelemetryPayload` | 392 | 0 |  |
+| `seed` | `uint32_t` | `int` | 4 | 392 |  |
+| `plant_pitch_deg` | `float` | `float` | 4 | 396 |  |
+| `plant_pitch_rate_dps` | `float` | `float` | 4 | 400 |  |
+| `plant_position_m` | `float` | `float` | 4 | 404 |  |
+| `plant_velocity_mps` | `float` | `float` | 4 | 408 |  |
+| `target_wheel_velocity` | `float` | `float` | 4 | 412 |  |
+| `actual_wheel_velocity` | `float` | `float` | 4 | 416 |  |
+| `plant_velocity_error` | `float` | `float` | 4 | 420 |  |
+| `f_cmd` | `float` | `float` | 4 | 424 |  |
+| `f_app` | `float` | `float` | 4 | 428 |  |
+| `external_force_n` | `float` | `float` | 4 | 432 |  |
+| `external_com_bias_rad` | `float` | `float` | 4 | 436 |  |
+| `x_ddot` | `float` | `float` | 4 | 440 |  |
+| `theta_ddot` | `float` | `float` | 4 | 444 |  |
+| `phase_error_steps` | `float` | `float` | 4 | 448 |  |
+| `missed_steps` | `float` | `float` | 4 | 452 |  |
+| `traction_limit_n` | `float` | `float` | 4 | 456 |  |
+| `motor_force_limit_n` | `float` | `float` | 4 | 460 |  |
+| `total_mass_scale` | `float` | `float` | 4 | 464 |  |
+| `pitch_inertia_scale` | `float` | `float` | 4 | 468 |  |
+| `motor_max_force_n` | `float` | `float` | 4 | 472 |  |
+| `motor_no_load_speed_mps` | `float` | `float` | 4 | 476 |  |
+| `motor_velocity_damping` | `float` | `float` | 4 | 480 |  |
+| `motor_tau_s` | `float` | `float` | 4 | 484 |  |
+| `traction_coefficient` | `float` | `float` | 4 | 488 |  |
+| `pitch_damping` | `float` | `float` | 4 | 492 |  |
+| `cart_damping` | `float` | `float` | 4 | 496 |  |
+| `phase_error_limit_steps` | `float` | `float` | 4 | 500 |  |
+| `tire_stiffness_n_per_m` | `float` | `float` | 4 | 504 |  |
+| `tire_damping_n_s_per_m` | `float` | `float` | 4 | 508 |  |
+| `wheel_equivalent_mass_kg` | `float` | `float` | 4 | 512 |  |
+| `force_saturated` | `bool` | `bool` | 1 | 516 |  |
+| `emitted_step_velocity_sps` | `float` | `float` | 4 | 520 |  |
+| `synthetic_estimator_velocity_sps` | `float` | `float` | 4 | 524 |  |
+| `controller_feedback_velocity_sps` | `float` | `float` | 4 | 528 |  |
+| `brace_enabled` | `bool` | `bool` | 1 | 532 |  |
+| `brace_contact_active` | `bool` | `bool` | 1 | 533 |  |
+| `brace_reserved` | `uint16_t` | `int` | 2 | 534 |  |
+| `brace_pitch_deg` | `float` | `float` | 4 | 536 |  |
+| `brace_penetration_deg` | `float` | `float` | 4 | 540 |  |
+| `brace_torque_nm` | `float` | `float` | 4 | 544 |  |
+| `recovery_command_active` | `bool` | `bool` | 1 | 548 |  |
+| `fallover_inhibited` | `bool` | `bool` | 1 | 549 |  |
+| `recovery_reserved` | `uint16_t` | `int` | 2 | 550 |  |
 
 ### `MsgId::ExternalJoystickCommand`
 
@@ -622,25 +627,6 @@ documented messages reuse their message section.
 | `result_code` | `uint8_t` | `int` | 1 | 5 |  |
 | `reserved` | `uint16_t` | `int` | 2 | 6 |  |
 | `values` | `ConfigPidValuesPayload` | `ConfigPidValuesPayload` | 152 | 8 |  |
-
-### `MsgId::PitchAuthorityDiagnosticCommand`
-
-- Numeric ID: `3014`
-- Payload type: `PitchAuthorityDiagnosticCommandPayload`
-- Python type: `PitchAuthorityDiagnosticCommandPayload`
-- Wire size: `32` bytes
-- Published by: `UdpBridge`
-- Consumed by: `ControlService`
-
-| Field | C++ Type | Python Type | Bytes | Offset | Description |
-|---|---|---|---:|---:|---|
-| `request_id` | `uint32_t` | `int` | 4 | 0 |  |
-| `active` | `uint8_t` | `int` | 1 | 4 |  |
-| `reserved0` | `uint8_t` | `int` | 1 | 5 |  |
-| `reserved1` | `uint16_t` | `int` | 2 | 6 |  |
-| `target_deg` | `double` | `float` | 8 | 8 |  |
-| `com_trim_deg` | `double` | `float` | 8 | 16 |  |
-| `duration_s` | `double` | `float` | 8 | 24 |  |
 
 ---
 

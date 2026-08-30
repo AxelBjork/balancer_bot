@@ -30,6 +30,7 @@ ControlService::ControlService(ipc::MessageBus& bus) : bus_(bus), run_id_(make_r
 
   // Telemetry publishing
   core_.setTelemetrySink([this](const Telemetry& t) {
+    if (simulation_telemetry_sink_) simulation_telemetry_sink_(t);
     ipc::SystemTelemetryPayload p{};
     p.run_id = run_id_;
     p.packet_seq = ++packet_seq_;
@@ -108,17 +109,6 @@ ControlService::ControlService(ipc::MessageBus& bus) : bus_(bus), run_id_(make_r
     p.trim_learning_allowed = t.trim_learning_allowed;
     p.pitch_target_limit_reason = t.pitch_target_limit_reason;
     p.velocity_control_sps = static_cast<float>(t.velocity_control_sps);
-    p.pitch_authority_diagnostic_active = t.pitch_authority_diagnostic_active;
-    p.pitch_authority_diagnostic_target_deg =
-        static_cast<float>(t.pitch_authority_diagnostic_target_deg);
-    p.pitch_authority_diagnostic_com_trim_deg =
-        static_cast<float>(t.pitch_authority_diagnostic_com_trim_deg);
-    p.pitch_authority_diagnostic_remaining_s =
-        static_cast<float>(t.pitch_authority_diagnostic_remaining_s);
-    p.pitch_authority_diagnostic_request_id =
-        t.pitch_authority_diagnostic_request_id;
-    p.pitch_authority_diagnostic_command_age_ms =
-        static_cast<float>(t.pitch_authority_diagnostic_command_age_ms);
     p.completed_step_acceleration_sps2 =
         static_cast<float>(t.completed_step_acceleration_sps2);
     p.user_velocity_mps = static_cast<float>(t.user_velocity_mps);

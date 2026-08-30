@@ -35,11 +35,9 @@ struct SimulatorJoySegment {
   double turn_end = 0.0;
 };
 
-struct SimulatorPitchAuthoritySegment {
+struct SimulatorBraceRestEvent {
   double start_s = 0.0;
-  double duration_s = 0.0;
-  double target_deg = 0.0;
-  double com_trim_deg = 0.0;
+  double pitch_deg = 67.0;
 };
 
 struct SimulatorScenario {
@@ -56,9 +54,9 @@ struct SimulatorScenario {
   std::optional<SimulatorPhysics> physics_override;
   std::vector<SimulatorDisturbance> disturbances;
   std::vector<SimulatorJoySegment> joy_segments;
-  std::vector<SimulatorPitchAuthoritySegment> pitch_authority_segments;
-  double pitch_authority_refresh_dropout_start_s = 0.0;
-  double pitch_authority_refresh_dropout_duration_s = 0.0;
+  // Simulator-only fixture events used to place an already-running plant
+  // back onto the brace for repeated-recovery tests.
+  std::vector<SimulatorBraceRestEvent> brace_rest_events;
   double total_mass_scale = 1.0;
   double pitch_inertia_scale = 1.0;
   double first_mass_moment_scale = 1.0;
@@ -81,6 +79,19 @@ struct SimulatorScenario {
   double velocity_estimator_bias_drift_mps_per_s = 0.0;
   double velocity_estimator_scale = 1.0;
   double velocity_estimator_latency_s = 0.0;
+  // Simulator-only physical support for fallen-state recovery scenarios.
+  // The brace is disabled by default and has no effect on ordinary runs.
+  bool brace_enabled = false;
+  double brace_pitch_deg = 67.0;
+  double brace_stiffness_nm_per_rad = 40.0;
+  double brace_damping_nm_s_per_rad = 0.8;
+  // Offline A/B controls for the two v12 fixes. These are not serialized to
+  // hardware and default to the production path.
+  bool simulation_endpoint_continuity_enabled = true;
+  bool simulation_matched_reference_filter_enabled = true;
+  // Simulator-only A/B hook. Production behavior uses the new drive
+  // feedforward composition by default; this is not serialized to hardware.
+  bool simulation_drive_feedforward_enabled = true;
 };
 
 struct SimulatorTimelineRow {
@@ -104,6 +115,7 @@ struct SimulatorTimelineRow {
   double com_trim_deg = 0.0;
   double user_velocity_mps = 0.0;
   double reference_velocity_mps = 0.0;
+  double velocity_feedback_reference_mps = 0.0;
   double reference_acceleration_mps2 = 0.0;
   double reference_jerk_mps3 = 0.0;
   double velocity_feedback_estimate_mps = 0.0;
@@ -146,6 +158,9 @@ struct SimulatorTimelineRow {
   double pitch_feedback_sps = 0.0;
   double pitch_rate_feedback_sps = 0.0;
   double pitch_accel_feedback_sps = 0.0;
+  double drive_feedforward_sps = 0.0;
+  double balance_correction_sps = 0.0;
+  double common_unclamped_sps = 0.0;
   double velocity_pitch_target_deg = 0.0;
   double balance_unclamped_sps = 0.0;
   double active_pitch_gain_sps_per_rad = 0.0;
@@ -168,12 +183,6 @@ struct SimulatorTimelineRow {
   double trim_trusted = 0.0;
   double trim_learning_allowed = 0.0;
   double trim_quiet_rate_rms_dps = 0.0;
-  double pitch_authority_diagnostic_active = 0.0;
-  double pitch_authority_diagnostic_target_deg = 0.0;
-  double pitch_authority_diagnostic_com_trim_deg = 0.0;
-  double pitch_authority_diagnostic_remaining_s = 0.0;
-  double pitch_authority_diagnostic_request_id = 0.0;
-  double pitch_authority_diagnostic_command_age_ms = 0.0;
   double completed_step_acceleration_sps2 = 0.0;
   double actuator_fault = 0.0;
   double motor_update_dt_ms = 0.0;
@@ -239,6 +248,38 @@ struct SimulatorTimelineRow {
   double stepper_summed_torque_nm = 0.0;
   double stepper_actual_wheel_velocity_mps = 0.0;
   double stepper_chassis_velocity_mps = 0.0;
+  double stepper_wheel_surface_velocity_mps = 0.0;
+  double stepper_wheel_angle_left_rad = 0.0;
+  double stepper_wheel_angle_right_rad = 0.0;
+  double stepper_wheel_angular_velocity_left_rad_s = 0.0;
+  double stepper_wheel_angular_velocity_right_rad_s = 0.0;
+  double stepper_chassis_ground_velocity_mps = 0.0;
+  double stepper_slip_velocity_mps = 0.0;
+  double stepper_accumulated_slip_distance_m = 0.0;
+  double stepper_wheel_acceleration_mps2 = 0.0;
+  double stepper_requested_contact_force_n = 0.0;
+  double stepper_actual_contact_force_n = 0.0;
+  double stepper_traction_limit_n = 0.0;
+  double stepper_traction_utilization = 0.0;
+  double stepper_requested_contact_force_left_n = 0.0;
+  double stepper_requested_contact_force_right_n = 0.0;
+  double stepper_actual_contact_force_left_n = 0.0;
+  double stepper_actual_contact_force_right_n = 0.0;
+  double stepper_traction_limit_left_n = 0.0;
+  double stepper_traction_limit_right_n = 0.0;
+  double stepper_traction_saturated = 0.0;
+  double stepper_contact_sticking = 0.0;
+  double stepper_static_contact_active = 0.0;
+  double stepper_unwrapped_electrical_phase_error_left_rad = 0.0;
+  double stepper_unwrapped_electrical_phase_error_right_rad = 0.0;
+  double stepper_field_rotor_relative_velocity_left_rad_s = 0.0;
+  double stepper_field_rotor_relative_velocity_right_rad_s = 0.0;
+  double stepper_electrical_cycle_index_left = 0.0;
+  double stepper_electrical_cycle_index_right = 0.0;
+  double stepper_accumulated_electrical_cycle_slips_left = 0.0;
+  double stepper_accumulated_electrical_cycle_slips_right = 0.0;
+  double stepper_electrical_cycle_slipped_left = 0.0;
+  double stepper_electrical_cycle_slipped_right = 0.0;
   double stepper_current_ref_a_left = 0.0;
   double stepper_current_ref_b_left = 0.0;
   double stepper_current_a_left = 0.0;
@@ -265,6 +306,13 @@ struct SimulatorTimelineRow {
   double stepper_magnetic_energy_right_j = 0.0;
   double stepper_voltage_saturated_left = 0.0;
   double stepper_voltage_saturated_right = 0.0;
+  double brace_enabled = 0.0;
+  double brace_pitch_deg = 0.0;
+  double brace_contact_active = 0.0;
+  double brace_penetration_deg = 0.0;
+  double brace_torque_nm = 0.0;
+  double recovery_command_active = 0.0;
+  double fallover_inhibited = 0.0;
   uint32_t seed = 0;
   double total_mass_scale = 1.0;
   double pitch_inertia_scale = 1.0;
@@ -319,6 +367,8 @@ std::vector<SimulatorScenario> simulator_scenario_set(std::string_view set_name,
 std::vector<SimulatorScenario> transfer_scenario_set();
 std::vector<SimulatorScenario> tuning_inner_scenario_set(
     PhysicsProfile physics_profile = PhysicsProfile::Realistic);
+std::vector<SimulatorScenario> tuning_root_controller_scenario_set(
+    PhysicsProfile physics_profile = PhysicsProfile::StepperPhaseElectrical);
 std::vector<SimulatorScenario> tuning_authority_scenario_set(
     PhysicsProfile physics_profile = PhysicsProfile::Realistic);
 std::vector<SimulatorScenario> tuning_velocity_scenario_set(

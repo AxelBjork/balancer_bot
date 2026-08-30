@@ -45,23 +45,6 @@ struct DOC_DESC(
 };
 
 struct DOC_DESC(
-    "User-supervised pitch-authority diagnostic command. When active, the controller disables "
-    "drive and velocity pitch contributions, freezes COM learning at the supplied trim, and "
-    "feeds the validated direct target through the normal final pitch-target and safety path. "
-    "Targets are limited to 0, +/-1, +/-2, or +/-4 degrees.")
-    PitchAuthorityDiagnosticCommandPayload {
-  uint32_t request_id;
-  uint8_t active;
-  uint8_t reserved0;
-  uint16_t reserved1;
-  double target_deg;
-  double com_trim_deg;
-  // Active commands expire unless refreshed. A bounded duration keeps a lost
-  // diagnostic client from leaving a direct target selected indefinitely.
-  double duration_s;
-};
-
-struct DOC_DESC(
     "Complete in-memory controller override from the dashboard. This message intentionally excludes the "
     "file schema version and controller enable mode.") PidConfigOverridePayload {
   uint32_t request_id;
@@ -155,15 +138,6 @@ struct DOC_DESC(
   bool trim_learning_allowed;
   uint8_t pitch_target_limit_reason;
   float velocity_control_sps;
-  // Direct pitch-authority diagnostic state appended for future capture
-  // reconstruction. Existing target/contribution fields remain the
-  // production path and are not repurposed for this mode.
-  bool pitch_authority_diagnostic_active;
-  float pitch_authority_diagnostic_target_deg;
-  float pitch_authority_diagnostic_com_trim_deg;
-  float pitch_authority_diagnostic_remaining_s;
-  uint32_t pitch_authority_diagnostic_request_id;
-  float pitch_authority_diagnostic_command_age_ms;
   float completed_step_acceleration_sps2;
   // Source-side timing metadata is appended so the dashboard can distinguish
   // sender pauses, transport loss, and receiver-side bursts. packet_seq is
@@ -258,6 +232,17 @@ struct SimulatorTelemetryPayload {
   float emitted_step_velocity_sps;
   float synthetic_estimator_velocity_sps;
   float controller_feedback_velocity_sps;
+  // Simulator-only fallen-state support diagnostics. These are appended so
+  // existing simulator telemetry offsets remain stable for older readers.
+  bool brace_enabled;
+  bool brace_contact_active;
+  uint16_t brace_reserved;
+  float brace_pitch_deg;
+  float brace_penetration_deg;
+  float brace_torque_nm;
+  bool recovery_command_active;
+  bool fallover_inhibited;
+  uint16_t recovery_reserved;
 };
 
 struct DOC_DESC(
@@ -280,7 +265,7 @@ constexpr uint8_t kSimDisturbanceStep = 0;
 constexpr uint8_t kSimDisturbanceRamp = 1;
 constexpr uint8_t kSimDisturbanceHoldBias = 2;
 inline constexpr std::size_t kMaxSimJoySegments = 4;
-inline constexpr std::size_t kMaxSimPitchAuthoritySegments = 12;
+inline constexpr std::size_t kMaxSimBraceRestEvents = 4;
 
 struct DOC_DESC("One deterministic joystick segment scheduled on the simulator timeline.")
     SimJoySegmentPayload {
@@ -290,6 +275,12 @@ struct DOC_DESC("One deterministic joystick segment scheduled on the simulator t
   double turn;
   double forward_end;
   double turn_end;
+};
+
+struct DOC_DESC("One simulator-only event that places the plant onto a configured physical brace.")
+    SimBraceRestEventPayload {
+  double start_s;
+  double pitch_deg;
 };
 
 struct DOC_DESC(
@@ -307,17 +298,6 @@ struct DOC_DESC(
   double com_bias_rad;
     double force_n_end;
   double com_bias_rad_end;
-};
-
-struct DOC_DESC(
-    "One scheduled direct pitch-authority diagnostic segment. The simulator refreshes the "
-    "short-lived diagnostic command while this segment is active so the production safety and "
-    "attitude-target path is exercised without enabling drive, velocity, or COM learning.")
-    SimPitchAuthoritySegmentPayload {
-  double start_s;
-  double duration_s;
-  double target_deg;
-  double com_trim_deg;
 };
 
 struct DOC_DESC(
@@ -366,12 +346,16 @@ struct DOC_DESC(
   // Initial body rate is simulator-only state used for reproducing measured
   // startup/recovery transients. It has no hardware wire consumer.
   double initial_pitch_rate_dps;
-  std::array<ipc::SimPitchAuthoritySegmentPayload, kMaxSimPitchAuthoritySegments>
-      pitch_authority_segments;
-  // Test-only deterministic refresh dropout used to verify the diagnostic
-  // watchdog. A zero duration leaves the scheduled refresh path intact.
-  double pitch_authority_refresh_dropout_start_s;
-  double pitch_authority_refresh_dropout_duration_s;
+  // Simulator-only fallen-state recovery fixture. The brace is disabled by
+  // default; rest events place an already-running plant on the brace without
+  // modifying estimator/controller state.
+  uint8_t brace_enabled;
+  uint8_t brace_reserved0;
+  uint16_t brace_reserved1;
+  double brace_pitch_deg;
+  double brace_stiffness_nm_per_rad;
+  double brace_damping_nm_s_per_rad;
+  std::array<ipc::SimBraceRestEventPayload, kMaxSimBraceRestEvents> brace_rest_events;
 };
 
 struct DOC_DESC("Immediate simulator reply indicating whether a start request was accepted.")
@@ -427,11 +411,6 @@ struct MessageTraits<MsgId::JoystickCommand> {
 template <>
 struct MessageTraits<MsgId::ExternalJoystickCommand> {
   using Payload = ipc::JoystickCommandPayload;
-};
-
-template <>
-struct MessageTraits<MsgId::PitchAuthorityDiagnosticCommand> {
-  using Payload = ipc::PitchAuthorityDiagnosticCommandPayload;
 };
 
 template <>

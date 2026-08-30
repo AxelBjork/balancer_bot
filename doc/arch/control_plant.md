@@ -233,7 +233,7 @@ v_user = normalized_forward_command * drive_max_velocity_mps
 
 The pure planner maintains `v_ref` and `a_ref`. It brakes through zero before
 changing direction, selects acceleration versus deceleration by speed
-magnitude, and derives `a_ref` from the actual state transition:
+magnitude, and derives both values from a kinematically consistent trajectory:
 
 ```text
 active_target = v_user
@@ -242,13 +242,24 @@ if v_ref and v_user have opposite signs:
 
 slowing_down = abs(active_target) < abs(v_ref)
 limit = slowing_down ? max_deceleration : max_acceleration
-v_ref_new = move_toward(v_ref, active_target, limit * dt)
-a_ref = (v_ref_new - v_ref) / dt
+v_ref_new = jerk_limited_step(v_ref, a_ref, active_target, limit, jerk, dt)
+a_ref = acceleration_at(v_ref_new)
 ```
 
-The planner never overshoots its active target. An optional jerk limit smooths
-the acceleration transition; it does not change the velocity-reference
-semantics.
+The planner never overshoots its active target. When jerk is configured, it
+starts the terminal deceleration early enough that `v_ref` and `a_ref=0`
+arrive together; it does not publish a nonzero acceleration while holding a
+constant target. For the velocity-feedback error, the planner reference is
+passed through the same measurement and control poles as the measured
+completed-step velocity:
+
+```text
+v_feedback_reference = velocity_control_filter(measurement_filter(v_ref))
+e_v = v_feedback_reference - v_feedback
+```
+
+The raw planner `v_ref` and transition acceleration remain available for
+feedforward and diagnostics.
 
 Velocity feedback and motion authority share one acceleration budget:
 

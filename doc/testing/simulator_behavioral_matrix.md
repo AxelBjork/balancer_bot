@@ -24,7 +24,7 @@ retaining their concrete sub-runs. It covers:
 - neutral balance, noise, disturbances, and long-horizon behavior;
 - signed `±1°`, `±2°`, `±4°`, and harder high-angle recovery;
 - drive, stop, reversal, initial velocity, and reduced-authority behavior;
-- pitch authority and estimator/uncertainty cases;
+- attitude-authority and estimator/uncertainty cases;
 - fixed-trim motion and disturbance behavior; adaptive COM acquisition,
   motion-time COM freeze, and maintenance behavior are explicitly deferred;
 - startup and fallover/re-arm boundaries.
@@ -49,7 +49,7 @@ The current host result is:
 The StepperPhaseElectrical xfails are intentional and currently represent:
 
 - noisy push and sustained initial-velocity authority boundaries;
-- direct constant-lean pitch-authority and plant-uncertainty boundaries;
+- constant-lean authority and plant-uncertainty boundaries;
 - the retained 50° estimator-limited startup boundary.
 
 The focused matrix deliberately skips adaptive COM acquisition/maintenance and

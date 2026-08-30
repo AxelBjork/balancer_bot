@@ -35,7 +35,7 @@ digraph IPC {
     ];
     ControlService [
       fillcolor="#0369A1",
-      label=<<B><FONT POINT-SIZE="30">ControlService</FONT></B><BR/><FONT POINT-SIZE="24">Owns the balancing control pipeline<BR/>that converts `PhysicsTick`,<BR/>`ImuData`, and `JoystickCommand`,<BR/>`PitchAuthorityDiagnosticCommand`, and<BR/>`MotorFeedback` inputs into<BR/>wheel-speed targets and streaming<BR/>controller telemetry.</FONT>>
+      label=<<B><FONT POINT-SIZE="30">ControlService</FONT></B><BR/><FONT POINT-SIZE="24">Owns the balancing control pipeline<BR/>that converts `PhysicsTick`,<BR/>`ImuData`, `JoystickCommand`, and<BR/>`MotorFeedback` inputs into<BR/>wheel-speed targets and streaming<BR/>controller telemetry.</FONT>>
     ];
     MotorService [
       fillcolor="#0369A1",
@@ -70,7 +70,7 @@ digraph IPC {
   Client [fillcolor="#047857", label=<<B><FONT POINT-SIZE="34">Client</FONT></B>>];
 
   Client -> TX [label="send", color="#F1F5F9", penwidth=5];
-  TX -> UdpBridge [label="Inbound Traffic:\nExternalJoystickCommand, ImuRawData\nPhysicsTick, PidConfigOverride\nPitchAuthorityDiagnosticCommand", color="#F1F5F9", penwidth=5, fontsize=25];
+  TX -> UdpBridge [label="Inbound Traffic:\nExternalJoystickCommand, ImuRawData\nPhysicsTick, PidConfigOverride", color="#F1F5F9", penwidth=5, fontsize=25];
 
   // Internal Service Logic
   ControlService -> MotorService [label="MotorTargets", style=dashed];
@@ -81,7 +81,7 @@ digraph IPC {
   MotorService -> ControlService [label="MotorFeedback", style=dashed];
   TimeService -> ControlService [label="PhysicsTick", style=dashed];
   TimeService -> MotorService [label="PhysicsTick", style=dashed];
-  UdpBridge -> ControlService [label="PhysicsTick, PidConfigOverride\nPitchAuthorityDiagnosticCommand", style=dashed];
+  UdpBridge -> ControlService [label="PhysicsTick, PidConfigOverride", style=dashed];
   UdpBridge -> ImuService [label="ImuRawData", style=dashed];
   UdpBridge -> InputService [label="ExternalJoystickCommand", style=dashed];
   UdpBridge -> MotorService [label="PhysicsTick", style=dashed];

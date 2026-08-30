@@ -320,6 +320,78 @@ std::vector<SimulatorScenario> tuning_inner_scenario_set(PhysicsProfile physics_
   };
 }
 
+std::vector<SimulatorScenario> tuning_root_controller_scenario_set(
+    PhysicsProfile physics_profile) {
+  // This surface uses the root pid.conf speed and the selected physical
+  // profile defaults. It is intentionally separate from the older 0.12 m/s
+  // proxy tuning scenarios.
+  constexpr double kUserSpeedMps = 0.3;
+  constexpr double kDeadzone = Config::deadzone;
+  const auto command_for_velocity = [](double velocity_mps) {
+    if (std::abs(velocity_mps) <= 1e-12) return 0.0;
+    const double magnitude = std::clamp(std::abs(velocity_mps) / kUserSpeedMps, 0.0, 1.0);
+    return std::copysign(kDeadzone + magnitude * (1.0 - kDeadzone), velocity_mps);
+  };
+  const auto make = [physics_profile](std::string name, double duration_s) {
+    SimulatorScenario scenario;
+    scenario.name = std::move(name);
+    scenario.duration_s = duration_s;
+    scenario.physics_profile = physics_profile;
+    return scenario;
+  };
+  const auto held = [&](std::string name, double target_mps, double duration_s,
+                        double hold_duration_s) {
+    auto scenario = make(std::move(name), duration_s);
+    scenario.joy_segments = {{1.0, hold_duration_s, command_for_velocity(target_mps), 0.0,
+                              command_for_velocity(target_mps), 0.0}};
+    return scenario;
+  };
+
+  auto neutral = make("root_neutral_balance", 10.0);
+  auto pitch_pos_1 = make("root_pitch_pos1", 10.0);
+  pitch_pos_1.initial_pitch_deg = 1.0;
+  auto pitch_neg_1 = make("root_pitch_neg1", 10.0);
+  pitch_neg_1.initial_pitch_deg = -1.0;
+  auto pitch_pos_4 = make("root_pitch_pos4", 12.0);
+  pitch_pos_4.initial_pitch_deg = 4.0;
+  auto pitch_neg_4 = make("root_pitch_neg4", 12.0);
+  pitch_neg_4.initial_pitch_deg = -4.0;
+
+  auto positive_015 = held("root_motion_pos015_hold_release", 0.15, 16.0, 7.0);
+  auto negative_015 = held("root_motion_neg015_hold_release", -0.15, 16.0, 7.0);
+  auto positive_030 = held("root_motion_pos030_hold_release", 0.30, 18.0, 8.0);
+  auto negative_030 = held("root_motion_neg030_hold_release", -0.30, 18.0, 8.0);
+
+  auto reversal = make("root_motion_reversal_pos030_neg030", 25.0);
+  reversal.joy_segments = {
+      {1.0, 8.0, command_for_velocity(0.30), 0.0, command_for_velocity(0.30), 0.0},
+      {9.0, 8.0, command_for_velocity(-0.30), 0.0, command_for_velocity(-0.30), 0.0},
+  };
+  auto reverse_reversal = make("root_motion_reversal_neg030_pos030", 25.0);
+  reverse_reversal.joy_segments = {
+      {1.0, 8.0, command_for_velocity(-0.30), 0.0, command_for_velocity(-0.30), 0.0},
+      {9.0, 8.0, command_for_velocity(0.30), 0.0, command_for_velocity(0.30), 0.0},
+  };
+
+  auto push = make("root_push_recovery", 12.0);
+  push.disturbances.push_back({
+      .kind = SimulatorDisturbanceKind::Step, .start_s = 3.0, .duration_s = 0.15,
+      .force_n = 0.5});
+  auto moving_push = held("root_motion_pos015_push", 0.15, 16.0, 10.0);
+  moving_push.disturbances.push_back({
+      .kind = SimulatorDisturbanceKind::Step, .start_s = 4.0, .duration_s = 0.15,
+      .force_n = 0.5});
+
+  auto initial_velocity = make("root_initial_velocity_pos1500", 18.0);
+  initial_velocity.initial_velocity_mps = 1500.0 * Config::meters_per_step;
+  auto initial_velocity_negative = make("root_initial_velocity_neg1500", 18.0);
+  initial_velocity_negative.initial_velocity_mps = -1500.0 * Config::meters_per_step;
+
+  return {neutral, pitch_pos_1, pitch_neg_1, pitch_pos_4, pitch_neg_4, positive_015,
+          negative_015, positive_030, negative_030, reversal, reverse_reversal, push,
+          moving_push, initial_velocity, initial_velocity_negative};
+}
+
 std::vector<SimulatorScenario> tuning_authority_scenario_set(PhysicsProfile physics_profile) {
   const auto release = [physics_profile](std::string name, double pitch_deg) {
     SimulatorScenario scenario;

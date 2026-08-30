@@ -43,7 +43,6 @@ enum class DOC_DESC("Top-level message type selector. The uint16_t wire value is
   ExternalJoystickCommand = 3011,
   PidConfigOverride = 3012,
   PidConfigStatus = 3013,
-  PitchAuthorityDiagnosticCommand = 3014,
 };
 
 template <MsgId Id>

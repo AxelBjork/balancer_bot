@@ -120,7 +120,19 @@ struct SimulatorConfig {
   // Offline robustness knob for the measured first mass moment H. The default
   // preserves the current nominal plant exactly.
   double first_mass_moment_scale = 1.0;
+  // Isolated actuator-envelope fixture: hold body pitch fixed while allowing
+  // chassis translation and independent wheel/rotor motion. This is not a
+  // production or controller mode.
+  bool stepper_lock_pitch_for_test = false;
   double imu_height_m = 0.070;
+  // Simulator-only physical brace/contact fixture.  When enabled, a one-sided
+  // compliant contact prevents the body from rotating farther outward than
+  // brace_pitch_deg.  It applies only at the brace; it does not add recovery
+  // torque inside the supported region or alter the controller.
+  bool brace_enabled = false;
+  double brace_pitch_deg = 67.0;
+  double brace_stiffness_nm_per_rad = 40.0;
+  double brace_damping_nm_s_per_rad = 0.8;
 };
 
 class BalancerSimulator {
@@ -182,6 +194,41 @@ class BalancerSimulator {
     double stepper_motor_relative_velocity_right_rad_s = 0.0;
     double stepper_actual_wheel_velocity_mps = 0.0;
     double stepper_chassis_velocity_mps = 0.0;
+    // Electrical-profile contact/ground diagnostics.  The legacy wheel field
+    // above remains for compatibility; these fields make the independent
+    // wheel, chassis, and slip velocities explicit.
+    double stepper_wheel_surface_velocity_mps = 0.0;
+    double stepper_wheel_angle_left_rad = 0.0;
+    double stepper_wheel_angle_right_rad = 0.0;
+    double stepper_wheel_angular_velocity_left_rad_s = 0.0;
+    double stepper_wheel_angular_velocity_right_rad_s = 0.0;
+    double stepper_chassis_ground_velocity_mps = 0.0;
+    double stepper_slip_velocity_mps = 0.0;
+    double stepper_accumulated_slip_distance_m = 0.0;
+    double stepper_wheel_acceleration_mps2 = 0.0;
+    double stepper_requested_contact_force_n = 0.0;
+    double stepper_actual_contact_force_n = 0.0;
+    double stepper_traction_limit_n = 0.0;
+    double stepper_traction_utilization = 0.0;
+    double stepper_requested_contact_force_left_n = 0.0;
+    double stepper_requested_contact_force_right_n = 0.0;
+    double stepper_actual_contact_force_left_n = 0.0;
+    double stepper_actual_contact_force_right_n = 0.0;
+    double stepper_traction_limit_left_n = 0.0;
+    double stepper_traction_limit_right_n = 0.0;
+    bool stepper_traction_saturated = false;
+    bool stepper_contact_sticking = false;
+    bool stepper_static_contact_active = false;
+    double stepper_unwrapped_electrical_phase_error_left_rad = 0.0;
+    double stepper_unwrapped_electrical_phase_error_right_rad = 0.0;
+    double stepper_field_rotor_relative_velocity_left_rad_s = 0.0;
+    double stepper_field_rotor_relative_velocity_right_rad_s = 0.0;
+    double stepper_electrical_cycle_index_left = 0.0;
+    double stepper_electrical_cycle_index_right = 0.0;
+    double stepper_accumulated_electrical_cycle_slips_left = 0.0;
+    double stepper_accumulated_electrical_cycle_slips_right = 0.0;
+    bool stepper_electrical_cycle_slipped_left = false;
+    bool stepper_electrical_cycle_slipped_right = false;
     // StepperPhaseElectrical-only diagnostics.
     double stepper_current_ref_a_left = 0.0;
     double stepper_current_ref_b_left = 0.0;
@@ -209,6 +256,11 @@ class BalancerSimulator {
     double stepper_magnetic_energy_right_j = 0.0;
     bool stepper_voltage_saturated_left = false;
     bool stepper_voltage_saturated_right = false;
+    // Simulator-only brace diagnostics.  These are zero/inactive unless the
+    // physical brace fixture is enabled and contacted.
+    bool brace_contact_active = false;
+    double brace_penetration_rad = 0.0;
+    double brace_torque_nm = 0.0;
   };
 
   struct LinearizedUprightModel {
@@ -243,6 +295,9 @@ class BalancerSimulator {
                                              double right_angle_rad);
   void set_external_force_n(double force_n);
   void set_external_com_bias_rad(double com_bias_rad);
+  // Test-only placement used to model a robot already resting against the
+  // brace.  No controller assistance or estimator state is changed.
+  void place_on_brace_for_test(double pitch_deg);
   void step(double dt_s);
   ipc::ImuRawPayload make_raw_imu_payload(uint64_t sim_time_us) const;
 
@@ -281,6 +336,10 @@ class BalancerSimulator {
 
  private:
   void step_once(double dt_s);
+  void step_stepper_electrical_once(double dt_s, double commanded_left_steps,
+                                    double commanded_right_steps,
+                                    double field_velocity_left_mps,
+                                    double field_velocity_right_mps);
   static StepperMassMatrix stepper_mass_matrix_with_cosine(
       const SimulatorPhysics& physics, double cos_pitch, double total_mass_scale,
       double first_mass_moment_scale, double pitch_inertia_scale);
@@ -301,6 +360,17 @@ class BalancerSimulator {
   std::deque<DelayedCommand> command_history_;
   double wheel_position_m_{0.0};
   double wheel_velocity_mps_{0.0};
+  // Relative wheel/rotor motion in metres and seconds.  The corresponding
+  // absolute wheel surface velocity is r * (relative_rate + pitch_rate).
+  double stepper_left_relative_velocity_mps_{0.0};
+  double stepper_right_relative_velocity_mps_{0.0};
+  bool stepper_contact_sticking_{true};
+  bool stepper_have_cycle_indices_{false};
+  std::int64_t stepper_last_cycle_index_left_{0};
+  std::int64_t stepper_last_cycle_index_right_{0};
+  std::uint64_t stepper_accumulated_cycle_slips_left_{0};
+  std::uint64_t stepper_accumulated_cycle_slips_right_{0};
+  double stepper_accumulated_slip_distance_m_{0.0};
   double emitted_steps_avg_{0.0};
   double emitted_left_steps_{0.0};
   double emitted_right_steps_{0.0};

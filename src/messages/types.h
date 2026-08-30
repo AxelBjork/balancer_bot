@@ -71,8 +71,6 @@ enum ComTrimLearningBlockReason : uint8_t {
   ComTrimLearningBlockFault = 10,
   // The velocity loop requested more pitch than its dedicated authority limit.
   ComTrimLearningBlockVelocityAuthorityLimited = 11,
-  // Direct pitch-authority diagnostics explicitly freeze COM learning.
-  ComTrimLearningBlockPitchAuthorityDiagnostic = 12,
 };
 
 // ---- Telemetry (controller diagnostics) ----
@@ -94,6 +92,9 @@ struct Telemetry {
   double com_trim_deg{};
   double user_velocity_mps{};
   double reference_velocity_mps{};
+  // The reference after the same observer/control filtering used for the
+  // measured velocity. reference_velocity_mps remains the raw planner state.
+  double velocity_feedback_reference_mps{};
   double reference_acceleration_mps2{};
   double velocity_feedback_estimate_mps{};
   double velocity_error_mps{};
@@ -152,6 +153,12 @@ struct Telemetry {
   double pitch_feedback_sps{};
   double pitch_rate_feedback_sps{};
   double pitch_accel_feedback_sps{};
+  // In-process diagnostics for the composed common motor request. The
+  // existing wire payload remains append-only until this operating-point
+  // decomposition is needed by hardware telemetry.
+  double drive_feedforward_sps{};
+  double balance_correction_sps{};
+  double common_unclamped_sps{};
   double velocity_pitch_target_deg{};
   double balance_unclamped_sps{};
   double active_pitch_gain_sps_per_rad{};
@@ -176,14 +183,6 @@ struct Telemetry {
   bool trim_trusted{};
   bool trim_learning_allowed{};
   double trim_quiet_rate_rms_dps{};
-  // Future direct pitch-authority captures explicitly identify the diagnostic
-  // target and the frozen trim used to compose the final attitude target.
-  bool pitch_authority_diagnostic_active{};
-  double pitch_authority_diagnostic_target_deg{};
-  double pitch_authority_diagnostic_com_trim_deg{};
-  double pitch_authority_diagnostic_remaining_s{};
-  uint32_t pitch_authority_diagnostic_request_id{};
-  double pitch_authority_diagnostic_command_age_ms{};
   double completed_step_acceleration_sps2{};
 };
 

@@ -34,13 +34,17 @@ class RateControllerCore {
   void pushImu(const ImuSample& s);
   void clearImu();
   void setJoystick(const JoyCmd& j);
-  // Enable a future user-supervised direct pitch-authority measurement. The
-  // target is accepted only for the explicit 0/1/2/4 degree test set, the
-  // supplied COM trim must remain inside the configured trim envelope, and
-  // active requests must carry a strictly increasing nonzero request ID.
-  bool setPitchAuthorityDiagnostic(bool active, double target_deg, double com_trim_deg,
-                                   double duration_s, uint32_t request_id = 0);
   void applyPidConfig();
+  // Simulator-only A/B controls. Defaults use the production path with both
+  // fixes enabled; no production configuration or runtime selector uses it.
+  void setSimulationOuterLoopOptions(bool endpoint_continuity_enabled,
+                                     bool matched_reference_filter_enabled);
+  // Simulator-only A/B hook for the drive-feedforward architecture. Production
+  // always uses the new architecture; this is not a configuration selector.
+  void setSimulationDriveFeedforwardEnabled(bool enabled);
+  // Simulator-only recovery-fixture gate. Production control is always
+  // enabled through its normal startup path.
+  void setSimulationControllerEnabled(bool enabled);
   void setMotorFeedback(int64_t left_actual_steps, int64_t right_actual_steps,
                         bool actuator_fault);
   void setTelemetrySink(std::function<void(const Telemetry&)> cb);

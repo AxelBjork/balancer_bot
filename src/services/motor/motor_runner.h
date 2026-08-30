@@ -742,10 +742,12 @@ class MotorRunner {
     const double max_delta = max_slew_sps_per_s_ * slew_dt_s;
     const double target_left_sps = target_left_sps_.load(std::memory_order_relaxed);
     const double target_right_sps = target_right_sps_.load(std::memory_order_relaxed);
+    double left_max_delta = max_delta;
+    double right_max_delta = max_delta;
     const ChannelUpdate left_update =
-        updateChannelLocked(left_state_, target_left_sps, max_delta);
+        updateChannelLocked(left_state_, target_left_sps, left_max_delta);
     const ChannelUpdate right_update =
-        updateChannelLocked(right_state_, target_right_sps, max_delta);
+        updateChannelLocked(right_state_, target_right_sps, right_max_delta);
     last_command_left_sps_ = signedMagnitude(left_state_);
     last_command_right_sps_ = signedMagnitude(right_state_);
     if (last_command_left_sps_ != target_left_sps) {

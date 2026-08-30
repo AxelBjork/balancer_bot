@@ -83,30 +83,6 @@ ipc::JoystickCommandPayload joystickAt(const SimulatorScenario& scenario, double
   return command;
 }
 
-struct PitchAuthorityValue {
-  bool active{false};
-  double target_deg{0.0};
-  double com_trim_deg{0.0};
-};
-
-PitchAuthorityValue pitchAuthorityAt(const SimulatorScenario& scenario, double time_s) {
-  if (scenario.pitch_authority_segments.empty()) return {};
-
-  // Keep the diagnostic path active for the entire run, including between
-  // pulses, so the ordinary drive/velocity/COM paths cannot contaminate a
-  // direct-target measurement. The first segment chooses the frozen trim;
-  // later segments may explicitly repeat or change it for a documented test.
-  PitchAuthorityValue value{true, 0.0, scenario.pitch_authority_segments.front().com_trim_deg};
-  for (const auto& segment : scenario.pitch_authority_segments) {
-    if (time_s < segment.start_s) continue;
-    value.com_trim_deg = segment.com_trim_deg;
-    if (segment.duration_s > 0.0 && time_s < segment.start_s + segment.duration_s) {
-      value.target_deg = segment.target_deg;
-    }
-  }
-  return value;
-}
-
 double rawPitchDeg(const std::array<double, 3>& acc) {
   return std::atan2(-acc[0], -acc[2]) * 180.0 / kPi;
 }
@@ -181,8 +157,13 @@ struct EngineServices {
   sil::MotorService motor;
   sil::TimeService time;
   EngineObserver observer;
+  Telemetry simulation_telemetry{};
+  bool have_simulation_telemetry{false};
 
-  explicit EngineServices(ipc::MessageBus& bus)
+  explicit EngineServices(ipc::MessageBus& bus, bool endpoint_continuity_enabled,
+                          bool matched_reference_filter_enabled,
+                          bool drive_feedforward_enabled,
+                          bool controller_enabled)
       : left(1, Stepper::Pins{12, 19, 13}, false, false),
         right(1, Stepper::Pins{4, 18, 24}, false, false),
         motors(left, right, Config::control_hz, Config::motor_slew_sps_per_s, &wave_backend),
@@ -190,6 +171,14 @@ struct EngineServices {
         control(bus),
         motor(bus, &motors),
         time(bus, kControlDtS) {
+    control.setSimulationOuterLoopOptions(endpoint_continuity_enabled,
+                                          matched_reference_filter_enabled);
+    control.setSimulationDriveFeedforwardEnabled(drive_feedforward_enabled);
+    control.setSimulationControllerEnabled(controller_enabled);
+    control.setSimulationTelemetrySink([this](const Telemetry& telemetry) {
+      simulation_telemetry = telemetry;
+      have_simulation_telemetry = true;
+    });
   }
 };
 
@@ -216,10 +205,17 @@ struct EnginePipeline {
   double previous_controller_common_steps = 0.0;
   bool have_velocity_sample = false;
 
-  explicit EnginePipeline(double initial_fused_pitch_deg, PhysicsProfile physics_profile)
+  explicit EnginePipeline(double initial_fused_pitch_deg, PhysicsProfile physics_profile,
+                          bool endpoint_continuity_enabled,
+                          bool matched_reference_filter_enabled,
+                          bool drive_feedforward_enabled,
+                          bool controller_enabled)
       : bus(this, &EnginePipeline::dispatch),
         use_chip_gyro_lpf1(physics_profile == PhysicsProfile::StepperPhaseElectrical),
-        services(bus) {
+        services(bus, endpoint_continuity_enabled,
+                 matched_reference_filter_enabled,
+                 drive_feedforward_enabled,
+                 controller_enabled) {
     for (auto& filter : chip_gyro_lpf1) {
       filter.set_cutoff_frequency(static_cast<float>(Config::sampling_hz),
                                   static_cast<float>(Config::imu_gyro_lpf1_bandwidth_hz));
@@ -341,6 +337,7 @@ struct SimulatorEngine::Impl {
   ipc::ImuRawPayload latest_raw{};
   ipc::JoystickCommandPayload external_joystick{};
   bool use_external_joystick{false};
+  bool simulation_controller_enabled{true};
   double plant_time_us{0.0};
   double next_imu_time_us{kImuPeriodUs};
   uint64_t last_imu_timestamp_us{0};
@@ -348,10 +345,20 @@ struct SimulatorEngine::Impl {
   explicit Impl(const SimulatorScenario& input)
       : scenario(input),
         simulator(makeSimulatorConfig(input)),
-        pipeline(input.initial_fused_pitch_deg, input.physics_profile),
+        pipeline(input.initial_fused_pitch_deg, input.physics_profile,
+                 input.simulation_endpoint_continuity_enabled,
+                 input.simulation_matched_reference_filter_enabled,
+                 // DirectActuator is retained as an explicit frozen reference
+                 // fixture. The production/electrical path uses the new
+                 // composition; this profile mapping is not a production
+                 // controller selector.
+                 input.simulation_drive_feedforward_enabled &&
+                     input.physics_profile != PhysicsProfile::DirectActuator,
+                 !input.brace_enabled),
         rng(input.imu_noise_seed),
         accel_noise(0.0, input.accel_noise_std_mps2 > 0.0 ? input.accel_noise_std_mps2 : 1.0),
         gyro_noise(0.0, input.gyro_noise_std_rad_s > 0.0 ? input.gyro_noise_std_rad_s : 1.0) {
+    simulation_controller_enabled = !input.brace_enabled;
     // Publish the ordinary time-zero sensor sample before integrating the
     // plant, matching the hardware filter's first-sample initialization.
     latest_raw = simulator.make_raw_imu_payload(0);
@@ -370,6 +377,10 @@ struct SimulatorEngine::Impl {
     config.total_mass_scale = input.total_mass_scale;
     config.pitch_inertia_scale = input.pitch_inertia_scale;
     config.first_mass_moment_scale = input.first_mass_moment_scale;
+    config.brace_enabled = input.brace_enabled;
+    config.brace_pitch_deg = input.brace_pitch_deg;
+    config.brace_stiffness_nm_per_rad = input.brace_stiffness_nm_per_rad;
+    config.brace_damping_nm_s_per_rad = input.brace_damping_nm_s_per_rad;
     return config;
   }
 
@@ -486,6 +497,15 @@ struct SimulatorEngine::Impl {
         schedule_boundary(disturbance.start_s + disturbance.duration_s);
       }
     }
+    for (const auto& rest : scenario.brace_rest_events) {
+      if (rest.start_s <= 0.0) continue;
+      const uint64_t timestamp_us =
+          static_cast<uint64_t>(std::llround(rest.start_s * 1e6));
+      if (timestamp_us > start_us && timestamp_us <= target_us) {
+        scheduler.schedule(SimulatorEvent{timestamp_us, SimulatorEventKind::BraceRest,
+                                          0, 0, rest.pitch_deg});
+      }
+    }
   }
 
   void scheduleImuSamples(uint64_t start_us, uint64_t target_us) {
@@ -584,6 +604,8 @@ struct SimulatorEngine::Impl {
           }
         } else if (event.kind == SimulatorEventKind::Scenario) {
           setDisturbance(static_cast<double>(scheduler.current_time_us()) / 1e6);
+        } else if (event.kind == SimulatorEventKind::BraceRest) {
+          simulator.place_on_brace_for_test(event.scalar);
         } else if (event.kind == SimulatorEventKind::ImuSample) {
           const uint64_t timestamp_us = scheduler.current_time_us();
           sampleImu(timestamp_us);
@@ -608,27 +630,15 @@ struct SimulatorEngine::Impl {
     const auto joystick = use_external_joystick
                               ? external_joystick
                               : joystickAt(scenario, static_cast<double>(end_us) / 1e6);
-    pipeline.bus.publish<MsgId::JoystickCommand>(joystick);
-    const auto pitch_authority =
-        pitchAuthorityAt(scenario, static_cast<double>(end_us) / 1e6);
-    const double end_time_s = static_cast<double>(end_us) / 1e6;
-    const bool refresh_dropout =
-        scenario.pitch_authority_refresh_dropout_duration_s > 0.0 &&
-        end_time_s >= scenario.pitch_authority_refresh_dropout_start_s &&
-        end_time_s < scenario.pitch_authority_refresh_dropout_start_s +
-                          scenario.pitch_authority_refresh_dropout_duration_s;
-    if (pitch_authority.active && !refresh_dropout) {
-      // Refresh before the deterministic PhysicsTick. The controller's
-      // watchdog is intentionally short-lived so a future hardware client
-      // cannot leave a diagnostic target latched after disconnect.
-      ipc::PitchAuthorityDiagnosticCommandPayload command{};
-      command.request_id = static_cast<uint32_t>(end_us / 1000U);
-      command.active = 1;
-      command.target_deg = pitch_authority.target_deg;
-      command.com_trim_deg = pitch_authority.com_trim_deg;
-      command.duration_s = 0.050;
-      pipeline.bus.publish<MsgId::PitchAuthorityDiagnosticCommand>(command);
+    if (scenario.brace_enabled && !simulation_controller_enabled &&
+        std::abs(joystick.forward) > Config::deadzone) {
+      // The first post-settle recovery command is the explicit handoff from
+      // the inert brace state. The controller then uses its ordinary
+      // fallover/re-arm semantics; this is not a production selector.
+      simulation_controller_enabled = true;
+      pipeline.services.control.setSimulationControllerEnabled(true);
     }
+    pipeline.bus.publish<MsgId::JoystickCommand>(joystick);
     pipeline.services.time.advance(kControlDtS);
     scheduler.controller_sample_processed(end_us);
 
@@ -703,6 +713,50 @@ struct SimulatorEngine::Impl {
     row.stepper_summed_torque_nm = diagnostics.stepper_summed_torque_nm;
     row.stepper_actual_wheel_velocity_mps = diagnostics.stepper_actual_wheel_velocity_mps;
     row.stepper_chassis_velocity_mps = diagnostics.stepper_chassis_velocity_mps;
+    row.stepper_wheel_surface_velocity_mps = diagnostics.stepper_wheel_surface_velocity_mps;
+    row.stepper_wheel_angle_left_rad = diagnostics.stepper_wheel_angle_left_rad;
+    row.stepper_wheel_angle_right_rad = diagnostics.stepper_wheel_angle_right_rad;
+    row.stepper_wheel_angular_velocity_left_rad_s =
+        diagnostics.stepper_wheel_angular_velocity_left_rad_s;
+    row.stepper_wheel_angular_velocity_right_rad_s =
+        diagnostics.stepper_wheel_angular_velocity_right_rad_s;
+    row.stepper_chassis_ground_velocity_mps = diagnostics.stepper_chassis_ground_velocity_mps;
+    row.stepper_slip_velocity_mps = diagnostics.stepper_slip_velocity_mps;
+    row.stepper_accumulated_slip_distance_m = diagnostics.stepper_accumulated_slip_distance_m;
+    row.stepper_wheel_acceleration_mps2 = diagnostics.stepper_wheel_acceleration_mps2;
+    row.stepper_requested_contact_force_n = diagnostics.stepper_requested_contact_force_n;
+    row.stepper_actual_contact_force_n = diagnostics.stepper_actual_contact_force_n;
+    row.stepper_traction_limit_n = diagnostics.stepper_traction_limit_n;
+    row.stepper_traction_utilization = diagnostics.stepper_traction_utilization;
+    row.stepper_requested_contact_force_left_n =
+        diagnostics.stepper_requested_contact_force_left_n;
+    row.stepper_requested_contact_force_right_n =
+        diagnostics.stepper_requested_contact_force_right_n;
+    row.stepper_actual_contact_force_left_n = diagnostics.stepper_actual_contact_force_left_n;
+    row.stepper_actual_contact_force_right_n = diagnostics.stepper_actual_contact_force_right_n;
+    row.stepper_traction_limit_left_n = diagnostics.stepper_traction_limit_left_n;
+    row.stepper_traction_limit_right_n = diagnostics.stepper_traction_limit_right_n;
+    row.stepper_traction_saturated = diagnostics.stepper_traction_saturated ? 1.0 : 0.0;
+    row.stepper_contact_sticking = diagnostics.stepper_contact_sticking ? 1.0 : 0.0;
+    row.stepper_static_contact_active = diagnostics.stepper_static_contact_active ? 1.0 : 0.0;
+    row.stepper_unwrapped_electrical_phase_error_left_rad =
+        diagnostics.stepper_unwrapped_electrical_phase_error_left_rad;
+    row.stepper_unwrapped_electrical_phase_error_right_rad =
+        diagnostics.stepper_unwrapped_electrical_phase_error_right_rad;
+    row.stepper_field_rotor_relative_velocity_left_rad_s =
+        diagnostics.stepper_field_rotor_relative_velocity_left_rad_s;
+    row.stepper_field_rotor_relative_velocity_right_rad_s =
+        diagnostics.stepper_field_rotor_relative_velocity_right_rad_s;
+    row.stepper_electrical_cycle_index_left = diagnostics.stepper_electrical_cycle_index_left;
+    row.stepper_electrical_cycle_index_right = diagnostics.stepper_electrical_cycle_index_right;
+    row.stepper_accumulated_electrical_cycle_slips_left =
+        diagnostics.stepper_accumulated_electrical_cycle_slips_left;
+    row.stepper_accumulated_electrical_cycle_slips_right =
+        diagnostics.stepper_accumulated_electrical_cycle_slips_right;
+    row.stepper_electrical_cycle_slipped_left =
+        diagnostics.stepper_electrical_cycle_slipped_left ? 1.0 : 0.0;
+    row.stepper_electrical_cycle_slipped_right =
+        diagnostics.stepper_electrical_cycle_slipped_right ? 1.0 : 0.0;
     row.stepper_current_ref_a_left = diagnostics.stepper_current_ref_a_left;
     row.stepper_current_ref_b_left = diagnostics.stepper_current_ref_b_left;
     row.stepper_current_a_left = diagnostics.stepper_current_a_left;
@@ -729,6 +783,16 @@ struct SimulatorEngine::Impl {
     row.stepper_magnetic_energy_right_j = diagnostics.stepper_magnetic_energy_right_j;
     row.stepper_voltage_saturated_left = diagnostics.stepper_voltage_saturated_left ? 1.0 : 0.0;
     row.stepper_voltage_saturated_right = diagnostics.stepper_voltage_saturated_right ? 1.0 : 0.0;
+    row.brace_enabled = scenario.brace_enabled ? 1.0 : 0.0;
+    row.brace_pitch_deg = scenario.brace_pitch_deg;
+    row.brace_contact_active = diagnostics.brace_contact_active ? 1.0 : 0.0;
+    row.brace_penetration_deg = diagnostics.brace_penetration_rad * 180.0 / kPi;
+    row.brace_torque_nm = diagnostics.brace_torque_nm;
+    const auto current_joystick =
+        use_external_joystick ? external_joystick
+                              : joystickAt(scenario, row.sim_time_s);
+    row.recovery_command_active =
+        std::abs(current_joystick.forward) > Config::deadzone ? 1.0 : 0.0;
     row.seed = scenario.imu_noise_seed;
     row.total_mass_scale = scenario.total_mass_scale;
     row.pitch_inertia_scale = scenario.pitch_inertia_scale;
@@ -845,23 +909,20 @@ struct SimulatorEngine::Impl {
       row.trim_trusted = telemetry.trim_trusted ? 1.0 : 0.0;
       row.trim_learning_allowed = telemetry.trim_learning_allowed ? 1.0 : 0.0;
       row.trim_quiet_rate_rms_dps = telemetry.trim_quiet_rate_rms_dps;
-      row.pitch_authority_diagnostic_active =
-          telemetry.pitch_authority_diagnostic_active ? 1.0 : 0.0;
-      row.pitch_authority_diagnostic_target_deg =
-          telemetry.pitch_authority_diagnostic_target_deg;
-      row.pitch_authority_diagnostic_com_trim_deg =
-          telemetry.pitch_authority_diagnostic_com_trim_deg;
-      row.pitch_authority_diagnostic_remaining_s =
-          telemetry.pitch_authority_diagnostic_remaining_s;
-      row.pitch_authority_diagnostic_request_id =
-          static_cast<double>(telemetry.pitch_authority_diagnostic_request_id);
-      row.pitch_authority_diagnostic_command_age_ms =
-          telemetry.pitch_authority_diagnostic_command_age_ms;
       row.command_saturated = telemetry.command_saturated;
       row.controller_fault_flags = telemetry.controller_fault_flags;
       row.controller_saturation_flags = telemetry.controller_saturation_flags;
       row.actuator_saturation_flags = telemetry.actuator_saturation_flags;
       row.actuator_fault = telemetry.actuator_fault;
+    }
+    row.fallover_inhibited =
+        (row.controller_fault_flags & ControllerFaultFallover) != 0 ? 1.0 : 0.0;
+    if (pipeline.services.have_simulation_telemetry) {
+      const auto& telemetry = pipeline.services.simulation_telemetry;
+      row.velocity_feedback_reference_mps = telemetry.velocity_feedback_reference_mps;
+      row.drive_feedforward_sps = telemetry.drive_feedforward_sps;
+      row.balance_correction_sps = telemetry.balance_correction_sps;
+      row.common_unclamped_sps = telemetry.common_unclamped_sps;
     }
     return row;
   }

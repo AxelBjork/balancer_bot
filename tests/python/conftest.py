@@ -32,24 +32,12 @@ from tests.python.support.behavioral_diagnostics import artifact_metrics
 # corresponding behavior is recovered.
 _BEHAVIORAL_XFAILS = (
     (
-        "test_cold_start_50deg_estimator_limited_is_tracked_against_70_degree_boundary[direct_actuator-3500-",
-        "DirectActuator retained 50 degree estimator-limited cold start crosses the 70 degree fail-fast boundary before the estimate catches up",
-    ),
-    (
-        "test_cold_start_50deg_estimator_limited_is_tracked_against_70_degree_boundary[stepper_phase_electrical-3500-",
-        "StepperPhaseElectrical retained 50 degree estimator-limited cold start crosses the 70 degree fail-fast boundary before the estimate catches up",
-    ),
-    (
         "test_simple_behavioral_scenarios[stepper_phase_electrical-2001-",
-        "StepperPhaseElectrical noisy push reaches the current electrical authority boundary before recovery",
+        "StepperPhaseElectrical noisy 2 N push reaches the 32 kSPS balance rail and fallover boundary before recovery",
     ),
     (
-        "test_pitch_authority_nominal_uncertainty_matrix_stays_within_reference_envelope[stepper_phase_electrical]",
-        "StepperPhaseElectrical direct authority under plant uncertainty reaches the current phase/safety boundary",
-    ),
-    (
-        "test_outer_transient_authority_saturation_recovers_without_trim_growth[stepper_phase_electrical]",
-        "StepperPhaseElectrical 7000-SPS initial-velocity recovery remains outside the sustained authority envelope",
+        "test_cold_start_braced_recovery_after_estimator_settle[stepper_phase_electrical-3501-",
+        "StepperPhaseElectrical 67 degree braced recovery remains beyond the current recoverable-angle boundary after estimator settling",
     ),
 )
 
@@ -118,9 +106,9 @@ def _matrix_category(test_name: str) -> str:
         ("simple_behavioral", "quiet_balance_and_disturbance"),
         ("hardware_inspired", "hardware_stress"),
         ("full_forward", "drive_stop"),
-        ("pitch_authority", "pitch_authority_diagnostics"),
         ("com_acquisition", "com_acquisition_and_maintenance"),
         ("velocity_recovery", "velocity_recovery"),
+        ("sustained_external_force", "velocity_recovery"),
         ("initial_velocity", "velocity_recovery"),
         ("startup", "startup_recovery"),
         ("estimator", "velocity_estimator_error"),
@@ -148,29 +136,24 @@ def _matrix_artifact_prefixes(test_name: str, scenario_name: str) -> tuple[str, 
         return ("full_forward_then_stop",)
     prefix_map = {
         "test_outer_velocity_recovery_envelope_is_signed_and_authority_aware": ("outer_live_recovery_",),
+        "test_outer_sustained_external_force_settles_lean_and_velocity": ("outer_live_sustained_force_",),
         "test_outer_initial_velocity_recovery_envelope_is_signed": ("outer_live_initial_",),
         "test_outer_hardware_startup_recovery_is_an_authority_audit_regression": ("outer_live_hardware_startup_recovery",),
         "test_outer_startup_combines_pitch_velocity_and_com_errors": ("outer_live_startup_combined_",),
         "test_outer_velocity_estimator_bias_scale_and_latency_remain_bounded": ("outer_live_estimator_",),
         "test_outer_transient_authority_saturation_recovers_without_trim_growth": ("outer_live_sustained_authority",),
         "test_outer_gain_authority_region_is_broad_and_symmetric": ("outer_live_region_",),
-        "test_outer_drive_stop_and_reversal_are_symmetric": ("outer_live_reversal_",),
+        "test_outer_drive_stop_and_reversal_stress_is_symmetric": ("outer_live_reversal_",),
         "test_outer_com_acquisition_is_symmetric_over_useful_bias_range": (
-            "outer_live_com_2_",
-            "outer_live_com_8_",
-            "outer_live_com_20_",
+            "outer_live_com_4_",
         ),
-        "test_outer_com_acquisition_pauses_through_motion_and_maintenance_reacquires": ("outer_live_com_interruptions", "outer_live_com_maintenance"),
         "test_outer_reduced_translation_authority_degrades_without_trim_runaway": ("outer_live_authority_",),
         "test_outer_noise_and_correlated_mass_uncertainty_remain_bounded": ("outer_live_mass_", "outer_live_noise_long"),
         "test_outer_ten_minute_event_run_has_no_growing_late_envelope": ("outer_live_long_events_600s",),
-        "test_pitch_authority_direct_target_sweep_is_end_to_end_and_isolated": ("pitch_authority_direct_sweep",),
-        "test_pitch_authority_watchdog_expires_on_refresh_dropout": ("pitch_authority_watchdog_dropout",),
-        "test_pitch_authority_first_stage_requires_zero_start_and_survives_repeated_pulses": ("pitch_authority_first_pm1_repeated",),
-        "test_pitch_authority_long_holds_and_reversals_have_event_metrics": ("pitch_authority_long_train",),
-        "test_pitch_authority_nominal_uncertainty_matrix_stays_within_reference_envelope": ("pitch_authority_uncertainty_",),
-        "test_pitch_authority_direct_targets_cover_initial_condition_variation": ("pitch_authority_initial_",),
-        "test_cold_start_50deg_estimator_limited_is_tracked_against_70_degree_boundary": ("cold_start_50deg_estimator_limited",),
+        "test_cold_start_braced_recovery_after_estimator_settle": (
+            "cold_start_40deg_shutdown_boundary",
+            "cold_start_67deg_recovery_boundary",
+        ),
     }
     return prefix_map.get(test_name, ())
 
@@ -181,8 +164,6 @@ def _matrix_xfail_group(row: dict) -> str:
     reason = str(row.get("xfail_reason", "")).lower()
     if "cold start" in reason or category == "high_angle_boundary":
         return "high_angle_boundary"
-    if category == "pitch_authority_diagnostics" or "authority/uncertainty" in reason:
-        return "attitude_recovery_frontier"
     if category == "long_horizon" or "long-horizon" in reason:
         return "long_horizon_instability"
     if category == "uncertainty" or "noise" in reason:
