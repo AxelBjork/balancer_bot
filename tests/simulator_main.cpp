@@ -484,23 +484,41 @@ class SimulatorService {
       scenario.com_angle_offset_rad = request.com_angle_offset_rad;
       scenario.total_mass_scale = request.total_mass_scale;
       scenario.pitch_inertia_scale = request.pitch_inertia_scale;
-      // The low-frequency mass variation is a correlated mechanical case:
-      // total mass and first mass moment change together so the COM height is
-      // not accidentally moved by a request that only intended to vary mass.
-      scenario.first_mass_moment_scale = request.total_mass_scale;
-      if (request.has_physics_override != 0) {
+      // Preserve the historical correlated-mass default while allowing a SIL
+      // scenario to describe a physical ballast location independently.
+      scenario.first_mass_moment_scale =
+          std::isfinite(request.first_mass_moment_scale) &&
+                  request.first_mass_moment_scale > 0.0
+              ? request.first_mass_moment_scale
+              : request.total_mass_scale;
+      const bool has_electrical_override =
+          (std::isfinite(request.stepper_current_limit_a) &&
+           request.stepper_current_limit_a > 0.0) ||
+          (std::isfinite(request.stepper_bus_voltage_v) &&
+           request.stepper_bus_voltage_v > 0.0);
+      if (request.has_physics_override != 0 || has_electrical_override) {
         SimulatorPhysics physics = BalancerSimulator::physics_for_profile(profile);
-        if (request.motor_max_force_n > 0.0) physics.max_force_n = request.motor_max_force_n;
-        physics.no_load_speed_mps = request.motor_no_load_speed_mps;
-        physics.motor_velocity_damping = request.motor_velocity_damping;
-        physics.motor_tau_s = request.motor_tau_s;
-        physics.traction_coefficient = request.traction_coefficient;
-        physics.pitch_damping = request.pitch_damping;
-        physics.cart_damping = request.cart_damping;
-        physics.phase_error_limit_steps = request.phase_error_limit_steps;
-        physics.tire_stiffness_n_per_m = request.tire_stiffness_n_per_m;
-        physics.tire_damping_n_s_per_m = request.tire_damping_n_s_per_m;
-        physics.wheel_equivalent_mass_kg = request.wheel_equivalent_mass_kg;
+        if (request.has_physics_override != 0) {
+          if (request.motor_max_force_n > 0.0) physics.max_force_n = request.motor_max_force_n;
+          physics.no_load_speed_mps = request.motor_no_load_speed_mps;
+          physics.motor_velocity_damping = request.motor_velocity_damping;
+          physics.motor_tau_s = request.motor_tau_s;
+          physics.traction_coefficient = request.traction_coefficient;
+          physics.pitch_damping = request.pitch_damping;
+          physics.cart_damping = request.cart_damping;
+          physics.phase_error_limit_steps = request.phase_error_limit_steps;
+          physics.tire_stiffness_n_per_m = request.tire_stiffness_n_per_m;
+          physics.tire_damping_n_s_per_m = request.tire_damping_n_s_per_m;
+          physics.wheel_equivalent_mass_kg = request.wheel_equivalent_mass_kg;
+        }
+        if (std::isfinite(request.stepper_current_limit_a) &&
+            request.stepper_current_limit_a > 0.0) {
+          physics.stepper_current_limit_a = request.stepper_current_limit_a;
+        }
+        if (std::isfinite(request.stepper_bus_voltage_v) &&
+            request.stepper_bus_voltage_v > 0.0) {
+          physics.stepper_bus_voltage_v = request.stepper_bus_voltage_v;
+        }
         scenario.physics_override = physics;
       }
       scenario.imu_pitch_lag_s = request.imu_pitch_lag_s;
@@ -816,6 +834,27 @@ class SimulatorService {
     payload.recovery_command_active = row.recovery_command_active > 0.5;
     payload.fallover_inhibited = row.fallover_inhibited > 0.5;
     payload.recovery_reserved = 0;
+    payload.first_mass_moment_scale =
+        static_cast<float>(run.scenario.first_mass_moment_scale);
+    payload.stepper_current_limit_a =
+        static_cast<float>(physics.stepper_current_limit_a);
+    payload.stepper_bus_voltage_v =
+        static_cast<float>(physics.stepper_bus_voltage_v);
+    payload.stepper_traction_utilization =
+        static_cast<float>(row.stepper_traction_utilization);
+    payload.stepper_accumulated_slip_distance_m =
+        static_cast<float>(row.stepper_accumulated_slip_distance_m);
+    payload.stepper_summed_torque_nm =
+        static_cast<float>(row.stepper_summed_torque_nm);
+    payload.stepper_accumulated_cycle_slips_left = static_cast<uint32_t>(
+        row.stepper_accumulated_electrical_cycle_slips_left);
+    payload.stepper_accumulated_cycle_slips_right = static_cast<uint32_t>(
+        row.stepper_accumulated_electrical_cycle_slips_right);
+    payload.stepper_voltage_saturated_left =
+        row.stepper_voltage_saturated_left > 0.5;
+    payload.stepper_voltage_saturated_right =
+        row.stepper_voltage_saturated_right > 0.5;
+    payload.stepper_recovery_reserved = 0;
     if (!endpoint_.send(active_peer_, MsgId::SimulatorTelemetry, payload,
                         simulator::SimulatorTxKind::Telemetry)) {
       run.telemetry_transport_failure = true;

@@ -89,10 +89,99 @@ integrate an independent rotor-inertia state: the plant supplies the
 constrained mechanical coordinate, while the actuator maintains the separate
 relative phase coordinate.
 
+## Coupled mechanics, support, and traction
+
+The electrical profile retains chassis translation, body pitch, and independent
+left/right wheel coordinates. Contact force is solved from those coupled
+coordinates; motor torque is not converted directly to ground force.
+
+For the symmetric, sticking, disturbance-free case, define
+
+$$
+A=T+\frac{I_{w,L}+I_{w,R}}{r^2},\qquad B=H\cos\theta,
+$$
+
+where each $I_w$ is the absolute wheel/hub/rotor inertia. Eliminating the wheel
+coordinates from the full constrained solve gives the useful audit form
+
+$$
+\begin{aligned}
+A\ddot{x}+B\ddot{\theta} &= \frac{\tau}{r},\\
+B\ddot{x}+J\ddot{\theta} &= Hg\sin\theta-\tau.
+\end{aligned}
+$$
+
+The implementation keeps the two wheel coordinates and two tire forces rather
+than using only this reduction. For side $i$, its no-slip acceleration
+constraint and wheel equation are
+
+$$
+\ddot{x}-r(\ddot{\alpha}_i+\ddot{\theta})=0,
+$$
+
+$$
+\tau_i=rC_i+I_{w,i}(\ddot{\alpha}_i+\ddot{\theta}),
+$$
+
+so $C_i$ is a Lagrange multiplier produced by the coupled solve. The second
+term is why $C_i\ne\tau_i/r$ during wheel acceleration. Chassis damping,
+rolling resistance, pitch damping, brace torque, and external disturbances are
+included in the implementation but omitted from the compact equations above.
+
+Using the horizontal-ground support load defined by the simulator fixture, the
+symmetric traction envelope is
+
+$$
+|C_L|\le\mu\frac{Tg}{2},\qquad
+|C_R|\le\mu\frac{Tg}{2}.
+$$
+
+Requested traction utilization is therefore
+
+$$
+u_{traction}=
+\max\left(
+\frac{|C_L|}{\mu Tg/2},
+\frac{|C_R|}{\mu Tg/2}
+\right).
+$$
+
+If either multiplier exceeds its envelope, that contact force is clipped and
+the independent wheel state is allowed to slip. Simulator analysis should use
+the requested/actual contact-force and traction-utilization diagnostics; it
+must not reconstruct utilization from motor torque divided by wheel radius.
+
+The fixture's support-load convention and brace limitations are documented in
+the [testing strategy](strategy.md#large-angle-brace-recovery).
+
+### Large-angle numerical check
+
+At the nominal settled `67.815°` pitch, the maintained constants give
+$A\approx1.07018\ \mathrm{kg}$, $B\approx0.02338\ \mathrm{kg\,m}$, and a
+gravity moment of approximately `0.56247 Nm`. Setting
+$\ddot{\theta}=0$ in the coupled equations gives
+
+$$
+\tau_{threshold}=\frac{Ar}{B+Ar}Hg\sin\theta
+\approx0.36756\ \mathrm{Nm},
+$$
+
+with $\ddot{x}\approx8.336\ \mathrm{m/s^2}$, total contact force
+$C_L+C_R\approx8.603\ \mathrm{N}$, and required $\mu\approx0.8498$.
+At the full nominal $\mu=1$ boundary, the corresponding values are
+$\tau\approx0.43344\ \mathrm{Nm}$ and
+$\ddot{\theta}\approx-25.272\ \mathrm{rad/s^2}$ (inward).
+
+These values are derived verification anchors, not separately owned plant
+parameters. They are enforced by
+`SimulatorRunnerTest.ElectricalTractionUsesCoupledContactForceAtLargePitch` in
+[`tests/simulator_runner_test.cpp`](../../tests/simulator_runner_test.cpp).
+
 ## Source of truth
 
-The numerical instantiation is deliberately not repeated here. It is defined
-by the production and simulator sources:
+The numerical parameter set is deliberately not maintained as a second table
+here. It is defined by the production and simulator sources; the worked check
+above is only a derived regression anchor:
 
 - `Config` owns production wheel and command kinematics.
 - `HardwareNominal` owns common plant quantities and derived StepperPhase
@@ -141,6 +230,41 @@ This document describes how the actuator realizes a command. It does not
 authorize changing physics or adding a `physics_override` while evaluating
 controller candidates.
 
+### High-angle field command
+
+The configured pitch and pitch-rate gains remain unchanged throughout brace
+recovery. While an explicit held forward/recovery request is active, the
+high-authority StepperPhase path separately feeds forward the known
+chassis-rotation contribution to field velocity. For large disturbances this
+term reaches `-0.88 * steps_per_rad * pitch_rate`; it blends from zero to full
+between `5–10 deg` absolute pitch or `15–30 deg/s` absolute pitch rate,
+whichever is larger. Below both bands, ordinary small-angle feedback is
+unchanged. It is enabled only for configurations with at least a `32,000 SPS`
+field cap; lower-authority reference configurations do not enter this
+high-field regime. This is a coordinate conversion for a field expressed in
+the rotating chassis frame, not pitch-gain scheduling or a recovery
+trajectory. With no held forward request, the feedforward is zero, including
+during ordinary disturbances.
+
+### MotorRunner bounded actuator envelope
+
+The production field trajectory has a `200,000 SPS/s` sustainable slew. A
+per-wheel, actuator-only credit of `250 SPS` permits one initial `300,000
+SPS/s` update at the `400 Hz` motor cadence when a same-direction growth
+request targets at least `32,000 SPS`. Credit refills at `3,000 SPS/s` only
+while the request is already reachable within the sustainable update. Stop
+and reset restore it; a direction transition discards it. Thus scheduler
+delay, an opposite-direction request, or a persistent unreachable request
+cannot accumulate burst authority.
+
+Same-direction field acceleration tapers above `20,000 SPS`, reaching `50,000
+SPS/s` at the `48,000 SPS` ceiling as bus-voltage margin falls. Reducing field
+magnitude above `20,000 SPS` may use up to `350,000 SPS/s`; this is bounded
+high-field braking, not growth or reversal authority. Direction reversals
+still brake to zero under the ordinary `200,000 SPS/s` envelope before the
+DIR transition. All decisions use requested and emitted STEP history only;
+`MotorRunner` has no IMU or controller-state input.
+
 ## Simulation and test boundary
 
 The simulator owns the scheduler, timestamped STEP stream, coupled rigid-body
@@ -153,6 +277,9 @@ balance, signed recovery, disturbance, drive/stop/reversal, authority, COM,
 long-horizon, and startup scenarios. Scenario outputs and retained evidence
 belong in the generated artifacts and source-controlled data manifests, not in
 this normative profile description.
+
+The production high-angle end-to-end and focused in-process regressions are
+defined in the [testing strategy](strategy.md#large-angle-brace-recovery).
 
 ## Required checks
 

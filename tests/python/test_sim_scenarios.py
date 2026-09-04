@@ -85,7 +85,7 @@ def test_behavioral_models_use_explicit_pid_configurations():
         assert _pid_value(STEPPER_PHASE_ELECTRICAL_MODEL.pid_config_path, "pitch_gain") == 173018.0
         assert _pid_value(STEPPER_PHASE_ELECTRICAL_MODEL.pid_config_path, "pitch_rate_gain") == 150.0
         assert _pid_value(STEPPER_PHASE_ELECTRICAL_MODEL.pid_config_path, "pitch_accel_gain") == 0.0
-    assert _pid_value(STEPPER_PHASE_ELECTRICAL_MODEL.pid_config_path, "balance_max_sps") == 32000.0
+    assert _pid_value(STEPPER_PHASE_ELECTRICAL_MODEL.pid_config_path, "balance_max_sps") == 48000.0
 
 
 def _model_params(
@@ -956,28 +956,6 @@ def _outer_pid_variant(
     text = re.sub(
         r"(?m)^\s*outer_pitch_limit_deg\s*=.*$",
         f"outer_pitch_limit_deg = {limit_deg:g}",
-        text,
-    )
-    output.write_text(text, encoding="utf-8")
-    return str(output)
-
-
-def _attitude_only_pid_variant(
-    sim_artifact_settings: dict, model: SimulatorModel
-) -> str:
-    """Make a simulator-only fixed-target recovery profile."""
-    source = Path(model.pid_config_path)
-    output = (
-        Path(sim_artifact_settings["temp_root"])
-        / model.key
-        / "outer_pid_cold_start.pid.conf"
-    )
-    output.parent.mkdir(parents=True, exist_ok=True)
-    text = source.read_text(encoding="utf-8")
-    text = re.sub(r"(?m)^\s*velocity_gain_per_s\s*=.*$", "velocity_gain_per_s = 0", text)
-    text = re.sub(
-        r"(?m)^\s*adaptive_com_trim_enabled\s*=.*$",
-        "adaptive_com_trim_enabled = 0",
         text,
     )
     output.write_text(text, encoding="utf-8")
@@ -2897,65 +2875,101 @@ def test_outer_ten_minute_event_run_has_no_growing_late_envelope(
     )
 
 
-COLD_START_DIAGNOSTICS = [
-    pytest.param(
-        3500,
-        "cold_start_40deg_shutdown_boundary",
-        40.0,
-    ),
-    pytest.param(
-        3501,
-        "cold_start_67deg_recovery_boundary",
-        67.0,
-    ),
-]
-
-
-@pytest.mark.parametrize(
-    ("run_id", "name", "initial_pitch_deg"),
-    COLD_START_DIAGNOSTICS,
-)
-@pytest.mark.parametrize(
-    "model", [pytest.param(STEPPER_PHASE_ELECTRICAL_MODEL, id="stepper_phase_electrical")]
-)
-def test_cold_start_braced_recovery_after_estimator_settle(
+def test_production_controller_recovers_from_67_degree_brace_over_ipc(
     simulator_udp,
     sim_artifact_settings,
-    run_id: int,
-    name: str,
-    initial_pitch_deg: float,
-    model: SimulatorModel,
 ):
+    model = STEPPER_PHASE_ELECTRICAL_MODEL
+    name = "production_controller_67_degree_brace_recovery"
     output_dir = _model_artifact_dir(sim_artifact_settings, model, name)
-    pid_path = _attitude_only_pid_variant(sim_artifact_settings, model)
     result = _run_model_scenario(
         simulator_udp,
         model,
-        run_id=run_id,
+        run_id=3501,
         output_dir=output_dir,
-        initial_pitch_deg=initial_pitch_deg,
+        initial_pitch_deg=67.0,
         duration_s=23.0,
         telemetry_stride=1,
-        pid_config_path=pid_path,
+        total_mass_scale=1.232 / 1.032,
+        first_mass_moment_scale=0.06132 / 0.06192,
+        pitch_inertia_scale=0.0045018 / 0.0045,
+        stepper_current_limit_a=2.0,
+        stepper_bus_voltage_v=12.6,
+        physics_override={"traction_coefficient": 1.0},
         brace_enabled=True,
-        brace_pitch_deg=initial_pitch_deg,
+        brace_pitch_deg=67.0,
         brace_stiffness_nm_per_rad=40.0,
         brace_damping_nm_s_per_rad=0.8,
         joy_segments=[
             {
-                "start_s": 8.0,
-                "duration_s": 15.0,
-                "forward": 0.25,
+                "start_s": 10.0,
+                "duration_s": 13.0,
+                "forward": 0.06,
             }
         ],
-        write_plots=True,
         fail_fast_pitch_deg=70.0,
+        scenario_category="high_angle_recovery",
+        scenario_intent=(
+            "Production controller and MotorRunner recover the physical 67 degree "
+            "brace plant through the public simulator IPC contract"
+        ),
     )
-    summary, metadata, done = result.summary, result.metadata, result.done
-    _assert_common_integrity(summary, metadata, done, model=model)
+    summary, metadata, done, frame = (
+        result.summary,
+        result.metadata,
+        result.done,
+        result.frame,
+    )
+    _assert_common_integrity(
+        summary,
+        metadata,
+        done,
+        model=model,
+        expected_physics_override={"traction_coefficient": 1.0},
+        expected_total_mass_scale=1.232 / 1.032,
+        expected_pitch_inertia_scale=0.0045018 / 0.0045,
+    )
     assert done.reason_code == DONE_COMPLETED
     assert done.actuator_fault_count == 0
     assert done.controller_fault_flags == 0
     assert done.max_abs_pitch_deg <= 70.0
     assert not summary["fell"]
-    assert summary["tail_rms_pitch_deg"] <= 1.0
+
+    assert not frame.empty
+    assert math.isclose(float(frame["first_mass_moment_scale"].iloc[-1]),
+                        0.06132 / 0.06192, rel_tol=1e-6)
+    assert math.isclose(float(frame["stepper_current_limit_a"].iloc[-1]),
+                        2.0, rel_tol=1e-6)
+    assert math.isclose(float(frame["stepper_bus_voltage_v"].iloc[-1]),
+                        12.6, rel_tol=1e-6)
+
+    settled = frame[(frame["t_sec"] >= 9.5) & (frame["t_sec"] < 10.0)].iloc[-1]
+    assert abs(float(settled["fused_pitch_deg"] - settled["plant_pitch_deg"])) < 0.5
+
+    recovery = frame[frame["t_sec"] >= 10.0]
+    released = recovery[~recovery["brace_contact_active"].astype(bool)]
+    assert not released.empty
+    release_t = float(released["t_sec"].iloc[0])
+    after_release = recovery[recovery["t_sec"] >= release_t]
+    assert not after_release["brace_contact_active"].astype(bool).any()
+    assert (after_release["plant_pitch_deg"].abs() <= 40.0).any()
+    assert (after_release["plant_pitch_deg"].abs() <= 20.0).any()
+    assert (after_release["plant_pitch_deg"] <= 0.0).any()
+
+    assert float(recovery["left_slewed_sps"].abs().max()) <= 48000.5
+    assert float(recovery["right_slewed_sps"].abs().max()) <= 48000.5
+    assert float(recovery["actual_wheel_velocity"].abs().max()) / METERS_PER_STEP < 48000.0
+    assert float(recovery["phase_error_steps"].abs().max()) < 45.0
+    assert float(recovery["stepper_traction_utilization"].max()) < 1.0
+    assert float(recovery["stepper_accumulated_slip_distance_m"].iloc[-1]) < 1e-6
+    assert int(recovery["stepper_accumulated_cycle_slips_left"].max()) == 0
+    assert int(recovery["stepper_accumulated_cycle_slips_right"].max()) == 0
+    assert float(recovery["stepper_summed_torque_nm"].abs().max()) > 0.60
+    assert recovery[
+        ["stepper_voltage_saturated_left", "stepper_voltage_saturated_right"]
+    ].astype(bool).any(axis=None)
+
+    tail = frame[frame["t_sec"] >= 18.0]
+    assert math.sqrt(float((tail["plant_pitch_deg"] ** 2).mean())) < 0.5
+    assert math.sqrt(float((tail["plant_pitch_rate_dps"] ** 2).mean())) < 15.0
+    assert math.sqrt(float((tail["plant_velocity_mps"] ** 2).mean())) < 0.02

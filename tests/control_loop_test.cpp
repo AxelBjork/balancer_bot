@@ -946,15 +946,15 @@ TEST(RateControllerCoreGainAuditTest, PitchGainIsConnectedAndScalesOutput) {
   EXPECT_NEAR(high_p, 2.0 * low_p, std::abs(low_p) * 0.05);
 }
 
-TEST(RateControllerCoreGainAuditTest, PitchRateGainIsConnectedAndScalesDamping) {
+TEST(RateControllerCoreGainAuditTest, PitchRateGainAdjustsKinematicRateFeedback) {
   ScopedConfigPidRestore restore;
   set_zeroed_gain_audit_config();
   ConfigPid::values.pitch_rate_gain = 100.0;
   const double low_damping = run_fresh_core_once(0.0, 0.2);
   ConfigPid::values.pitch_rate_gain = 200.0;
   const double high_damping = run_fresh_core_once(0.0, 0.2);
-  EXPECT_GT(low_damping, 0.0);
-  EXPECT_NEAR(high_damping, 2.0 * low_damping, std::abs(low_damping) * 0.05);
+  EXPECT_GT(high_damping, low_damping);
+  EXPECT_NEAR(high_damping - low_damping, 100.0 * 0.2, 1e-9);
 }
 
 TEST(RateControllerCoreGainAuditTest, PitchAccelerationGainConsumesImuPitchAcceleration) {
@@ -985,15 +985,17 @@ TEST(RateControllerCoreStateFeedbackTest, IndependentTermsUseRobotForwardPolarit
 
   ASSERT_FALSE(h.telemetry().empty());
   const auto& t = h.telemetry().back();
+  const double active_rate_gain = 200.0;
   EXPECT_NEAR(t.pitch_feedback_sps, 100.0, 1e-9);
-  EXPECT_NEAR(t.pitch_rate_feedback_sps, 40.0, 1e-9);
+  EXPECT_NEAR(t.pitch_rate_feedback_sps, active_rate_gain * 0.20, 1e-9);
   EXPECT_NEAR(t.pitch_accel_feedback_sps, 1.2, 1e-9);
-  EXPECT_NEAR(t.balance_unclamped_sps, 141.2, 1e-9);
-  EXPECT_NEAR(t.u_sps, 141.2, 1e-9);
+  const double expected = 100.0 + active_rate_gain * 0.20 + 1.2;
+  EXPECT_NEAR(t.balance_unclamped_sps, expected, 1e-9);
+  EXPECT_NEAR(t.u_sps, expected, 1e-9);
   EXPECT_NEAR(h.runner().lastLeft(), h.runner().lastRight(), 1e-9);
-  EXPECT_NEAR(h.runner().lastLeft(), 141.2, 1e-9);
+  EXPECT_NEAR(h.runner().lastLeft(), expected, 1e-9);
   EXPECT_DOUBLE_EQ(t.active_pitch_gain_sps_per_rad, 1000.0);
-  EXPECT_DOUBLE_EQ(t.active_pitch_rate_gain_sps_per_rad_s, 200.0);
+  EXPECT_NEAR(t.active_pitch_rate_gain_sps_per_rad_s, active_rate_gain, 1e-12);
   EXPECT_DOUBLE_EQ(t.active_pitch_accel_gain_sps_per_rad_s2, 4.0);
 }
 
@@ -1011,15 +1013,40 @@ TEST(RateControllerCoreStateFeedbackTest, GainsConsumeRadiansAndRadiansPerSecond
   h.tick(1.0 / 400.0, 2500);
   ASSERT_FALSE(h.telemetry().empty());
   const auto& first = h.telemetry().back();
-  const double expected = (6000.0 + 350.0) * M_PI / 180.0;
+  const double active_rate_gain = 350.0;
+  const double expected = (6000.0 + active_rate_gain) * M_PI / 180.0;
   EXPECT_NEAR(first.pitch_feedback_sps, 6000.0 * M_PI / 180.0, 1e-12);
-  EXPECT_NEAR(first.pitch_rate_feedback_sps, 350.0 * M_PI / 180.0, 1e-12);
+  EXPECT_NEAR(first.pitch_rate_feedback_sps,
+              active_rate_gain * M_PI / 180.0, 1e-12);
   EXPECT_NEAR(first.u_sps, expected, 1e-12);
 
   h.setImu(pitch_rad, rate_rad_s, 7500);
   h.tick(1.0 / 200.0, 7500);
   ASSERT_FALSE(h.telemetry().empty());
   EXPECT_NEAR(h.telemetry().back().u_sps, expected, 1e-12);
+}
+
+TEST(RateControllerCoreStateFeedbackTest,
+     HighAuthorityStepperTuneFeedsChassisRotationIntoFieldRate) {
+  ScopedConfigPidRestore restore;
+  set_zeroed_gain_audit_config();
+  ConfigPid::values.pitch_gain = 173018.0;
+  ConfigPid::values.pitch_rate_gain = 150.0;
+  ConfigPid::values.balance_max_sps = 48000.0;
+
+  RateControllerHarness h;
+  h.setJoystick(0.10, 0.0);
+  h.setImu(0.0, 0.0, 2500);
+  h.tick(1.0 / 400.0, 2500);
+  h.setImu(12.0 * M_PI / 180.0, 0.20, 5000);
+  h.tick(1.0 / 400.0, 5000);
+
+  const double active_rate_gain =
+      150.0 - 0.88 * Config::steps_per_rev / (2.0 * M_PI);
+  ASSERT_FALSE(h.telemetry().empty());
+  const auto& t = h.telemetry().back();
+  EXPECT_NEAR(t.active_pitch_rate_gain_sps_per_rad_s, active_rate_gain, 1e-12);
+  EXPECT_NEAR(t.pitch_rate_feedback_sps, active_rate_gain * 0.20, 1e-9);
 }
 
 TEST(RateControllerCoreStateFeedbackTest, StateFeedbackDoesNotDependOnNestedPidProducts) {
@@ -1858,11 +1885,52 @@ TEST(RateControllerCoreTest, HeldCommandUsesInternalFalloverRecoveryPath) {
   h.tick(1.0 / 400.0, 10000);
   EXPECT_NE(h.telemetry().back().controller_fault_flags & ControllerFaultFallover, 0u);
 
+  // A fresh high-angle rearm is limited to the known fallen geometry; the
+  // 40--60 degree band is continuation authority for an already-armed catch.
   h.setJoystick(0.10, 0.0);
   h.setImu(55.0 * M_PI / 180.0, 0.0, 12500);
   h.tick(1.0 / 400.0, 12500);
+  EXPECT_NE(h.telemetry().back().controller_fault_flags & ControllerFaultFallover, 0u);
+
+  h.setImu(67.0 * M_PI / 180.0, 0.0, 15000);
+  h.tick(1.0 / 400.0, 15000);
   EXPECT_EQ(h.telemetry().back().controller_fault_flags & ControllerFaultFallover, 0u);
   EXPECT_GT(h.runner().lastLeft(), 0.0);
+}
+
+TEST(RateControllerCoreTest, HighPitchRecoveryRequiresCorrectCommandDirectionAndInwardContinuation) {
+  ScopedConfigPidRestore restore;
+  set_zeroed_gain_audit_config();
+  ConfigPid::values.pitch_gain = 10000.0;
+
+  RateControllerHarness wrong_direction;
+  wrong_direction.setJoystick(-0.25, 0.0);
+  wrong_direction.setImu(67.0 * M_PI / 180.0, 0.0, 2500);
+  wrong_direction.tick(1.0 / 400.0, 2500);
+  EXPECT_NE(wrong_direction.telemetry().back().controller_fault_flags &
+                ControllerFaultFallover,
+            0u);
+
+  RateControllerHarness recovering;
+  recovering.setJoystick(0.25, 0.0);
+  recovering.setImu(67.0 * M_PI / 180.0, 0.0, 2500);
+  recovering.tick(1.0 / 400.0, 2500);
+  ASSERT_EQ(recovering.telemetry().back().controller_fault_flags &
+                ControllerFaultFallover,
+            0u);
+
+  // Inward motion at 50 degrees retains authority through the ordinary
+  // shutdown region.  A clear outward return at the same angle inhibits it.
+  recovering.setImu(50.0 * M_PI / 180.0, -20.0 * M_PI / 180.0, 5000);
+  recovering.tick(1.0 / 400.0, 5000);
+  EXPECT_EQ(recovering.telemetry().back().controller_fault_flags &
+                ControllerFaultFallover,
+            0u);
+  recovering.setImu(50.0 * M_PI / 180.0, 10.0 * M_PI / 180.0, 7500);
+  recovering.tick(1.0 / 400.0, 7500);
+  EXPECT_NE(recovering.telemetry().back().controller_fault_flags &
+                ControllerFaultFallover,
+            0u);
 }
 
 TEST(RateControllerCoreTest, ImuAndActuatorFaultsOverrideFalloverRecoveryCommand) {

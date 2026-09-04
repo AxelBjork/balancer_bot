@@ -612,10 +612,20 @@ void BalancerSimulator::step_stepper_electrical_once(double dt_s, double command
                                 physics_.pitch_damping * Q_dot +
                                 external_force_n_ * com_height_m * cQ + brace_torque_nm;
 
-  const double body_normal_force =
-      std::max(0.0, total_mass * std::max(0.0, physics_.gravity_mps2) * cQ);
+  // The wheel contact is with a horizontal ground plane.  In this reduced
+  // plant there is no vertical coordinate or brace reaction-force solve, so
+  // the wheel-load proxy is the full gravitational support load.  Projecting
+  // it by cos(pitch) incorrectly treats body pitch as if the robot were on an
+  // inclined plane; at the 67-degree brace that removed about 62% of the
+  // available tire traction.  The compliant brace below is represented only
+  // as a pitch torque, so it does not subtract a modeled vertical reaction
+  // from this load.  If a force-resolved brace is added later, replace this
+  // with the solved wheel vertical reaction (Mg minus the brace's vertical
+  // reaction), not another pitch projection.
+  const double wheel_normal_force =
+      total_mass * std::max(0.0, physics_.gravity_mps2);
   const double traction_limit_each =
-      std::max(0.0, physics_.traction_coefficient) * body_normal_force * 0.5;
+      std::max(0.0, physics_.traction_coefficient) * wheel_normal_force * 0.5;
   const double rolling_force_each =
       std::max(0.0, physics_.rolling_resistance_force_n) * 0.5;
 

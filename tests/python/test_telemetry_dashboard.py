@@ -83,7 +83,7 @@ def telemetry_packet(**changes: float | int) -> bytes:
 
 def test_generated_telemetry_wire_sizes_and_round_trip():
     assert SystemTelemetryPayload.WIRE_SIZE == 392
-    assert SimulatorTelemetryPayload.WIRE_SIZE == 552
+    assert SimulatorTelemetryPayload.WIRE_SIZE == 592
     sample = dataclasses.replace(
         SystemTelemetryPayload.unpack(bytes(SystemTelemetryPayload.WIRE_SIZE)),
         run_id=17,

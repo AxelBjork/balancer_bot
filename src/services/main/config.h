@@ -69,6 +69,23 @@ struct Config {
   // Pulse frequency can change much faster than the wheel itself; the phase-
   // error/missed-step plant supplies the physical acceleration limit.
   static constexpr double motor_slew_sps_per_s = 200000.0;
+  // High field-speed requests may briefly spend a bounded actuator-only slew
+  // budget. At 400 Hz, 250 SPS of credit permits one 300 kSPS/s update before
+  // returning to the sustainable envelope. Credit is used
+  // only for same-direction magnitude growth above 32 kSPS and recovers only
+  // while the requested command is already reachable at the sustainable rate.
+  static constexpr double motor_burst_slew_sps_per_s = 350000.0;
+  static constexpr double motor_slew_burst_credit_sps = 250.0;
+  static constexpr double motor_slew_burst_min_target_sps = 32000.0;
+  static constexpr double motor_slew_burst_recovery_sps_per_s = 3000.0;
+  // Same-direction field acceleration tapers above 20 kSPS as back-EMF uses
+  // more of the available bus voltage. Same-direction magnitude braking in
+  // this high-field interval gets a separate bounded allowance; a direction
+  // reversal still uses the sustainable envelope and must pass through zero.
+  static constexpr double motor_slew_taper_start_sps = 20000.0;
+  static constexpr double motor_slew_taper_end_sps = 48000.0;
+  static constexpr double motor_slew_at_taper_end_sps_per_s = 50000.0;
+  static constexpr double motor_high_field_braking_slew_sps_per_s = 350000.0;
 
   // Motion authority is deliberately separate from fall protection.
   static constexpr double max_motion_pitch_setpoint_deg = 45.0;

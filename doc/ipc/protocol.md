@@ -12,7 +12,7 @@ It describes the reflected runtime message bus used by the balancer services, in
 UDP runtime API and the internal-only messages exchanged between services.
 
 - Documented balancer message count: `15`
-- Protocol hash: `85a3e7ce1a73a4f4`
+- Protocol hash: `85ce2b2c9452f623`
 - UDP ingress/egress gateway: `UdpBridge`
 
 ## System Architecture
@@ -320,7 +320,7 @@ documented messages reuse their message section.
 - Numeric ID: `3005`
 - Payload type: `SimStartRunPayload`
 - Python type: `SimStartRunPayload`
-- Wire size: `1264` bytes
+- Wire size: `1288` bytes
 - Published by: `UdpBridge`
 - Consumed by: _None_
 
@@ -372,6 +372,9 @@ documented messages reuse their message section.
 | `brace_stiffness_nm_per_rad` | `double` | `float` | 8 | 1184 |  |
 | `brace_damping_nm_s_per_rad` | `double` | `float` | 8 | 1192 |  |
 | `brace_rest_events` | `std::array<SimBraceRestEventPayload, 4>` | `list[SimBraceRestEventPayload]` | 64 | 1200 |  |
+| `first_mass_moment_scale` | `double` | `float` | 8 | 1264 |  |
+| `stepper_current_limit_a` | `double` | `float` | 8 | 1272 |  |
+| `stepper_bus_voltage_v` | `double` | `float` | 8 | 1280 |  |
 
 #### Sub-struct: `SimDisturbancePayload`
 
@@ -500,7 +503,7 @@ documented messages reuse their message section.
 - Numeric ID: `3010`
 - Payload type: `SimulatorTelemetryPayload`
 - Python type: `SimulatorTelemetryPayload`
-- Wire size: `552` bytes
+- Wire size: `592` bytes
 - Published by: _None_
 - Consumed by: `UdpBridge`
 
@@ -551,6 +554,17 @@ documented messages reuse their message section.
 | `recovery_command_active` | `bool` | `bool` | 1 | 548 |  |
 | `fallover_inhibited` | `bool` | `bool` | 1 | 549 |  |
 | `recovery_reserved` | `uint16_t` | `int` | 2 | 550 |  |
+| `first_mass_moment_scale` | `float` | `float` | 4 | 552 |  |
+| `stepper_current_limit_a` | `float` | `float` | 4 | 556 |  |
+| `stepper_bus_voltage_v` | `float` | `float` | 4 | 560 |  |
+| `stepper_traction_utilization` | `float` | `float` | 4 | 564 |  |
+| `stepper_accumulated_slip_distance_m` | `float` | `float` | 4 | 568 |  |
+| `stepper_summed_torque_nm` | `float` | `float` | 4 | 572 |  |
+| `stepper_accumulated_cycle_slips_left` | `uint32_t` | `int` | 4 | 576 |  |
+| `stepper_accumulated_cycle_slips_right` | `uint32_t` | `int` | 4 | 580 |  |
+| `stepper_voltage_saturated_left` | `bool` | `bool` | 1 | 584 |  |
+| `stepper_voltage_saturated_right` | `bool` | `bool` | 1 | 585 |  |
+| `stepper_recovery_reserved` | `uint16_t` | `int` | 2 | 586 |  |
 
 ### `MsgId::ExternalJoystickCommand`
 

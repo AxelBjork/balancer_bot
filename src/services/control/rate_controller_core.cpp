@@ -20,6 +20,15 @@ constexpr double kMaxImuAgeS = 0.030;
 constexpr double kMaxImuFutureS = 0.002;
 constexpr double kFalloverRearmPitchRad = 10.0 * M_PI / 180.0;
 constexpr double kFalloverRearmRateRadS = 30.0 * M_PI / 180.0;
+constexpr double kFallenRecoveryStartMinPitchRad = 60.0 * M_PI / 180.0;
+constexpr double kFallenRecoveryStartMaxPitchRad = 70.0 * M_PI / 180.0;
+constexpr double kFallenRecoveryOutwardRateToleranceRadS = 5.0 * M_PI / 180.0;
+constexpr double kChassisRotationFeedforwardMinFieldCapSps = 32000.0;
+constexpr double kPitchRateKinematicFeedforwardFraction = 0.88;
+constexpr double kRateCorrectionBlendStartPitchRad = 5.0 * M_PI / 180.0;
+constexpr double kRateCorrectionFullPitchRad = 10.0 * M_PI / 180.0;
+constexpr double kRateCorrectionBlendStartRateRadS = 15.0 * M_PI / 180.0;
+constexpr double kRateCorrectionFullRateRadS = 30.0 * M_PI / 180.0;
 constexpr double kVelocityLoopPeriodS = 1.0 / 100.0;
 // COM trim is a physical-bias estimate, so convergence is judged from a
 // quiet equilibrium rather than from elapsed time alone.  These thresholds
@@ -69,6 +78,31 @@ double outer_pitch_limit_rad() {
 }
 
 constexpr double kStepsPerRad = Config::steps_per_rev / (2.0 * M_PI);
+
+double chassis_rotation_field_feedforward_gain(
+    double field_cap_sps, double absolute_pitch_rad,
+    double absolute_pitch_rate_rad_s, bool recovery_envelope_requested) {
+  // The stepper field is expressed in the rotating chassis frame. During a
+  // high-authority held maneuver, feed its known chassis-rotation component
+  // forward instead of disguising that coordinate conversion as a retuned
+  // pitch-rate gain. Low-authority reference configurations never enter this
+  // high-field coordinate regime and retain their configured controller.
+  if (!recovery_envelope_requested ||
+      field_cap_sps < kChassisRotationFeedforwardMinFieldCapSps) {
+    return 0.0;
+  }
+  const double pitch_blend = std::clamp(
+      (absolute_pitch_rad - kRateCorrectionBlendStartPitchRad) /
+          (kRateCorrectionFullPitchRad - kRateCorrectionBlendStartPitchRad),
+      0.0, 1.0);
+  const double rate_blend = std::clamp(
+      (absolute_pitch_rate_rad_s - kRateCorrectionBlendStartRateRadS) /
+          (kRateCorrectionFullRateRadS - kRateCorrectionBlendStartRateRadS),
+      0.0, 1.0);
+  const double recovery_envelope_blend = std::max(pitch_blend, rate_blend);
+  return -recovery_envelope_blend *
+         kPitchRateKinematicFeedforwardFraction * kStepsPerRad;
+}
 
 }  // namespace
 
@@ -395,8 +429,15 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
     t.common_unclamped_sps = p_->common_unclamped_sps;
     t.velocity_pitch_target_deg = 0.0;
     t.balance_unclamped_sps = p_->balance_unclamped_sps;
+    const bool recovery_envelope_requested =
+        std::isfinite(p_->latest_joy.forward) &&
+        normalized_forward_command(p_->latest_joy.forward) != 0.0;
     t.active_pitch_gain_sps_per_rad = ConfigPid::values.pitch_gain;
-    t.active_pitch_rate_gain_sps_per_rad_s = ConfigPid::values.pitch_rate_gain;
+    t.active_pitch_rate_gain_sps_per_rad_s =
+        ConfigPid::values.pitch_rate_gain +
+        chassis_rotation_field_feedforward_gain(
+            ConfigPid::values.balance_max_sps, std::abs(pitch_rad),
+            std::abs(pitch_rate_rad_s), recovery_envelope_requested);
     t.active_pitch_accel_gain_sps_per_rad_s2 = ConfigPid::values.pitch_accel_gain;
     t.active_velocity_pitch_gain_rad_per_sps = 0.0;
     t.active_velocity_control_cutoff_hz = 0.0;
@@ -444,37 +485,61 @@ void RateControllerCore::step(double dt_s, std::chrono::steady_clock::time_point
   const double pitch_rad = p_->latest_imu.angle_rad;
   const double pitch_rate_rad_s = p_->latest_imu.gyro_rad_s;
   const double pitch_accel_rad_s2 = p_->latest_imu.pitch_accel_rad_s2;
-  const auto feedback_terms = [pitch_rad, pitch_rate_rad_s, pitch_accel_rad_s2](
-                                  double pitch_target_rad) {
+  const JoyCmd joy = p_->latest_joy;
+  const double forward_command =
+      std::isfinite(joy.forward) ? normalized_forward_command(joy.forward) : 0.0;
+  const bool recovery_envelope_requested = forward_command != 0.0;
+  const double chassis_rotation_field_feedforward_gain_sps_per_rad_s =
+      chassis_rotation_field_feedforward_gain(
+          ConfigPid::values.balance_max_sps, std::abs(pitch_rad),
+          std::abs(pitch_rate_rad_s), recovery_envelope_requested);
+  const double active_pitch_rate_gain =
+      ConfigPid::values.pitch_rate_gain +
+      chassis_rotation_field_feedforward_gain_sps_per_rad_s;
+  const auto feedback_terms = [pitch_rad, pitch_rate_rad_s, pitch_accel_rad_s2,
+                               active_pitch_rate_gain](double pitch_target_rad) {
     // The IMU pitch/rate convention is positive forward, while a positive
     // wheel SPS command produces negative body angular acceleration at this
     // mechanical boundary.  Therefore the robot-forward motor command uses
     // the physical equivalent of negative feedback: positive pitch error,
     // positive pitch rate, and positive pitch acceleration all command the
-    // wheels forward.  The coefficients remain independently tunable in
-    // SPS/rad, SPS/(rad/s), and SPS/(rad/s^2).
+    // wheels forward. The three terms remain independent in SPS/rad,
+    // SPS/(rad/s), and SPS/(rad/s^2). The effective rate coefficient includes
+    // only the explicit chassis-rotation field feedforward above.
     return std::array<double, 3>{
         ConfigPid::values.pitch_gain * (pitch_rad - pitch_target_rad),
-        ConfigPid::values.pitch_rate_gain * pitch_rate_rad_s,
+        active_pitch_rate_gain * pitch_rate_rad_s,
         ConfigPid::values.pitch_accel_gain * pitch_accel_rad_s2,
     };
   };
   const double imu_age_s = std::chrono::duration<double>(now - p_->latest_imu.t).count();
   const double pitch_limit_rad = kMaxPitchSetpointRad;
   const double fallover_limit_rad = Config::fallover_shutdown_deg * M_PI / 180.0;
-  const JoyCmd joy = p_->latest_joy;
-  const double forward_command =
-      std::isfinite(joy.forward) ? normalized_forward_command(joy.forward) : 0.0;
   uint32_t fault_flags = ControllerFaultNone;
   if (imu_age_s > kMaxImuAgeS) fault_flags |= ControllerFaultStaleImu;
   if (imu_age_s < -kMaxImuFutureS) fault_flags |= ControllerFaultFutureImu;
-  const bool fallover_recovery_requested = forward_command != 0.0;
-  if (p_->balance_armed && !fallover_recovery_requested &&
-      std::abs(pitch_rad) > fallover_limit_rad) {
+  const double absolute_pitch_rad = std::abs(pitch_rad);
+  const bool recovery_command_direction_valid =
+      forward_command != 0.0 && forward_command * pitch_rad > 0.0;
+  const bool fallen_recovery_start_allowed =
+      recovery_command_direction_valid &&
+      absolute_pitch_rad >= kFallenRecoveryStartMinPitchRad &&
+      absolute_pitch_rad <= kFallenRecoveryStartMaxPitchRad &&
+      std::abs(pitch_rate_rad_s) <= kFalloverRearmRateRadS;
+  const bool high_pitch_recovery_continuing =
+      p_->balance_armed && recovery_command_direction_valid &&
+      absolute_pitch_rad > fallover_limit_rad &&
+      absolute_pitch_rad <= kFallenRecoveryStartMaxPitchRad &&
+      pitch_rad * pitch_rate_rad_s <=
+          absolute_pitch_rad * kFallenRecoveryOutwardRateToleranceRadS;
+  const bool high_pitch_control_allowed =
+      fallen_recovery_start_allowed || high_pitch_recovery_continuing;
+  if (p_->balance_armed && absolute_pitch_rad > fallover_limit_rad &&
+      !high_pitch_control_allowed) {
     p_->balance_armed = false;
   }
-  const bool rearm_attitude_allowed = fallover_recovery_requested ||
-                                      std::abs(pitch_rad) <= kFalloverRearmPitchRad;
+  const bool rearm_attitude_allowed =
+      fallen_recovery_start_allowed || absolute_pitch_rad <= kFalloverRearmPitchRad;
   if (!p_->balance_armed && rearm_attitude_allowed &&
       std::abs(pitch_rate_rad_s) <= kFalloverRearmRateRadS) {
     p_->balance_armed = true;

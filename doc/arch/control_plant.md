@@ -58,6 +58,28 @@ the selected profile provides it, and the selected actuator's applied torque
 or force. It is richer than the compact audit model below; the compact model
 is for signs, poles, and local parameter checks.
 
+## Gravity load and recovery energy
+
+For pitch measured from upright, the gravity moment magnitude about the axle is
+
+$$
+\tau_g(\theta)=Hg\sin\theta.
+$$
+
+Gravity is conservative in this model. The potential-energy increase required
+to move from pitch $\theta$ to upright is
+
+$$
+\Delta U=Hg(1-\cos\theta).
+$$
+
+With the nominal first mass moment and a settled pitch of `67.815 deg`, these
+evaluate to approximately `0.56247 Nm` and `0.37807 J`. The energy is modest,
+but the instantaneous gravity moment remains large near the brace angle. These
+expressions describe only the aggregate rigid body; actuator torque, contact
+force, electrical loss, and simulator fixture behavior belong to their
+respective profile and testing documents.
+
 ## Variables and compact-model assumptions
 
 - $x$, $\dot{x}$, $\ddot{x}$: forward wheel-axle position, velocity, and

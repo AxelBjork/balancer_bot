@@ -372,7 +372,7 @@ TEST_F(MotorRunnerTest, SupportsOneAndTwelveThousandSps) {
   EXPECT_EQ(backend.frames.front().right_pulses, 30U);
 }
 
-TEST_F(MotorRunnerTest, ProductionSlewAllowsExactlyFiveHundredSpsPerFourHundredHertzTick) {
+TEST_F(MotorRunnerTest, ProductionSlewAllowsExactlyFiveHundredSpsPerTick) {
   Stepper left(1, Stepper::Pins{5, 6, 13});
   Stepper right(1, Stepper::Pins{7, 8, 14});
   RecordingWaveBackend backend;
@@ -395,6 +395,80 @@ TEST_F(MotorRunnerTest, ProductionSlewAllowsExactlyFiveHundredSpsPerFourHundredH
   EXPECT_DOUBLE_EQ(feedback.left_slewed_sps, 1000.0);
   EXPECT_DOUBLE_EQ(feedback.right_slewed_sps, -1000.0);
   EXPECT_EQ(feedback.actuator_saturation_flags, ActuatorSaturationNone);
+}
+
+TEST_F(MotorRunnerTest, ProductionBurstSpendsOnlyBoundedHighDemandSameDirectionCredit) {
+  Stepper left(1, Stepper::Pins{5, 6, 13});
+  Stepper right(1, Stepper::Pins{7, 8, 14});
+  RecordingWaveBackend backend;
+  MotorRunner runner(left, right, Config::control_hz,
+                     Config::motor_slew_sps_per_s, &backend);
+
+  // 250 SPS of credit supplies one 750-SPS tick.
+  runner.setTargets(48000.0, 48000.0, 2500);
+  EXPECT_DOUBLE_EQ(runner.getFeedbackSample().left_slewed_sps, 750.0);
+  runner.setTargets(48000.0, 48000.0, 5000);
+  EXPECT_DOUBLE_EQ(runner.getFeedbackSample().left_slewed_sps, 1250.0);
+  runner.setTargets(48000.0, 48000.0, 7500);
+  EXPECT_DOUBLE_EQ(runner.getFeedbackSample().left_slewed_sps, 1750.0);
+
+  // A request below the high-demand threshold retains the ordinary envelope.
+  runner.stop();
+  runner.setTargets(30000.0, 30000.0, 10000);
+  EXPECT_DOUBLE_EQ(runner.getFeedbackSample().left_slewed_sps, 500.0);
+}
+
+TEST_F(MotorRunnerTest, ProductionBurstDoesNotAccelerateAReversal) {
+  Stepper left(1, Stepper::Pins{5, 6, 13});
+  Stepper right(1, Stepper::Pins{7, 8, 14});
+  RecordingWaveBackend backend;
+  MotorRunner runner(left, right, Config::control_hz,
+                     Config::motor_slew_sps_per_s, &backend);
+
+  runner.setTargets(48000.0, 48000.0, 2500);
+  EXPECT_DOUBLE_EQ(runner.getFeedbackSample().left_slewed_sps, 750.0);
+  runner.setTargets(-48000.0, -48000.0, 5000);
+  EXPECT_DOUBLE_EQ(runner.getFeedbackSample().left_slewed_sps, 250.0);
+  runner.setTargets(-48000.0, -48000.0, 7500);
+  EXPECT_DOUBLE_EQ(runner.getFeedbackSample().left_slewed_sps, 0.0);
+  runner.setTargets(-48000.0, -48000.0, 10000);
+  EXPECT_DOUBLE_EQ(runner.getFeedbackSample().left_slewed_sps, 0.0);
+  runner.setTargets(-48000.0, -48000.0, 12500);
+  EXPECT_DOUBLE_EQ(runner.getFeedbackSample().left_slewed_sps, -500.0);
+  runner.setTargets(-48000.0, -48000.0, 15000);
+  EXPECT_DOUBLE_EQ(runner.getFeedbackSample().left_slewed_sps, -1000.0);
+}
+
+TEST_F(MotorRunnerTest, ProductionEnvelopeTapersGrowthAndRetainsHighFieldBraking) {
+  Stepper left(1, Stepper::Pins{5, 6, 13});
+  Stepper right(1, Stepper::Pins{7, 8, 14});
+  RecordingWaveBackend backend;
+  MotorRunner runner(left, right, Config::control_hz,
+                     Config::motor_slew_sps_per_s, &backend);
+
+  uint64_t timestamp_us = 0;
+  while (runner.getFeedbackSample().left_slewed_sps <=
+         Config::motor_slew_taper_start_sps) {
+    timestamp_us += 2500;
+    runner.setTargets(48000.0, 48000.0, timestamp_us);
+  }
+  const double above_taper = runner.getFeedbackSample().left_slewed_sps;
+  timestamp_us += 2500;
+  runner.setTargets(48000.0, 48000.0, timestamp_us);
+  const double tapered_growth =
+      runner.getFeedbackSample().left_slewed_sps - above_taper;
+  EXPECT_GT(tapered_growth, 0.0);
+  EXPECT_LT(tapered_growth,
+            Config::motor_slew_sps_per_s / Config::control_hz);
+
+  const double before_braking = runner.getFeedbackSample().left_slewed_sps;
+  timestamp_us += 2500;
+  const double reduced_target = 0.5 * Config::motor_slew_taper_start_sps;
+  runner.setTargets(reduced_target, reduced_target, timestamp_us);
+  EXPECT_NEAR(before_braking - runner.getFeedbackSample().left_slewed_sps,
+              Config::motor_high_field_braking_slew_sps_per_s /
+                  Config::control_hz,
+              1e-9);
 }
 
 TEST_F(MotorRunnerTest, NewTargetIsQueuedForTheNextTwoPointFiveMillisecondFrame) {

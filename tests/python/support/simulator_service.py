@@ -209,6 +209,9 @@ def make_start_payload(
     com_angle_offset_rad: float = 0.0,
     total_mass_scale: float = 1.0,
     pitch_inertia_scale: float = 1.0,
+    first_mass_moment_scale: float | None = None,
+    stepper_current_limit_a: float = 0.0,
+    stepper_bus_voltage_v: float = 0.0,
     physics_override: dict | None = None,
     imu_pitch_lag_s: float = 0.0,
     imu_noise_seed: int = 0,
@@ -343,6 +346,13 @@ def make_start_payload(
         brace_stiffness_nm_per_rad=brace_stiffness_nm_per_rad,
         brace_damping_nm_s_per_rad=brace_damping_nm_s_per_rad,
         brace_rest_events=wire_brace_rest_events,
+        first_mass_moment_scale=(
+            total_mass_scale
+            if first_mass_moment_scale is None
+            else first_mass_moment_scale
+        ),
+        stepper_current_limit_a=stepper_current_limit_a,
+        stepper_bus_voltage_v=stepper_bus_voltage_v,
         disturbances=wire_disturbances,
         joy_segments=wire_joy,
         pid_config_path=_fixed_bytes(pid_config_path, 128),
@@ -425,6 +435,9 @@ def run_scenario_live(
     com_angle_offset_rad: float = 0.0,
     total_mass_scale: float = 1.0,
     pitch_inertia_scale: float = 1.0,
+    first_mass_moment_scale: float | None = None,
+    stepper_current_limit_a: float = 0.0,
+    stepper_bus_voltage_v: float = 0.0,
     physics_override: dict | None = None,
     imu_pitch_lag_s: float = 0.0,
     imu_noise_seed: int = 0,
@@ -479,6 +492,13 @@ def run_scenario_live(
         "com_angle_offset_rad": com_angle_offset_rad,
         "total_mass_scale": total_mass_scale,
         "pitch_inertia_scale": pitch_inertia_scale,
+        "first_mass_moment_scale": (
+            total_mass_scale
+            if first_mass_moment_scale is None
+            else first_mass_moment_scale
+        ),
+        "stepper_current_limit_a": stepper_current_limit_a,
+        "stepper_bus_voltage_v": stepper_bus_voltage_v,
         "imu_pitch_lag_s": imu_pitch_lag_s,
         "imu_noise_seed": imu_noise_seed,
         "accel_noise_std_mps2": accel_noise_std_mps2,
@@ -529,6 +549,9 @@ def run_scenario_live(
         com_angle_offset_rad=com_angle_offset_rad,
         total_mass_scale=total_mass_scale,
         pitch_inertia_scale=pitch_inertia_scale,
+        first_mass_moment_scale=first_mass_moment_scale,
+        stepper_current_limit_a=stepper_current_limit_a,
+        stepper_bus_voltage_v=stepper_bus_voltage_v,
         physics_override=physics_override,
         imu_pitch_lag_s=imu_pitch_lag_s,
         imu_noise_seed=imu_noise_seed,

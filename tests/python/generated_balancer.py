@@ -286,7 +286,7 @@ class SimBraceRestEventPayload:
 
 @dataclass
 class SimStartRunPayload:
-    WIRE_SIZE = 1264
+    WIRE_SIZE = 1288
     run_id: int
     physics_profile: int
     has_physics_override: int
@@ -333,6 +333,9 @@ class SimStartRunPayload:
     brace_stiffness_nm_per_rad: float
     brace_damping_nm_s_per_rad: float
     brace_rest_events: list[SimBraceRestEventPayload]
+    first_mass_moment_scale: float
+    stepper_current_limit_a: float
+    stepper_bus_voltage_v: float
 
     def pack_wire(self) -> bytes:
         data = bytearray()
@@ -367,6 +370,7 @@ class SimStartRunPayload:
                 else:
                     item = SimBraceRestEventPayload(item)
             data.extend(item.pack_wire())
+        data.extend(struct.pack("<ddd", self.first_mass_moment_scale, self.stepper_current_limit_a, self.stepper_bus_voltage_v))
         return bytes(data)
 
     def pack(self) -> bytes:
@@ -401,7 +405,9 @@ class SimStartRunPayload:
             item = SimBraceRestEventPayload.unpack_wire(data[offset:offset+sub_size])
             brace_rest_events.append(item)
             offset += sub_size
-        return cls(run_id=run_id, physics_profile=physics_profile, has_physics_override=has_physics_override, telemetry_stride=telemetry_stride, transfer_scenario_index=transfer_scenario_index, reserved1=reserved1, duration_s=duration_s, initial_pitch_deg=initial_pitch_deg, com_angle_offset_rad=com_angle_offset_rad, total_mass_scale=total_mass_scale, pitch_inertia_scale=pitch_inertia_scale, motor_max_force_n=motor_max_force_n, motor_no_load_speed_mps=motor_no_load_speed_mps, motor_velocity_damping=motor_velocity_damping, motor_tau_s=motor_tau_s, traction_coefficient=traction_coefficient, pitch_damping=pitch_damping, cart_damping=cart_damping, phase_error_limit_steps=phase_error_limit_steps, tire_stiffness_n_per_m=tire_stiffness_n_per_m, tire_damping_n_s_per_m=tire_damping_n_s_per_m, wheel_equivalent_mass_kg=wheel_equivalent_mass_kg, imu_pitch_lag_s=imu_pitch_lag_s, imu_noise_seed=imu_noise_seed, accel_noise_std_mps2=accel_noise_std_mps2, gyro_noise_std_rad_s=gyro_noise_std_rad_s, imu_timestamp_jitter_us=imu_timestamp_jitter_us, imu_sample_loss_rate=imu_sample_loss_rate, accel_bias_mps2=accel_bias_mps2, gyro_bias_rad_s=gyro_bias_rad_s, disturbances=disturbances, joy_segments=joy_segments, pid_config_path=pid_config_path, initial_velocity_mps=initial_velocity_mps, velocity_estimator_bias_mps=velocity_estimator_bias_mps, velocity_estimator_bias_drift_mps_per_s=velocity_estimator_bias_drift_mps_per_s, velocity_estimator_scale=velocity_estimator_scale, velocity_estimator_latency_s=velocity_estimator_latency_s, initial_pitch_rate_dps=initial_pitch_rate_dps, brace_enabled=brace_enabled, brace_reserved0=brace_reserved0, brace_reserved1=brace_reserved1, brace_pitch_deg=brace_pitch_deg, brace_stiffness_nm_per_rad=brace_stiffness_nm_per_rad, brace_damping_nm_s_per_rad=brace_damping_nm_s_per_rad, brace_rest_events=brace_rest_events)
+        first_mass_moment_scale, stepper_current_limit_a, stepper_bus_voltage_v = struct.unpack_from("<ddd", data, offset)
+        offset += struct.calcsize("<ddd")
+        return cls(run_id=run_id, physics_profile=physics_profile, has_physics_override=has_physics_override, telemetry_stride=telemetry_stride, transfer_scenario_index=transfer_scenario_index, reserved1=reserved1, duration_s=duration_s, initial_pitch_deg=initial_pitch_deg, com_angle_offset_rad=com_angle_offset_rad, total_mass_scale=total_mass_scale, pitch_inertia_scale=pitch_inertia_scale, motor_max_force_n=motor_max_force_n, motor_no_load_speed_mps=motor_no_load_speed_mps, motor_velocity_damping=motor_velocity_damping, motor_tau_s=motor_tau_s, traction_coefficient=traction_coefficient, pitch_damping=pitch_damping, cart_damping=cart_damping, phase_error_limit_steps=phase_error_limit_steps, tire_stiffness_n_per_m=tire_stiffness_n_per_m, tire_damping_n_s_per_m=tire_damping_n_s_per_m, wheel_equivalent_mass_kg=wheel_equivalent_mass_kg, imu_pitch_lag_s=imu_pitch_lag_s, imu_noise_seed=imu_noise_seed, accel_noise_std_mps2=accel_noise_std_mps2, gyro_noise_std_rad_s=gyro_noise_std_rad_s, imu_timestamp_jitter_us=imu_timestamp_jitter_us, imu_sample_loss_rate=imu_sample_loss_rate, accel_bias_mps2=accel_bias_mps2, gyro_bias_rad_s=gyro_bias_rad_s, disturbances=disturbances, joy_segments=joy_segments, pid_config_path=pid_config_path, initial_velocity_mps=initial_velocity_mps, velocity_estimator_bias_mps=velocity_estimator_bias_mps, velocity_estimator_bias_drift_mps_per_s=velocity_estimator_bias_drift_mps_per_s, velocity_estimator_scale=velocity_estimator_scale, velocity_estimator_latency_s=velocity_estimator_latency_s, initial_pitch_rate_dps=initial_pitch_rate_dps, brace_enabled=brace_enabled, brace_reserved0=brace_reserved0, brace_reserved1=brace_reserved1, brace_pitch_deg=brace_pitch_deg, brace_stiffness_nm_per_rad=brace_stiffness_nm_per_rad, brace_damping_nm_s_per_rad=brace_damping_nm_s_per_rad, brace_rest_events=brace_rest_events, first_mass_moment_scale=first_mass_moment_scale, stepper_current_limit_a=stepper_current_limit_a, stepper_bus_voltage_v=stepper_bus_voltage_v)
 
     @classmethod
     def unpack(cls, data: bytes) -> "SimStartRunPayload":
@@ -531,7 +537,7 @@ class ImuRawPayload:
 
 @dataclass
 class SimulatorTelemetryPayload:
-    WIRE_SIZE = 552
+    WIRE_SIZE = 592
     system: SystemTelemetryPayload
     seed: int
     plant_pitch_deg: float
@@ -577,6 +583,17 @@ class SimulatorTelemetryPayload:
     recovery_command_active: bool
     fallover_inhibited: bool
     recovery_reserved: int
+    first_mass_moment_scale: float
+    stepper_current_limit_a: float
+    stepper_bus_voltage_v: float
+    stepper_traction_utilization: float
+    stepper_accumulated_slip_distance_m: float
+    stepper_summed_torque_nm: float
+    stepper_accumulated_cycle_slips_left: int
+    stepper_accumulated_cycle_slips_right: int
+    stepper_voltage_saturated_left: bool
+    stepper_voltage_saturated_right: bool
+    stepper_recovery_reserved: int
 
     def pack_wire(self) -> bytes:
         data = bytearray()
@@ -589,7 +606,7 @@ class SimulatorTelemetryPayload:
             else:
                 item = SystemTelemetryPayload(item)
         data.extend(item.pack_wire())
-        data.extend(struct.pack("<Iffffffffffffffffffffffffffffff?3xfff??Hfff??H", self.seed, self.plant_pitch_deg, self.plant_pitch_rate_dps, self.plant_position_m, self.plant_velocity_mps, self.target_wheel_velocity, self.actual_wheel_velocity, self.plant_velocity_error, self.f_cmd, self.f_app, self.external_force_n, self.external_com_bias_rad, self.x_ddot, self.theta_ddot, self.phase_error_steps, self.missed_steps, self.traction_limit_n, self.motor_force_limit_n, self.total_mass_scale, self.pitch_inertia_scale, self.motor_max_force_n, self.motor_no_load_speed_mps, self.motor_velocity_damping, self.motor_tau_s, self.traction_coefficient, self.pitch_damping, self.cart_damping, self.phase_error_limit_steps, self.tire_stiffness_n_per_m, self.tire_damping_n_s_per_m, self.wheel_equivalent_mass_kg, self.force_saturated, self.emitted_step_velocity_sps, self.synthetic_estimator_velocity_sps, self.controller_feedback_velocity_sps, self.brace_enabled, self.brace_contact_active, self.brace_reserved, self.brace_pitch_deg, self.brace_penetration_deg, self.brace_torque_nm, self.recovery_command_active, self.fallover_inhibited, self.recovery_reserved))
+        data.extend(struct.pack("<Iffffffffffffffffffffffffffffff?3xfff??Hfff??HffffffII??H4x", self.seed, self.plant_pitch_deg, self.plant_pitch_rate_dps, self.plant_position_m, self.plant_velocity_mps, self.target_wheel_velocity, self.actual_wheel_velocity, self.plant_velocity_error, self.f_cmd, self.f_app, self.external_force_n, self.external_com_bias_rad, self.x_ddot, self.theta_ddot, self.phase_error_steps, self.missed_steps, self.traction_limit_n, self.motor_force_limit_n, self.total_mass_scale, self.pitch_inertia_scale, self.motor_max_force_n, self.motor_no_load_speed_mps, self.motor_velocity_damping, self.motor_tau_s, self.traction_coefficient, self.pitch_damping, self.cart_damping, self.phase_error_limit_steps, self.tire_stiffness_n_per_m, self.tire_damping_n_s_per_m, self.wheel_equivalent_mass_kg, self.force_saturated, self.emitted_step_velocity_sps, self.synthetic_estimator_velocity_sps, self.controller_feedback_velocity_sps, self.brace_enabled, self.brace_contact_active, self.brace_reserved, self.brace_pitch_deg, self.brace_penetration_deg, self.brace_torque_nm, self.recovery_command_active, self.fallover_inhibited, self.recovery_reserved, self.first_mass_moment_scale, self.stepper_current_limit_a, self.stepper_bus_voltage_v, self.stepper_traction_utilization, self.stepper_accumulated_slip_distance_m, self.stepper_summed_torque_nm, self.stepper_accumulated_cycle_slips_left, self.stepper_accumulated_cycle_slips_right, self.stepper_voltage_saturated_left, self.stepper_voltage_saturated_right, self.stepper_recovery_reserved))
         return bytes(data)
 
     def pack(self) -> bytes:
@@ -601,9 +618,9 @@ class SimulatorTelemetryPayload:
         sub_size = SystemTelemetryPayload.WIRE_SIZE
         system = SystemTelemetryPayload.unpack_wire(data[offset:offset+sub_size])
         offset += sub_size
-        seed, plant_pitch_deg, plant_pitch_rate_dps, plant_position_m, plant_velocity_mps, target_wheel_velocity, actual_wheel_velocity, plant_velocity_error, f_cmd, f_app, external_force_n, external_com_bias_rad, x_ddot, theta_ddot, phase_error_steps, missed_steps, traction_limit_n, motor_force_limit_n, total_mass_scale, pitch_inertia_scale, motor_max_force_n, motor_no_load_speed_mps, motor_velocity_damping, motor_tau_s, traction_coefficient, pitch_damping, cart_damping, phase_error_limit_steps, tire_stiffness_n_per_m, tire_damping_n_s_per_m, wheel_equivalent_mass_kg, force_saturated, emitted_step_velocity_sps, synthetic_estimator_velocity_sps, controller_feedback_velocity_sps, brace_enabled, brace_contact_active, brace_reserved, brace_pitch_deg, brace_penetration_deg, brace_torque_nm, recovery_command_active, fallover_inhibited, recovery_reserved = struct.unpack_from("<Iffffffffffffffffffffffffffffff?3xfff??Hfff??H", data, offset)
-        offset += struct.calcsize("<Iffffffffffffffffffffffffffffff?3xfff??Hfff??H")
-        return cls(system=system, seed=seed, plant_pitch_deg=plant_pitch_deg, plant_pitch_rate_dps=plant_pitch_rate_dps, plant_position_m=plant_position_m, plant_velocity_mps=plant_velocity_mps, target_wheel_velocity=target_wheel_velocity, actual_wheel_velocity=actual_wheel_velocity, plant_velocity_error=plant_velocity_error, f_cmd=f_cmd, f_app=f_app, external_force_n=external_force_n, external_com_bias_rad=external_com_bias_rad, x_ddot=x_ddot, theta_ddot=theta_ddot, phase_error_steps=phase_error_steps, missed_steps=missed_steps, traction_limit_n=traction_limit_n, motor_force_limit_n=motor_force_limit_n, total_mass_scale=total_mass_scale, pitch_inertia_scale=pitch_inertia_scale, motor_max_force_n=motor_max_force_n, motor_no_load_speed_mps=motor_no_load_speed_mps, motor_velocity_damping=motor_velocity_damping, motor_tau_s=motor_tau_s, traction_coefficient=traction_coefficient, pitch_damping=pitch_damping, cart_damping=cart_damping, phase_error_limit_steps=phase_error_limit_steps, tire_stiffness_n_per_m=tire_stiffness_n_per_m, tire_damping_n_s_per_m=tire_damping_n_s_per_m, wheel_equivalent_mass_kg=wheel_equivalent_mass_kg, force_saturated=force_saturated, emitted_step_velocity_sps=emitted_step_velocity_sps, synthetic_estimator_velocity_sps=synthetic_estimator_velocity_sps, controller_feedback_velocity_sps=controller_feedback_velocity_sps, brace_enabled=brace_enabled, brace_contact_active=brace_contact_active, brace_reserved=brace_reserved, brace_pitch_deg=brace_pitch_deg, brace_penetration_deg=brace_penetration_deg, brace_torque_nm=brace_torque_nm, recovery_command_active=recovery_command_active, fallover_inhibited=fallover_inhibited, recovery_reserved=recovery_reserved)
+        seed, plant_pitch_deg, plant_pitch_rate_dps, plant_position_m, plant_velocity_mps, target_wheel_velocity, actual_wheel_velocity, plant_velocity_error, f_cmd, f_app, external_force_n, external_com_bias_rad, x_ddot, theta_ddot, phase_error_steps, missed_steps, traction_limit_n, motor_force_limit_n, total_mass_scale, pitch_inertia_scale, motor_max_force_n, motor_no_load_speed_mps, motor_velocity_damping, motor_tau_s, traction_coefficient, pitch_damping, cart_damping, phase_error_limit_steps, tire_stiffness_n_per_m, tire_damping_n_s_per_m, wheel_equivalent_mass_kg, force_saturated, emitted_step_velocity_sps, synthetic_estimator_velocity_sps, controller_feedback_velocity_sps, brace_enabled, brace_contact_active, brace_reserved, brace_pitch_deg, brace_penetration_deg, brace_torque_nm, recovery_command_active, fallover_inhibited, recovery_reserved, first_mass_moment_scale, stepper_current_limit_a, stepper_bus_voltage_v, stepper_traction_utilization, stepper_accumulated_slip_distance_m, stepper_summed_torque_nm, stepper_accumulated_cycle_slips_left, stepper_accumulated_cycle_slips_right, stepper_voltage_saturated_left, stepper_voltage_saturated_right, stepper_recovery_reserved = struct.unpack_from("<Iffffffffffffffffffffffffffffff?3xfff??Hfff??HffffffII??H4x", data, offset)
+        offset += struct.calcsize("<Iffffffffffffffffffffffffffffff?3xfff??Hfff??HffffffII??H4x")
+        return cls(system=system, seed=seed, plant_pitch_deg=plant_pitch_deg, plant_pitch_rate_dps=plant_pitch_rate_dps, plant_position_m=plant_position_m, plant_velocity_mps=plant_velocity_mps, target_wheel_velocity=target_wheel_velocity, actual_wheel_velocity=actual_wheel_velocity, plant_velocity_error=plant_velocity_error, f_cmd=f_cmd, f_app=f_app, external_force_n=external_force_n, external_com_bias_rad=external_com_bias_rad, x_ddot=x_ddot, theta_ddot=theta_ddot, phase_error_steps=phase_error_steps, missed_steps=missed_steps, traction_limit_n=traction_limit_n, motor_force_limit_n=motor_force_limit_n, total_mass_scale=total_mass_scale, pitch_inertia_scale=pitch_inertia_scale, motor_max_force_n=motor_max_force_n, motor_no_load_speed_mps=motor_no_load_speed_mps, motor_velocity_damping=motor_velocity_damping, motor_tau_s=motor_tau_s, traction_coefficient=traction_coefficient, pitch_damping=pitch_damping, cart_damping=cart_damping, phase_error_limit_steps=phase_error_limit_steps, tire_stiffness_n_per_m=tire_stiffness_n_per_m, tire_damping_n_s_per_m=tire_damping_n_s_per_m, wheel_equivalent_mass_kg=wheel_equivalent_mass_kg, force_saturated=force_saturated, emitted_step_velocity_sps=emitted_step_velocity_sps, synthetic_estimator_velocity_sps=synthetic_estimator_velocity_sps, controller_feedback_velocity_sps=controller_feedback_velocity_sps, brace_enabled=brace_enabled, brace_contact_active=brace_contact_active, brace_reserved=brace_reserved, brace_pitch_deg=brace_pitch_deg, brace_penetration_deg=brace_penetration_deg, brace_torque_nm=brace_torque_nm, recovery_command_active=recovery_command_active, fallover_inhibited=fallover_inhibited, recovery_reserved=recovery_reserved, first_mass_moment_scale=first_mass_moment_scale, stepper_current_limit_a=stepper_current_limit_a, stepper_bus_voltage_v=stepper_bus_voltage_v, stepper_traction_utilization=stepper_traction_utilization, stepper_accumulated_slip_distance_m=stepper_accumulated_slip_distance_m, stepper_summed_torque_nm=stepper_summed_torque_nm, stepper_accumulated_cycle_slips_left=stepper_accumulated_cycle_slips_left, stepper_accumulated_cycle_slips_right=stepper_accumulated_cycle_slips_right, stepper_voltage_saturated_left=stepper_voltage_saturated_left, stepper_voltage_saturated_right=stepper_voltage_saturated_right, stepper_recovery_reserved=stepper_recovery_reserved)
 
     @classmethod
     def unpack(cls, data: bytes) -> "SimulatorTelemetryPayload":
@@ -773,15 +790,15 @@ PAYLOAD_SIZE_BY_ID = {
     MsgId.PhysicsTick: 16,
     MsgId.MotorTargets: 16,
     MsgId.SystemTelemetry: 392,
-    MsgId.SimStartRun: 1264,
+    MsgId.SimStartRun: 1288,
     MsgId.SimStartAck: 8,
     MsgId.SimStopRun: 4,
     MsgId.SimRunDone: 96,
     MsgId.ImuRawData: 56,
-    MsgId.SimulatorTelemetry: 552,
+    MsgId.SimulatorTelemetry: 592,
     MsgId.ExternalJoystickCommand: 16,
     MsgId.PidConfigOverride: 160,
     MsgId.PidConfigStatus: 160,
 }
 
-PROTOCOL_HASH = "85a3e7ce1a73a4f4"
+PROTOCOL_HASH = "85ce2b2c9452f623"

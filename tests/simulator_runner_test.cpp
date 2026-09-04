@@ -1399,6 +1399,103 @@ TEST(SimulatorRunnerTest, ElectricalBraceLimitsOutwardPitchSymmetrically) {
   }
 }
 
+TEST(SimulatorRunnerTest, ElectricalTractionUsesFullHorizontalGroundSupportAtLargePitch) {
+  BalancerSimulator::Config config;
+  config.physics_profile = PhysicsProfile::StepperPhaseElectrical;
+  config.initial_pitch_deg = 67.0;
+  config.com_angle_offset_rad = 0.0;
+
+  BalancerSimulator simulator(config);
+  simulator.set_emitted_steps(0.0, 0.0);
+  simulator.step(0.0);
+
+  // Pitch changes the rigid-body coupling term, not the vertical support from
+  // a horizontal ground plane.  The current brace fixture is torque-only, so
+  // it has no modeled vertical reaction to subtract from this load.
+  EXPECT_NEAR(simulator.diagnostics().stepper_traction_limit_n,
+              BalancerSimulator::HardwareNominal::total_mass_kg * 9.81, 1.0e-9);
+  EXPECT_NEAR(simulator.diagnostics().stepper_traction_limit_left_n,
+              0.5 * BalancerSimulator::HardwareNominal::total_mass_kg * 9.81, 1.0e-9);
+}
+
+TEST(SimulatorRunnerTest, ElectricalTractionUsesCoupledContactForceAtLargePitch) {
+  constexpr double initial_pitch_deg = 67.815;
+  constexpr double gravity_mps2 = 9.81;
+  const double pitch_rad = initial_pitch_deg * M_PI / 180.0;
+  const double mass = BalancerSimulator::HardwareNominal::total_mass_kg;
+  const double first_moment = BalancerSimulator::HardwareNominal::first_mass_moment_kg_m;
+  const double wheel_radius = BalancerSimulator::HardwareNominal::stepper_phase_wheel_radius;
+  const double wheel_inertia =
+      BalancerSimulator::HardwareNominal::stepper_rotating_inertia_kg_m2_per_motor;
+  const double effective_mass = mass + 2.0 * wheel_inertia / (wheel_radius * wheel_radius);
+  const double coupling = first_moment * std::cos(pitch_rad);
+  const double gravity_moment = first_moment * gravity_mps2 * std::sin(pitch_rad);
+
+  // Solve the coupled no-slip equations at theta_ddot=0. Motor torque is not
+  // tire force times radius: wheel inertia and chassis acceleration carry
+  // part of the applied torque during launch.
+  const double threshold_torque =
+      effective_mass * wheel_radius * gravity_moment /
+      (coupling + effective_mass * wheel_radius);
+  const double expected_x_ddot = threshold_torque / (effective_mass * wheel_radius);
+  const double expected_contact_force = mass * expected_x_ddot;
+
+  BalancerSimulator::Config config;
+  config.physics_profile = PhysicsProfile::StepperPhaseElectrical;
+  config.initial_pitch_deg = initial_pitch_deg;
+  config.com_angle_offset_rad = 0.0;
+  auto physics = BalancerSimulator::physics_for_profile(config.physics_profile);
+  physics.cart_damping = 0.0;
+  physics.rolling_resistance_force_n = 0.0;
+  physics.static_breakaway_force_n = 0.0;
+  physics.pitch_damping = 0.0;
+  physics.stepper_motor_relative_damping_nm_s_per_rad = 0.0;
+  config.physics_override = physics;
+
+  BalancerSimulator simulator(config);
+  simulator.set_emitted_steps(0.0, 0.0);
+  simulator.set_stepper_direct_torque_for_test(0.5 * threshold_torque,
+                                               0.5 * threshold_torque);
+  simulator.step(0.0);
+
+  EXPECT_NEAR(threshold_torque, 0.36756, 1.0e-4);
+  EXPECT_NEAR(simulator.diagnostics().theta_ddot, 0.0, 1.0e-9);
+  EXPECT_NEAR(simulator.diagnostics().x_ddot, expected_x_ddot, 1.0e-9);
+  EXPECT_NEAR(simulator.diagnostics().stepper_requested_contact_force_n,
+              expected_contact_force, 1.0e-9);
+  EXPECT_NEAR(expected_contact_force, 8.603, 1.0e-3);
+  EXPECT_NEAR(simulator.diagnostics().stepper_traction_utilization,
+              expected_contact_force / (mass * gravity_mps2), 1.0e-9);
+
+  const double full_traction_force = mass * gravity_mps2;
+  const double full_traction_pitch_ddot =
+      (gravity_moment -
+       (coupling + wheel_radius * effective_mass) * full_traction_force / mass) /
+      (BalancerSimulator::HardwareNominal::pitch_inertia_about_axle_kg_m2 +
+       wheel_radius * coupling -
+       (coupling + wheel_radius * effective_mass) * coupling / mass);
+  const double full_traction_x_ddot =
+      (full_traction_force - coupling * full_traction_pitch_ddot) / mass;
+  const double full_traction_torque =
+      wheel_radius *
+      (effective_mass * full_traction_x_ddot + coupling * full_traction_pitch_ddot);
+
+  BalancerSimulator full_traction_simulator(config);
+  full_traction_simulator.set_emitted_steps(0.0, 0.0);
+  full_traction_simulator.set_stepper_direct_torque_for_test(
+      0.5 * full_traction_torque, 0.5 * full_traction_torque);
+  full_traction_simulator.step(0.0);
+
+  EXPECT_NEAR(full_traction_torque, 0.43344, 1.0e-4);
+  EXPECT_NEAR(full_traction_pitch_ddot, -25.2716, 1.0e-3);
+  EXPECT_NEAR(full_traction_simulator.diagnostics().theta_ddot,
+              full_traction_pitch_ddot, 1.0e-9);
+  EXPECT_NEAR(full_traction_simulator.diagnostics().stepper_requested_contact_force_n,
+              full_traction_force, 1.0e-9);
+  EXPECT_NEAR(full_traction_simulator.diagnostics().stepper_traction_utilization,
+              1.0, 1.0e-9);
+}
+
 TEST(SimulatorRunnerTest, BracedRecoveryAtControllerShutdownAngleUsesSettledEstimatorAndFreshCommand) {
   ScopedStateFeedbackConfig restore;
   ConfigPid::load((std::filesystem::path(BALANCER_REPO_ROOT) / "pid.conf").string());
@@ -1478,6 +1575,169 @@ TEST(SimulatorRunnerTest, BracedRecoveryAtControllerShutdownAngleUsesSettledEsti
                 << result.rows.back().controller_fault_flags << '\n';
     }
   }
+}
+
+TEST(SimulatorRunnerTest, ProductionControllerRecoversFromSixtySevenDegreeBrace) {
+  ScopedStateFeedbackConfig restore;
+  ConfigPid::load((std::filesystem::path(BALANCER_REPO_ROOT) / "pid.conf").string());
+  ASSERT_DOUBLE_EQ(ConfigPid::values.pitch_gain, 173018.0);
+  ASSERT_DOUBLE_EQ(ConfigPid::values.pitch_rate_gain, 150.0);
+  ASSERT_DOUBLE_EQ(ConfigPid::values.balance_max_sps, 48000.0);
+
+  SimulatorScenario scenario;
+  scenario.name = "production_controller_67_degree_brace_recovery";
+  scenario.physics_profile = PhysicsProfile::StepperPhaseElectrical;
+  scenario.duration_s = 23.0;
+  scenario.initial_pitch_deg = 67.0;
+  scenario.initial_fused_pitch_deg = 0.0;
+  scenario.brace_enabled = true;
+  scenario.brace_pitch_deg = 67.0;
+  scenario.brace_stiffness_nm_per_rad = 40.0;
+  scenario.brace_damping_nm_s_per_rad = 0.8;
+  scenario.joy_segments.push_back(SimulatorJoySegment{
+      .start_s = 10.0, .duration_s = 13.0, .forward = 0.06,
+      .forward_end = 0.06});
+
+  auto physics = BalancerSimulator::physics_for_profile(
+      PhysicsProfile::StepperPhaseElectrical);
+  physics.stepper_current_limit_a = 2.0;
+  physics.stepper_bus_voltage_v = 12.6;
+  physics.traction_coefficient = 1.0;
+  physics.max_physical_integration_step_s = 62.5e-6;
+  scenario.physics_override = physics;
+  // 200 g at -3 mm: M += 0.2 kg, H += m*z, J += m*z^2.
+  scenario.total_mass_scale = 1.232 / 1.032;
+  scenario.first_mass_moment_scale = 0.06132 / 0.06192;
+  scenario.pitch_inertia_scale = 0.0045018 / 0.0045;
+
+  const auto result = run_simulator_scenario_with_loaded_pid(scenario);
+  ASSERT_FALSE(result.rows.empty());
+
+  const auto first_time = [&](const auto& predicate) {
+    const auto found = std::find_if(result.rows.begin(), result.rows.end(), predicate);
+    return found == result.rows.end() ? std::numeric_limits<double>::infinity()
+                                      : found->sim_time_s;
+  };
+  const double release_s = first_time([](const auto& row) {
+    return row.sim_time_s >= 10.0 && row.brace_contact_active < 0.5;
+  });
+  const double cross_40_s = first_time([](const auto& row) {
+    return row.sim_time_s >= 10.0 && std::abs(row.plant_pitch_deg) <= 40.0;
+  });
+  const double cross_20_s = first_time([](const auto& row) {
+    return row.sim_time_s >= 10.0 && std::abs(row.plant_pitch_deg) <= 20.0;
+  });
+  const double cross_upright_s = first_time([](const auto& row) {
+    return row.sim_time_s >= 10.0 && row.plant_pitch_deg <= 0.0;
+  });
+
+  double peak_requested_sps = 0.0;
+  double peak_applied_sps = 0.0;
+  double peak_emitted_sps = 0.0;
+  double peak_mechanical_sps = 0.0;
+  double peak_phase_steps = 0.0;
+  double peak_traction = 0.0;
+  double peak_electromagnetic_torque_nm = 0.0;
+  double peak_pitch_rate_dps = 0.0;
+  double above_sustainable_s = 0.0;
+  double excess_slew_integral_sps = 0.0;
+  double peak_slew_sps2 = 0.0;
+  size_t voltage_saturated_samples = 0;
+  size_t recovery_samples = 0;
+  bool brace_recontact = false;
+  bool released = false;
+  for (size_t index = 0; index < result.rows.size(); ++index) {
+    const auto& row = result.rows[index];
+    if (row.sim_time_s < 10.0) continue;
+    ++recovery_samples;
+    peak_requested_sps = std::max(peak_requested_sps,
+                                  std::abs(row.balance_unclamped_sps));
+    peak_applied_sps = std::max(peak_applied_sps,
+                                std::abs(row.left_slewed_sps));
+    peak_emitted_sps = std::max(peak_emitted_sps,
+                                std::abs(row.emitted_step_velocity_sps));
+    peak_mechanical_sps = std::max(
+        peak_mechanical_sps,
+        std::abs(row.actual_wheel_velocity / Config::meters_per_step));
+    peak_phase_steps = std::max(peak_phase_steps,
+                                std::abs(row.phase_error_steps));
+    peak_traction = std::max(peak_traction,
+                             row.stepper_traction_utilization);
+    peak_electromagnetic_torque_nm =
+        std::max(peak_electromagnetic_torque_nm,
+                 std::abs(row.stepper_summed_torque_nm));
+    peak_pitch_rate_dps = std::max(peak_pitch_rate_dps,
+                                   std::abs(row.plant_pitch_rate_dps));
+    voltage_saturated_samples +=
+        row.stepper_voltage_saturated_left > 0.5 ||
+        row.stepper_voltage_saturated_right > 0.5;
+    if (!released && row.brace_contact_active < 0.5) released = true;
+    if (released && row.brace_contact_active > 0.5) brace_recontact = true;
+    if (index == 0) continue;
+    const double dt = row.sim_time_s - result.rows[index - 1].sim_time_s;
+    if (dt <= 0.0) continue;
+    const double slew = std::abs(
+        (row.left_slewed_sps - result.rows[index - 1].left_slewed_sps) / dt);
+    peak_slew_sps2 = std::max(peak_slew_sps2, slew);
+    if (slew > Config::motor_slew_sps_per_s + 1.0) {
+      above_sustainable_s += dt;
+      excess_slew_integral_sps +=
+          (slew - Config::motor_slew_sps_per_s) * dt;
+    }
+  }
+
+  const double tail_pitch_rms = signal_rms_in_window(
+      result, 18.0, 23.0, [](const auto& row) { return row.plant_pitch_deg; });
+  const double tail_rate_rms = signal_rms_in_window(
+      result, 18.0, 23.0,
+      [](const auto& row) { return row.plant_pitch_rate_dps; });
+  const double tail_velocity_rms = signal_rms_in_window(
+      result, 18.0, 23.0,
+      [](const auto& row) { return row.plant_velocity; });
+
+  EXPECT_FALSE(result.fell);
+  EXPECT_TRUE(std::isfinite(release_s));
+  EXPECT_TRUE(std::isfinite(cross_40_s));
+  EXPECT_TRUE(std::isfinite(cross_20_s));
+  EXPECT_TRUE(std::isfinite(cross_upright_s));
+  EXPECT_FALSE(brace_recontact);
+  EXPECT_LE(peak_applied_sps, 48000.0 + 1e-6);
+  EXPECT_LT(peak_phase_steps, 45.0);
+  EXPECT_LT(peak_traction, 1.0);
+  EXPECT_LT(result.rows.back().stepper_accumulated_slip_distance_m, 1e-6);
+  EXPECT_EQ(result.rows.back().stepper_accumulated_electrical_cycle_slips_left, 0.0);
+  EXPECT_EQ(result.rows.back().stepper_accumulated_electrical_cycle_slips_right, 0.0);
+  EXPECT_EQ(result.rows.back().controller_fault_flags, ControllerFaultNone);
+  EXPECT_LT(tail_pitch_rms, 0.5);
+  EXPECT_LT(tail_rate_rms, 15.0);
+  EXPECT_LT(tail_velocity_rms, 0.02);
+
+  std::cout << "production_67 enable_s=10 release_s=" << release_s
+            << " cross_40_s=" << cross_40_s
+            << " cross_20_s=" << cross_20_s
+            << " upright_s=" << cross_upright_s
+            << " peak_rate_dps=" << peak_pitch_rate_dps
+            << " peak_requested_sps=" << peak_requested_sps
+            << " peak_applied_sps=" << peak_applied_sps
+            << " peak_emitted_sps=" << peak_emitted_sps
+            << " peak_mechanical_sps=" << peak_mechanical_sps
+            << " peak_slew_sps2=" << peak_slew_sps2
+            << " above_200k_s=" << above_sustainable_s
+            << " excess_slew_integral_sps=" << excess_slew_integral_sps
+            << " peak_electromagnetic_torque_nm="
+            << peak_electromagnetic_torque_nm
+            << " peak_phase_steps=" << peak_phase_steps
+            << " voltage_saturated_fraction="
+            << (recovery_samples > 0
+                    ? static_cast<double>(voltage_saturated_samples) /
+                          static_cast<double>(recovery_samples)
+                    : 0.0)
+            << " peak_traction=" << peak_traction
+            << " slip_distance_m="
+            << result.rows.back().stepper_accumulated_slip_distance_m
+            << " tail_pitch_rms_deg=" << tail_pitch_rms
+            << " tail_rate_rms_dps=" << tail_rate_rms
+            << " tail_velocity_rms_mps=" << tail_velocity_rms << '\n';
 }
 
 TEST(SimulatorRunnerTest, BracedRecoveryCancellationReinhibitsOutsideSafeRegion) {

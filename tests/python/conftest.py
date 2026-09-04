@@ -33,11 +33,7 @@ from tests.python.support.behavioral_diagnostics import artifact_metrics
 _BEHAVIORAL_XFAILS = (
     (
         "test_simple_behavioral_scenarios[stepper_phase_electrical-2001-",
-        "StepperPhaseElectrical noisy 2 N push reaches the 32 kSPS balance rail and fallover boundary before recovery",
-    ),
-    (
-        "test_cold_start_braced_recovery_after_estimator_settle[stepper_phase_electrical-3501-",
-        "StepperPhaseElectrical 67 degree braced recovery remains beyond the current recoverable-angle boundary after estimator settling",
+        "StepperPhaseElectrical noisy 2 N push reaches the configured balance rail and fallover boundary before recovery",
     ),
 )
 
@@ -150,9 +146,8 @@ def _matrix_artifact_prefixes(test_name: str, scenario_name: str) -> tuple[str, 
         "test_outer_reduced_translation_authority_degrades_without_trim_runaway": ("outer_live_authority_",),
         "test_outer_noise_and_correlated_mass_uncertainty_remain_bounded": ("outer_live_mass_", "outer_live_noise_long"),
         "test_outer_ten_minute_event_run_has_no_growing_late_envelope": ("outer_live_long_events_600s",),
-        "test_cold_start_braced_recovery_after_estimator_settle": (
-            "cold_start_40deg_shutdown_boundary",
-            "cold_start_67deg_recovery_boundary",
+        "test_production_controller_recovers_from_67_degree_brace_over_ipc": (
+            "production_controller_67_degree_brace_recovery",
         ),
     }
     return prefix_map.get(test_name, ())

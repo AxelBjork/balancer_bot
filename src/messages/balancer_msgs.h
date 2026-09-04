@@ -243,6 +243,19 @@ struct SimulatorTelemetryPayload {
   bool recovery_command_active;
   bool fallover_inhibited;
   uint16_t recovery_reserved;
+  // Electrical recovery acceptance diagnostics. These are simulator-only and
+  // appended so existing telemetry offsets remain stable.
+  float first_mass_moment_scale;
+  float stepper_current_limit_a;
+  float stepper_bus_voltage_v;
+  float stepper_traction_utilization;
+  float stepper_accumulated_slip_distance_m;
+  float stepper_summed_torque_nm;
+  uint32_t stepper_accumulated_cycle_slips_left;
+  uint32_t stepper_accumulated_cycle_slips_right;
+  bool stepper_voltage_saturated_left;
+  bool stepper_voltage_saturated_right;
+  uint16_t stepper_recovery_reserved;
 };
 
 struct DOC_DESC(
@@ -356,6 +369,13 @@ struct DOC_DESC(
   double brace_stiffness_nm_per_rad;
   double brace_damping_nm_s_per_rad;
   std::array<ipc::SimBraceRestEventPayload, kMaxSimBraceRestEvents> brace_rest_events;
+  // Optional electrical-plant overrides appended for high-angle SIL
+  // acceptance. Non-positive electrical values retain the selected profile's
+  // defaults. A non-positive first-moment scale retains the historical
+  // correlated-mass behavior.
+  double first_mass_moment_scale;
+  double stepper_current_limit_a;
+  double stepper_bus_voltage_v;
 };
 
 struct DOC_DESC("Immediate simulator reply indicating whether a start request was accepted.")

@@ -223,15 +223,26 @@ class MotorRunner {
   using FeedbackSample = MotorFeedbackSample;
 
   MotorRunner(Stepper& left, Stepper& right, double control_hz = 1000.0,
-              double max_slew_sps_per_s = 200000.0, WaveFrameBackend* backend = nullptr)
+              double max_slew_sps_per_s = 200000.0, WaveFrameBackend* backend = nullptr,
+              double burst_slew_sps_per_s = Config::motor_burst_slew_sps_per_s,
+              double burst_credit_sps = Config::motor_slew_burst_credit_sps,
+              double burst_min_target_sps = Config::motor_slew_burst_min_target_sps,
+              double burst_recovery_sps_per_s =
+                  Config::motor_slew_burst_recovery_sps_per_s)
       : left_(left),
         right_(right),
         pigpio_backend_(left.pi(), left.stepPin(), right.stepPin()),
         backend_(backend != nullptr ? *backend : static_cast<WaveFrameBackend&>(pigpio_backend_)),
         nominal_control_dt_s_(1.0 / (control_hz > 0.0 ? control_hz : 1.0)),
-        max_slew_sps_per_s_(std::max(0.0, max_slew_sps_per_s)) {
+        max_slew_sps_per_s_(std::max(0.0, max_slew_sps_per_s)),
+        burst_slew_sps_per_s_(std::max(max_slew_sps_per_s_, burst_slew_sps_per_s)),
+        burst_credit_capacity_sps_(std::max(0.0, burst_credit_sps)),
+        burst_min_target_sps_(std::max(0.0, burst_min_target_sps)),
+        burst_recovery_sps_per_s_(std::max(0.0, burst_recovery_sps_per_s)) {
     left_state_.direction_forward = left_.dirForward();
     right_state_.direction_forward = right_.dirForward();
+    left_state_.burst_credit_sps = burst_credit_capacity_sps_;
+    right_state_.burst_credit_sps = burst_credit_capacity_sps_;
   }
 
   void setTargets(double left_sps, double right_sps, uint64_t timestamp_us) {
@@ -294,6 +305,8 @@ class MotorRunner {
     right_state_.magnitude_sps = 0.0;
     clearReversalQualification(left_state_);
     clearReversalQualification(right_state_);
+    left_state_.burst_credit_sps = burst_credit_capacity_sps_;
+    right_state_.burst_credit_sps = burst_credit_capacity_sps_;
     phase_left_ = 0.0;
     phase_right_ = 0.0;
     measured_avg_sps_ = 0.0;
@@ -317,6 +330,8 @@ class MotorRunner {
     right_state_.magnitude_sps = 0.0;
     clearReversalQualification(left_state_);
     clearReversalQualification(right_state_);
+    left_state_.burst_credit_sps = burst_credit_capacity_sps_;
+    right_state_.burst_credit_sps = burst_credit_capacity_sps_;
     phase_left_ = 0.0;
     phase_right_ = 0.0;
     measured_avg_sps_ = 0.0;
@@ -449,6 +464,7 @@ class MotorRunner {
     double magnitude_sps{0.0};
     unsigned opposite_samples{0};
     double opposite_credit_steps{0.0};
+    double burst_credit_sps{0.0};
   };
 
   struct ChannelUpdate {
@@ -534,6 +550,56 @@ class MotorRunner {
   static double signedMagnitude(const ChannelState& state) {
     if (state.magnitude_sps <= kCommandZeroEpsilonSps) return 0.0;
     return state.direction_forward ? state.magnitude_sps : -state.magnitude_sps;
+  }
+
+  double slewDeltaForChannelLocked(ChannelState& state, double target_sps,
+                                   double slew_dt_s) const {
+    const int requested_direction = targetDirection(target_sps);
+    const int physical_direction = state.direction_forward ? 1 : -1;
+    const double requested_magnitude = std::abs(target_sps);
+    const bool same_direction =
+        requested_direction != 0 && requested_direction == physical_direction;
+    double sustainable_slew_sps_per_s = max_slew_sps_per_s_;
+    if (same_direction && requested_magnitude < state.magnitude_sps &&
+        state.magnitude_sps > Config::motor_slew_taper_start_sps) {
+      // Back-EMF assists removal of high field speed. This path is bounded to
+      // the high-field interval and never accelerates through a reversal.
+      sustainable_slew_sps_per_s =
+          Config::motor_high_field_braking_slew_sps_per_s;
+    } else if (same_direction && requested_magnitude > state.magnitude_sps &&
+        state.magnitude_sps > Config::motor_slew_taper_start_sps) {
+      const double taper = std::clamp(
+          (state.magnitude_sps - Config::motor_slew_taper_start_sps) /
+              (Config::motor_slew_taper_end_sps -
+               Config::motor_slew_taper_start_sps),
+          0.0, 1.0);
+      sustainable_slew_sps_per_s =
+          max_slew_sps_per_s_ +
+          taper * (Config::motor_slew_at_taper_end_sps_per_s -
+                   max_slew_sps_per_s_);
+    }
+    const double sustainable_delta = sustainable_slew_sps_per_s * slew_dt_s;
+    const bool same_direction_growth =
+        same_direction &&
+        requested_magnitude > state.magnitude_sps + sustainable_delta;
+    const bool burst_eligible =
+        same_direction_growth && requested_magnitude >= burst_min_target_sps_;
+
+    double allowed_delta = sustainable_delta;
+    if (burst_eligible && state.burst_credit_sps > 0.0) {
+      const double burst_delta = burst_slew_sps_per_s_ * slew_dt_s;
+      const double extra_delta = std::min(
+          {std::max(0.0, burst_delta - sustainable_delta),
+           state.burst_credit_sps,
+           requested_magnitude - state.magnitude_sps - sustainable_delta});
+      allowed_delta += extra_delta;
+      state.burst_credit_sps -= extra_delta;
+    } else if (requested_magnitude <= state.magnitude_sps + sustainable_delta) {
+      state.burst_credit_sps = std::min(
+          burst_credit_capacity_sps_,
+          state.burst_credit_sps + burst_recovery_sps_per_s_ * slew_dt_s);
+    }
+    return allowed_delta;
   }
 
   ChannelUpdate updateChannelLocked(ChannelState& state, double target_sps,
@@ -739,15 +805,21 @@ class MotorRunner {
     have_last_call_time_ = true;
 
     const double slew_dt_s = std::min(elapsed_dt_s, nominal_control_dt_s_);
-    const double max_delta = max_slew_sps_per_s_ * slew_dt_s;
     const double target_left_sps = target_left_sps_.load(std::memory_order_relaxed);
     const double target_right_sps = target_right_sps_.load(std::memory_order_relaxed);
-    double left_max_delta = max_delta;
-    double right_max_delta = max_delta;
+    const double left_max_delta =
+        slewDeltaForChannelLocked(left_state_, target_left_sps, slew_dt_s);
+    const double right_max_delta =
+        slewDeltaForChannelLocked(right_state_, target_right_sps, slew_dt_s);
     const ChannelUpdate left_update =
         updateChannelLocked(left_state_, target_left_sps, left_max_delta);
     const ChannelUpdate right_update =
         updateChannelLocked(right_state_, target_right_sps, right_max_delta);
+    // A direction transition always starts on the sustainable envelope.  It
+    // also discards stored burst authority so a reversal cannot receive a
+    // delayed same-direction burst on the following update.
+    if (left_update.direction_changed) left_state_.burst_credit_sps = 0.0;
+    if (right_update.direction_changed) right_state_.burst_credit_sps = 0.0;
     last_command_left_sps_ = signedMagnitude(left_state_);
     last_command_right_sps_ = signedMagnitude(right_state_);
     if (last_command_left_sps_ != target_left_sps) {
@@ -815,6 +887,10 @@ class MotorRunner {
   std::atomic<uint64_t> current_time_us_{0};
   const double nominal_control_dt_s_;
   const double max_slew_sps_per_s_;
+  const double burst_slew_sps_per_s_;
+  const double burst_credit_capacity_sps_;
+  const double burst_min_target_sps_;
+  const double burst_recovery_sps_per_s_;
   double last_command_left_sps_{0.0};
   double last_command_right_sps_{0.0};
   double phase_left_{0.0};

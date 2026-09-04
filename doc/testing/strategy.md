@@ -153,6 +153,51 @@ Key files:
 - `tests/python/test_run_artifacts.py`
   checks artifact summarization and hardware-log parsing
 
+### Large-angle brace recovery
+
+The simulator's brace is a one-sided compliant pitch-torque fixture. It has no
+vertical coordinate, contact geometry, or solved vertical reaction. On the
+horizontal simulator floor the vertical balance is therefore
+
+$$
+N_L+N_R=Tg,
+$$
+
+both while the brace torque is active and after release; body pitch does not
+introduce a $\cos\theta$ wheel-load factor. A future force-resolved brace must
+instead solve its vertical reaction and use
+$N_L+N_R=Tg-N_{brace}$. This fixture convention is common simulator logic,
+while each actuator profile owns how it solves or applies tire contact force.
+
+The production high-angle end-to-end regression is
+`test_production_controller_recovers_from_67_degree_brace_over_ipc` in
+`tests/python/test_sim_scenarios.py`. Pytest launches a clean simulator binary
+and configures, commands, and observes the run only through the public UDP IPC
+contract. It runs the real controller and `MotorRunner` path after estimator
+settling, with `2.0 A`, `12.6 V`, a `48,000 SPS` controller cap, `mu=1`, and a
+physical `0.200 kg` ballast contribution at `-3 mm` applied consistently to
+total mass, first mass moment, and pitch inertia. The reflected start command
+carries independent total-mass, first-moment, pitch-inertia, current, and
+bus-voltage overrides. Reflected telemetry reports the applied values plus
+traction, slip, cycle-slip, torque, and voltage-saturation diagnostics needed
+for black-box acceptance.
+
+The production enable path permits an explicit, direction-valid held forward
+command to re-arm in the known fallen brace band (`60–70 deg`) when absolute
+pitch rate is at most `30 deg/s`. There is no separate re-arm exception around
+`40 deg`: an unbraced 40-degree cold start races estimator settle against
+falling and is not the same maneuver. Once armed above the normal fallover
+angle, authority continues only while the command remains direction-valid,
+pitch stays within `70 deg`, and outward motion is no more than the `5 deg/s`
+tolerance. These are continuously evaluated Boolean gates, not a recovery
+phase, trajectory, or persistent recovery state. Inside the normal safe
+region, ordinary enable semantics apply.
+
+`SimulatorRunnerTest.ProductionControllerRecoversFromSixtySevenDegreeBrace`
+is the focused in-process companion check. These fixtures are
+controller/actuator acceptance evidence; they do not change nominal electrical
+constants and do not imply that the tune is hardware-validated.
+
 ## Legacy Transfer Acceptance and Artifacts
 
 The focused four-nominal-plus-three-actuator-stress legacy transfer matrix runs in-process in `balancer_tests`.
